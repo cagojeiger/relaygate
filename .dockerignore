@@ -1,0 +1,9 @@
+.git
+.github
+.omx
+data
+target
+bin
+coverage.out
+*.test
+docs

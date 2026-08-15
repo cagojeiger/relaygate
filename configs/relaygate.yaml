@@ -1,0 +1,41 @@
+raft:
+  node_id: node-1
+  bind_address: 0.0.0.0:7000
+  advertise_address: 127.0.0.1:7000
+  data_dir: ./data/relaygate
+  bootstrap: true
+  apply_timeout: 5s
+  transport_timeout: 10s
+  startup_timeout: 15s
+  shutdown_timeout: 10s
+  snapshot_retain: 2
+  snapshot_threshold: 8192
+  snapshot_interval: 2m
+  max_pool: 3
+  max_command_bytes: 65536
+
+gateway:
+  id: gateway-1
+  control_endpoints:
+    - 127.0.0.1:7100
+  connect_timeout: 2s
+  retry_interval: 250ms
+
+control:
+  cluster_epoch: relaygate-v1
+  bind_address: 0.0.0.0:7100
+  authority_probe_interval: 250ms
+  authority_probe_timeout: 2s
+  gateway_revalidation_timeout: 15s
+  shutdown_timeout: 5s
+  max_distinct_binding_keys_per_epoch: 100000
+  max_distinct_gateway_ids_per_epoch: 1024
+
+admin:
+  bind_address: 0.0.0.0:9090
+  read_timeout: 5s
+  write_timeout: 10s
+  shutdown_timeout: 5s
+
+logging:
+  level: info

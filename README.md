@@ -20,3 +20,47 @@ RelayGate는 Raft로 조정되는 Gateway cluster에서 일시적인 양방향 P
 장애와 복구 경계는 [SPEC 003](docs/spec/003-failure-and-recovery-model.md), 닫힌 상태 전이표는
 [SPEC 004](docs/spec/004-state-transition-model.md), v0 필수 테스트는
 [TEST 001](docs/test/001-core-correctness-test-plan.md)에서 정의한다.
+
+## 현재 구현
+
+현재 control-plane slice는 다음 경계까지 구현한다.
+
+- HashiCorp Raft의 단일 voter 또는 정적 3-voter bootstrap
+- BoltDB log/stable store와 file snapshot
+- `GatewaySlot`과 `BindingSlot` generation/ref CAS, tombstone과 distinct-key 상한
+- Current leader의 term/quorum 확인으로 생성하는 `AuthorityId`, exact Gateway generation fencing과 timeout classification
+- 내부 gRPC control stream: `Hello → exact FullSnapshot → owner-checked serial BindingMutation`
+- 각 process의 독립적인 `GatewayId`/`GatewayInstanceId`, endpoint 순회와 leader 변경 뒤 자동 full-snapshot 재검증
+- JSON structured log, read-only status/health와 Prometheus metrics
+- Snapshot 뒤 process restart에서 control state 복구
+
+인증, payload relay, 동적 multi-node join과 public Go/Rust SDK는 아직 구현하지 않았다.
+
+현재 Raft transport와 internal control gRPC는 TLS나 peer authentication 없이 **신뢰된 local/dev
+network만을 전제**한다. Compose는 control port를 host loopback에만 publish한다. 이 상태로 shared 또는
+untrusted network에 배포하지 않으며, 운영 배포 전 transport trust boundary와 Gateway identity 인증을
+별도로 확정한다.
+
+```bash
+go run ./cmd/relaygate -config ./configs/relaygate.yaml
+curl http://127.0.0.1:9090/healthz/ready
+curl http://127.0.0.1:9090/status
+```
+
+설정은 `configs/relaygate.yaml` 하나가 기준이다. 공통 정책은 YAML에 두고, 배포마다 달라지는
+`RELAYGATE_RAFT_NODE_ID`, `RELAYGATE_RAFT_ADVERTISE_ADDRESS`,
+`RELAYGATE_RAFT_DATA_DIR`, `RELAYGATE_RAFT_BOOTSTRAP`,
+`RELAYGATE_RAFT_BOOTSTRAP_VOTERS`, `RELAYGATE_CONTROL_CLUSTER_EPOCH`,
+`RELAYGATE_GATEWAY_ID`, `RELAYGATE_GATEWAY_CONTROL_ENDPOINTS`를 환경변수로 덮어쓴다.
+Bootstrap voter와 control endpoint 목록은 JSON 배열이며 `Raft NodeId`와 `GatewayId`는 같은 값으로
+간주하지 않는다.
+
+Docker Compose는 고정된 3-voter smoke cluster를 실행한다. Raft transport는 Compose network 안에만 있고,
+각 노드의 internal control gRPC는 `7101`–`7103`, read-only Admin HTTP는 `9091`–`9093`에 노출된다.
+
+```bash
+docker compose up --build
+curl http://127.0.0.1:9091/status
+curl http://127.0.0.1:9092/status
+curl http://127.0.0.1:9093/status
+```

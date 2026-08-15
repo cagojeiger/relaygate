@@ -1,6 +1,6 @@
 # TEST 001: Core Correctness Test Plan
 
-> **Status:** Draft — implementation 전에는 모두 `Planned`
+> **Status:** Draft — 전체 v0 release gate는 아직 `Planned`
 >
 > RelayGate의 닫힌 상태 모델, failure semantics와 복구 경계를 증명하기 위해 반드시 통과해야 할 테스트다.
 
@@ -61,6 +61,11 @@ flowchart LR
 | `B07` | Conditional cleanup vs rebind | Old cleanup과 new generation rebind를 두 순서로 적용 | New ref가 이기면 cleanup no-op, cleanup이 먼저면 rebind가 next generation으로 재시도한다. |
 | `B08` | Distinct-key cap | 한 epoch에서 cap까지 서로 다른 BindingKey 생성 후 existing/new key 작업 | Existing rebind/remove는 가능, 처음 보는 key install만 fail closed다. |
 | `B09` | Registering cancel vs late install | Install submit 뒤 unbind/session end와 Raft apply를 양 순서로 실행 | Local binding은 즉시 retired라 `O=false`다. Apply가 늦게 성공하면 exact ref conditional tombstone을 제출하고 새 ref를 건드리지 않는다. |
+| `B10` | Gateway registration replay | 동일 Gateway register command를 ACK loss 뒤 재생 | 같은 generation/ref 하나만 남고 replay는 `AlreadyApplied`다. |
+| `B11` | Gateway instance replacement | 같은 GatewayId에 새 GatewayInstanceId를 exact CAS로 등록 | Generation이 한 번 증가하고 old control session/snapshot은 즉시 fenced/ineligible이다. |
+| `B12` | Gateway registration ABA | `live(g1) → tombstone(g2) → live(g3)` 뒤 old register/remove 재생 | Old generation은 current instance를 덮거나 제거하지 않는다. |
+| `B13` | Distinct GatewayId cap | Epoch cap까지 등록한 뒤 existing/new GatewayId 작업 | Existing reconnect/replace/remove는 가능하고 처음 보는 GatewayId만 fail closed다. |
+| `B14` | Gateway snapshot round trip | GatewaySlot과 BindingSlot을 snapshot/restore | 정렬된 동일 state와 generation/ref/tombstone을 복구한다. Live route는 control 재검증 전 열리지 않는다. |
 
 ## O — Open, accept and observation tests
 
@@ -96,6 +101,9 @@ flowchart LR
 | `C10` | Same-epoch quorum unavailable | Quorum-compatible safety state를 복구할 수 없는 조합 | Same epoch를 강제 bootstrap하지 않고 fail closed한다. |
 | `C11` | Unsafe fresh epoch request | 하나의 old authority path를 fence하지 못한 상태에서 reset | Fresh epoch가 열리지 않고 service R3/fail closed다. |
 | `C12` | Safe fresh epoch | 모든 old path external fence 증명 후 offline bootstrap | New epoch만 current이며 old context/message는 거부된다. Service R2, old continuity R3다. |
+| `C13` | Control protocol order | Hello 전, snapshot 전 mutation, 두 번째 Hello/Snapshot, missing mutation을 각각 전송 | 허용된 `Hello → Snapshot → Mutation*` 외 입력은 stable gRPC rejection이고 durable state는 전진하지 않는다. |
+| `C14` | Mutation response loss | Binding mutation commit 직전/직후 stream을 끊고 새 session에서 snapshot/replay | Commit 전이면 미적용, commit 뒤 replay는 `AlreadyApplied`; 같은 stream을 resume하지 않는다. |
+| `C15` | Follower endpoint | 같은 Hello를 follower와 quorum-confirmed leader에 전송 | Follower는 `UNAVAILABLE`이고 registration이 없으며 leader만 session을 연다. Redirect state는 없다. |
 
 ## K — Config, revocation and presence tests
 
@@ -171,9 +179,9 @@ point와 경쟁하면 두 event order가 각각 독립 test다.
 | --- | --- |
 | State totality, lifecycle completion, terminal absorbing | `M01–M04`, `M09`, `P01–P03` |
 | Client isolation, authentication, REST boundary and admission | `M05–M06`, `O01–O05`, `K13–K14` |
-| Binding ABA and bounded durable state | `B01–B09` |
+| Binding/Gateway ABA and bounded durable state | `B01–B14` |
 | Open observation and SDK compatibility | `O06–O13` |
-| Authority, quorum, epoch safety | `C01–C12`, `X01`, `X04` |
+| Authority, quorum, control order and epoch safety | `C01–C15`, `X01`, `X04` |
 | Config revocation and presence | `K01–K12`, `X02` |
 | Bounded flow and volatile payload | `M08`, `P04–P07`, `X05` |
 | Partial/unknown outcomes | `O07–O11`, `X03`, `X06`, `R06–R07` |
@@ -193,8 +201,19 @@ v0 correctness 완료를 주장하려면 다음을 모두 만족해야 한다.
 - 실패한 test를 timeout 증가나 retry 추가만으로 숨기지 않는다.
 - 실행하지 않은 test는 `passed`로 기록하지 않는다.
 
-현재는 설계 문서만 있으므로 이 목록 전체의 상태는 **Planned**다. 문서·diagram 검증은 runtime correctness
-증명이 아니다.
+현재 자동화 범위는 다음과 같다.
+
+| Slice | 현재 증거 | 아직 증명하지 않는 것 |
+| --- | --- | --- |
+| Raft FSM | Binding/Gateway CAS replay, rejection, ABA, cap과 deterministic snapshot unit test | Process crash-cut 전체와 route eligibility |
+| Control stream | Hello/snapshot 순서, 누락·extra를 거부하는 exact full-set snapshot, 직렬 mutation, exact GatewaySlot fence, cross-owner mutation 거부, instance replacement와 quorum-loss fence gRPC test | Auth, payload relay와 arbitrary packet loss |
+| Gateway control client | Process별 새 GatewayInstanceId, follower endpoint 순회, 같은 instance의 새 control session reconnect, silent transport blackhole 뒤 bounded readiness 철회와 Admin readiness unit/Compose test | Listener binding snapshot, auth revision과 gateway-only deployment |
+| 3 voter | 정적 bootstrap/복제/leader replacement/rejoin, old control stream fence와 new authority full-snapshot 후 mutation integration test | Dynamic membership, full pairwise failure matrix |
+| Container wiring | CI에서 새 3-node Compose cluster의 세 Gateway 자동 등록, leader stop 뒤 surviving Gateway 재검증과 실제 control smoke | 장기 soak, resource pressure와 arbitrary container partition |
+
+이는 `M03`, `B01–B03`, `B07–B08`, `B10–B14`, `C01`, `C04–C06`, `C08`, `C13–C15`의 일부 전제에 대한
+구현 증거일 뿐, 각 항목의 모든 crash-cut과 route oracle을 충족하지 않는다. 따라서 test ID 전체를 아직
+`passed`로 판정하지 않는다. 부분 unit/integration test는 전체 runtime correctness 증명이 아니다.
 
 ## 관련 문서
 

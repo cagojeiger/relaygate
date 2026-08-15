@@ -161,6 +161,14 @@ cluster: {
       style.stroke: "#059669"
       style.stroke-width: 2
     }
+
+    gateways: {
+      label: "Committed GatewaySlot\nGatewayId → generation\n· instance ref / tombstone"
+      shape: stored_data
+      style.fill: "#ffffff"
+      style.stroke: "#059669"
+      style.stroke-width: 2
+    }
   }
 
   route: {
@@ -200,7 +208,7 @@ caller <-> cluster.runtime.capacity.gateway_d: "protobuf gRPC · Open · payload
 cluster.runtime.capacity.gateway_d <-> cluster.voters.followers.voter_b.gateway: "lazy relay · active Pipe" { class: grpc }
 cluster.voters.followers.voter_b.gateway <-> listener: "protobuf gRPC · Listen · Pipe" { class: grpc }
 
-cluster.runtime.live -> cluster.voters.leader.gateway: "all Gateways\nregister · heartbeat · resolve" { class: control }
+cluster.runtime.live -> cluster.voters.leader.gateway: "all Gateways\nHello · snapshot · mutation" { class: control }
 cluster.voters.leader.gateway -> cluster.voters.leader.raft: "command / query" { class: control_solid }
 cluster.voters.leader.gateway -> cluster.voters.leader.presence: "revalidate + full snapshot" { class: control }
 
@@ -210,6 +218,8 @@ observer -> cluster.voters.leader.rest: "GET presence\ncomplete / incomplete" { 
 cluster.voters.leader.raft <-> cluster.voters.followers.voter_b.raft: "Raft replication" { class: raft_flow }
 cluster.voters.leader.raft <-> cluster.voters.followers.voter_c.raft: { class: raft_flow }
 cluster.voters.leader.raft -> cluster.voters.bindings: "apply" { class: raft_check }
+cluster.voters.leader.raft -> cluster.voters.gateways: "apply" { class: raft_check }
+cluster.voters.gateways -> cluster.voters.leader.presence: "committed set" { class: raft_check }
 
 cluster.voters.bindings -> cluster.route.eligible: "C · committed exact slot" { class: raft_check }
 cluster.voters.leader.raft -> cluster.route.eligible: "Q · admission quorum" { class: raft_check }

@@ -26,10 +26,12 @@ flowchart LR
     B["ListenerBindingId"]
     P["PipeId"]
 
+    GS["GatewayId<br/>stable configured identity"]
     G["GatewayInstanceId<br/>process lifetime"]
     S["ClientSessionId<br/>authenticated connection lifetime"]
 
     C --> E --> T --> B --> P
+    GS --> G
     G -. "binding owner" .-> B
     S -. "live owner · auth_revision" .-> B
     S -. "participant" .-> P
@@ -39,7 +41,7 @@ flowchart LR
     classDef runtime fill:#eff6ff,stroke:#2563eb,stroke-width:2px
     class C namespace
     class E,T,B address
-    class P,G,S runtime
+    class P,GS,G,S runtime
 ```
 
 ```text
@@ -47,9 +49,12 @@ ResolveScope       = (ClientId, Endpoint)
 BindingKey         = (ClientId, EndpointPattern, TargetId)
 BindingSlot        = (BindingKey, BindingGeneration, RefOrTombstone)
 BindingRecord      = live BindingSlot with ListenerBindingRef
-ListenerBindingRef = (GatewayInstanceId, ListenerBindingId)
+ListenerBindingRef = (GatewayId, GatewayInstanceId, ListenerBindingId)
+GatewaySlot        = (GatewayId, GatewayGeneration, RefOrTombstone)
+GatewayRef         = live GatewaySlot with GatewayInstanceId
 CurrentAuthority   = (ClusterEpoch, AuthorityId)
-ControlSessionRef  = (AuthorityId, ControlSessionId, GatewayInstanceId)
+ControlSessionRef  = (ClusterEpoch, AuthorityId, ControlSessionId,
+                      GatewayId, GatewayInstanceId)
 AuthContext        = (ClientId, ApiKeyId, auth_revision, ClientSessionId)
 OpenContext        = (ClusterEpoch, AuthorityId, AttemptId, AuthContext,
                       BindingKey, BindingGeneration, ListenerBindingRef)
@@ -61,6 +66,7 @@ OpenContext        = (ClusterEpoch, AuthorityId, AttemptId, AuthContext,
 
 | Identity | 생성부터 소멸까지 |
 | --- | --- |
+| `GatewayId` | 배포 config가 정하는 stable identity다. Process restart 뒤에도 같은 logical Gateway라면 유지한다. |
 | `GatewayInstanceId` | Gateway process 시작 때 새로 생성되고 process 종료 때 끝난다. 재시작은 새 identity다. |
 | `AuthorityId` | 현재 `ClusterEpoch`에서 authority 획득을 확인할 때마다 생성하는 opaque identity다. Raft role만으로는 authority가 아니며 step-down, quorum 상실 또는 epoch 종료 때 current가 아니게 된다. |
 | `ControlSessionId` | Current authority가 Gateway control connection을 확인할 때 생성되고 connection, authority 또는 Gateway instance 종료 때 끝난다. |
@@ -83,6 +89,64 @@ Context의 `AuthorityId`는 authenticated 발급 provenance이며 owner가 curre
 요구하지 않는다. Owner는 current `ClusterEpoch`, single-use와 exact binding, bound `ClientId/ApiKeyId`가
 현재 local snapshot에서 여전히 허용되고 retired되지 않았는지를 검사한다. 유지된 immutable key라면
 `auth_revision` equality만 달라졌다는 이유로 context를 취소하지 않는다.
+
+## Gateway 등록과 control stream
+
+```mermaid
+sequenceDiagram
+    participant G as Gateway
+    participant A as Current authority
+    participant R as Raft state
+
+    G->>A: Hello(epoch, GatewayId, GatewayInstanceId)
+    A->>R: GatewaySlot CAS
+    A-->>G: SessionOpened(ControlSessionRef, generation)
+    G->>A: FullSnapshot(exact committed live bindings)
+    A-->>G: SnapshotAccepted(Rebuilding or Complete)
+    loop ordered, one mutation at a time
+        G->>A: BindingMutation(expected generation/ref)
+        A->>R: CAS apply
+        A-->>G: MutationResult
+    end
+```
+
+`GatewaySlot`은 stable `GatewayId`마다 최신 `GatewayGeneration`과 live `GatewayInstanceId` 또는 tombstone을
+Raft에 둔다. 새 instance 등록과 제거는 binding과 같은 expected generation/value CAS를 쓰며 generation을
+증가시킨다. 동일 instance의 같은 target generation replay만 idempotent하다. 새 instance가 current가 되면
+이전 instance의 control session과 snapshot은 즉시 ineligible이다.
+
+`SessionOpened`가 반환한 generation은 server-side control session에 고정된다. 이후 snapshot과 mutation은
+같은 `(GatewayId, GatewayGeneration, GatewayInstanceId)`가 current live `GatewaySlot`일 때만 진행한다.
+Current authority는 Gateway 등록/session fencing, snapshot validation과 binding mutation을 하나의 ordered
+control lane으로 처리하므로 instance 교체와 binding CAS 사이에 stale operation이 끼어들지 않는다.
+
+Wire `ListenerBindingRef`는 현재 control session에 이미 고정된 `GatewayId`를 반복하지 않는다. Server는
+이를 결합해 durable ref를 만들며, stable `GatewayId`가 다른 ref의 replace/remove CAS는 mismatch다. 같은
+stable Gateway의 새 instance는 이전 instance ref를 expected value로 사용해 rebind할 수 있다.
+
+한 번도 등록하지 않은 `GatewayId`는 generation `0`의 implicit tombstone이다. v0은 current-epoch slot을
+GC하지 않고 `MaxDistinctGatewayIDsPerEpoch`로 수를 제한한다. 한계에 도달하면 기존 ID의 reconnect·replace는
+허용하지만 새 ID 등록은 fail closed한다. 공간 회수는 safe offline epoch reset에서만 한다.
+
+한 control stream의 순서는 `Hello → SessionOpened → FullSnapshot → BindingMutation*`뿐이다. `FullSnapshot`은
+해당 current Gateway instance가 소유한 committed live binding의 정확한 전체 집합이어야 한다. Snapshot 전
+mutation, 두 번째 Hello/Snapshot과 exact `ControlSessionRef`가 아닌 message는 거부한다. Per-message heartbeat,
+sequence와 request ID는 두지 않는다. Ordered gRPC stream, HTTP/2 keepalive, transport 종료와 Raft CAS replay가
+각각 순서·failure detection·중복 수렴을 담당한다. Transport나 authority가 끝나면 새 stream은 새
+`ControlSessionId`와 full snapshot부터 다시 시작한다.
+
+Gateway와 control server는 서로 호환되는 HTTP/2 keepalive 정책을 사용한다. 한쪽 transport가 응답하지 않으면
+Gateway는 bounded time 안에 `Revalidated`를 벗어나며, 같은 stream이나 snapshot을 live로 계속 간주하지 않는다.
+Keepalive 간격과 timeout 값은 protocol identity가 아니라 구현·운영 정책이다.
+
+CAS mismatch의 `MutationResult(REJECTED)`는 그 판단에 사용한 current committed slot을 함께 반환한다. Gateway는
+그 slot을 새 expected value로 명시해 재시도하거나 local binding을 포기한다. Authority가 expected value를
+추측해 자동 overwrite하지 않는다.
+
+Gateway는 배포 config의 control endpoint 목록을 순회한다. Quorum-confirmed current authority만 `Hello`를
+수락하고 follower/no-quorum endpoint는 `UNAVAILABLE`을 반환한다. Gateway는 bounded backoff 뒤 다른 endpoint나
+같은 endpoint에 새 stream을 연다. Redirect나 별도 leader-discovery protocol은 stale될 또 하나의 상태로 두지
+않는다.
 
 ## Route가 유효한 조건
 

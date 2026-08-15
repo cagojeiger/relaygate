@@ -138,6 +138,9 @@ credential은 자신의 `ClientId`만 볼 수 있다. Cluster-wide observation�
 
 ## Presence completeness
 
+여기서 committed Gateway는 current epoch의 live `GatewaySlot = (GatewayId, generation, GatewayInstanceId)`이다.
+같은 `GatewayId`의 새 instance가 commit되면 이전 instance classification은 current set에 속하지 않는다.
+
 ```mermaid
 stateDiagram-v2
     [*] --> NoAuthority
@@ -160,6 +163,9 @@ stateDiagram-v2
   즉시 무효화하고 `Rebuilding`에서 다시 계산한다.
 - Rebuilding 중에는 부분 결과와 `incomplete`를 함께 반환한다. 빈 결과를 complete로 표시하지 않는다.
 - Timeout 값은 이 spec에서 정하지 않는다. Route eligibility는 [SPEC 001](001-system-model.md)을 따른다.
+- Go runtime의 timeout 값은 `control.gateway_revalidation_timeout`으로 설정하며 timeout classification은
+  unavailable 추정일 뿐 route나 revocation gate를 true로 만들지 않는다. `Syncing` session이 이 timeout을
+  넘으면 ended로 fence하며 늦은 snapshot은 같은 session을 되살리지 않고 새 control session을 요구한다.
 
 ## 관련 문서
 

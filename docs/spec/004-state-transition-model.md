@@ -16,7 +16,7 @@ Pipe 계약, [SPEC 002](002-client-configuration-and-presence.md)는 config·pre
 Global `Healthy` state는 없다. 전체 상태는 독립 machine의 곱이고 route·복구 상태는 파생값이다.
 
 ```text
-SystemState = Authority × Quorum × ControlSession × Presence × AuthSnapshot
+SystemState = Authority × Quorum × GatewayRegistration × ControlSession × Presence × AuthSnapshot
             × ClientSession × LocalBinding × FlowControl
             × OwnerPipe × IngressPipe × ListenerPipe × CallerPipe
             × OpenAllAccumulator
@@ -57,6 +57,7 @@ single-use, exact binding과 current local `O`를 검사한다.
 | --- | --- | --- | --- | --- |
 | `Authority` | `(ClusterEpoch, AuthorityId)` | `Absent` | `Fenced` | Memory. Raft safety state에서 다시 판단한다. |
 | `Quorum` | Current epoch의 control plane | `Unavailable` | 없음 | Derived memory observation |
+| `GatewayRegistration` | Stable `GatewayId` | `AbsentG` | 없음 | Latest generation/ref 또는 tombstone만 Raft snapshot에 유지 |
 | `ControlSession` | `ControlSessionRef` | `AbsentC` | `EndedC` | Memory only |
 | `Presence` | `CurrentAuthority` | `NoAuthority` | 없음 | Memory only; failover 때 재구축 |
 | `AuthSnapshot` | Gateway process | `StartupBlocked` | 없음 | External config가 source of truth |
@@ -82,6 +83,7 @@ Protocol은 wire message를 이 event에 매핑할 수 있지만 집합 밖의 �
 | --- | --- | --- |
 | Authority | `Absent`, `Current`, `Fenced` | `AuthorityConfirmed`, `StepDown`, `QuorumLost`, `EpochEnded` |
 | Quorum | `Unavailable`, `Available` | `QuorumConfirmed`, `QuorumLost`, `EpochEnded` |
+| GatewayRegistration | `AbsentG`, `LiveG`, `TombstonedG` | `Register`, `ReplaceInstance`, `Remove`, `EpochEnded` |
 | ControlSession | `AbsentC`, `Syncing`, `Revalidated`, `EndedC` | `SyncStarted`, `SnapshotValidated`, `Close`, `Timeout`, `AuthorityEnded`, `GatewayEnded` |
 | Presence | `NoAuthority`, `Rebuilding`, `Complete` | `AuthorityConfirmed`, `AllGatewaysClassified`, `CommittedSetChanged`, `ControlGenerationChanged`, `AuthorityEnded` |
 | AuthSnapshot | `StartupBlocked`, `ActiveAuth`, `Validating` | `StartupValid`, `StartupInvalid`, `ReloadStarted`, `ReloadValid`, `ReloadInvalid` |
@@ -112,16 +114,29 @@ stable rejection이다. 나머지 per-operation machine도 표의 initial state�
 | Quorum | `Available` | `EpochEnded` | Current epoch | `Unavailable` | Old-epoch operation 중단 |
 | Quorum | `Unavailable` | `EpochEnded` | Current epoch | `Unavailable` | 이미 unavailable; epoch observation 종료 |
 
+### GatewayRegistration
+
+| From | Event | Guard | To | Effect |
+| --- | --- | --- | --- | --- |
+| `AbsentG` | `Register` | New `GatewayId`, capacity 있음, expected `(generation=0, tombstone)` | `LiveG` | Generation 1과 exact `GatewayInstanceId` commit |
+| `LiveG` | `ReplaceInstance` | Exact current generation/ref CAS | `LiveG` | Generation 증가; 새 instance commit; old session/snapshot fence |
+| `LiveG` | `Remove` | Exact current generation/ref CAS | `TombstonedG` | Generation 증가; current committed set에서 제외 |
+| `TombstonedG` | `Register` | Exact tombstone generation CAS | `LiveG` | Generation 증가; 새 instance commit |
+| `AbsentG/LiveG/TombstonedG` | `EpochEnded` | Current epoch | 새 epoch의 `AbsentG` | Old slot과 message는 old epoch에 남아 current state를 변경하지 못함 |
+
+같은 target generation/ref의 `Register`/`ReplaceInstance`/`Remove` replay는 `AlreadyApplied` no-op이다. 다른
+generation/ref mismatch와 capacity를 넘는 새 `GatewayId`는 stable rejection이며 current slot을 바꾸지 않는다.
+
 ### ControlSession과 Presence
 
 | Machine | From | Event | Guard | To | Effect |
 | --- | --- | --- | --- | --- | --- |
-| ControlSession | `AbsentC` | `SyncStarted` | Current authority + live `GatewayInstanceId` | `Syncing` | 새 `ControlSessionId`; full snapshot 요구 |
+| ControlSession | `AbsentC` | `SyncStarted` | Current authority + exact live `GatewaySlot` generation/ref | `Syncing` | 새 `ControlSessionId`; server-side generation 고정, full snapshot 요구 |
 | ControlSession | `Syncing` | `SnapshotValidated` | Exact current ref + complete valid snapshot | `Revalidated` | `V` 후보와 presence classification 설치 |
 | ControlSession | `Syncing/Revalidated` | `Close/Timeout` | Exact current ref | `EndedC` | 해당 snapshot ineligible |
 | ControlSession | `Syncing/Revalidated` | `AuthorityEnded/GatewayEnded` | 해당 identity 종료 | `EndedC` | Session과 snapshot 폐기 |
 | Presence | `NoAuthority` | `AuthorityConfirmed` | New current authority | `Rebuilding` | 빈 view에서 시작; `complete=false` |
-| Presence | `Rebuilding` | `AllGatewaysClassified` | 모든 committed Gateway가 revalidated/timeout 분류됨 | `Complete` | Current snapshot publish 가능 |
+| Presence | `Rebuilding` | `AllGatewaysClassified` | 모든 live committed `GatewaySlot`이 revalidated/timeout 분류됨 | `Complete` | Current snapshot publish 가능 |
 | Presence | `Complete` | `CommittedSetChanged/ControlGenerationChanged` | Current authority | `Rebuilding` | 이전 complete/config-converged publication 무효 |
 | Presence | `Rebuilding` | `CommittedSetChanged/ControlGenerationChanged` | Current authority | `Rebuilding` | 영향받은 classification 폐기 |
 | Presence | `Rebuilding/Complete` | `AuthorityEnded` | Current authority 종료 | `NoAuthority` | Unavailable 또는 explicitly incomplete |
@@ -245,6 +260,7 @@ stable rejection이다. 나머지 per-operation machine도 표의 initial state�
 ## 구현과 protocol의 의무
 
 - Wire message/status는 이 문서의 semantic event에 매핑해야 하며 새 전이 의미를 만들지 않는다.
+- Control stream은 `Hello → SessionOpened → FullSnapshot → BindingMutation*` 순서를 지키며 mutation은 stream별로 직렬화한다.
 - State mutation은 identity, generation과 expected current value를 함께 검증한다.
 - 모든 table과 buffer는 bounded하며 capacity 부족은 새 state 생성을 fail closed한다.
 - 구현 최적화가 lease를 사용하면 필요한 clock bound를 별도 protocol 문서에 명시한다.

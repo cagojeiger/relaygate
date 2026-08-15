@@ -1,0 +1,156 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "$out"
+            exit 1
+          fi
+
+  vet:
+    name: go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: |
+          GOTOOLCHAIN=local go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+          GOTOOLCHAIN=local govulncheck ./...
+
+  test:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race ./...
+
+  image:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          tags: relaygate:ci
+
+  compose-smoke:
+    name: docker compose smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Start three-node cluster
+        run: docker compose up -d --build
+      - name: Verify gateway registration, failover, and control smoke
+        shell: bash
+        run: |
+          leader_service=""
+          for _ in $(seq 1 90); do
+            for mapping in relaygate-1:9091:7101 relaygate-2:9092:7102 relaygate-3:9093:7103; do
+              IFS=: read -r service admin_port control_port <<< "$mapping"
+              relay_status=$(curl -fsS "http://127.0.0.1:${admin_port}/status" 2>/dev/null || true)
+              if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); p=d["presence"]; assert d["role"] == "Leader" and d["gateway_control"]["state"] == "Revalidated" and p == {"state":"Complete","committed":3,"classified":3,"revalidated":3}' "$relay_status" 2>/dev/null; then
+                leader_service=$service
+                break 2
+              fi
+            done
+            sleep 0.5
+          done
+          test -n "$leader_service"
+          RELAYGATE_COMPOSE_ADMIN_ADDRS="127.0.0.1:9091,127.0.0.1:9092,127.0.0.1:9093" \
+            go test -race -count=1 ./internal/gatewaycontrol -run '^TestComposeGatewayControlReady$' -v
+
+          docker compose stop "$leader_service"
+          survivor_admin_addrs=()
+          new_leader_control_port=""
+          for _ in $(seq 1 90); do
+            for mapping in relaygate-1:9091:7101 relaygate-2:9092:7102 relaygate-3:9093:7103; do
+              IFS=: read -r service admin_port control_port <<< "$mapping"
+              if [[ "$service" == "$leader_service" ]]; then
+                continue
+              fi
+              relay_status=$(curl -fsS "http://127.0.0.1:${admin_port}/status" 2>/dev/null || true)
+              if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); p=d["presence"]; assert d["role"] == "Leader" and d["gateway_control"]["state"] == "Revalidated" and p == {"state":"Complete","committed":3,"classified":3,"revalidated":2}' "$relay_status" 2>/dev/null; then
+                new_leader_control_port=$control_port
+                break 2
+              fi
+            done
+            sleep 0.5
+          done
+          test -n "$new_leader_control_port"
+          for mapping in relaygate-1:9091 relaygate-2:9092 relaygate-3:9093; do
+            IFS=: read -r service admin_port <<< "$mapping"
+            if [[ "$service" != "$leader_service" ]]; then
+              survivor_admin_addrs+=("127.0.0.1:${admin_port}")
+            fi
+          done
+          joined_admin_addrs=$(IFS=,; echo "${survivor_admin_addrs[*]}")
+          RELAYGATE_COMPOSE_ADMIN_ADDRS="$joined_admin_addrs" \
+            RELAYGATE_COMPOSE_EXPECTED_COMMITTED=3 \
+            RELAYGATE_COMPOSE_EXPECTED_REVALIDATED=2 \
+            go test -race -count=1 ./internal/gatewaycontrol -run '^TestComposeGatewayControlReady$' -v
+          RELAYGATE_COMPOSE_CONTROL_ADDR="127.0.0.1:${new_leader_control_port}" \
+            RELAYGATE_COMPOSE_CLUSTER_EPOCH=local-compose-1 \
+            go test -race -count=1 ./internal/controlgrpc -run '^TestComposeControlSmoke$' -v
+      - name: Print cluster logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Stop cluster
+        if: always()
+        run: docker compose down -v
