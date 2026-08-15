@@ -1,0 +1,218 @@
+# Render from the repository root:
+# d2 --layout elk docs/diagrams/cluster-topology.d2 docs/diagrams/cluster-topology.svg
+direction: down
+
+classes: {
+  actor: { shape: person; style.fill: "#eff6ff"; style.stroke: "#2563eb"; style.stroke-width: 2 }
+  gateway: { style.fill: "#eef2ff"; style.stroke: "#4f46e5" }
+  raft: { shape: hexagon; style.fill: "#d1fae5"; style.stroke: "#059669" }
+  voter: { style.fill: "#ffffff"; style.stroke: "#059669"; style.border-radius: 6 }
+  config_flow: { style.stroke: "#ea580c"; style.stroke-width: 2 }
+  grpc: { style.stroke: "#2563eb"; style.stroke-width: 3 }
+  control: { style.stroke: "#7c3aed"; style.stroke-width: 2; style.stroke-dash: 5 }
+  control_solid: { style.stroke: "#7c3aed"; style.stroke-width: 2 }
+  observe: { style.stroke: "#64748b"; style.stroke-width: 2 }
+  raft_flow: { style.stroke: "#059669"; style.stroke-width: 2 }
+  raft_check: { style.stroke: "#059669"; style.stroke-dash: 3 }
+  leader_check: { style.stroke: "#7c3aed"; style.stroke-dash: 3 }
+  live_check: { style.stroke: "#2563eb"; style.stroke-dash: 3 }
+  exclude_flow: { style.stroke: "#dc2626"; style.stroke-dash: 5 }
+}
+
+common_config: {
+  label: "External client config · source of truth\nClientId → ApiKeyId / verifier\nno service DB or client/key CRUD"
+  shape: stored_data
+  style.fill: "#fff7ed"
+  style.stroke: "#ea580c"
+  style.stroke-width: 2
+}
+
+caller: {
+  label: "Caller · Go / Rust SDK"
+  class: actor
+}
+
+observer: {
+  label: "Operator / observer"
+  class: actor
+  style.fill: "#f8fafc"
+  style.stroke: "#64748b"
+}
+
+cluster: {
+  label: "RelayGate · Go Gateway cluster"
+  direction: right
+  style.fill: "#f8fafc"
+  style.stroke: "#64748b"
+  style.stroke-width: 2
+  style.border-radius: 10
+
+  runtime: {
+    label: "Gateway runtime"
+    direction: down
+    style.fill: "#eff6ff"
+    style.stroke: "#2563eb"
+    style.border-radius: 8
+
+    auth: {
+      label: "Auth snapshot\nimmutable · revision · memory only"
+      shape: page
+      style.fill: "#fff7ed"
+      style.stroke: "#ea580c"
+      style.stroke-width: 2
+    }
+
+    capacity: {
+      label: "Gateway-only capacity · scale independently"
+      direction: right
+      style.fill: "#eef2ff"
+      style.stroke: "#4f46e5"
+      style.border-radius: 8
+
+      gateway_d: {
+        label: "Gateway D"
+        class: gateway
+      }
+      gateway_e: {
+        label: "Gateway E"
+        class: gateway
+      }
+    }
+
+    live: {
+      label: "Every Gateway · memory only\ninstances · sessions · listeners · pipes\nbuffers / payload"
+      shape: page
+      style.fill: "#eff6ff"
+      style.stroke: "#2563eb"
+    }
+  }
+
+  voters: {
+    label: "One Raft group · 1 / 3 / 5 / 7 voters\ndurable safety state per voter"
+    direction: down
+    style.fill: "#ecfdf5"
+    style.stroke: "#059669"
+    style.border-radius: 8
+
+    leader: {
+      label: "Node A · current leader"
+      direction: down
+      class: voter
+
+      gateway: {
+        label: "Gateway · control"
+        class: gateway
+      }
+      raft: {
+        label: "Raft leader"
+        class: raft
+      }
+      presence: {
+        label: "Presence · memory only\ncomplete / incomplete while rebuilding"
+        style.fill: "#f5f3ff"
+        style.stroke: "#7c3aed"
+      }
+      rest: {
+        label: "Read-only REST\ncurrent presence"
+        style.fill: "#f8fafc"
+        style.stroke: "#64748b"
+      }
+    }
+
+    followers: {
+      label: ""
+      direction: right
+      style.fill: "#ecfdf5"
+      style.stroke: "#ecfdf5"
+
+      voter_b: {
+        label: "Node B · voter"
+        class: voter
+
+        gateway: {
+          label: "Gateway"
+          class: gateway
+        }
+        raft: {
+          label: "Raft follower"
+          class: raft
+        }
+      }
+
+      voter_c: {
+        label: "Node C · voter"
+        class: voter
+
+        gateway: {
+          label: "Gateway"
+          class: gateway
+        }
+        raft: {
+          label: "Raft follower"
+          class: raft
+        }
+      }
+    }
+
+    bindings: {
+      label: "Committed BindingSlot\n(ClientId, Pattern, TargetId)\n→ generation · ref / tombstone"
+      shape: stored_data
+      style.fill: "#ffffff"
+      style.stroke: "#059669"
+      style.stroke-width: 2
+    }
+  }
+
+  route: {
+    label: "Route decision"
+    direction: down
+    style.fill: "#f8fafc"
+    style.stroke: "#64748b"
+    style.border-radius: 8
+
+    eligible: {
+      label: "New-Pipe admission iff\nA session · L authority · Q quorum\nC committed · V revalidated · O owner reserve"
+      shape: diamond
+      style.fill: "#ecfdf5"
+      style.stroke: "#059669"
+      style.stroke-width: 2
+    }
+
+    excludes: {
+      label: "Never in Raft\nclient/key config · live state\npresence · payload"
+      shape: page
+      style.fill: "#fef2f2"
+      style.stroke: "#dc2626"
+      style.stroke-dash: 5
+    }
+  }
+}
+
+listener: {
+  label: "Listener · Go / Rust SDK"
+  class: actor
+}
+
+common_config -> cluster.runtime.auth: "startup: fail closed\nSIGHUP: atomic · invalid keeps current" { class: config_flow }
+cluster.runtime.auth -> cluster.runtime.live: "removal → reject auth + close matching runtime" { class: config_flow }
+
+caller <-> cluster.runtime.capacity.gateway_d: "protobuf gRPC · Open · payload" { class: grpc }
+cluster.runtime.capacity.gateway_d <-> cluster.voters.followers.voter_b.gateway: "lazy relay · active Pipe" { class: grpc }
+cluster.voters.followers.voter_b.gateway <-> listener: "protobuf gRPC · Listen · Pipe" { class: grpc }
+
+cluster.runtime.live -> cluster.voters.leader.gateway: "all Gateways\nregister · heartbeat · resolve" { class: control }
+cluster.voters.leader.gateway -> cluster.voters.leader.raft: "command / query" { class: control_solid }
+cluster.voters.leader.gateway -> cluster.voters.leader.presence: "revalidate + full snapshot" { class: control }
+
+cluster.voters.leader.presence -> cluster.voters.leader.rest: { class: observe }
+observer -> cluster.voters.leader.rest: "GET presence\ncomplete / incomplete" { class: observe }
+
+cluster.voters.leader.raft <-> cluster.voters.followers.voter_b.raft: "Raft replication" { class: raft_flow }
+cluster.voters.leader.raft <-> cluster.voters.followers.voter_c.raft: { class: raft_flow }
+cluster.voters.leader.raft -> cluster.voters.bindings: "apply" { class: raft_check }
+
+cluster.voters.bindings -> cluster.route.eligible: "C · committed exact slot" { class: raft_check }
+cluster.voters.leader.raft -> cluster.route.eligible: "Q · admission quorum" { class: raft_check }
+cluster.voters.leader.presence -> cluster.route.eligible: "L · current authority\nV · revalidated snapshot" { class: leader_check }
+cluster.runtime.live -> cluster.route.eligible: "A · active client session\nO · owner can reserve" { class: live_check }
+cluster.voters.bindings -> cluster.route.excludes: "excludes" { class: exclude_flow }
