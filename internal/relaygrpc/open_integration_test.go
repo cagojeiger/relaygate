@@ -96,6 +96,7 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 	}}); err != nil {
 		t.Fatalf("Send(ListenerConfirmed): %v", err)
 	}
+	requireListenerConfirmationAcknowledged(t, listener, established.GetAttemptId(), established.GetPipeId())
 	preActivationPayload := []byte{0x00, 0x01, 0xfe, 0xff}
 	sendPipePayload(t, listener, established.GetPipeId(), preActivationPayload)
 	openedResponse, err := caller.Recv()

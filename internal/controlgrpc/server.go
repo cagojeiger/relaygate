@@ -5,18 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"time"
 
+	"github.com/cagojeiger/relaygate/internal/controltransport"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
 
-const (
-	maxMessageBytes  = 1 << 20
-	keepaliveTime    = 10 * time.Second
-	keepaliveTimeout = 5 * time.Second
-)
+const maxMessageBytes = 1 << 20
 
 type Config struct {
 	BindAddress string
@@ -40,11 +36,11 @@ func Start(ctx context.Context, config Config, service *Service) (*Server, error
 		grpc.MaxRecvMsgSize(maxMessageBytes),
 		grpc.MaxSendMsgSize(maxMessageBytes),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Time:    keepaliveTime,
-			Timeout: keepaliveTimeout,
+			Time:    controltransport.KeepaliveTime,
+			Timeout: controltransport.KeepaliveTimeout,
 		}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime: keepaliveTime,
+			MinTime: controltransport.KeepaliveMinPingTime,
 		}),
 	)
 	controlv1.RegisterGatewayControlServer(grpcServer, service)

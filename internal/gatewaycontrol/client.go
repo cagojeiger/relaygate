@@ -13,16 +13,12 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/authority"
 	"github.com/cagojeiger/relaygate/internal/controlstate"
+	"github.com/cagojeiger/relaygate/internal/controltransport"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
-)
-
-const (
-	controlKeepaliveTime    = 10 * time.Second
-	controlKeepaliveTimeout = 5 * time.Second
 )
 
 var (
@@ -133,8 +129,8 @@ func newClient(config Config, logger *slog.Logger, instanceID string) (*Client, 
 		logger:     logger.With("component", "gateway_control", "gateway_id", config.GatewayID, "gateway_instance_id", instanceID),
 		instanceID: instanceID,
 		keepalive: keepalive.ClientParameters{
-			Time:    controlKeepaliveTime,
-			Timeout: controlKeepaliveTimeout,
+			Time:    controltransport.KeepaliveTime,
+			Timeout: controltransport.KeepaliveTimeout,
 		},
 		status: Status{
 			GatewayID:         config.GatewayID,

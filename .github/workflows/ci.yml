@@ -74,6 +74,18 @@ jobs:
           cache: true
       - run: go test -race ./...
 
+  rust-sdk:
+    name: rust sdk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
+      - run: cargo fmt --all --check
+      - run: cargo check --workspace --locked
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
   image:
     name: docker build
     runs-on: ubuntu-latest
@@ -99,7 +111,7 @@ jobs:
         run: docker compose up -d --build
       - name: Build public Relay smoke client
         run: docker build --file Dockerfile.compose-test --tag relaygate-compose-test:ci .
-      - name: Verify public Relay lifecycle, gateway failover, and control smoke
+      - name: Verify public Relay, SDK interoperability, gateway failover, and control smoke
         shell: bash
         run: |
           leader_service=""
@@ -162,6 +174,8 @@ jobs:
           test "$proxy_exit" = 0
           docker rm "$proxy_name"
           trap - EXIT
+
+          RELAYGATE_COMPOSE_PROJECT=relaygate ./scripts/compose-sdk-conformance.sh
 
           docker compose stop "$leader_service"
           survivor_admin_addrs=()

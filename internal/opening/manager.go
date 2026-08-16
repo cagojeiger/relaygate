@@ -1180,19 +1180,19 @@ func (m *Manager) failPayload(e *entry, cause error) {
 	m.launchTermination(work)
 }
 
-// ClosePipe applies the caller session's exact local terminal transition. A
-// true result means the Pipe belongs to caller and is now terminal; repeating
-// the request while its bounded terminal record is retained is a no-op that
-// also returns true. Unknown and foreign-session Pipe IDs are indistinguishable
-// and never change state.
-func (m *Manager) ClosePipe(caller clientsession.Ref, pipeID string) bool {
-	if caller.ClientSessionID == "" || pipeID == "" || len(pipeID) > controlstate.MaxIdentityBytes {
+// ClosePipe applies an exact participant session's local terminal transition.
+// A true result means the accepted Pipe belongs to the caller or listener and
+// is now terminal; repeating the request while its bounded terminal record is
+// retained is a no-op that also returns true. Unknown and foreign-session Pipe
+// IDs are indistinguishable and never change state.
+func (m *Manager) ClosePipe(participant clientsession.Ref, pipeID string) bool {
+	if participant.ClientSessionID == "" || pipeID == "" || len(pipeID) > controlstate.MaxIdentityBytes {
 		return false
 	}
 
 	m.mu.Lock()
 	e := m.byPipe[pipeID]
-	if e == nil || e.caller != caller {
+	if e == nil || (e.caller != participant && e.listener != participant) {
 		m.mu.Unlock()
 		return false
 	}

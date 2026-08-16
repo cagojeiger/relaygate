@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/controlstate"
+	"github.com/cagojeiger/relaygate/internal/controltransport"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -519,7 +520,7 @@ func TestClientLeavesRevalidatedStateWhenControlTransportStalls(t *testing.T) {
 	_ = receiveTestValue(t, accepted)
 	_ = waitForClientState(t, client, StateRevalidated)
 	proxy.Blackhole()
-	waitForClientToLeaveState(t, client, StateRevalidated, controlKeepaliveTime+5*time.Second)
+	waitForClientToLeaveState(t, client, StateRevalidated, controltransport.KeepaliveTime+5*time.Second)
 }
 
 func TestNewClientRejectsIncompleteConfig(t *testing.T) {

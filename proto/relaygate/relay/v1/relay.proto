@@ -41,6 +41,7 @@ message ConnectResponse {
     PipePayload pipe_payload = 14;
     PipeTerminated pipe_terminated = 15;
     PipePayloadRejected pipe_payload_rejected = 16;
+    ListenerConfirmationAcknowledged listener_confirmation_acknowledged = 17;
   }
 }
 
@@ -213,4 +214,9 @@ enum PipePayloadFailure {
 message PipePayloadRejected {
   string pipe_id = 1;
   PipePayloadFailure failure = 2;
+}
+
+message ListenerConfirmationAcknowledged {
+  string attempt_id = 1;
+  string pipe_id = 2;
 }

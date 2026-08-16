@@ -297,7 +297,7 @@ func TestConnectRequiresAuthenticationBeforeTimeout(t *testing.T) {
 	}
 }
 
-func TestConnectOpenSerializesListenerOfferAcceptConfirmationAndCallerResult(t *testing.T) {
+func TestConnectOpenAcknowledgesListenerConfirmationOnlyAfterExactApply(t *testing.T) {
 	bound := make(chan bindingCall, 1)
 	endpointForOpen := make(chan localbinding.ListenerEndpoint, 1)
 	slot := testListenerSlot("client-a", "/jobs/exact", "worker")
@@ -352,10 +352,25 @@ func TestConnectOpenSerializesListenerOfferAcceptConfirmationAndCallerResult(t *
 		t.Fatalf("ListenerEstablished = %#v", established)
 	}
 	if err := listener.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ListenerConfirmed{
+		ListenerConfirmed: &relayv1.ListenerConfirmed{AttemptId: established.GetAttemptId(), PipeId: "wrong-pipe"},
+	}}); err != nil {
+		t.Fatalf("Send(inexact ListenerConfirmed): %v", err)
+	}
+	rejectedResponse, err := listener.Recv()
+	if err != nil {
+		t.Fatalf("Recv(ListenerDecisionRejected): %v", err)
+	}
+	if rejected := rejectedResponse.GetListenerDecisionRejected(); rejected.GetAttemptId() != established.GetAttemptId() ||
+		rejected.GetFailure() != relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_WRONG_PHASE ||
+		rejectedResponse.GetListenerConfirmationAcknowledged() != nil {
+		t.Fatalf("inexact confirmation response = %#v", rejectedResponse)
+	}
+	if err := listener.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ListenerConfirmed{
 		ListenerConfirmed: &relayv1.ListenerConfirmed{AttemptId: established.GetAttemptId(), PipeId: established.GetPipeId()},
 	}}); err != nil {
 		t.Fatalf("Send(ListenerConfirmed): %v", err)
 	}
+	requireListenerConfirmationAcknowledged(t, listener, established.GetAttemptId(), established.GetPipeId())
 	openedResponse, err := caller.Recv()
 	if err != nil {
 		t.Fatalf("Recv(PipeOpened): %v", err)
@@ -364,6 +379,20 @@ func TestConnectOpenSerializesListenerOfferAcceptConfirmationAndCallerResult(t *
 	if opened.GetRequestId() != "request-1" || opened.GetAttemptId() != "attempt-1" || opened.GetPipeId() != "pipe-1" ||
 		opened.GetEndpoint() != "/jobs/exact" || opened.GetTargetId() != "worker" {
 		t.Fatalf("PipeOpened = %#v", opened)
+	}
+}
+
+func requireListenerConfirmationAcknowledged(t *testing.T, stream interface {
+	Recv() (*relayv1.ConnectResponse, error)
+}, attemptID, pipeID string) {
+	t.Helper()
+	response, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(ListenerConfirmationAcknowledged): %v", err)
+	}
+	acknowledged := response.GetListenerConfirmationAcknowledged()
+	if acknowledged.GetAttemptId() != attemptID || acknowledged.GetPipeId() != pipeID {
+		t.Fatalf("ListenerConfirmationAcknowledged = %#v", response)
 	}
 }
 

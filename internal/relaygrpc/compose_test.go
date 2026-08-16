@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -119,6 +120,7 @@ func runComposeRelaySmoke(t *testing.T, callerAddress, listenerAddress string) {
 	}}); err != nil {
 		t.Fatalf("Send(ListenerConfirmed): %v", err)
 	}
+	requireListenerConfirmationAcknowledged(t, listener, established.GetAttemptId(), established.GetPipeId())
 
 	openedResponse, err := caller.Recv()
 	if err != nil {
@@ -277,7 +279,8 @@ func relayComposeProxy(ctx context.Context, downstream, upstream net.Conn) error
 	_ = upstream.Close()
 	copies.Wait()
 
-	if first.err != nil && !errors.Is(first.err, net.ErrClosed) && !errors.Is(first.err, io.EOF) {
+	if first.err != nil && !errors.Is(first.err, net.ErrClosed) && !errors.Is(first.err, io.EOF) &&
+		!errors.Is(first.err, syscall.ECONNRESET) {
 		return first.err
 	}
 	return nil

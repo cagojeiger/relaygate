@@ -259,22 +259,34 @@ func TestConnectCancelOpenBothSidesOfAccept(t *testing.T) {
 	})
 }
 
-func TestConnectClosePipeIsExactAndSessionOwned(t *testing.T) {
+func TestConnectClosePipeIsExactParticipantOwned(t *testing.T) {
 	var mu sync.Mutex
-	owners := make(map[string]clientsession.Ref)
+	type pipeParticipants struct {
+		caller   clientsession.Ref
+		listener clientsession.Ref
+	}
+	participants := make(map[string]pipeParticipants)
 	closed := make(map[string]int)
+	var listenerSession clientsession.Ref
+	bindings := &testBindingManager{bind: func(_ context.Context, session clientsession.Session, endpoint, targetID string, _ localbinding.ListenerEndpoint) (controlstate.BindingSlot, error) {
+		mu.Lock()
+		listenerSession = session.Ref
+		mu.Unlock()
+		return testListenerSlot(session.Ref.ClientID, endpoint, targetID), nil
+	}}
 	opener := &testOpener{
 		open: func(_ context.Context, session clientsession.Session, endpoint, _ string) (opening.Result, error) {
 			pipeID := "pipe-" + endpoint
 			mu.Lock()
-			owners[pipeID] = session.Ref
+			participants[pipeID] = pipeParticipants{caller: session.Ref, listener: listenerSession}
 			mu.Unlock()
 			return opening.Result{AttemptID: "attempt-" + endpoint, PipeID: pipeID}, nil
 		},
 		closePipe: func(session clientsession.Ref, pipeID string) bool {
 			mu.Lock()
 			defer mu.Unlock()
-			if owners[pipeID] != session {
+			ownedBy := participants[pipeID]
+			if ownedBy.caller != session && ownedBy.listener != session {
 				return false
 			}
 			if closed[pipeID] == 0 {
@@ -283,10 +295,12 @@ func TestConnectClosePipeIsExactAndSessionOwned(t *testing.T) {
 			return true
 		},
 	}
-	_, _, server := startTestServerWithDependencies(t, &testBindingManager{}, opener)
+	_, _, server := startTestServerWithDependencies(t, bindings, opener)
 	connection := dialTestServer(t, server.Address())
+	listener := authenticateTestStreamWithDeadline(t, connection)
 	owner := authenticateTestStreamWithDeadline(t, connection)
 	foreign := authenticateTestStreamWithDeadline(t, connection)
+	bindListener(t, listener, "/close", "listener")
 
 	if err := owner.Send(openRequest("request-1", "one", "worker")); err != nil {
 		t.Fatalf("Send(first Open): %v", err)
@@ -316,11 +330,17 @@ func TestConnectClosePipeIsExactAndSessionOwned(t *testing.T) {
 	if ack := closeRequest(foreign, "pipe-one"); ack.GetOwned() {
 		t.Fatalf("foreign close acknowledgement = %#v", ack)
 	}
-	if ack := closeRequest(owner, "pipe-one"); !ack.GetOwned() {
-		t.Fatalf("owner close acknowledgement = %#v", ack)
+	if ack := closeRequest(foreign, "unknown-pipe"); ack.GetOwned() {
+		t.Fatalf("unknown close acknowledgement = %#v", ack)
+	}
+	if ack := closeRequest(listener, "pipe-one"); !ack.GetOwned() {
+		t.Fatalf("listener close acknowledgement = %#v", ack)
+	}
+	if ack := closeRequest(listener, "pipe-one"); !ack.GetOwned() {
+		t.Fatalf("duplicate listener close acknowledgement = %#v", ack)
 	}
 	if ack := closeRequest(owner, "pipe-one"); !ack.GetOwned() {
-		t.Fatalf("duplicate owner close acknowledgement = %#v", ack)
+		t.Fatalf("caller retained-history acknowledgement = %#v", ack)
 	}
 
 	mu.Lock()
@@ -411,20 +431,46 @@ func TestCrossOpeningStreamsDoNotHeadOfLineBlockListenerDecisions(t *testing.T) 
 	if err != nil || rightEstablished.GetListenerEstablished() == nil {
 		t.Fatalf("Recv(right ListenerEstablished) = %#v, %v", rightEstablished, err)
 	}
-	for stream, established := range map[grpc.BidiStreamingClient[relayv1.ConnectRequest, relayv1.ConnectResponse]]*relayv1.ListenerEstablished{
+	establishedByStream := map[grpc.BidiStreamingClient[relayv1.ConnectRequest, relayv1.ConnectResponse]]*relayv1.ListenerEstablished{
 		left: leftEstablished.GetListenerEstablished(), right: rightEstablished.GetListenerEstablished(),
-	} {
+	}
+	for stream, established := range establishedByStream {
 		if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ListenerConfirmed{
 			ListenerConfirmed: &relayv1.ListenerConfirmed{AttemptId: established.GetAttemptId(), PipeId: established.GetPipeId()},
 		}}); err != nil {
 			t.Fatalf("Send(ListenerConfirmed): %v", err)
 		}
 	}
-	if response, err := left.Recv(); err != nil || response.GetPipeOpened().GetRequestId() != "left-to-right" {
-		t.Fatalf("Recv(left PipeOpened) = %#v, %v", response, err)
-	}
-	if response, err := right.Recv(); err != nil || response.GetPipeOpened().GetRequestId() != "right-to-left" {
-		t.Fatalf("Recv(right PipeOpened) = %#v, %v", response, err)
+	for stream, expected := range map[grpc.BidiStreamingClient[relayv1.ConnectRequest, relayv1.ConnectResponse]]struct {
+		established *relayv1.ListenerEstablished
+		requestID   string
+	}{
+		left:  {established: establishedByStream[left], requestID: "left-to-right"},
+		right: {established: establishedByStream[right], requestID: "right-to-left"},
+	} {
+		seenAcknowledged := false
+		seenOpened := false
+		for !seenAcknowledged || !seenOpened {
+			response, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv(confirmation/Open outcome): %v", err)
+			}
+			if acknowledged := response.GetListenerConfirmationAcknowledged(); acknowledged != nil {
+				if acknowledged.GetAttemptId() != expected.established.GetAttemptId() || acknowledged.GetPipeId() != expected.established.GetPipeId() {
+					t.Fatalf("ListenerConfirmationAcknowledged = %#v", acknowledged)
+				}
+				seenAcknowledged = true
+				continue
+			}
+			if opened := response.GetPipeOpened(); opened != nil {
+				if opened.GetRequestId() != expected.requestID {
+					t.Fatalf("PipeOpened = %#v, want request %q", opened, expected.requestID)
+				}
+				seenOpened = true
+				continue
+			}
+			t.Fatalf("unexpected confirmation/Open response = %#v", response)
+		}
 	}
 }
 

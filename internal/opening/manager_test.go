@@ -300,7 +300,7 @@ func TestCallerListenerAndCredentialRetirementSynchronouslyTerminalize(t *testin
 	}
 }
 
-func TestClosePipeIsExactSessionOwnedAndIdempotent(t *testing.T) {
+func TestClosePipeIsExactParticipantOwnedAndIdempotent(t *testing.T) {
 	endpoint := &scriptedEndpoint{}
 	h := newSequenceHarness(t, 2, endpoint)
 	defer h.manager.Close()
@@ -318,14 +318,17 @@ func TestClosePipeIsExactSessionOwnedAndIdempotent(t *testing.T) {
 	foreign := h.caller.Ref
 	foreign.ClientSessionID = "other-session"
 	if h.manager.ClosePipe(foreign, first.PipeID) {
-		t.Fatal("foreign session closed caller Pipe")
+		t.Fatal("foreign session closed participant Pipe")
+	}
+	if h.manager.ClosePipe(h.listener.Ref, "unknown-pipe") {
+		t.Fatal("listener session closed unknown Pipe")
 	}
 	if h.manager.ActiveCount() != 2 {
-		t.Fatalf("foreign close changed active count to %d", h.manager.ActiveCount())
+		t.Fatalf("foreign/unknown close changed active count to %d", h.manager.ActiveCount())
 	}
 
-	if !h.manager.ClosePipe(h.caller.Ref, first.PipeID) {
-		t.Fatal("caller could not close owned Pipe")
+	if !h.manager.ClosePipe(h.listener.Ref, first.PipeID) {
+		t.Fatal("listener could not close participant Pipe")
 	}
 	if termination := receiveTermination(t, endpoint); termination.PipeID != first.PipeID {
 		t.Fatalf("first termination = %#v", termination)
@@ -333,8 +336,11 @@ func TestClosePipeIsExactSessionOwnedAndIdempotent(t *testing.T) {
 	if snapshot, ok := h.manager.Inspect(second.AttemptID); !ok || snapshot.State != StateAccepted {
 		t.Fatalf("second Pipe changed while closing first: %#v, found=%v", snapshot, ok)
 	}
+	if !h.manager.ClosePipe(h.listener.Ref, first.PipeID) {
+		t.Fatal("duplicate listener close was not idempotent")
+	}
 	if !h.manager.ClosePipe(h.caller.Ref, first.PipeID) {
-		t.Fatal("duplicate owned close was not idempotent")
+		t.Fatal("caller participant lost bounded terminal history")
 	}
 	assertNoTermination(t, endpoint, 20*time.Millisecond)
 

@@ -405,11 +405,13 @@ successful replay-entry insert를 원자적으로 순서화한다. O가 먼저�
 consume되지 않아 expiry 전 다시 평가할 수 있다. Listener provisional accept를 Owner가 `AcceptedO`로 기록하며
 `PipeId`를 만드는 순간이 Open LP다. `AcceptedUnconfirmed`에서 ACK나 transport를 잃으면
 local Pipe를 terminal로 만들고 peer에 전파하며 resume하거나 attach하지 않는다. Retry는 새 attempt다.
-Caller-facing stream/session lifetime이 accepted Pipe의 ownership을 묶는다. Owner는 caller application의
+Caller와 Listener의 exact stream/session lifetime이 accepted Pipe의 ownership을 묶는다. Owner는 caller application의
 ACK 관찰 여부를 추측하지 않으며 stream/session 종료나 hop failure를 local terminal trigger로 사용한다.
-Listener의 accept 응답은 provisional이다. Owner가 `Accepted`를 기록한 뒤 established confirmation을 보내기
-전에는 Listener SDK가 Pipe handle을 application에 노출하지 않는다. Confirmation 전 owner crash/hop failure는
-provisional attempt를 terminal로 만든다.
+Listener의 accept 응답은 provisional이다. Owner가 `Accepted`를 기록한 뒤 `ListenerEstablished(attempt_id, pipe_id)`를
+보내면 Listener는 exact `ListenerConfirmed`를 반환한다. Gateway가 그 confirmation을 성공적으로 apply한 뒤에만
+`ListenerConfirmationAcknowledged`로 같은 identity를 echo하며, Listener SDK는 이 ACK를 관찰한 뒤에만 Pipe handle을
+application에 노출한다. Exact apply 또는 ACK 관찰 전 owner crash/hop failure는 handle을 노출하지 않고 provisional
+attempt를 terminal로 만든다.
 
 `CancelOpen(request_id)`는 같은 stream의 아직 response-committed 되지 않은 worker에 cancel signal을
 idempotent하게 전달한다. `OpenCancelAcknowledged.was_pending`은 이 local signal 전달 여부일 뿐 최종 outcome이 아니다.
@@ -483,8 +485,8 @@ flowchart LR
   우회하며 폐기된 volatile payload를 재전송하지 않는다.
 - Session, listener, unconsumed attempt와 Pipe table도 configured bound를 가진다. 한계에서는 새 항목을
   fail closed하고 기존 live state를 묵시적으로 제거하지 않는다.
-- `ClosePipe(pipe_id)`는 그 Relay stream의 exact caller session이 소유한 accepted Pipe만 terminal로 만든다.
-  `owned=false`는 unknown ID와 다른 session 소유 ID를 구분하지 않는다. `owned=true` close replay는 process의
+- `ClosePipe(pipe_id)`는 그 Relay stream의 exact caller 또는 exact listener session이 참여한 accepted Pipe만 terminal로 만든다.
+  `owned=false`는 unknown ID와 foreign session 소유 ID를 구분하지 않는다. `owned=true` participant close replay는 process의
   `relay.max_pipes` 크기 terminal history에 record가 남아 있는 동안 idempotent no-op이며 영속 tombstone은 없다.
   Session/credential retirement와 Close는 같은 owner table mutex에서 first local terminal effect 하나로 순서화한다.
 - Stream/Session 종료는 모든 in-flight Open worker를 cancel하고 join한 뒤 caller 소유 Pipe를 retire한다. Pipe worker는

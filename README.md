@@ -37,19 +37,42 @@ RelayGate는 Raft로 조정되는 Gateway cluster에서 일시적인 양방향 P
 - 별도 local binding runtime의 `Registering/Live/Retiring/Retired`, session ownership과 process-wide capacity
 - Install 응답 유실 뒤 authoritative reconcile + exact CAS replay, unbind/session/key 제거의 즉시 local ineligibility
 - In-flight correlation 전용 `request_id`, exact literal `endpoint`와 required `target_id`를 쓰는 same/cross-Gateway `Open`
-- `A ∧ L ∧ Q ∧ C ∧ V ∧ O` attempt admission, owner O reservation과 Listener accept Open LP
+- `A ∧ L ∧ Q ∧ C ∧ V ∧ O` attempt admission, owner O reservation, Listener accept Open LP와 exact confirmation-apply ACK
 - `Hello`의 internal relay address를 current authority session memory에만 둔 remote-owner discovery
 - 별도 internal gRPC bind/advertise listener, exact serialized context/absolute expiry와 bounded replay fence
-- Process-wide bounded async Open, duplicate in-flight rejection, `CancelOpen`과 exact caller-owned `ClosePipe`
+- Process-wide bounded async Open, duplicate in-flight rejection, `CancelOpen`과 exact caller/listener participant `ClosePipe`
 - Bounded attempt/Pipe/terminal table, caller `Opened/Failed/Unknown`과 session/reload terminal 전파
 - Same/cross-Gateway Pipe의 60 KiB 이하 opaque payload frame, activation, 방향별 FIFO와 bounded backpressure
 - JSON structured log, quorum-confirmed read-only `/status`, local health/readiness와 Prometheus metrics
 - Snapshot 뒤 process restart에서 control state 복구
 
 Cross-Gateway owner forwarding은 아래 승인 계약과 [TEST 001의 H01–H12](docs/test/001-core-correctness-test-plan.md)를
-따른다. Unit/integration test와 isolated 3-node H12 smoke가 pass했고 CI에 같은 workflow가 있다. Arbitrary fault
-matrix, peer auth/mTLS와 전체 H gate는 아직 증명하지 않는다. Wildcard/priority, target 생략 선택, `OpenAll`,
-동적 multi-node join과 public Go/Rust SDK도 별도 evidence가 필요하다.
+따른다. Unit/integration test와 isolated 3-node H12 smoke가 pass했고 CI에 같은 workflow가 있다. Public Go/Rust
+SDK도 같은 3-node cluster에서 Go→Go, Go→Rust, Rust→Go, Rust→Rust 네 조합을 통과한다. Arbitrary fault
+matrix, peer auth/mTLS와 전체 H gate는 아직 증명하지 않는다. Wildcard/priority, target 생략 선택, `OpenAll`과
+동적 multi-node join은 별도 evidence가 필요하다.
+
+## Public SDK
+
+| SDK | 위치 | 공개 경계 |
+| --- | --- | --- |
+| Go | `github.com/cagojeiger/relaygate/sdk/go` | `Client`, `Listener`, `Offer`, `Pipe` |
+| Rust | `sdk/rust/relaygate-sdk` | `Client`, `Listener`, `Offer`, `Pipe` |
+
+두 SDK는 같은 `relay.proto`만 사용하고 generated gRPC, Gateway, control과 Raft type을 공개 API에 노출하지 않는다.
+TLS가 기본이며 plaintext는 명시적으로 선택한 loopback local development 연결에서만 허용한다. 현재 SDK 범위는
+literal endpoint + exact target의 Bind/Open, confirmation ACK 뒤 Listener Pipe 노출, 양방향 framed payload와
+participant Close다. 자동 reconnect/retry, Pipe resume/replay, wildcard와 `OpenAll`은 제공하지 않는다. `Send`
+성공은 bounded local queue/stream write의 성공이지 peer application ACK가 아니다. Rust crate는 아직 repository
+workspace 전용(`publish = false`)이다.
+
+```bash
+# 실행 중인 3-node Compose project에서 네 언어 조합을 모두 검증한다.
+./scripts/compose-sdk-conformance.sh
+
+# Compose project 이름이 relaygate가 아니면 명시한다.
+RELAYGATE_COMPOSE_PROJECT=<project> ./scripts/compose-sdk-conformance.sh
+```
 
 ## 승인된 Cross-Gateway 계약
 
@@ -115,8 +138,9 @@ Gateway wall clock의 알려진 skew가 이 값보다 작아야 한다.
 admission 상한이며 범위는 1–100,000이다. Open worker semaphore, successful O reservation replay cache와 terminal
 history도 같은 크기로 제한한다.
 Open worker는 stream 수와 곱해 상한을 넘지 않으며 초과 시 기존 Pipe를 evict하지 않고 새 Open만 거부한다. `request_id`는
-live stream의 in-flight correlation에만 쓰고 replay/resume하지 않는다. `CancelOpen` ACK는 signal 전달 여부, `ClosePipe` ACK는 exact
-session ownership 여부만 나타낸다.
+live stream의 in-flight correlation에만 쓰고 replay/resume하지 않는다. `ListenerConfirmationAcknowledged`는 exact
+`ListenerConfirmed(attempt_id, pipe_id)`가 server-side apply된 뒤 같은 identity를 echo하며 Listener SDK의 Pipe handle 노출
+barrier가 된다. `CancelOpen` ACK는 signal 전달 여부, `ClosePipe` ACK는 exact caller/listener participant ownership 여부만 나타낸다.
 Payload는 메시지 경계를 보존하며 frame당 최대 60 KiB다. 방향별 순서만 보존하고 전달 성공은 local gRPC stream
 write 완료까지만 뜻하며 peer application 관찰이나 ACK가 아니다. Stream별 payload queue는 32 frame, process 전체
 outbound queued/in-flight payload는 `min(relay.max_pipes, 1024)` frame으로 제한한다. 한계가 `relay.open_timeout`

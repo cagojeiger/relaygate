@@ -100,7 +100,7 @@ Protocol은 wire message를 이 event에 매핑할 수 있지만 집합 밖의 �
 | FlowControl | `Flowing`, `Backpressured`, `Exhausted`, `TerminalRequested`, `TerminalF` | `PayloadIngress`, `PayloadWriteCompleted`, `PayloadWriteFailed`, `QueueHigh`, `DownstreamDrained`, `BoundExceeded`, `RequestTerminal`, `PipeTerminal`, `LocalTerminalConfirmed` |
 | OwnerPipe | `OpeningO`, `AdmittedO`, `AcceptedO`, `TerminalO` | `ReservationSucceeded`, `ReservationRejected`, `ListenerAccepted`, `ListenerRejected`, `AttemptDeadline`, `Cancel`, `SessionOrHopEnded`, `TerminalReceived`, `EpochEnded` |
 | IngressPipe | `OpeningI`, `OpenI`, `TerminalI` | `OwnerAccepted`, `OwnerRejected`, `Cancel`, `Deadline`, `CallerSessionEnded`, `OwnerHopEnded`, `TerminalReceived`, `EpochEnded` |
-| ListenerPipe | `OfferedL`, `ProvisionalL`, `OpenL`, `TerminalL` | `AcceptProposed`, `Reject`, `OwnerConfirmed`, `AttemptDeadline`, `Cancel`, `SessionOrHopEnded`, `TerminalReceived`, `EpochEnded` |
+| ListenerPipe | `OfferedL`, `ProvisionalL`, `OpenL`, `TerminalL` | `AcceptProposed`, `Reject`, `OwnerEstablished`, `ConfirmationAcknowledged`, `AttemptDeadline`, `Cancel`, `SessionOrHopEnded`, `TerminalReceived`, `EpochEnded` |
 | CallerPipe | `OpeningC`, `OpenC`, `TerminalC` | `AckObserved`, `Rejected`, `Cancel`, `Deadline`, `TransportEnded`, `TerminalReceived`, `EpochEnded` |
 | ForwardedAttemptFence | `AbsentR`, `ReservedR` | `ReservationSucceeded`, `ReservationRejected`, `DuplicateReceived`, `CacheFull`, `Expired`, `GatewayEnded`, `EpochEnded` |
 | RemoteHop | `DialingH`, `OpeningH`, `AdmittedH`, `AcceptedH`, `OpenH`, `TerminalH` | `StreamOpened`, `OwnerAdmitted`, `OwnerAccepted`, `OwnerRejected`, `IngressActivated`, `PayloadIngress`, `Deadline`, `HopEnded`, `TerminalReceived`, `EpochEnded` |
@@ -116,7 +116,8 @@ Public Relay wire mapping은 다음으로 닫힌다.
 | Valid new `Open(request_id, endpoint, target_id)` | `CallerPipe=OpeningC`와 bounded owner attempt를 생성한다. `request_id`는 해당 stream에서 terminal response 전까지만 correlation identity다. |
 | Duplicate in-flight `request_id` | 새 machine/effect 없음 + `OpenRequestRejected(DuplicateInFlight)`. 원래 Open만 Pipe outcome을 낸다. |
 | `CancelOpen(request_id)` | Live in-flight worker면 exact `Cancel` 전달 + `was_pending=true`, 아니면 no-op + `was_pending=false`. ACK는 최종 outcome이나 remote never-accept 증명이 아니다. |
-| `ClosePipe(pipe_id)` | Exact caller session이 소유한 accepted Pipe면 `Cancel`을 적용한다. Unknown/foreign이면 state 불변 + `owned=false`; bounded terminal record replay면 no-op + `owned=true`. |
+| `ListenerConfirmed(attempt_id, pipe_id)` | Pending `ListenerEstablished`의 exact identity면 confirmation을 apply한 뒤 같은 pair의 `ListenerConfirmationAcknowledged`를 반환한다. Invalid/unknown/mismatch면 `ListenerDecisionRejected`이며 ACK나 handle 노출이 없다. |
+| `ClosePipe(pipe_id)` | Exact caller 또는 exact listener participant session의 accepted Pipe면 `Cancel`을 적용한다. Unknown/foreign이면 state 불변 + `owned=false`; exact participant의 bounded terminal record replay면 no-op + `owned=true`. |
 | `PipePayload(pipe_id, payload)` | Exact participant session, activated accepted Pipe와 1..60 KiB data면 해당 방향 `PayloadIngress`; sender가 정한 ClientId/direction은 받지 않는다. |
 | Exact participant의 pre-activation `PipePayload` | Bounded activation gate에서 기다린다. Caller의 `PipeOpened`가 wire에 기록되면 `PayloadIngress`, 먼저 terminal되면 stable `PipePayloadRejected`, deadline이면 `BoundExceeded → RequestTerminal`이다. |
 | Invalid, unknown, foreign 또는 terminal Pipe payload | Pipe/Flow state 불변 + stable `PipePayloadRejected`; unknown과 foreign ownership은 구분하지 않는다. |
@@ -318,9 +319,10 @@ caller outcome을 `Unknown`으로 둔다.
 | --- | --- | --- | --- | --- |
 | `OfferedL` | `AcceptProposed` | Listener application accept | `ProvisionalL` | 아직 Pipe handle 노출 안 함 |
 | `OfferedL` | `Reject/AttemptDeadline/Cancel/SessionOrHopEnded/TerminalReceived/EpochEnded` | 해당 attempt | `TerminalL` | Owner에 reject/terminal 전파 |
-| `ProvisionalL` | `OwnerConfirmed` | Exact `PipeId` | `OpenL` | 이 시점부터 SDK가 Pipe handle 노출 |
+| `ProvisionalL` | `OwnerEstablished` | Exact `AttemptId + PipeId` | `ProvisionalL` | Exact `ListenerConfirmed` 전송; 아직 Pipe handle 노출 안 함 |
+| `ProvisionalL` | `ConfirmationAcknowledged` | Successfully applied exact `AttemptId + PipeId` ACK 관찰 | `OpenL` | 이 시점부터 SDK가 Pipe handle 노출 |
 | `ProvisionalL` | `AttemptDeadline/Cancel/SessionOrHopEnded/TerminalReceived/EpochEnded` | 해당 attempt | `TerminalL` | Handle 노출 없음 |
-| `OpenL` | `AttemptDeadline` | Owner confirm 뒤의 late timer | `OpenL` | No-op; attempt timer 폐기 |
+| `OpenL` | `AttemptDeadline` | Confirmation ACK 뒤의 late timer | `OpenL` | No-op; attempt timer 폐기 |
 | `OpenL` | `Cancel/SessionOrHopEnded/TerminalReceived/EpochEnded` | 첫 local terminal | `TerminalL` | Best-effort terminal 전파 |
 
 ### CallerPipe
@@ -333,7 +335,7 @@ caller outcome을 `Unknown`으로 둔다.
 | `OpenC` | `Cancel/TransportEnded/TerminalReceived/EpochEnded` | 첫 local terminal | `TerminalC` | Best-effort terminal 전파 |
 
 `OpenCancelAcknowledged.was_pending`은 `CallerPipe` outcome 전이가 아니다. `ClosePipe`의 `owned=true`도 peer
-terminal 완료 증명이 아니라 exact caller-owned local terminal 적용/duplicate no-op의 ACK다. Terminal history는
+terminal 완료 증명이 아니라 exact caller/listener participant-owned local terminal 적용/duplicate no-op의 ACK다. Terminal history는
 `relay.max_pipes`로 bounded하며 eviction 뒤 unknown과 foreign replay는 동일한 `owned=false`다.
 
 ### OpenAllAccumulator
@@ -372,6 +374,7 @@ Protocol invariant상 도달 불가능한 vector는 실행 test 대신 proof를 
 ## 구현과 protocol의 의무
 
 - Wire message/status는 이 문서의 semantic event에 매핑해야 하며 새 전이 의미를 만들지 않는다.
+- Listener SDK는 exact `ListenerConfirmationAcknowledged` 관찰 전 Pipe handle을 application에 노출하지 않는다.
 - Control stream은 `Hello(owner_relay_address) → SessionOpened(authoritative current-instance bindings) → FullSnapshot → BindingMutation*` 순서를 지키며 mutation은 stream별로 직렬화한다.
 - State mutation은 identity, generation과 expected current value를 함께 검증한다.
 - 모든 table과 buffer는 bounded하며 capacity 부족은 새 state 생성을 fail closed한다.

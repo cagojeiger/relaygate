@@ -234,7 +234,12 @@ func (s *Service) handleRequest(ctx context.Context, session clientsession.Sessi
 		if err := listener.confirmed(confirmed.GetAttemptId(), confirmed.GetPipeId()); err != nil {
 			return listenerDecisionRejected(confirmed.GetAttemptId(), err), nil
 		}
-		return nil, nil
+		return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerConfirmationAcknowledged{
+			ListenerConfirmationAcknowledged: &relayv1.ListenerConfirmationAcknowledged{
+				AttemptId: confirmed.GetAttemptId(),
+				PipeId:    confirmed.GetPipeId(),
+			},
+		}}, nil
 	}
 
 	return nil, status.Error(codes.FailedPrecondition, "authenticate must be followed by a relay operation")
