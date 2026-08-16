@@ -21,6 +21,7 @@ import (
 	"github.com/cagojeiger/relaygate/internal/config"
 	"github.com/cagojeiger/relaygate/internal/controlgrpc"
 	"github.com/cagojeiger/relaygate/internal/gatewaycontrol"
+	"github.com/cagojeiger/relaygate/internal/gatewayrelay"
 	"github.com/cagojeiger/relaygate/internal/localbinding"
 	"github.com/cagojeiger/relaygate/internal/opening"
 	"github.com/cagojeiger/relaygate/internal/raftnode"
@@ -117,6 +118,7 @@ func run() error {
 		ProbeInterval:       appConfig.Control.AuthorityProbeInterval.Value(),
 		ProbeTimeout:        appConfig.Control.AuthorityProbeTimeout.Value(),
 		RevalidationTimeout: appConfig.Control.GatewayRevalidationTimeout.Value(),
+		OpenContextTTL:      appConfig.Relay.OpenTimeout.Value(),
 	}, node)
 	if err != nil {
 		return fmt.Errorf("configure authority manager: %w", err)
@@ -137,6 +139,7 @@ func run() error {
 	gatewayClient, err := gatewaycontrol.New(gatewaycontrol.Config{
 		ClusterEpoch:     appConfig.Control.ClusterEpoch,
 		GatewayID:        appConfig.Gateway.ID,
+		RelayAddress:     appConfig.InternalRelay.AdvertiseAddress,
 		ControlEndpoints: appConfig.Gateway.ControlEndpoints,
 		ConnectTimeout:   appConfig.Gateway.ConnectTimeout.Value(),
 		RetryInterval:    appConfig.Gateway.RetryInterval.Value(),
@@ -170,11 +173,24 @@ func run() error {
 		_ = controlServer.Shutdown(shutdownContext)
 		return fmt.Errorf("attach listener binding runtime: %w", err)
 	}
+	gatewayRelayClient, err := gatewayrelay.NewClient(
+		appConfig.InternalRelay.ConnectTimeout.Value(),
+		appConfig.Relay.OpenTimeout.Value(),
+		appConfig.Relay.MaxPipes,
+	)
+	if err != nil {
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("configure Gateway relay client: %w", err)
+	}
+	defer gatewayRelayClient.Close()
 	openingManager, err := opening.New(opening.Config{
 		ClusterEpoch: appConfig.Control.ClusterEpoch,
 		MaxPipes:     appConfig.Relay.MaxPipes,
 		OpenTimeout:  appConfig.Relay.OpenTimeout.Value(),
-	}, gatewayClient, bindingManager)
+	}, gatewayClient, bindingManager, gatewayRelayClient)
 	if err != nil {
 		authorityManager.Close()
 		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
@@ -190,6 +206,42 @@ func run() error {
 		_ = controlServer.Shutdown(shutdownContext)
 		return fmt.Errorf("attach Open runtime: %w", err)
 	}
+	gatewayRelayService, err := gatewayrelay.NewService(
+		openingManager,
+		appConfig.Relay.OpenTimeout.Value(),
+		appConfig.Relay.MaxPipes,
+	)
+	if err != nil {
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("configure Gateway relay service: %w", err)
+	}
+	gatewayRelayServer, err := gatewayrelay.Start(context.Background(), gatewayrelay.Config{
+		BindAddress: appConfig.InternalRelay.BindAddress,
+		OpenTimeout: appConfig.Relay.OpenTimeout.Value(),
+		MaxPipes:    appConfig.Relay.MaxPipes,
+	}, gatewayRelayService)
+	if err != nil {
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("start Gateway relay service: %w", err)
+	}
+	var stopGatewayRelayOnce sync.Once
+	var gatewayRelayShutdownErr error
+	stopGatewayRelay := func() error {
+		stopGatewayRelayOnce.Do(func() {
+			gatewayRelayClient.Close()
+			shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.InternalRelay.ShutdownTimeout.Value())
+			gatewayRelayShutdownErr = gatewayRelayServer.Shutdown(shutdownContext)
+			cancelShutdown()
+		})
+		return gatewayRelayShutdownErr
+	}
+	defer func() { _ = stopGatewayRelay() }()
 	gatewayContext, cancelGateway := context.WithCancel(context.Background())
 	gatewayDone := make(chan struct{})
 	go func() {
@@ -254,6 +306,7 @@ func run() error {
 		"raft_address", appConfig.Raft.AdvertiseAddress,
 		"control_address", controlServer.Address(),
 		"relay_address", relayServer.Address(),
+		"internal_relay_address", gatewayRelayServer.Address(),
 		"admin_address", adminServer.Address(),
 		"gateway_id", appConfig.Gateway.ID,
 		"gateway_instance_id", gatewayClient.Status().GatewayInstanceID,
@@ -312,6 +365,13 @@ func run() error {
 				runErr = fmt.Errorf("relay server stopped unexpectedly")
 			}
 			running = false
+		case err := <-gatewayRelayServer.Errors():
+			if err != nil {
+				runErr = err
+			} else {
+				runErr = fmt.Errorf("gateway relay server stopped unexpectedly")
+			}
+			running = false
 		}
 	}
 
@@ -326,6 +386,10 @@ func run() error {
 		logger.Error("relay shutdown failed", "error", err)
 	}
 	cancelRelayShutdown()
+	if err := stopGatewayRelay(); err != nil {
+		shutdownErr = errors.Join(shutdownErr, err)
+		logger.Error("Gateway relay shutdown failed", "error", err)
+	}
 	controlShutdownContext, cancelControlShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
 	if err := controlServer.Shutdown(controlShutdownContext); err != nil {
 		shutdownErr = errors.Join(shutdownErr, err)

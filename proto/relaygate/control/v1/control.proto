@@ -29,6 +29,7 @@ message Hello {
   string cluster_epoch = 1;
   string gateway_id = 2;
   string gateway_instance_id = 3;
+  string relay_address = 4;
 }
 
 message SessionRef {
@@ -137,6 +138,11 @@ message OpenContext {
   string attempt_id = 3;
   AuthContext auth = 4;
   BindingSlot binding = 5;
+  string ingress_gateway_id = 6;
+  string ingress_gateway_instance_id = 7;
+  string ingress_control_session_id = 8;
+  string owner_relay_address = 9;
+  int64 expires_at_unix_millis = 10;
 }
 
 message AdmitOpenResponse {

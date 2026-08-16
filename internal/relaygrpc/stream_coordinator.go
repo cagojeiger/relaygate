@@ -202,7 +202,7 @@ func (c *streamCoordinator) runOpen(service *Service, ctx context.Context, reque
 			// A pre-activation terminal may win after OpenPipe returns. The
 			// PipeOpened write has completed, so emit its exact terminal on the
 			// same control lane to preserve caller observation order.
-			_ = c.pipeEndpoint.TerminatePipe(c.sendCtx, pipeID)
+			_ = c.pipeEndpoint.TerminatePipe(c.sendCtx, pipeID) //nolint:contextcheck // Completion ordering uses the coordinator-owned send context.
 		}
 	}
 

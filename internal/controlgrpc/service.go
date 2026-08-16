@@ -193,7 +193,7 @@ func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello
 		return controlstate.GatewaySlot{}, authority.Session{}, nil, unavailable("confirm authority after gateway registration", err)
 	}
 	ownedBindings := ownedBindingSlots(s.node.State(), hello.GetGatewayId(), hello.GetGatewayInstanceId())
-	session, err := s.authority.OpenSession(gatewaySlot)
+	session, err := s.authority.OpenSession(gatewaySlot, hello.GetRelayAddress())
 	if err != nil {
 		return controlstate.GatewaySlot{}, authority.Session{}, nil, unavailable("open control session", err)
 	}
@@ -210,6 +210,9 @@ func (s *Service) validateHello(hello *controlv1.Hello) error {
 	if hello.GetGatewayId() == "" || len(hello.GetGatewayId()) > controlstate.MaxIdentityBytes ||
 		hello.GetGatewayInstanceId() == "" || len(hello.GetGatewayInstanceId()) > controlstate.MaxIdentityBytes {
 		return status.Errorf(codes.InvalidArgument, "gateway_id and gateway_instance_id must be 1..%d bytes", controlstate.MaxIdentityBytes)
+	}
+	if err := authority.ValidateRelayAddress(hello.GetRelayAddress()); err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid relay_address: %v", err)
 	}
 	return nil
 }
@@ -546,11 +549,16 @@ func openContextToProto(openContext authority.OpenContext) *controlv1.OpenContex
 		binding.Ref.GatewayId = openContext.Binding.Ref.GatewayID
 	}
 	return &controlv1.OpenContext{
-		ClusterEpoch: openContext.ClusterEpoch,
-		AuthorityId:  openContext.AuthorityID,
-		AttemptId:    openContext.AttemptID,
-		Auth:         authContextToProto(openContext.Auth),
-		Binding:      binding,
+		ClusterEpoch:             openContext.ClusterEpoch,
+		AuthorityId:              openContext.AuthorityID,
+		AttemptId:                openContext.AttemptID,
+		Auth:                     authContextToProto(openContext.Auth),
+		Binding:                  binding,
+		IngressGatewayId:         openContext.IngressGatewayID,
+		IngressGatewayInstanceId: openContext.IngressGatewayInstanceID,
+		IngressControlSessionId:  openContext.IngressControlSessionID,
+		OwnerRelayAddress:        openContext.OwnerRelayAddress,
+		ExpiresAtUnixMillis:      openContext.ExpiresAt.UnixMilli(),
 	}
 }
 

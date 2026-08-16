@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cagojeiger/relaygate/internal/authority"
 	"github.com/cagojeiger/relaygate/internal/clientauth"
 	"github.com/cagojeiger/relaygate/internal/clientsession"
 	"github.com/cagojeiger/relaygate/internal/controlstate"
@@ -139,6 +140,71 @@ func TestCapacityAdmissionIsAtomicUnderConcurrency(t *testing.T) {
 	close(allowInstall)
 	if err := <-results; err != nil {
 		t.Fatalf("winning concurrent Bind(): %v", err)
+	}
+}
+
+func TestReserveForwardedUsesCurrentCredentialAndExactLocalOwner(t *testing.T) {
+	sessions := newFakeSessions()
+	listener := newSession("listener-session", "client-1", "key-1")
+	sessions.allow(listener.Ref)
+	manager := mustManager(t, 1, &fakeCommitter{install: exactInstall}, sessions)
+	defer manager.Close()
+
+	slot, err := manager.Bind(context.Background(), listener, "/events", "worker", acceptingEndpoint{})
+	if err != nil {
+		t.Fatalf("Bind(): %v", err)
+	}
+	caller := clientsession.Ref{
+		ClientSessionID: "remote-caller-session",
+		ClientID:        listener.Ref.ClientID,
+		APIKeyID:        listener.Ref.APIKeyID,
+		AuthRevision:    "older-revision-is-provenance-only",
+	}
+	open, err := authority.NewForwardedOpenContext(
+		"epoch-1",
+		"authority-1",
+		"attempt-1",
+		authority.AuthContext{
+			ClientSessionID: caller.ClientSessionID,
+			ClientID:        caller.ClientID,
+			APIKeyID:        caller.APIKeyID,
+			AuthRevision:    caller.AuthRevision,
+		},
+		slot,
+		authority.ForwardingContext{
+			IngressGatewayID:         "gateway-2",
+			IngressGatewayInstanceID: "instance-2",
+			IngressControlSessionID:  "control-2",
+			OwnerRelayAddress:        "127.0.0.1:7300",
+			ExpiresAt:                time.Now().Add(time.Minute),
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewForwardedOpenContext(): %v", err)
+	}
+
+	reservation, err := manager.ReserveForwarded(open, caller)
+	if err != nil {
+		t.Fatalf("ReserveForwarded(): %v", err)
+	}
+	if !slotsEqual(reservation.Binding, slot) || reservation.Caller != caller || reservation.Listener != listener.Ref {
+		t.Fatalf("reservation = %#v", reservation)
+	}
+	if !open.TryConsume() {
+		t.Fatal("local binding consumed the serialized-attempt token instead of leaving replay ownership to opening")
+	}
+
+	stale := open.Clone()
+	stale.Binding.Generation++
+	if _, err := manager.ReserveForwarded(stale, caller); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ReserveForwarded(stale generation) = %v, want ErrNotFound", err)
+	}
+	foreign := caller
+	foreign.APIKeyID = "removed-key"
+	foreignOpen := open.Clone()
+	foreignOpen.Auth.APIKeyID = foreign.APIKeyID
+	if _, err := manager.ReserveForwarded(foreignOpen, foreign); !errors.Is(err, ErrSessionEnded) {
+		t.Fatalf("ReserveForwarded(retired credential) = %v, want ErrSessionEnded", err)
 	}
 }
 
@@ -418,6 +484,17 @@ func (f *fakeSessions) Require(ref clientsession.Ref) error {
 	return nil
 }
 
+func (f *fakeSessions) Allowed(clientID, apiKeyID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for ref, active := range f.allowed {
+		if active && ref.ClientID == clientID && ref.APIKeyID == apiKeyID {
+			return true
+		}
+	}
+	return false
+}
+
 type blockingSessions struct {
 	ref            clientsession.Ref
 	requireEntered chan struct{}
@@ -438,6 +515,10 @@ func (f *blockingSessions) Require(ref clientsession.Ref) error {
 		<-f.allowRequire
 	})
 	return nil
+}
+
+func (f *blockingSessions) Allowed(clientID, apiKeyID string) bool {
+	return f.ref.ClientID == clientID && f.ref.APIKeyID == apiKeyID
 }
 
 type casCommitter struct {

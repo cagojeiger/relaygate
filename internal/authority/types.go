@@ -3,10 +3,14 @@ package authority
 import (
 	"errors"
 	"fmt"
+	"net"
 	"sync/atomic"
+	"time"
 
 	"github.com/cagojeiger/relaygate/internal/controlstate"
 )
+
+const MaxRelayAddressBytes = 1024
 
 var (
 	ErrInvalidOpen     = errors.New("invalid open admission request")
@@ -28,12 +32,25 @@ type AuthContext struct {
 // target. AttemptID is fresh for every successful decision; owner-side
 // reservation and consumption are outside this authority lane.
 type OpenContext struct {
-	ClusterEpoch string
-	AuthorityID  string
-	AttemptID    string
-	Auth         AuthContext
-	Binding      controlstate.BindingSlot
-	attempt      *attemptToken
+	ClusterEpoch             string
+	AuthorityID              string
+	AttemptID                string
+	Auth                     AuthContext
+	Binding                  controlstate.BindingSlot
+	IngressGatewayID         string
+	IngressGatewayInstanceID string
+	IngressControlSessionID  string
+	OwnerRelayAddress        string
+	ExpiresAt                time.Time
+	attempt                  *attemptToken
+}
+
+type ForwardingContext struct {
+	IngressGatewayID         string
+	IngressGatewayInstanceID string
+	IngressControlSessionID  string
+	OwnerRelayAddress        string
+	ExpiresAt                time.Time
 }
 
 type attemptToken struct {
@@ -80,6 +97,63 @@ func NewOpenContext(
 		Binding:      binding,
 		attempt:      &attemptToken{},
 	}, nil
+}
+
+// NewForwardedOpenContext constructs a single-use context carrying the exact
+// ingress control identity and the live owner's advertised relay address.
+// ExpiresAt is structurally validated here; evaluating it against the owner's
+// clock remains an owner-side admission responsibility.
+func NewForwardedOpenContext(
+	clusterEpoch, authorityID, attemptID string,
+	auth AuthContext,
+	binding controlstate.BindingSlot,
+	forwarding ForwardingContext,
+) (OpenContext, error) {
+	open, err := NewOpenContext(clusterEpoch, authorityID, attemptID, auth, binding)
+	if err != nil {
+		return OpenContext{}, err
+	}
+	for _, identity := range []struct {
+		field string
+		value string
+	}{
+		{field: "ingress_gateway_id", value: forwarding.IngressGatewayID},
+		{field: "ingress_gateway_instance_id", value: forwarding.IngressGatewayInstanceID},
+		{field: "ingress_control_session_id", value: forwarding.IngressControlSessionID},
+	} {
+		if identity.value == "" || len(identity.value) > controlstate.MaxIdentityBytes {
+			return OpenContext{}, fmt.Errorf("%w: %s must be 1..%d bytes", ErrInvalidOpen, identity.field, controlstate.MaxIdentityBytes)
+		}
+	}
+	if err := ValidateRelayAddress(forwarding.OwnerRelayAddress); err != nil {
+		return OpenContext{}, fmt.Errorf("%w: owner_relay_address: %w", ErrInvalidOpen, err)
+	}
+	if forwarding.ExpiresAt.UnixMilli() <= 0 {
+		return OpenContext{}, fmt.Errorf("%w: expires_at must be a positive Unix time", ErrInvalidOpen)
+	}
+	open.IngressGatewayID = forwarding.IngressGatewayID
+	open.IngressGatewayInstanceID = forwarding.IngressGatewayInstanceID
+	open.IngressControlSessionID = forwarding.IngressControlSessionID
+	open.OwnerRelayAddress = forwarding.OwnerRelayAddress
+	open.ExpiresAt = forwarding.ExpiresAt
+	return open, nil
+}
+
+func ValidateRelayAddress(address string) error {
+	if address == "" || len(address) > MaxRelayAddressBytes {
+		return fmt.Errorf("relay address must be 1..%d bytes", MaxRelayAddressBytes)
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid relay address: %w", err)
+	}
+	if host == "" || port == "" {
+		return fmt.Errorf("relay address must include a host and port")
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return fmt.Errorf("relay address cannot use an unspecified host")
+	}
+	return nil
 }
 
 // Clone returns an immutable value copy that shares the same single-use token.

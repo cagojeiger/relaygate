@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cagojeiger/relaygate/internal/clientauth"
 )
@@ -27,6 +28,10 @@ func TestLoadCanonicalConfig(t *testing.T) {
 	if config.Raft.BindAddress != "127.0.0.1:7000" ||
 		config.Control.BindAddress != "127.0.0.1:7100" ||
 		config.Relay.BindAddress != "127.0.0.1:7200" ||
+		config.InternalRelay.BindAddress != "127.0.0.1:7300" ||
+		config.InternalRelay.AdvertiseAddress != "127.0.0.1:7300" ||
+		config.InternalRelay.ConnectTimeout.Value() != 2*time.Second ||
+		config.InternalRelay.ShutdownTimeout.Value() != 5*time.Second ||
 		config.Admin.BindAddress != "127.0.0.1:9090" ||
 		config.Relay.AuthenticationTimeout.Value() <= 0 ||
 		config.Relay.OpenTimeout.Value() <= 0 ||
@@ -35,7 +40,7 @@ func TestLoadCanonicalConfig(t *testing.T) {
 		config.Relay.MaxPipes <= 0 ||
 		config.Control.AuthorityProbeInterval.Value() <= 0 ||
 		config.Control.GatewayRevalidationTimeout.Value() <= 0 {
-		t.Fatalf("unexpected canonical bind config: raft=%#v control=%#v relay=%#v admin=%#v", config.Raft, config.Control, config.Relay, config.Admin)
+		t.Fatalf("unexpected canonical bind config: raft=%#v control=%#v relay=%#v internal_relay=%#v admin=%#v", config.Raft, config.Control, config.Relay, config.InternalRelay, config.Admin)
 	}
 	if len(config.Clients) != 1 || len(config.Clients["local-development"].APIKeys) != 1 {
 		t.Fatalf("unexpected client config: %#v", config.Clients)
@@ -53,6 +58,8 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("RELAYGATE_CONTROL_BIND_ADDRESS", "0.0.0.0:7100")
 	t.Setenv("RELAYGATE_GATEWAY_ID", "gateway-2")
 	t.Setenv("RELAYGATE_GATEWAY_CONTROL_ENDPOINTS", `["relaygate-1:7100","relaygate-2:7100","relaygate-3:7100"]`)
+	t.Setenv("RELAYGATE_INTERNAL_RELAY_BIND_ADDRESS", "0.0.0.0:7300")
+	t.Setenv("RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS", "relaygate-2:7300")
 	t.Setenv("RELAYGATE_ADMIN_BIND_ADDRESS", "0.0.0.0:9090")
 
 	path := filepath.Join("..", "..", "configs", "relaygate.yaml")
@@ -77,6 +84,9 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	}
 	if config.Gateway.ID != "gateway-2" || len(config.Gateway.ControlEndpoints) != 3 || config.Gateway.ControlEndpoints[1] != "relaygate-2:7100" {
 		t.Fatalf("gateway config = %#v", config.Gateway)
+	}
+	if config.InternalRelay.BindAddress != "0.0.0.0:7300" || config.InternalRelay.AdvertiseAddress != "relaygate-2:7300" {
+		t.Fatalf("internal relay config = %#v", config.InternalRelay)
 	}
 }
 
@@ -224,4 +234,35 @@ func TestValidateRejectsInvalidRelayBounds(t *testing.T) {
 			t.Fatalf("Validate() error = %v, want max_pipes maximum error", err)
 		}
 	})
+}
+
+func TestValidateRejectsInvalidInternalRelayConfig(t *testing.T) {
+	valid := Defaults()
+	valid.Raft.NodeID = "node-1"
+	valid.Gateway.ID = "gateway-1"
+	valid.Control.ClusterEpoch = "epoch-1"
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{name: "bind address", mutate: func(config *Config) { config.InternalRelay.BindAddress = "missing-port" }, want: "internal_relay.bind_address"},
+		{name: "bind port", mutate: func(config *Config) { config.InternalRelay.BindAddress = "127.0.0.1:" }, want: "internal_relay.bind_address"},
+		{name: "advertise address", mutate: func(config *Config) { config.InternalRelay.AdvertiseAddress = "0.0.0.0:7300" }, want: "internal_relay.advertise_address"},
+		{name: "advertise port", mutate: func(config *Config) { config.InternalRelay.AdvertiseAddress = "relaygate-1:" }, want: "internal_relay.advertise_address"},
+		{name: "advertise address bound", mutate: func(config *Config) {
+			config.InternalRelay.AdvertiseAddress = strings.Repeat("r", maxInternalRelayAddressBytes) + ":7300"
+		}, want: "internal_relay.advertise_address"},
+		{name: "connect timeout", mutate: func(config *Config) { config.InternalRelay.ConnectTimeout = 0 }, want: "internal_relay timeouts"},
+		{name: "shutdown timeout", mutate: func(config *Config) { config.InternalRelay.ShutdownTimeout = 0 }, want: "internal_relay timeouts"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := valid
+			test.mutate(&config)
+			if err := config.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, test.want)
+			}
+		})
+	}
 }

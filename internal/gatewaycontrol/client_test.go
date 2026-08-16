@@ -17,6 +17,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const testRelayAddress = "relay-gateway-1.internal:7300"
+
 func TestInstallFailsFastBeforeControlIsRevalidated(t *testing.T) {
 	client := newTestClient(t, "127.0.0.1:1")
 	_, err := client.Install(context.Background(), testBindingKey("one"), testBindingRef("one"))
@@ -414,6 +416,7 @@ func TestClientRotatesEndpointsAndRevalidates(t *testing.T) {
 	client, err := newClient(Config{
 		ClusterEpoch:     "epoch-1",
 		GatewayID:        "gateway-1",
+		RelayAddress:     testRelayAddress,
 		ControlEndpoints: []string{rejectAddress, acceptAddress},
 		ConnectTimeout:   time.Second,
 		RetryInterval:    10 * time.Millisecond,
@@ -437,6 +440,9 @@ func TestClientRotatesEndpointsAndRevalidates(t *testing.T) {
 	if rejectedHello.GetGatewayInstanceId() != "instance-1" || acceptedSession.hello.GetGatewayInstanceId() != "instance-1" {
 		t.Fatalf("instance IDs changed across endpoints: rejected=%q accepted=%q", rejectedHello.GetGatewayInstanceId(), acceptedSession.hello.GetGatewayInstanceId())
 	}
+	if rejectedHello.GetRelayAddress() != testRelayAddress || acceptedSession.hello.GetRelayAddress() != testRelayAddress {
+		t.Fatalf("relay addresses = rejected %q accepted %q, want %q", rejectedHello.GetRelayAddress(), acceptedSession.hello.GetRelayAddress(), testRelayAddress)
+	}
 	status := waitForClientState(t, client, StateRevalidated)
 	if status.Endpoint != acceptAddress || status.GatewayGeneration != 1 || !status.Ready() {
 		t.Fatalf("client status = %#v", status)
@@ -449,6 +455,7 @@ func TestClientReconnectKeepsProcessInstanceAndUsesNewSession(t *testing.T) {
 	client, err := newClient(Config{
 		ClusterEpoch:     "epoch-1",
 		GatewayID:        "gateway-1",
+		RelayAddress:     testRelayAddress,
 		ControlEndpoints: []string{address},
 		ConnectTimeout:   time.Second,
 		RetryInterval:    10 * time.Millisecond,
@@ -488,6 +495,7 @@ func TestClientLeavesRevalidatedStateWhenControlTransportStalls(t *testing.T) {
 	client, err := newClient(Config{
 		ClusterEpoch:     "epoch-1",
 		GatewayID:        "gateway-1",
+		RelayAddress:     testRelayAddress,
 		ControlEndpoints: []string{proxy.Address()},
 		ConnectTimeout:   time.Second,
 		RetryInterval:    10 * time.Millisecond,
@@ -522,12 +530,24 @@ func TestNewClientRejectsIncompleteConfig(t *testing.T) {
 	_, err = newClient(Config{
 		ClusterEpoch:     "epoch-1",
 		GatewayID:        "gateway-1",
+		RelayAddress:     testRelayAddress,
 		ControlEndpoints: []string{"127.0.0.1:7100"},
 		ConnectTimeout:   time.Second,
 		RetryInterval:    time.Second,
 	}, nil, "")
 	if err == nil {
 		t.Fatal("newClient() succeeded with empty instance ID")
+	}
+	_, err = newClient(Config{
+		ClusterEpoch:     "epoch-1",
+		GatewayID:        "gateway-1",
+		RelayAddress:     "0.0.0.0:7300",
+		ControlEndpoints: []string{"127.0.0.1:7100"},
+		ConnectTimeout:   time.Second,
+		RetryInterval:    time.Second,
+	}, nil, "instance-1")
+	if err == nil {
+		t.Fatal("newClient() accepted an unspecified relay address")
 	}
 }
 
@@ -545,6 +565,7 @@ func newTestClient(t *testing.T, address string) *Client {
 	client, err := newClient(Config{
 		ClusterEpoch:     "epoch-1",
 		GatewayID:        "gateway-1",
+		RelayAddress:     testRelayAddress,
 		ControlEndpoints: []string{address},
 		ConnectTimeout:   time.Second,
 		RetryInterval:    10 * time.Millisecond,

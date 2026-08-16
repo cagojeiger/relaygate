@@ -326,6 +326,7 @@ type Hello struct {
 	ClusterEpoch      string                 `protobuf:"bytes,1,opt,name=cluster_epoch,json=clusterEpoch,proto3" json:"cluster_epoch,omitempty"`
 	GatewayId         string                 `protobuf:"bytes,2,opt,name=gateway_id,json=gatewayId,proto3" json:"gateway_id,omitempty"`
 	GatewayInstanceId string                 `protobuf:"bytes,3,opt,name=gateway_instance_id,json=gatewayInstanceId,proto3" json:"gateway_instance_id,omitempty"`
+	RelayAddress      string                 `protobuf:"bytes,4,opt,name=relay_address,json=relayAddress,proto3" json:"relay_address,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -377,6 +378,13 @@ func (x *Hello) GetGatewayId() string {
 func (x *Hello) GetGatewayInstanceId() string {
 	if x != nil {
 		return x.GatewayInstanceId
+	}
+	return ""
+}
+
+func (x *Hello) GetRelayAddress() string {
+	if x != nil {
+		return x.RelayAddress
 	}
 	return ""
 }
@@ -1219,14 +1227,19 @@ func (x *AdmitOpenRequest) GetTargetId() string {
 }
 
 type OpenContext struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClusterEpoch  string                 `protobuf:"bytes,1,opt,name=cluster_epoch,json=clusterEpoch,proto3" json:"cluster_epoch,omitempty"`
-	AuthorityId   string                 `protobuf:"bytes,2,opt,name=authority_id,json=authorityId,proto3" json:"authority_id,omitempty"`
-	AttemptId     string                 `protobuf:"bytes,3,opt,name=attempt_id,json=attemptId,proto3" json:"attempt_id,omitempty"`
-	Auth          *AuthContext           `protobuf:"bytes,4,opt,name=auth,proto3" json:"auth,omitempty"`
-	Binding       *BindingSlot           `protobuf:"bytes,5,opt,name=binding,proto3" json:"binding,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	ClusterEpoch             string                 `protobuf:"bytes,1,opt,name=cluster_epoch,json=clusterEpoch,proto3" json:"cluster_epoch,omitempty"`
+	AuthorityId              string                 `protobuf:"bytes,2,opt,name=authority_id,json=authorityId,proto3" json:"authority_id,omitempty"`
+	AttemptId                string                 `protobuf:"bytes,3,opt,name=attempt_id,json=attemptId,proto3" json:"attempt_id,omitempty"`
+	Auth                     *AuthContext           `protobuf:"bytes,4,opt,name=auth,proto3" json:"auth,omitempty"`
+	Binding                  *BindingSlot           `protobuf:"bytes,5,opt,name=binding,proto3" json:"binding,omitempty"`
+	IngressGatewayId         string                 `protobuf:"bytes,6,opt,name=ingress_gateway_id,json=ingressGatewayId,proto3" json:"ingress_gateway_id,omitempty"`
+	IngressGatewayInstanceId string                 `protobuf:"bytes,7,opt,name=ingress_gateway_instance_id,json=ingressGatewayInstanceId,proto3" json:"ingress_gateway_instance_id,omitempty"`
+	IngressControlSessionId  string                 `protobuf:"bytes,8,opt,name=ingress_control_session_id,json=ingressControlSessionId,proto3" json:"ingress_control_session_id,omitempty"`
+	OwnerRelayAddress        string                 `protobuf:"bytes,9,opt,name=owner_relay_address,json=ownerRelayAddress,proto3" json:"owner_relay_address,omitempty"`
+	ExpiresAtUnixMillis      int64                  `protobuf:"varint,10,opt,name=expires_at_unix_millis,json=expiresAtUnixMillis,proto3" json:"expires_at_unix_millis,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *OpenContext) Reset() {
@@ -1294,6 +1307,41 @@ func (x *OpenContext) GetBinding() *BindingSlot {
 	return nil
 }
 
+func (x *OpenContext) GetIngressGatewayId() string {
+	if x != nil {
+		return x.IngressGatewayId
+	}
+	return ""
+}
+
+func (x *OpenContext) GetIngressGatewayInstanceId() string {
+	if x != nil {
+		return x.IngressGatewayInstanceId
+	}
+	return ""
+}
+
+func (x *OpenContext) GetIngressControlSessionId() string {
+	if x != nil {
+		return x.IngressControlSessionId
+	}
+	return ""
+}
+
+func (x *OpenContext) GetOwnerRelayAddress() string {
+	if x != nil {
+		return x.OwnerRelayAddress
+	}
+	return ""
+}
+
+func (x *OpenContext) GetExpiresAtUnixMillis() int64 {
+	if x != nil {
+		return x.ExpiresAtUnixMillis
+	}
+	return 0
+}
+
 type AdmitOpenResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Context       *OpenContext           `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
@@ -1352,12 +1400,13 @@ const file_proto_relaygate_control_v1_control_proto_rawDesc = "" +
 	"\x0esession_opened\x18\x01 \x01(\v2#.relaygate.control.v1.SessionOpenedH\x00R\rsessionOpened\x12U\n" +
 	"\x11snapshot_accepted\x18\x02 \x01(\v2&.relaygate.control.v1.SnapshotAcceptedH\x00R\x10snapshotAccepted\x12O\n" +
 	"\x0fmutation_result\x18\x03 \x01(\v2$.relaygate.control.v1.MutationResultH\x00R\x0emutationResultB\t\n" +
-	"\amessage\"{\n" +
+	"\amessage\"\xa0\x01\n" +
 	"\x05Hello\x12#\n" +
 	"\rcluster_epoch\x18\x01 \x01(\tR\fclusterEpoch\x12\x1d\n" +
 	"\n" +
 	"gateway_id\x18\x02 \x01(\tR\tgatewayId\x12.\n" +
-	"\x13gateway_instance_id\x18\x03 \x01(\tR\x11gatewayInstanceId\"\xd1\x01\n" +
+	"\x13gateway_instance_id\x18\x03 \x01(\tR\x11gatewayInstanceId\x12#\n" +
+	"\rrelay_address\x18\x04 \x01(\tR\frelayAddress\"\xd1\x01\n" +
 	"\n" +
 	"SessionRef\x12#\n" +
 	"\rcluster_epoch\x18\x01 \x01(\tR\fclusterEpoch\x12!\n" +
@@ -1421,14 +1470,20 @@ const file_proto_relaygate_control_v1_control_proto_rawDesc = "" +
 	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\x125\n" +
 	"\x04auth\x18\x02 \x01(\v2!.relaygate.control.v1.AuthContextR\x04auth\x12\x1a\n" +
 	"\bendpoint\x18\x03 \x01(\tR\bendpoint\x12\x1b\n" +
-	"\ttarget_id\x18\x04 \x01(\tR\btargetId\"\xe8\x01\n" +
+	"\ttarget_id\x18\x04 \x01(\tR\btargetId\"\xf7\x03\n" +
 	"\vOpenContext\x12#\n" +
 	"\rcluster_epoch\x18\x01 \x01(\tR\fclusterEpoch\x12!\n" +
 	"\fauthority_id\x18\x02 \x01(\tR\vauthorityId\x12\x1d\n" +
 	"\n" +
 	"attempt_id\x18\x03 \x01(\tR\tattemptId\x125\n" +
 	"\x04auth\x18\x04 \x01(\v2!.relaygate.control.v1.AuthContextR\x04auth\x12;\n" +
-	"\abinding\x18\x05 \x01(\v2!.relaygate.control.v1.BindingSlotR\abinding\"P\n" +
+	"\abinding\x18\x05 \x01(\v2!.relaygate.control.v1.BindingSlotR\abinding\x12,\n" +
+	"\x12ingress_gateway_id\x18\x06 \x01(\tR\x10ingressGatewayId\x12=\n" +
+	"\x1bingress_gateway_instance_id\x18\a \x01(\tR\x18ingressGatewayInstanceId\x12;\n" +
+	"\x1aingress_control_session_id\x18\b \x01(\tR\x17ingressControlSessionId\x12.\n" +
+	"\x13owner_relay_address\x18\t \x01(\tR\x11ownerRelayAddress\x123\n" +
+	"\x16expires_at_unix_millis\x18\n" +
+	" \x01(\x03R\x13expiresAtUnixMillis\"P\n" +
 	"\x11AdmitOpenResponse\x12;\n" +
 	"\acontext\x18\x01 \x01(\v2!.relaygate.control.v1.OpenContextR\acontext*k\n" +
 	"\rPresenceState\x12\x1e\n" +

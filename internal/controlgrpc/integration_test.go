@@ -65,6 +65,7 @@ func TestThreeNodeLeaderFailoverRequiresNewControlSessionAndSnapshot(t *testing.
 			ProbeInterval:       25 * time.Millisecond,
 			ProbeTimeout:        250 * time.Millisecond,
 			RevalidationTimeout: time.Second,
+			OpenContextTTL:      testOpenContextTTL,
 		}, node)
 		if err != nil {
 			t.Fatalf("authority.New(node-%d): %v", index+1, err)
@@ -111,7 +112,12 @@ func TestThreeNodeLeaderFailoverRequiresNewControlSessionAndSnapshot(t *testing.
 		t.Fatalf("Connect(follower): %v", err)
 	}
 	if err := followerStream.Send(&controlv1.ControlRequest{Message: &controlv1.ControlRequest_Hello{
-		Hello: &controlv1.Hello{ClusterEpoch: epoch, GatewayId: "gateway-a", GatewayInstanceId: "instance-a"},
+		Hello: &controlv1.Hello{
+			ClusterEpoch:      epoch,
+			GatewayId:         "gateway-a",
+			GatewayInstanceId: "instance-a",
+			RelayAddress:      testRelayAddress("gateway-a"),
+		},
 	}}); err != nil {
 		t.Fatalf("Send(follower hello): %v", err)
 	}
@@ -221,7 +227,12 @@ func connectAndSync(t *testing.T, address, epoch, gatewayID, instanceID string) 
 		t.Fatalf("Connect(): %v", err)
 	}
 	if err := stream.Send(&controlv1.ControlRequest{Message: &controlv1.ControlRequest_Hello{
-		Hello: &controlv1.Hello{ClusterEpoch: epoch, GatewayId: gatewayID, GatewayInstanceId: instanceID},
+		Hello: &controlv1.Hello{
+			ClusterEpoch:      epoch,
+			GatewayId:         gatewayID,
+			GatewayInstanceId: instanceID,
+			RelayAddress:      testRelayAddress(gatewayID),
+		},
 	}}); err != nil {
 		_ = connection.Close()
 		t.Fatalf("Send(hello): %v", err)

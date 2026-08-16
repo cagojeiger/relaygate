@@ -11,6 +11,7 @@ x-relaygate: &relaygate
 x-relaygate-environment: &relaygate-environment
   RELAYGATE_RAFT_BIND_ADDRESS: 0.0.0.0:7000
   RELAYGATE_CONTROL_BIND_ADDRESS: 0.0.0.0:7100
+  RELAYGATE_INTERNAL_RELAY_BIND_ADDRESS: 0.0.0.0:7300
   RELAYGATE_ADMIN_BIND_ADDRESS: 0.0.0.0:9090
   RELAYGATE_CONTROL_CLUSTER_EPOCH: local-compose-1
   RELAYGATE_GATEWAY_CONTROL_ENDPOINTS: >-
@@ -24,6 +25,7 @@ services:
       RELAYGATE_GATEWAY_ID: gateway-1
       RELAYGATE_RAFT_NODE_ID: node-1
       RELAYGATE_RAFT_ADVERTISE_ADDRESS: relaygate-1:7000
+      RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS: relaygate-1:7300
       RELAYGATE_RAFT_BOOTSTRAP: "true"
       RELAYGATE_RAFT_BOOTSTRAP_VOTERS: >-
         [{"node_id":"node-1","address":"relaygate-1:7000"},{"node_id":"node-2","address":"relaygate-2:7000"},{"node_id":"node-3","address":"relaygate-3:7000"}]
@@ -40,6 +42,7 @@ services:
       RELAYGATE_GATEWAY_ID: gateway-2
       RELAYGATE_RAFT_NODE_ID: node-2
       RELAYGATE_RAFT_ADVERTISE_ADDRESS: relaygate-2:7000
+      RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS: relaygate-2:7300
       RELAYGATE_RAFT_BOOTSTRAP: "false"
     volumes:
       - relaygate-node-2-data:/var/lib/relaygate
@@ -54,6 +57,7 @@ services:
       RELAYGATE_GATEWAY_ID: gateway-3
       RELAYGATE_RAFT_NODE_ID: node-3
       RELAYGATE_RAFT_ADVERTISE_ADDRESS: relaygate-3:7000
+      RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS: relaygate-3:7300
       RELAYGATE_RAFT_BOOTSTRAP: "false"
     volumes:
       - relaygate-node-3-data:/var/lib/relaygate

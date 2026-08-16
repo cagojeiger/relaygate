@@ -116,6 +116,13 @@ func (m *Manager) Require(ref Ref) error {
 	return nil
 }
 
+// Allowed reports whether an immutable credential identity is present in the
+// current process snapshot. It does not create or validate a local session;
+// the cross-Gateway owner path uses it to recheck a forwarded caller at O.
+func (m *Manager) Allowed(clientID, apiKeyID string) bool {
+	return m.auth.Allowed(clientID, apiKeyID)
+}
+
 func (m *Manager) End(ref Ref) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

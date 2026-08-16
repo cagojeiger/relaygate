@@ -29,6 +29,8 @@ var (
 	ErrPayloadInvalid         = errors.New("invalid payload")
 	ErrPipeNotOwned           = errors.New("pipe not owned")
 	ErrPayloadBackpressure    = errors.New("payload backpressure exhausted")
+	ErrContextExpired         = errors.New("forwarded open context expired")
+	ErrAttemptReplay          = errors.New("forwarded open attempt replayed")
 )
 
 type Config struct {
@@ -46,6 +48,29 @@ type Admitter interface {
 type ReservationStore interface {
 	GatewayID() string
 	Reserve(authority.OpenContext, clientsession.Ref) (localbinding.Reservation, error)
+	ReserveForwarded(authority.OpenContext, clientsession.Ref) (localbinding.Reservation, error)
+}
+
+// RemoteEndpoint is one ingress-owned hop to a remote owning Gateway. The
+// endpoint is volatile: it is never reconnected or resumed after Done closes.
+type RemoteEndpoint interface {
+	localbinding.PayloadEndpoint
+	Activate(context.Context) error
+	Close(context.Context) error
+	Done() <-chan struct{}
+}
+
+type RemoteResult struct {
+	AttemptID string
+	PipeID    string
+	Binding   controlstate.BindingSlot
+	Endpoint  RemoteEndpoint
+}
+
+// RemoteOpener creates one cross-Gateway stream for one attempt/Pipe. It must
+// not replay the forwarded context when the stream outcome is unknown.
+type RemoteOpener interface {
+	Open(context.Context, authority.OpenContext, localbinding.CallerEndpoint) (RemoteResult, error)
 }
 
 type State string
@@ -84,6 +109,7 @@ type entry struct {
 	listener     clientsession.Ref
 	listenerDone <-chan struct{}
 	endpoint     localbinding.ListenerEndpoint
+	remote       RemoteEndpoint
 
 	state           State
 	terminalErr     error
@@ -97,6 +123,9 @@ type entry struct {
 
 	activation         chan struct{}
 	activated          bool
+	activationStarted  bool
+	activationFinished chan struct{}
+	activationOK       bool
 	pipeCtx            context.Context //nolint:containedctx // Entry owns this accepted-Pipe lifetime context.
 	cancelPipe         context.CancelCauseFunc
 	callerToListenerMu sync.Mutex
@@ -106,6 +135,7 @@ type entry struct {
 type termination struct {
 	listenerEndpoint localbinding.ListenerEndpoint
 	callerEndpoint   localbinding.CallerEndpoint
+	remoteEndpoint   RemoteEndpoint
 	message          localbinding.Termination
 	entry            *entry
 }
@@ -114,6 +144,8 @@ type Manager struct {
 	config   Config
 	admitter Admitter
 	bindings ReservationStore
+	remote   RemoteOpener
+	now      func() time.Time
 
 	ctx       context.Context //nolint:containedctx // Manager owns one process-lifetime root context for opener and termination workers.
 	cancel    context.CancelFunc
@@ -132,12 +164,16 @@ type Manager struct {
 	byAttempt     map[string]*entry
 	byPipe        map[string]*entry
 	terminalOrder []*entry
-	active        uint32
-	pending       uint32
-	closed        bool
+	// forwardedAttempts retains successful remote O reservations until their
+	// absolute expiry. Expired entries are safe to evict because the context
+	// itself then fails closed; the map never exceeds MaxPipes.
+	forwardedAttempts map[string]time.Time
+	active            uint32
+	pending           uint32
+	closed            bool
 }
 
-func New(config Config, admitter Admitter, bindings ReservationStore) (*Manager, error) {
+func New(config Config, admitter Admitter, bindings ReservationStore, remote ...RemoteOpener) (*Manager, error) {
 	if config.ClusterEpoch == "" || len(config.ClusterEpoch) > controlstate.MaxIdentityBytes {
 		return nil, fmt.Errorf("%w: cluster epoch must be 1..%d bytes", ErrInvalid, controlstate.MaxIdentityBytes)
 	}
@@ -153,17 +189,27 @@ func New(config Config, admitter Admitter, bindings ReservationStore) (*Manager,
 	if bindings == nil {
 		return nil, fmt.Errorf("%w: local reservation store is required", ErrInvalid)
 	}
+	if len(remote) > 1 {
+		return nil, fmt.Errorf("%w: at most one remote opener is allowed", ErrInvalid)
+	}
+	var remoteOpener RemoteOpener
+	if len(remote) == 1 {
+		remoteOpener = remote[0]
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		config:       config,
-		admitter:     admitter,
-		bindings:     bindings,
-		ctx:          ctx,
-		cancel:       cancel,
-		entries:      make(map[*entry]struct{}),
-		byAttempt:    make(map[string]*entry),
-		byPipe:       make(map[string]*entry),
-		terminations: make(chan termination, config.MaxPipes),
+		config:            config,
+		admitter:          admitter,
+		bindings:          bindings,
+		remote:            remoteOpener,
+		now:               time.Now,
+		ctx:               ctx,
+		cancel:            cancel,
+		entries:           make(map[*entry]struct{}),
+		byAttempt:         make(map[string]*entry),
+		byPipe:            make(map[string]*entry),
+		forwardedAttempts: make(map[string]time.Time),
+		terminations:      make(chan termination, config.MaxPipes),
 	}
 	m.terminationWorker.Add(1)
 	go m.runTerminations()
@@ -174,7 +220,7 @@ func New(config Config, admitter Admitter, bindings ReservationStore) (*Manager,
 // return means the owner AcceptedO transition and listener confirmation ACK
 // have both occurred; it does not model ingress apply or caller ACK.
 func (m *Manager) Open(ctx context.Context, caller clientsession.Session, endpoint, targetID string) (Result, error) {
-	return m.open(ctx, caller, nil, endpoint, targetID)
+	return m.open(ctx, caller, nil, endpoint, targetID, nil, false)
 }
 
 // OpenPipe opens an owner-local exact target with both payload directions and
@@ -185,10 +231,42 @@ func (m *Manager) OpenPipe(ctx context.Context, caller clientsession.Session, ca
 	if callerEndpoint == nil {
 		return Result{}, fmt.Errorf("%w: caller endpoint is required", ErrInvalid)
 	}
-	return m.open(ctx, caller, callerEndpoint, endpoint, targetID)
+	return m.open(ctx, caller, callerEndpoint, endpoint, targetID, nil, false)
 }
 
-func (m *Manager) open(ctx context.Context, caller clientsession.Session, callerEndpoint localbinding.CallerEndpoint, endpoint, targetID string) (Result, error) {
+// OpenForwarded executes the owner segment for a context admitted on another
+// Gateway. The hop context is the remote caller lifetime; once it ends, an
+// accepted owner Pipe becomes terminal and is never resumed.
+func (m *Manager) OpenForwarded(ctx context.Context, openContext authority.OpenContext, callerEndpoint localbinding.CallerEndpoint) (Result, error) {
+	if ctx == nil {
+		return Result{}, fmt.Errorf("%w: context is required", ErrInvalid)
+	}
+	if callerEndpoint == nil {
+		return Result{}, fmt.Errorf("%w: caller endpoint is required", ErrInvalid)
+	}
+	caller := clientsession.Session{
+		Ref: clientsession.Ref{
+			ClientSessionID: openContext.Auth.ClientSessionID,
+			ClientID:        openContext.Auth.ClientID,
+			APIKeyID:        openContext.Auth.APIKeyID,
+			AuthRevision:    openContext.Auth.AuthRevision,
+		},
+		Done: ctx.Done(),
+	}
+	endpoint := openContext.Binding.Key.EndpointPattern
+	targetID := openContext.Binding.Key.TargetID
+	copy := openContext.Clone()
+	return m.open(ctx, caller, callerEndpoint, endpoint, targetID, &copy, true)
+}
+
+func (m *Manager) open(
+	ctx context.Context,
+	caller clientsession.Session,
+	callerEndpoint localbinding.CallerEndpoint,
+	endpoint, targetID string,
+	provided *authority.OpenContext,
+	forwardedOwner bool,
+) (Result, error) {
 	if err := validateOpenInput(ctx, caller, endpoint, targetID); err != nil {
 		return Result{}, err
 	}
@@ -201,7 +279,7 @@ func (m *Manager) open(ctx context.Context, caller clientsession.Session, caller
 	default:
 	}
 
-	pipeCtx, cancelPipe := context.WithCancelCause(context.Background())
+	pipeCtx, cancelPipe := context.WithCancelCause(context.WithoutCancel(ctx))
 	e := &entry{
 		caller:         caller.Ref,
 		callerDone:     caller.Done,
@@ -224,21 +302,42 @@ func (m *Manager) open(ctx context.Context, caller clientsession.Session, caller
 	m.setPhaseCancel(e, cancelPhase)
 	defer cancelTimeout()
 
-	openContext, err := m.admitter.AdmitOpen(attemptCtx, caller.Ref, endpoint, targetID)
-	if err != nil {
-		return Result{}, m.fail(e, classifyAdmissionError(attemptCtx, err))
+	var openContext authority.OpenContext
+	if provided == nil {
+		var err error
+		openContext, err = m.admitter.AdmitOpen(attemptCtx, caller.Ref, endpoint, targetID)
+		if err != nil {
+			return Result{}, m.fail(e, classifyAdmissionError(attemptCtx, err))
+		}
+	} else {
+		openContext = provided.Clone()
 	}
 	if err := validateOpenContext(m.config.ClusterEpoch, caller.Ref, endpoint, targetID, openContext); err != nil {
 		return Result{}, m.fail(e, err)
 	}
-	if openContext.Binding.Ref.GatewayID != m.bindings.GatewayID() {
-		return Result{}, m.fail(e, ErrRemoteOwnerUnsupported)
+	ownerLocal := openContext.Binding.Ref.GatewayID == m.bindings.GatewayID()
+	if forwardedOwner {
+		if err := validateForwardingContext(openContext); err != nil {
+			return Result{}, m.fail(e, err)
+		}
+	}
+	if forwardedOwner && !ownerLocal {
+		return Result{}, m.fail(e, ErrNotFound)
+	}
+	if !forwardedOwner && !ownerLocal {
+		if m.remote == nil {
+			return Result{}, m.fail(e, ErrRemoteOwnerUnsupported)
+		}
+		if err := validateForwardingContext(openContext); err != nil {
+			return Result{}, m.fail(e, err)
+		}
+		return m.openRemote(e, attemptCtx, cancelTimeout, cancelPhase, openContext)
 	}
 	if cause := context.Cause(attemptCtx); cause != nil {
 		return Result{}, m.fail(e, mapContextError(cause))
 	}
 
-	reservation, err := m.reserve(e, openContext)
+	reservation, err := m.reserve(e, openContext, forwardedOwner)
 	if err != nil {
 		return Result{}, m.fail(e, classifyReservationError(err))
 	}
@@ -301,6 +400,34 @@ func (m *Manager) open(ctx context.Context, caller clientsession.Session, caller
 	return result, nil
 }
 
+func (m *Manager) openRemote(
+	e *entry,
+	attemptCtx context.Context,
+	cancelTimeout context.CancelFunc,
+	cancelPhase context.CancelCauseFunc,
+	openContext authority.OpenContext,
+) (Result, error) {
+	if !m.now().Before(openContext.ExpiresAt) {
+		return Result{}, m.fail(e, ErrContextExpired)
+	}
+	result, err := m.remote.Open(attemptCtx, openContext.Clone(), e.callerEndpoint)
+	if err != nil {
+		return Result{}, m.fail(e, classifyRemoteError(attemptCtx, err))
+	}
+	accepted, terminalErr := m.acceptRemote(e, openContext, result)
+	cancelTimeout()
+	cancelPhase(nil)
+	if !accepted {
+		if result.Endpoint != nil {
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(attemptCtx), m.config.OpenTimeout)
+			_ = result.Endpoint.Close(closeCtx)
+			cancel()
+		}
+		return Result{}, m.failRemoteResult(e, terminalErr)
+	}
+	return m.result(e)
+}
+
 func validateOpenInput(ctx context.Context, caller clientsession.Session, endpoint, targetID string) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: context is required", ErrInvalid)
@@ -345,6 +472,22 @@ func validateOpenContext(clusterEpoch string, caller clientsession.Ref, endpoint
 	return nil
 }
 
+func validateForwardingContext(open authority.OpenContext) error {
+	if open.IngressGatewayID == "" || open.IngressGatewayInstanceID == "" || open.IngressControlSessionID == "" ||
+		len(open.IngressGatewayID) > controlstate.MaxIdentityBytes ||
+		len(open.IngressGatewayInstanceID) > controlstate.MaxIdentityBytes ||
+		len(open.IngressControlSessionID) > controlstate.MaxIdentityBytes {
+		return fmt.Errorf("%w: invalid forwarded ingress identity", ErrUnavailable)
+	}
+	if err := authority.ValidateRelayAddress(open.OwnerRelayAddress); err != nil {
+		return fmt.Errorf("%w: invalid owner relay address: %w", ErrUnavailable, err)
+	}
+	if open.ExpiresAt.UnixMilli() <= 0 {
+		return fmt.Errorf("%w: forwarded context has no absolute expiry", ErrUnavailable)
+	}
+	return nil
+}
+
 func (m *Manager) insert(ctx context.Context, e *entry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -382,21 +525,56 @@ func (m *Manager) setPhaseCancel(e *entry, cancel context.CancelCauseFunc) {
 	e.cancelPhase = cancel
 }
 
-func (m *Manager) reserve(e *entry, open authority.OpenContext) (localbinding.Reservation, error) {
+func (m *Manager) reserve(e *entry, open authority.OpenContext, forwarded bool) (localbinding.Reservation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if e.state == StateTerminal {
 		return localbinding.Reservation{}, e.terminalErr
 	}
 	if existing := m.byAttempt[open.AttemptID]; existing != nil && existing != e {
-		return localbinding.Reservation{}, fmt.Errorf("%w: duplicate attempt", ErrUnavailable)
+		return localbinding.Reservation{}, fmt.Errorf("%w: duplicate attempt", ErrAttemptReplay)
 	}
-	reservation, err := m.bindings.Reserve(open, e.caller)
+	if forwarded {
+		now := m.now()
+		m.pruneForwardedAttemptsLocked(now)
+		if !now.Before(open.ExpiresAt) {
+			return localbinding.Reservation{}, ErrContextExpired
+		}
+		if _, exists := m.forwardedAttempts[open.AttemptID]; exists {
+			return localbinding.Reservation{}, ErrAttemptReplay
+		}
+		if uint64(len(m.forwardedAttempts)) >= uint64(m.config.MaxPipes) {
+			return localbinding.Reservation{}, ErrCapacity
+		}
+	}
+	var (
+		reservation localbinding.Reservation
+		err         error
+	)
+	if forwarded {
+		reservation, err = m.bindings.ReserveForwarded(open, e.caller)
+	} else {
+		reservation, err = m.bindings.Reserve(open, e.caller)
+	}
 	if err != nil {
 		return localbinding.Reservation{}, err
 	}
+	if reservation.Context.ClusterEpoch != open.ClusterEpoch || reservation.Context.AuthorityID != open.AuthorityID ||
+		reservation.Context.AttemptID != open.AttemptID || reservation.Context.Auth != open.Auth ||
+		!sameExactSlot(reservation.Context.Binding, open.Binding) ||
+		reservation.Caller != e.caller || !sameExactSlot(reservation.Binding, open.Binding) ||
+		reservation.Listener.ClientSessionID == "" || reservation.Listener.ClientID == "" ||
+		reservation.Listener.APIKeyID == "" || reservation.ListenerDone == nil || reservation.Endpoint == nil {
+		return localbinding.Reservation{}, fmt.Errorf("%w: reservation store returned a non-exact result", ErrUnavailable)
+	}
 	if reservation.Listener == e.caller {
 		return localbinding.Reservation{}, fmt.Errorf("%w: caller and listener sessions must differ", ErrInvalid)
+	}
+	if forwarded {
+		if !m.now().Before(open.ExpiresAt) {
+			return localbinding.Reservation{}, ErrContextExpired
+		}
+		m.forwardedAttempts[open.AttemptID] = open.ExpiresAt
 	}
 	e.attemptID = reservation.Context.AttemptID
 	e.binding = cloneSlot(reservation.Binding)
@@ -411,6 +589,14 @@ func (m *Manager) reserve(e *entry, open authority.OpenContext) (localbinding.Re
 		m.watchListener(e)
 	}()
 	return cloneReservation(reservation), nil
+}
+
+func (m *Manager) pruneForwardedAttemptsLocked(now time.Time) {
+	for attemptID, expiresAt := range m.forwardedAttempts {
+		if !now.Before(expiresAt) {
+			delete(m.forwardedAttempts, attemptID)
+		}
+	}
 }
 
 // beginOffer linearizes listener notification against terminalization. Once it
@@ -501,6 +687,54 @@ func (m *Manager) accept(e *entry, pipeID string, cancel context.CancelCauseFunc
 	return true, nil, nil
 }
 
+func (m *Manager) acceptRemote(e *entry, open authority.OpenContext, result RemoteResult) (bool, error) {
+	if result.AttemptID != open.AttemptID || result.PipeID == "" || len(result.PipeID) > controlstate.MaxIdentityBytes ||
+		result.Endpoint == nil || !sameExactSlot(result.Binding, open.Binding) {
+		return false, fmt.Errorf("%w: remote owner returned a non-exact result", ErrUnknown)
+	}
+	remoteDone := result.Endpoint.Done()
+	if remoteDone == nil {
+		return false, fmt.Errorf("%w: remote owner returned no lifetime signal", ErrUnknown)
+	}
+
+	m.mu.Lock()
+	if e.state == StateTerminal {
+		terminalErr := e.terminalErr
+		m.mu.Unlock()
+		return false, terminalErr
+	}
+	if e.state != StateOpening {
+		m.mu.Unlock()
+		return false, fmt.Errorf("%w: remote attempt is not opening", ErrUnknown)
+	}
+	if existing := m.byAttempt[result.AttemptID]; existing != nil && existing != e {
+		m.mu.Unlock()
+		return false, fmt.Errorf("%w: duplicate remote attempt", ErrUnknown)
+	}
+	if existing := m.byPipe[result.PipeID]; existing != nil && existing != e {
+		m.mu.Unlock()
+		return false, fmt.Errorf("%w: duplicate remote PipeID", ErrUnknown)
+	}
+
+	e.attemptID = result.AttemptID
+	e.pipeID = result.PipeID
+	e.binding = cloneSlot(result.Binding)
+	e.remote = result.Endpoint
+	e.listenerDone = remoteDone
+	e.state = StateAccepted
+	e.provisional = true
+	e.activationFinished = make(chan struct{})
+	m.byAttempt[e.attemptID] = e
+	m.byPipe[e.pipeID] = e
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		m.watchRemote(e, remoteDone)
+	}()
+	m.mu.Unlock()
+	return true, nil
+}
+
 func (m *Manager) result(e *entry) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -519,6 +753,22 @@ func (m *Manager) result(e *entry) (Result, error) {
 
 func (m *Manager) fail(e *entry, cause error) error {
 	work, terminalErr := m.terminalize(e, cause)
+	m.launchTermination(work)
+	return terminalErr
+}
+
+// A structurally valid remote result proves the owner Open LP may have passed.
+// Even when a caller/session terminal won the ingress-local race, that result
+// can no longer be reported as a stable pre-LP failure.
+func (m *Manager) failRemoteResult(e *entry, cause error) error {
+	m.mu.Lock()
+	if e.state == StateTerminal {
+		terminalErr := unknown(e.terminalErr)
+		m.mu.Unlock()
+		return terminalErr
+	}
+	work, terminalErr := m.terminalizeLocked(e, unknown(cause))
+	m.mu.Unlock()
 	m.launchTermination(work)
 	return terminalErr
 }
@@ -551,7 +801,7 @@ func (m *Manager) terminalizeLocked(e *entry, cause error) (*termination, error)
 	if m.active > 0 {
 		m.active--
 	}
-	if e.endpoint != nil && (e.provisional || e.offerStarted) {
+	if (e.endpoint != nil && (e.provisional || e.offerStarted)) || e.remote != nil {
 		e.terminationHeld = true
 		m.pending++
 	}
@@ -569,7 +819,7 @@ func (m *Manager) terminalizeLocked(e *entry, cause error) (*termination, error)
 }
 
 func (m *Manager) terminationLocked(e *entry) *termination {
-	if !e.terminationHeld || e.endpoint == nil {
+	if !e.terminationHeld || (e.endpoint == nil && e.remote == nil) {
 		return nil
 	}
 	var callerEndpoint localbinding.CallerEndpoint
@@ -580,6 +830,7 @@ func (m *Manager) terminationLocked(e *entry) *termination {
 	return &termination{
 		listenerEndpoint: e.endpoint,
 		callerEndpoint:   callerEndpoint,
+		remoteEndpoint:   e.remote,
 		message:          localbinding.Termination{AttemptID: e.attemptID, PipeID: e.pipeID},
 		entry:            e,
 	}
@@ -613,7 +864,7 @@ func (m *Manager) trimTerminalLocked() {
 }
 
 func (m *Manager) launchTermination(work *termination) {
-	if work == nil || (work.listenerEndpoint == nil && work.callerEndpoint == nil) {
+	if work == nil || (work.listenerEndpoint == nil && work.callerEndpoint == nil && work.remoteEndpoint == nil) {
 		return
 	}
 	defer m.terminationSenders.Done()
@@ -647,6 +898,13 @@ func (m *Manager) runTerminations() {
 			go func() {
 				defer sends.Done()
 				_ = work.callerEndpoint.TerminatePipe(ctx, work.message.PipeID)
+			}()
+		}
+		if work.remoteEndpoint != nil {
+			sends.Add(1)
+			go func() {
+				defer sends.Done()
+				_ = work.remoteEndpoint.Close(ctx)
 			}()
 		}
 		sends.Wait()
@@ -706,6 +964,16 @@ func (m *Manager) watchListener(e *entry) {
 	}
 }
 
+func (m *Manager) watchRemote(e *entry, done <-chan struct{}) {
+	select {
+	case <-done:
+		_ = m.fail(e, ErrUnavailable)
+	case <-m.ctx.Done():
+		_ = m.fail(e, ErrUnavailable)
+	case <-e.done:
+	}
+}
+
 func (m *Manager) RetireSession(session clientsession.Ref) int {
 	return m.retireMatching(func(e *entry) bool { return e.caller == session || e.listener == session }, ErrSessionEnded)
 }
@@ -740,6 +1008,39 @@ func (m *Manager) ActivatePipe(caller clientsession.Ref, pipeID string) bool {
 		m.mu.Unlock()
 		return false
 	}
+	if e.remote != nil {
+		if e.activationStarted {
+			finished := e.activationFinished
+			m.mu.Unlock()
+			return m.waitRemoteActivation(e, finished)
+		}
+		e.activationStarted = true
+		if e.activationFinished == nil {
+			e.activationFinished = make(chan struct{})
+		}
+		remote := e.remote
+		pipeCtx := e.pipeCtx
+		m.mu.Unlock()
+
+		activationCtx, cancel := context.WithTimeout(pipeCtx, m.config.OpenTimeout)
+		err := remote.Activate(activationCtx)
+		cancel()
+
+		m.mu.Lock()
+		var work *termination
+		success := err == nil && e.state == StateAccepted
+		if success {
+			e.activated = true
+			e.activationOK = true
+			close(e.activation)
+		} else if e.state == StateAccepted {
+			work, _ = m.terminalizeLocked(e, ErrUnavailable)
+		}
+		close(e.activationFinished)
+		m.mu.Unlock()
+		m.launchTermination(work)
+		return success
+	}
 	if !e.activated {
 		e.activated = true
 		close(e.activation)
@@ -748,10 +1049,25 @@ func (m *Manager) ActivatePipe(caller clientsession.Ref, pipeID string) bool {
 	return true
 }
 
+func (m *Manager) waitRemoteActivation(e *entry, finished <-chan struct{}) bool {
+	timer := time.NewTimer(m.config.OpenTimeout)
+	defer timer.Stop()
+	select {
+	case <-finished:
+	case <-m.ctx.Done():
+		return false
+	case <-timer.C:
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return e.state == StateAccepted && e.activationOK
+}
+
 // RelayPayload delivers one opaque payload to the opposite exact participant.
 // Calls in each direction are serialized independently and remain gated until
 // the caller-facing PipeOpened message has been written successfully.
-func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pipeID string, data []byte) error {
+func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pipeID string, data []byte) error { //nolint:contextcheck // Accepted Pipe lifetime is entry-owned and intentionally outlives a payload call.
 	if ctx == nil {
 		return fmt.Errorf("%w: context is required", ErrPayloadInvalid)
 	}
@@ -760,6 +1076,9 @@ func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pi
 	}
 	if pipeID == "" || len(pipeID) > controlstate.MaxIdentityBytes {
 		return fmt.Errorf("%w: PipeID must be 1..%d bytes", ErrPayloadInvalid, controlstate.MaxIdentityBytes)
+	}
+	if sender.ClientSessionID == "" || sender.ClientID == "" || sender.APIKeyID == "" || sender.AuthRevision == "" {
+		return ErrPipeNotOwned
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -776,8 +1095,16 @@ func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pi
 	switch sender {
 	case e.caller:
 		direction = &e.callerToListenerMu
-		destination = e.endpoint
+		if e.remote != nil {
+			destination = e.remote
+		} else {
+			destination = e.endpoint
+		}
 	case e.listener:
+		if e.listener.ClientSessionID == "" {
+			m.mu.Unlock()
+			return ErrPipeNotOwned
+		}
 		direction = &e.listenerToCallerMu
 		destination = e.callerEndpoint
 	default:
@@ -820,7 +1147,7 @@ func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pi
 	m.mu.Unlock()
 
 	if destination == nil {
-		if context.Cause(pipeCtx) != nil {
+		if context.Cause(pipeCtx) != nil { //nolint:contextcheck // Pipe cancellation is entry-owned, not derived from this payload call.
 			return ErrPipeNotOwned
 		}
 		m.failPayload(e, ErrUnavailable)
@@ -828,7 +1155,7 @@ func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pi
 	}
 
 	deliveryCtx, cancelDelivery := context.WithCancelCause(ctx)
-	stopPipeCancellation := context.AfterFunc(pipeCtx, func() {
+	stopPipeCancellation := context.AfterFunc(pipeCtx, func() { //nolint:contextcheck // Bridge entry-owned Pipe cancellation into this delivery call.
 		cancelDelivery(context.Cause(pipeCtx))
 	})
 	err := destination.DeliverPayload(deliveryCtx, localbinding.PipePayload{PipeID: pipeID, Data: payload})
@@ -840,7 +1167,7 @@ func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pi
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
-	if context.Cause(pipeCtx) != nil {
+	if context.Cause(pipeCtx) != nil { //nolint:contextcheck // Pipe cancellation is entry-owned, not derived from this payload call.
 		return ErrPipeNotOwned
 	}
 	stable := classifyPayloadError(err)
@@ -986,16 +1313,41 @@ func classifyAdmissionError(ctx context.Context, err error) error {
 
 func classifyReservationError(err error) error {
 	switch {
+	case errors.Is(err, ErrContextExpired), errors.Is(err, ErrAttemptReplay), errors.Is(err, ErrCapacity):
+		return err
 	case errors.Is(err, ErrInvalid):
 		return err
 	case errors.Is(err, localbinding.ErrInvalid):
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	case errors.Is(err, localbinding.ErrCapacity):
+		return fmt.Errorf("%w: %w", ErrCapacity, err)
 	case errors.Is(err, localbinding.ErrAttemptUsed):
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	case errors.Is(err, localbinding.ErrNotFound):
 		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	case errors.Is(err, localbinding.ErrSessionEnded):
 		return fmt.Errorf("%w: %w", ErrSessionEnded, err)
+	default:
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+}
+
+func classifyRemoteError(ctx context.Context, err error) error {
+	if errors.Is(err, ErrUnknown) {
+		return err
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return mapContextError(cause)
+	}
+	switch {
+	case errors.Is(err, ErrInvalid), errors.Is(err, ErrCapacity), errors.Is(err, ErrNotFound),
+		errors.Is(err, ErrUnavailable), errors.Is(err, ErrListenerRejected), errors.Is(err, ErrDeadline),
+		errors.Is(err, ErrSessionEnded), errors.Is(err, ErrContextExpired), errors.Is(err, ErrAttemptReplay):
+		return err
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%w: %w", ErrDeadline, err)
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
 	default:
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
@@ -1084,6 +1436,13 @@ func cloneSlot(slot controlstate.BindingSlot) controlstate.BindingSlot {
 		copy.Ref = &ref
 	}
 	return copy
+}
+
+func sameExactSlot(left, right controlstate.BindingSlot) bool {
+	if left.Key != right.Key || left.Generation != right.Generation || left.Ref == nil || right.Ref == nil {
+		return false
+	}
+	return *left.Ref == *right.Ref
 }
 
 func newPipeID() (string, error) {

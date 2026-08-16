@@ -125,6 +125,44 @@ jobs:
             --env RELAYGATE_COMPOSE_RELAY_ADDR=127.0.0.1:7200 \
             relaygate-compose-test:ci
 
+          caller_container=$(docker compose ps -q relaygate-1)
+          listener_container=$(docker compose ps -q relaygate-2)
+          test -n "$caller_container"
+          test -n "$listener_container"
+          proxy_name=relaygate-compose-loopback-proxy
+          cleanup_proxy() {
+            docker rm -f "$proxy_name" >/dev/null 2>&1 || true
+          }
+          cleanup_proxy
+          trap cleanup_proxy EXIT
+          docker run --detach \
+            --name "$proxy_name" \
+            --network "container:${listener_container}" \
+            --env RELAYGATE_COMPOSE_PROXY_LISTEN_ADDR=0.0.0.0:17200 \
+            --env RELAYGATE_COMPOSE_PROXY_TARGET_ADDR=127.0.0.1:7200 \
+            relaygate-compose-test:ci \
+            -test.run '^TestComposeTCPProxy$' -test.v -test.count=1 -test.timeout=2m
+          proxy_ready=false
+          for _ in $(seq 1 30); do
+            if docker logs "$proxy_name" 2>&1 | grep -q 'compose proxy listening'; then
+              proxy_ready=true
+              break
+            fi
+            sleep 0.2
+          done
+          test "$proxy_ready" = true
+          docker run --rm \
+            --network "container:${caller_container}" \
+            --env RELAYGATE_COMPOSE_CALLER_RELAY_ADDR=127.0.0.1:7200 \
+            --env RELAYGATE_COMPOSE_LISTENER_RELAY_ADDR=relaygate-2:17200 \
+            relaygate-compose-test:ci \
+            -test.run '^TestComposeCrossGatewayRelaySmoke$' -test.v -test.count=1 -test.timeout=45s
+          proxy_exit=$(docker wait "$proxy_name")
+          docker logs "$proxy_name"
+          test "$proxy_exit" = 0
+          docker rm "$proxy_name"
+          trap - EXIT
+
           docker compose stop "$leader_service"
           survivor_admin_addrs=()
           new_leader_control_port=""

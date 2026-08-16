@@ -3,12 +3,21 @@ package authority
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/controlstate"
 	"github.com/cagojeiger/relaygate/internal/raftnode"
 )
+
+const (
+	ingressRelayAddress = "ingress.internal:7300"
+	ownerRelayAddress   = "owner.internal:7300"
+	admissionContextTTL = 30 * time.Second
+)
+
+var admissionNow = time.Unix(1_700_000_000, 123_000_000)
 
 func TestResolveOpenReturnsExactContext(t *testing.T) {
 	binding := admissionBinding("client-a", "/jobs/one", "worker")
@@ -26,6 +35,11 @@ func TestResolveOpenReturnsExactContext(t *testing.T) {
 	if first.ClusterEpoch != "epoch-1" || first.AuthorityID != ingress.AuthorityID ||
 		first.AttemptID == "" || len(first.AttemptID) > controlstate.MaxIdentityBytes ||
 		first.AttemptID == second.AttemptID || first.Auth != auth ||
+		first.IngressGatewayID != ingress.GatewayID ||
+		first.IngressGatewayInstanceID != ingress.GatewayInstanceID ||
+		first.IngressControlSessionID != ingress.ControlSessionID ||
+		first.OwnerRelayAddress != ownerRelayAddress ||
+		!first.ExpiresAt.Equal(admissionNow.Add(admissionContextTTL)) ||
 		!bindingSlotsEqual(first.Binding, binding) {
 		t.Fatalf("Open context = %#v; second attempt = %q", first, second.AttemptID)
 	}
@@ -74,6 +88,63 @@ func TestOpenContextConsumptionIsSharedByValueCopiesAndClones(t *testing.T) {
 	}
 }
 
+func TestNewForwardedOpenContextValidatesForwardingFields(t *testing.T) {
+	base := ForwardingContext{
+		IngressGatewayID:         "gateway-ingress",
+		IngressGatewayInstanceID: "instance-ingress",
+		IngressControlSessionID:  "control-ingress",
+		OwnerRelayAddress:        ownerRelayAddress,
+		ExpiresAt:                time.UnixMilli(1),
+	}
+	open, err := NewForwardedOpenContext(
+		"epoch-1",
+		"authority-1",
+		"attempt-forwarded",
+		admissionAuth("client-a"),
+		admissionBinding("client-a", "/jobs/one", "worker"),
+		base,
+	)
+	if err != nil {
+		t.Fatalf("NewForwardedOpenContext(): %v", err)
+	}
+	if open.IngressGatewayID != base.IngressGatewayID || open.IngressGatewayInstanceID != base.IngressGatewayInstanceID ||
+		open.IngressControlSessionID != base.IngressControlSessionID || open.OwnerRelayAddress != base.OwnerRelayAddress ||
+		!open.ExpiresAt.Equal(base.ExpiresAt) {
+		t.Fatalf("forwarding context = %#v", open)
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*ForwardingContext)
+	}{
+		{name: "ingress gateway", mutate: func(context *ForwardingContext) { context.IngressGatewayID = "" }},
+		{name: "ingress instance", mutate: func(context *ForwardingContext) {
+			context.IngressGatewayInstanceID = strings.Repeat("i", controlstate.MaxIdentityBytes+1)
+		}},
+		{name: "ingress session", mutate: func(context *ForwardingContext) { context.IngressControlSessionID = "" }},
+		{name: "owner relay", mutate: func(context *ForwardingContext) { context.OwnerRelayAddress = "0.0.0.0:7300" }},
+		{name: "oversized owner relay", mutate: func(context *ForwardingContext) {
+			context.OwnerRelayAddress = strings.Repeat("r", MaxRelayAddressBytes+1)
+		}},
+		{name: "expiry", mutate: func(context *ForwardingContext) { context.ExpiresAt = time.Time{} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			forwarding := base
+			test.mutate(&forwarding)
+			if _, err := NewForwardedOpenContext(
+				"epoch-1",
+				"authority-1",
+				"attempt-invalid",
+				admissionAuth("client-a"),
+				admissionBinding("client-a", "/jobs/one", "worker"),
+				forwarding,
+			); !errors.Is(err, ErrInvalidOpen) {
+				t.Fatalf("NewForwardedOpenContext() error = %v, want ErrInvalidOpen", err)
+			}
+		})
+	}
+}
+
 func TestResolveOpenFailsClosedWhenCommittedOrRevalidatedGateIsFalse(t *testing.T) {
 	binding := admissionBinding("client-a", "/jobs/one", "worker")
 	for _, test := range []struct {
@@ -111,7 +182,7 @@ func TestResolveOpenRejectsStaleIngressSession(t *testing.T) {
 	binding := admissionBinding("client-a", "/jobs/one", "worker")
 	manager, node, ingress := newAdmissionManager(t, []controlstate.BindingSlot{binding}, []controlstate.BindingSlot{binding})
 	ingressSlot := node.State().Gateways[0]
-	replacement, err := manager.OpenSession(ingressSlot)
+	replacement, err := manager.OpenSession(ingressSlot, testRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(replacement): %v", err)
 	}
@@ -165,22 +236,24 @@ func newAdmissionManager(
 		ProbeInterval:       time.Hour,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      admissionContextTTL,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
 	}
 	t.Cleanup(manager.Close)
+	manager.now = func() time.Time { return admissionNow }
 	if _, err := manager.Confirm(context.Background()); err != nil {
 		t.Fatalf("Confirm(): %v", err)
 	}
-	ingress, err := manager.OpenSession(ingressSlot)
+	ingress, err := manager.OpenSession(ingressSlot, ingressRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(ingress): %v", err)
 	}
 	if err := manager.Revalidate(ingress.Ref, nil); err != nil {
 		t.Fatalf("Revalidate(ingress): %v", err)
 	}
-	owner, err := manager.OpenSession(ownerSlot)
+	owner, err := manager.OpenSession(ownerSlot, ownerRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(owner): %v", err)
 	}

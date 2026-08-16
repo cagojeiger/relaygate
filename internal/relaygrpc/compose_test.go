@@ -3,8 +3,12 @@ package relaygrpc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,21 +28,42 @@ func TestComposePublicRelaySmoke(t *testing.T) {
 	if address == "" {
 		t.Skip("RELAYGATE_COMPOSE_RELAY_ADDR is not set")
 	}
+	runComposeRelaySmoke(t, address, address)
+}
+
+func TestComposeCrossGatewayRelaySmoke(t *testing.T) {
+	callerAddress := os.Getenv("RELAYGATE_COMPOSE_CALLER_RELAY_ADDR")
+	listenerAddress := os.Getenv("RELAYGATE_COMPOSE_LISTENER_RELAY_ADDR")
+	if callerAddress == "" || listenerAddress == "" {
+		t.Skip("RELAYGATE_COMPOSE_CALLER_RELAY_ADDR and RELAYGATE_COMPOSE_LISTENER_RELAY_ADDR are not set")
+	}
+	runComposeRelaySmoke(t, callerAddress, listenerAddress)
+}
+
+func runComposeRelaySmoke(t *testing.T, callerAddress, listenerAddress string) {
+	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	connection, err := grpc.NewClient(
-		"passthrough:///"+address,
+	listenerConnection, err := grpc.NewClient(
+		"passthrough:///"+listenerAddress,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		t.Fatalf("grpc.NewClient(): %v", err)
+		t.Fatalf("grpc.NewClient(listener): %v", err)
 	}
-	defer connection.Close()
+	defer listenerConnection.Close()
+	callerConnection, err := grpc.NewClient(
+		"passthrough:///"+callerAddress,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient(caller): %v", err)
+	}
+	defer callerConnection.Close()
 
-	client := relayv1.NewRelayClient(connection)
-	listener, _ := authenticateComposeStream(t, ctx, client)
-	caller, callerSessionID := authenticateComposeStream(t, ctx, client)
+	listener, _ := authenticateComposeStream(t, ctx, relayv1.NewRelayClient(listenerConnection))
+	caller, callerSessionID := authenticateComposeStream(t, ctx, relayv1.NewRelayClient(callerConnection))
 	runID := time.Now().UnixNano()
 	endpoint := fmt.Sprintf("/compose/relay/%d", runID)
 	targetID := "smoke"
@@ -170,9 +195,97 @@ func TestComposePublicRelaySmoke(t *testing.T) {
 	}
 }
 
+// TestComposeTCPProxy exposes a loopback-only public Relay listener inside one
+// RelayGate container network namespace. CI uses it only as a bounded sidecar;
+// the production listener remains bound to 127.0.0.1 and is never published.
+func TestComposeTCPProxy(t *testing.T) {
+	listenAddress := os.Getenv("RELAYGATE_COMPOSE_PROXY_LISTEN_ADDR")
+	targetAddress := os.Getenv("RELAYGATE_COMPOSE_PROXY_TARGET_ADDR")
+	if listenAddress == "" || targetAddress == "" {
+		t.Skip("RELAYGATE_COMPOSE_PROXY_LISTEN_ADDR and RELAYGATE_COMPOSE_PROXY_TARGET_ADDR are not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	listener, err := net.Listen("tcp", listenAddress)
+	if err != nil {
+		t.Fatalf("net.Listen(%q): %v", listenAddress, err)
+	}
+	defer listener.Close()
+	t.Logf("compose proxy listening on %s for %s", listener.Addr(), targetAddress)
+
+	downstream, err := acceptComposeProxyConnection(ctx, listener)
+	if err != nil {
+		t.Fatalf("accept proxy connection: %v", err)
+	}
+	defer downstream.Close()
+	upstream, err := net.DialTimeout("tcp", targetAddress, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy target %q: %v", targetAddress, err)
+	}
+	defer upstream.Close()
+
+	if err := relayComposeProxy(ctx, downstream, upstream); err != nil {
+		t.Fatalf("relay proxy connection: %v", err)
+	}
+}
+
+func acceptComposeProxyConnection(ctx context.Context, listener net.Listener) (net.Conn, error) {
+	type result struct {
+		connection net.Conn
+		err        error
+	}
+	accepted := make(chan result, 1)
+	go func() {
+		connection, err := listener.Accept()
+		accepted <- result{connection: connection, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = listener.Close()
+		return nil, context.Cause(ctx)
+	case result := <-accepted:
+		return result.connection, result.err
+	}
+}
+
+func relayComposeProxy(ctx context.Context, downstream, upstream net.Conn) error {
+	type copyResult struct {
+		err error
+	}
+	results := make(chan copyResult, 2)
+	var copies sync.WaitGroup
+	copies.Add(2)
+	copyDirection := func(destination, source net.Conn) {
+		defer copies.Done()
+		_, err := io.Copy(destination, source)
+		if tcp, ok := destination.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+		results <- copyResult{err: err}
+	}
+	go copyDirection(upstream, downstream)
+	go copyDirection(downstream, upstream)
+
+	var first copyResult
+	select {
+	case <-ctx.Done():
+		first.err = context.Cause(ctx)
+	case first = <-results:
+	}
+	_ = downstream.Close()
+	_ = upstream.Close()
+	copies.Wait()
+
+	if first.err != nil && !errors.Is(first.err, net.ErrClosed) && !errors.Is(first.err, io.EOF) {
+		return first.err
+	}
+	return nil
+}
+
 func authenticateComposeStream(t *testing.T, ctx context.Context, client relayv1.RelayClient) (relayv1.Relay_ConnectClient, string) {
 	t.Helper()
-	stream, err := client.Connect(ctx)
+	stream, err := client.Connect(ctx, grpc.WaitForReady(true))
 	if err != nil {
 		t.Fatalf("Connect(): %v", err)
 	}

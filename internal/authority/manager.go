@@ -24,6 +24,7 @@ type Config struct {
 	ProbeInterval       time.Duration
 	ProbeTimeout        time.Duration
 	RevalidationTimeout time.Duration
+	OpenContextTTL      time.Duration
 }
 
 type RaftNode interface {
@@ -83,11 +84,12 @@ type classificationDeadline struct {
 }
 
 type sessionEntry struct {
-	ref      SessionRef
-	state    SessionState
-	bindings map[controlstate.BindingKey]controlstate.BindingSlot
-	done     chan struct{}
-	closed   bool
+	ref          SessionRef
+	relayAddress string
+	state        SessionState
+	bindings     map[controlstate.BindingKey]controlstate.BindingSlot
+	done         chan struct{}
+	closed       bool
 }
 
 type Manager struct {
@@ -112,8 +114,8 @@ func New(config Config, node RaftNode) (*Manager, error) {
 	if config.ClusterEpoch == "" {
 		return nil, fmt.Errorf("cluster epoch is required")
 	}
-	if config.ProbeInterval <= 0 || config.ProbeTimeout <= 0 || config.RevalidationTimeout <= 0 {
-		return nil, fmt.Errorf("authority probe and revalidation timeouts must be positive")
+	if config.ProbeInterval <= 0 || config.ProbeTimeout <= 0 || config.RevalidationTimeout <= 0 || config.OpenContextTTL <= 0 {
+		return nil, fmt.Errorf("authority probe, revalidation, and Open context timeouts must be positive")
 	}
 	if node == nil {
 		return nil, fmt.Errorf("raft node is required")
@@ -230,9 +232,12 @@ func (m *Manager) Observe(ctx context.Context) (Ref, Presence, error) {
 	return ref, m.presenceLocked(), nil
 }
 
-func (m *Manager) OpenSession(slot controlstate.GatewaySlot) (Session, error) {
+func (m *Manager) OpenSession(slot controlstate.GatewaySlot, relayAddress string) (Session, error) {
 	if slot.GatewayID == "" || slot.Generation == 0 || slot.Ref == nil || slot.Ref.GatewayInstanceID == "" {
 		return Session{}, fmt.Errorf("exact live gateway slot is required")
+	}
+	if err := ValidateRelayAddress(relayAddress); err != nil {
+		return Session{}, fmt.Errorf("valid relay address is required: %w", err)
 	}
 	controlSessionID, err := newID()
 	if err != nil {
@@ -258,9 +263,10 @@ func (m *Manager) OpenSession(slot controlstate.GatewaySlot) (Session, error) {
 			GatewayInstanceID: slot.Ref.GatewayInstanceID,
 			GatewayGeneration: slot.Generation,
 		},
-		state:    SessionSyncing,
-		bindings: make(map[controlstate.BindingKey]controlstate.BindingSlot),
-		done:     make(chan struct{}),
+		relayAddress: relayAddress,
+		state:        SessionSyncing,
+		bindings:     make(map[controlstate.BindingKey]controlstate.BindingSlot),
+		done:         make(chan struct{}),
 	}
 	m.sessions[slot.GatewayID] = entry
 	m.deadlines[slot.GatewayID] = classificationDeadline{
@@ -354,7 +360,20 @@ func (m *Manager) ResolveOpen(ingress SessionRef, auth AuthContext, endpoint, ta
 	if err != nil {
 		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, err)
 	}
-	result, err := NewOpenContext(m.current.ClusterEpoch, m.current.AuthorityID, attemptID, auth, committed)
+	result, err := NewForwardedOpenContext(
+		m.current.ClusterEpoch,
+		m.current.AuthorityID,
+		attemptID,
+		auth,
+		committed,
+		ForwardingContext{
+			IngressGatewayID:         ingressEntry.ref.GatewayID,
+			IngressGatewayInstanceID: ingressEntry.ref.GatewayInstanceID,
+			IngressControlSessionID:  ingressEntry.ref.ControlSessionID,
+			OwnerRelayAddress:        owner.relayAddress,
+			ExpiresAt:                m.now().Add(m.config.OpenContextTTL),
+		},
+	)
 	if err != nil {
 		return OpenContext{}, fmt.Errorf("%w: construct open context: %w", ErrOpenUnavailable, err)
 	}

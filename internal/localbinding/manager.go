@@ -34,6 +34,7 @@ type Committer interface {
 
 type SessionValidator interface {
 	Require(clientsession.Ref) error
+	Allowed(clientID, apiKeyID string) bool
 }
 
 type State string
@@ -276,6 +277,19 @@ func (m *Manager) GatewayID() string {
 // current LiveB entry. The comparison and both session validations are ordered
 // with unbind and credential retirement by m.mu.
 func (m *Manager) Reserve(open authority.OpenContext, caller clientsession.Ref) (Reservation, error) {
+	return m.reserve(open, caller, false)
+}
+
+// ReserveForwarded reserves an exact owner-local binding for a caller session
+// that lives on another Gateway. The opening manager owns serialized-attempt
+// replay protection; this layer rechecks the current credential and exact
+// local listener atomically with binding retirement, but does not require the
+// remote caller to exist in this process's ClientSession table.
+func (m *Manager) ReserveForwarded(open authority.OpenContext, caller clientsession.Ref) (Reservation, error) {
+	return m.reserve(open, caller, true)
+}
+
+func (m *Manager) reserve(open authority.OpenContext, caller clientsession.Ref, forwarded bool) (Reservation, error) {
 	if open.ClusterEpoch == "" || len(open.ClusterEpoch) > controlstate.MaxIdentityBytes ||
 		open.AuthorityID == "" || len(open.AuthorityID) > controlstate.MaxIdentityBytes ||
 		open.AttemptID == "" || len(open.AttemptID) > controlstate.MaxIdentityBytes ||
@@ -308,7 +322,11 @@ func (m *Manager) Reserve(open authority.OpenContext, caller clientsession.Ref) 
 	if e == nil || e.state != StateLive || !sameExactSlot(open.Binding, e.slot) || e.endpoint == nil {
 		return Reservation{}, ErrNotFound
 	}
-	if err := m.sessions.Require(caller); err != nil {
+	if forwarded {
+		if !m.sessions.Allowed(caller.ClientID, caller.APIKeyID) {
+			return Reservation{}, fmt.Errorf("%w: caller credential is retired", ErrSessionEnded)
+		}
+	} else if err := m.sessions.Require(caller); err != nil {
 		return Reservation{}, fmt.Errorf("%w: caller: %w", ErrSessionEnded, err)
 	}
 	if err := m.sessions.Require(e.session); err != nil {
@@ -324,7 +342,7 @@ func (m *Manager) Reserve(open authority.OpenContext, caller clientsession.Ref) 
 	if e.session == caller {
 		return Reservation{}, fmt.Errorf("%w: caller and listener sessions must differ", ErrInvalid)
 	}
-	if !open.TryConsume() {
+	if !forwarded && !open.TryConsume() {
 		return Reservation{}, ErrAttemptUsed
 	}
 

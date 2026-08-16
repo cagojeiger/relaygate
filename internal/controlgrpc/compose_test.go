@@ -67,6 +67,11 @@ func TestComposeControlSmoke(t *testing.T) {
 	openContext := admission.GetContext()
 	if openContext.GetClusterEpoch() != epoch || openContext.GetAuthorityId() != session.GetAuthorityId() ||
 		openContext.GetAttemptId() == "" || openContext.GetBinding().GetGeneration() == 0 ||
+		openContext.GetIngressGatewayId() != session.GetGatewayId() ||
+		openContext.GetIngressGatewayInstanceId() != session.GetGatewayInstanceId() ||
+		openContext.GetIngressControlSessionId() != session.GetControlSessionId() ||
+		openContext.GetOwnerRelayAddress() != testRelayAddress(runID) ||
+		openContext.GetExpiresAtUnixMillis() <= time.Now().UnixMilli() ||
 		openContext.GetBinding().GetKey().GetClientId() != runID ||
 		openContext.GetBinding().GetKey().GetEndpointPattern() != "/health" ||
 		openContext.GetBinding().GetKey().GetTargetId() != "self" ||

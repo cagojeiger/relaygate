@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/cagojeiger/relaygate/internal/authority"
 	"github.com/cagojeiger/relaygate/internal/clientsession"
@@ -86,6 +87,11 @@ func openContextFromProto(
 		len(wire.GetAttemptId()) > controlstate.MaxIdentityBytes {
 		return authority.OpenContext{}, fmt.Errorf("%w: control returned a mismatched Open identity", ErrOpenUnavailable)
 	}
+	if wire.GetIngressGatewayId() != control.GatewayID ||
+		wire.GetIngressGatewayInstanceId() != control.GatewayInstanceID ||
+		wire.GetIngressControlSessionId() != control.ControlSessionID {
+		return authority.OpenContext{}, fmt.Errorf("%w: control returned a mismatched ingress identity", ErrOpenUnavailable)
+	}
 	wireAuth := wire.GetAuth()
 	if wireAuth == nil || wireAuth.GetClientSessionId() != auth.ClientSessionID ||
 		wireAuth.GetClientId() != auth.ClientID || wireAuth.GetApiKeyId() != auth.APIKeyID ||
@@ -108,7 +114,7 @@ func openContextFromProto(
 	if err := ref.Validate(); err != nil {
 		return authority.OpenContext{}, fmt.Errorf("%w: control returned an invalid full binding ref: %w", ErrOpenUnavailable, err)
 	}
-	openContext, err := authority.NewOpenContext(
+	openContext, err := authority.NewForwardedOpenContext(
 		wire.GetClusterEpoch(),
 		wire.GetAuthorityId(),
 		wire.GetAttemptId(),
@@ -117,6 +123,13 @@ func openContextFromProto(
 			Key:        returnedKey,
 			Generation: wireBinding.GetGeneration(),
 			Ref:        &ref,
+		},
+		authority.ForwardingContext{
+			IngressGatewayID:         wire.GetIngressGatewayId(),
+			IngressGatewayInstanceID: wire.GetIngressGatewayInstanceId(),
+			IngressControlSessionID:  wire.GetIngressControlSessionId(),
+			OwnerRelayAddress:        wire.GetOwnerRelayAddress(),
+			ExpiresAt:                time.UnixMilli(wire.GetExpiresAtUnixMillis()),
 		},
 	)
 	if err != nil {

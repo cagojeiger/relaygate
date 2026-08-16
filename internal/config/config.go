@@ -36,13 +36,14 @@ func (d Duration) Value() time.Duration {
 }
 
 type Config struct {
-	Raft    RaftConfig                         `yaml:"raft"`
-	Gateway GatewayConfig                      `yaml:"gateway"`
-	Relay   RelayConfig                        `yaml:"relay"`
-	Control ControlConfig                      `yaml:"control"`
-	Admin   AdminConfig                        `yaml:"admin"`
-	Logging LoggingConfig                      `yaml:"logging"`
-	Clients map[string]clientauth.ClientConfig `yaml:"clients"`
+	Raft          RaftConfig                         `yaml:"raft"`
+	Gateway       GatewayConfig                      `yaml:"gateway"`
+	Relay         RelayConfig                        `yaml:"relay"`
+	InternalRelay InternalRelayConfig                `yaml:"internal_relay"`
+	Control       ControlConfig                      `yaml:"control"`
+	Admin         AdminConfig                        `yaml:"admin"`
+	Logging       LoggingConfig                      `yaml:"logging"`
+	Clients       map[string]clientauth.ClientConfig `yaml:"clients"`
 }
 
 type RaftConfig struct {
@@ -85,7 +86,17 @@ type RelayConfig struct {
 	MaxPipes              uint32   `yaml:"max_pipes"`
 }
 
-const maxRelayPipes uint32 = 100_000
+type InternalRelayConfig struct {
+	BindAddress      string   `yaml:"bind_address"`
+	AdvertiseAddress string   `yaml:"advertise_address"`
+	ConnectTimeout   Duration `yaml:"connect_timeout"`
+	ShutdownTimeout  Duration `yaml:"shutdown_timeout"`
+}
+
+const (
+	maxRelayPipes                uint32 = 100_000
+	maxInternalRelayAddressBytes int    = 1024
+)
 
 type ControlConfig struct {
 	ClusterEpoch                   string   `yaml:"cluster_epoch"`
@@ -138,6 +149,12 @@ func Defaults() Config {
 			MaxClientSessions:     10_000,
 			MaxListenerBindings:   controlstate.MaxListenerBindingsPerGateway,
 			MaxPipes:              10_000,
+		},
+		InternalRelay: InternalRelayConfig{
+			BindAddress:      "127.0.0.1:7300",
+			AdvertiseAddress: "127.0.0.1:7300",
+			ConnectTimeout:   Duration(2 * time.Second),
+			ShutdownTimeout:  Duration(5 * time.Second),
 		},
 		Control: ControlConfig{
 			BindAddress:                    "127.0.0.1:7100",
@@ -229,6 +246,12 @@ func applyEnvironment(config *Config, lookupEnv func(string) (string, bool)) err
 			return fmt.Errorf("RELAYGATE_GATEWAY_CONTROL_ENDPOINTS: %w", err)
 		}
 		config.Gateway.ControlEndpoints = endpoints
+	}
+	if value, ok := lookupEnv("RELAYGATE_INTERNAL_RELAY_BIND_ADDRESS"); ok {
+		config.InternalRelay.BindAddress = value
+	}
+	if value, ok := lookupEnv("RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS"); ok {
+		config.InternalRelay.AdvertiseAddress = value
 	}
 	if value, ok := lookupEnv("RELAYGATE_ADMIN_BIND_ADDRESS"); ok {
 		config.Admin.BindAddress = value
@@ -363,6 +386,18 @@ func (c Config) Validate() error {
 	if c.Relay.MaxPipes == 0 || c.Relay.MaxPipes > maxRelayPipes {
 		return fmt.Errorf("relay.max_pipes must be between 1 and %d", maxRelayPipes)
 	}
+	if err := validateListenAddress("internal_relay.bind_address", c.InternalRelay.BindAddress); err != nil {
+		return err
+	}
+	if len(c.InternalRelay.AdvertiseAddress) > maxInternalRelayAddressBytes {
+		return fmt.Errorf("internal_relay.advertise_address must be at most %d bytes", maxInternalRelayAddressBytes)
+	}
+	if err := validateDialAddress("internal_relay.advertise_address", c.InternalRelay.AdvertiseAddress); err != nil {
+		return err
+	}
+	if c.InternalRelay.ConnectTimeout.Value() <= 0 || c.InternalRelay.ShutdownTimeout.Value() <= 0 {
+		return fmt.Errorf("internal_relay timeouts must be positive")
+	}
 	if c.Control.ClusterEpoch == "" || len(c.Control.ClusterEpoch) > controlstate.MaxIdentityBytes {
 		return fmt.Errorf("control.cluster_epoch must be 1..%d bytes", controlstate.MaxIdentityBytes)
 	}
@@ -410,8 +445,12 @@ func validateListenAddress(name, address string) error {
 	if address == "" {
 		return fmt.Errorf("%s is required", name)
 	}
-	if _, _, err := net.SplitHostPort(address); err != nil {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
 		return fmt.Errorf("%s: %w", name, err)
+	}
+	if port == "" {
+		return fmt.Errorf("%s must include a port", name)
 	}
 	return nil
 }
@@ -436,12 +475,15 @@ func validateAdvertiseAddress(address string) error {
 }
 
 func validateDialAddress(name, address string) error {
-	host, _, err := net.SplitHostPort(address)
+	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	if host == "" {
 		return fmt.Errorf("%s must include a host", name)
+	}
+	if port == "" {
+		return fmt.Errorf("%s must include a port", name)
 	}
 	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
 		return fmt.Errorf("%s cannot use an unspecified host", name)

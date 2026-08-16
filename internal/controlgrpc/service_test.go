@@ -22,7 +22,14 @@ import (
 	"github.com/cagojeiger/relaygate/internal/raftnode"
 )
 
-const testEpoch = "epoch-1"
+const (
+	testEpoch          = "epoch-1"
+	testOpenContextTTL = 30 * time.Second
+)
+
+func testRelayAddress(gatewayID string) string {
+	return gatewayID + ".relay.internal:7300"
+}
 
 func TestConnectRequiresSnapshotThenAppliesIdempotentMutations(t *testing.T) {
 	harness := newHarness(t)
@@ -113,6 +120,7 @@ func TestAdmitOpenReturnsExactContextWithoutDisruptingMutationStream(t *testing.
 	}
 	harness.node.resetStateCalls()
 
+	beforeAdmission := time.Now()
 	response, err := harness.client.AdmitOpen(harness.ctx, &controlv1.AdmitOpenRequest{
 		Session:  session,
 		Auth:     auth,
@@ -122,6 +130,7 @@ func TestAdmitOpenReturnsExactContextWithoutDisruptingMutationStream(t *testing.
 	if err != nil {
 		t.Fatalf("AdmitOpen(): %v", err)
 	}
+	afterAdmission := time.Now()
 	if calls := harness.node.stateCallCount(); calls != 0 {
 		t.Fatalf("AdmitOpen() full State calls = %d, want 0", calls)
 	}
@@ -134,7 +143,13 @@ func TestAdmitOpenReturnsExactContextWithoutDisruptingMutationStream(t *testing.
 		openContext.GetBinding().GetKey().GetTargetId() != "worker" ||
 		openContext.GetBinding().GetRef().GetGatewayId() != "gateway-a" ||
 		openContext.GetBinding().GetRef().GetGatewayInstanceId() != "instance-a" ||
-		openContext.GetBinding().GetRef().GetListenerBindingId() != "listener-a" {
+		openContext.GetBinding().GetRef().GetListenerBindingId() != "listener-a" ||
+		openContext.GetIngressGatewayId() != session.GetGatewayId() ||
+		openContext.GetIngressGatewayInstanceId() != session.GetGatewayInstanceId() ||
+		openContext.GetIngressControlSessionId() != session.GetControlSessionId() ||
+		openContext.GetOwnerRelayAddress() != testRelayAddress("gateway-a") ||
+		openContext.GetExpiresAtUnixMillis() < beforeAdmission.Add(testOpenContextTTL).UnixMilli() ||
+		openContext.GetExpiresAtUnixMillis() > afterAdmission.Add(testOpenContextTTL).UnixMilli() {
 		t.Fatalf("Open context = %#v", openContext)
 	}
 
@@ -157,6 +172,39 @@ func TestAdmitOpenReturnsExactContextWithoutDisruptingMutationStream(t *testing.
 	if result := streamResponse.GetMutationResult(); result.GetCode() != controlv1.MutationCode_MUTATION_CODE_APPLIED ||
 		result.GetSlot().GetKey().GetEndpointPattern() != "/jobs/two" {
 		t.Fatalf("next mutation result = %#v", result)
+	}
+}
+
+func TestConnectRejectsInvalidRelayAddressBeforeGatewayRegistration(t *testing.T) {
+	for _, relayAddress := range []string{
+		"",
+		"0.0.0.0:7300",
+		"relay.internal:",
+		strings.Repeat("r", authority.MaxRelayAddressBytes+1),
+	} {
+		t.Run(relayAddress, func(t *testing.T) {
+			harness := newHarness(t)
+			stream, err := harness.client.Connect(harness.ctx)
+			if err != nil {
+				t.Fatalf("Connect(): %v", err)
+			}
+			if err := stream.Send(&controlv1.ControlRequest{Message: &controlv1.ControlRequest_Hello{
+				Hello: &controlv1.Hello{
+					ClusterEpoch:      testEpoch,
+					GatewayId:         "gateway-invalid",
+					GatewayInstanceId: "instance-invalid",
+					RelayAddress:      relayAddress,
+				},
+			}}); err != nil {
+				t.Fatalf("Send(hello): %v", err)
+			}
+			if _, err := stream.Recv(); status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("Recv() error = %v, want InvalidArgument", err)
+			}
+			if slot := harness.node.LookupGateway("gateway-invalid"); slot.Generation != 0 || slot.Ref != nil {
+				t.Fatalf("invalid Hello durably registered gateway: %#v", slot)
+			}
+		})
 	}
 }
 
@@ -563,7 +611,7 @@ func TestControlProtocolRejectsOutOfOrderMessages(t *testing.T) {
 			name: "second hello",
 			request: func(*controlv1.SessionRef) *controlv1.ControlRequest {
 				return &controlv1.ControlRequest{Message: &controlv1.ControlRequest_Hello{Hello: &controlv1.Hello{
-					ClusterEpoch: testEpoch, GatewayId: "gateway-a", GatewayInstanceId: "instance-a",
+					ClusterEpoch: testEpoch, GatewayId: "gateway-a", GatewayInstanceId: "instance-a", RelayAddress: testRelayAddress("gateway-a"),
 				}}}
 			},
 		},
@@ -610,6 +658,7 @@ func newHarness(t *testing.T) *harness {
 		ProbeInterval:       time.Hour,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      testOpenContextTTL,
 	}, node)
 	if err != nil {
 		t.Fatalf("authority.New(): %v", err)
@@ -678,7 +727,12 @@ func (h *harness) openSession(t *testing.T, gatewayID, instanceID string) (grpc.
 		t.Fatalf("Connect(): %v", err)
 	}
 	if err := stream.Send(&controlv1.ControlRequest{Message: &controlv1.ControlRequest_Hello{
-		Hello: &controlv1.Hello{ClusterEpoch: testEpoch, GatewayId: gatewayID, GatewayInstanceId: instanceID},
+		Hello: &controlv1.Hello{
+			ClusterEpoch:      testEpoch,
+			GatewayId:         gatewayID,
+			GatewayInstanceId: instanceID,
+			RelayAddress:      testRelayAddress(gatewayID),
+		},
 	}}); err != nil {
 		t.Fatalf("Send(hello): %v", err)
 	}

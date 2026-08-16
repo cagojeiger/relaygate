@@ -30,6 +30,12 @@ relay:
   max_listener_bindings: 512
   max_pipes: 10000
 
+internal_relay:
+  bind_address: 127.0.0.1:7300
+  advertise_address: 127.0.0.1:7300
+  connect_timeout: 2s
+  shutdown_timeout: 5s
+
 control:
   cluster_epoch: relaygate-v1
   bind_address: 127.0.0.1:7100

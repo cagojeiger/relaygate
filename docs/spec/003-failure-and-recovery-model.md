@@ -6,8 +6,9 @@
 
 이 문서는 [SPEC 001](001-system-model.md)의 identity·admission·Pipe 계약과
 [SPEC 002](002-client-configuration-and-presence.md)의 config·관찰 계약을 실패 상황에서도 유지하도록
-구체화한다. 아래에서 **불변식**은 구현이 반드시 만족해야 하는 동작이고, timeout 값, wire code,
-fencing을 구현하는 grant·lease·round-trip 방식과 retry 간격은 **구현 선택**이다.
+구체화한다. 아래에서 **불변식**은 구현이 반드시 만족해야 하는 동작이다. Failure-detector/control-retry
+timeout 값, wire code와 fencing을 구현하는 grant·lease·round-trip 방식은 **구현 선택**이다. 반면 remote
+Open의 absolute expiry, `relay.open_timeout` validity와 아래 clock-skew bound는 correctness 조건이다.
 
 ## Failure model과 범위 밖
 
@@ -42,6 +43,7 @@ flowchart LR
 | Storage | Durable Raft state를 보존한 restart와 탐지 가능한 voter-store unavailable·loss·corruption | 검증 가능한 state로만 safety를 복구한다. 잃은 voter identity는 재사용하지 않고, quorum state를 증명하지 못하면 same epoch를 강제 복구하지 않는다. |
 | Config | Process별 reload 성공·실패·지연과 revision skew | 각 process는 validated snapshot만 atomic하게 사용한다. Cluster-wide 동시 적용을 가정하지 않는다. |
 | Operator | 명시적인 offline reset/bootstrap | 모든 old authority/admission path를 외부적으로 fence한 뒤에만 새 `ClusterEpoch`를 활성화한다. Hot epoch 전환은 없다. |
+| Clock | Authority와 Gateway wall clock의 유한 skew | `ClockSkewBound < relay.open_timeout`을 증명할 수 있을 때만 remote Open을 활성화한다. Owner는 `now < expires_at`만 accept한다. |
 
 HTTP/RPC caller cancellation과 caller-owned deadline은 authority 또는 quorum 상실의 증거가 아니다. 해당
 호출만 unavailable로 끝내며 current authority와 다른 control session은 유지한다. Global fence는 definitive
@@ -49,7 +51,8 @@ role/epoch 상실 또는 manager-owned authority probe의 failure observation이
 
 Crash와 partition은 관찰만으로 구분할 수 없다. Timeout은 death proof가 아니라 suspicion이다. Suspect
 판정은 route를 ineligible로 만들어 false positive 때 availability를 줄일 수 있지만, 어떤 admission gate도
-참으로 만들거나 stale state를 current로 승격할 수 없다. Timeout 값은 correctness 조건이 아니다. 공통
+참으로 만들거나 stale state를 current로 승격할 수 없다. Failure-detector timeout 값은 correctness 조건이
+아니다. 공통
 가정은 crash-recovery가 아니라 **crash-stop 뒤 새 runtime identity로 재참여**한다는 것이다. Voter만
 [ADR 004](../adr/004-raft-safety-state-durability.md)의 durable safety state를 복구할 수 있다.
 
@@ -64,6 +67,7 @@ bootstrap은 모든 old authority/control/admission path가 외부 traffic·netw
 - RelayGate가 수행하는 application retry, deduplication, workflow와 offline storage
 - 자동 `ClusterEpoch` 변경, 두 epoch의 hot merge, region backup/restore 정책
 - REST presence를 history, synchronization log, route authority 또는 복구 증명으로 사용하는 것
+- Peer authentication/mTLS가 없는 internal owner listener를 production/shared/untrusted network에 배포하는 것
 
 ## State machine overview
 
@@ -76,6 +80,7 @@ non-normative overview이며 충돌할 때는 SPEC 004가 우선한다.
 SystemState = Authority × Quorum × ControlSession × Presence × AuthSnapshot
             × ClientSession × LocalBinding × FlowControl
             × OwnerPipe × IngressPipe × ListenerPipe × CallerPipe
+            × ForwardedAttemptFence × RemoteHop
             × OpenAllAccumulator
 ```
 
@@ -154,10 +159,10 @@ flowchart TB
 flowchart TB
     subgraph Owner["Owner-local Pipe"]
         direction LR
-        O0["Opening"] -->|"O reserves"| O1["Admitted"]
-        O1 -->|"Listener accepts"| O2["Accepted"]
-        O0 -->|"reject · cancel · deadline · failure · epoch end"| O3["Terminal"]
-        O1 -->|"reject · cancel · deadline · failure · epoch end"| O3
+        O0["Opening"] -->|"O reserve + replay entry"| O1["Admitted"]
+        O1 -->|"Listener accepts + PipeId"| O2["Accepted"]
+        O0 -->|"reject · cancel · deadline · failure"| O3["Terminal"]
+        O1 -->|"reject · cancel · deadline · failure"| O3
         O2 -->|"cancel · stream/session/hop · epoch end"| O3
     end
 
@@ -184,17 +189,32 @@ flowchart TB
         K1 -->|"cancel · local · epoch terminal"| K2
     end
 
+    subgraph Remote["Remote hop / replay fence"]
+        direction LR
+        H0["Dialing"] -->|"ForwardOpen"| H1["Opening"]
+        H1 -->|"O reserve + replay entry"| H2["Admitted"]
+        H2 -->|"AcceptedO + PipeId"| H3["Accepted"]
+        H3 -->|"public ACK written · activate"| H4["Open"]
+        H0 -->|"loss · reject · expiry"| H5["Terminal"]
+        H1 -->|"loss · O reject · expiry"| H5
+        H2 -->|"Listener reject · attempt deadline · loss"| H5
+        H3 -->|"loss · terminal"| H5
+        H4 -->|"loss · terminal"| H5
+    end
+
     O0 ~~~ I0
     I0 ~~~ L0
     L0 ~~~ K0
+    K0 ~~~ H0
 
     classDef terminal fill:#fef2f2,stroke:#dc2626,stroke-width:2px
-    class O3,I2,L3,K2 terminal
+    class O3,I2,L3,K2,H5 terminal
 ```
 
 `Quorum ∈ {Unavailable, Available}`이다. `Presence ∈ {NoAuthority, Rebuilding, Complete}`이며 authority
 상실을 local하게 관찰하면 `NoAuthority`, 새 authority는 `Rebuilding`에서 시작한다. `Syncing`, `Validating`,
-`RetiringS/B`에서는 각각 `V`, 새 snapshot, `A/O`가 아직 참이 아니다. `Fenced`, `EndedC`, `TerminalS`,
+`RetiringS/B`에서는 각각 `V`, 새 snapshot, `A/O`가 아직 참이 아니다. Context는 expiry 뒤 새 O에 쓸 수 없고
+replay entry는 expiry에 GC할 수 있다. `Fenced`, `EndedC`, `TerminalS`,
 `RetiredB`, `TerminalF/O/I/L/C`는 해당 identity에서 absorbing state다. 재연결·재등록·rebind·retry는 이전
 machine을 되살리지 않고 새 identity의 machine을 만든다. 하나의 event가 여러 machine을 전이시킬 수
 있지만 각 state의 owner와 수명은 섞지 않는다.
@@ -226,33 +246,45 @@ sequenceDiagram
     C->>I: Open under implicit ClientId
     I->>A: request an Opening attempt
     A->>A: evaluate L · Q · C · V<br/>with active A
-    A-->>I: fenced one-attempt admission context
-    I->>O: Opening attempt + exact binding ref
-    O->>O: O = final live-ref compare-and-reserve
-    O->>Ls: offer exact Opening attempt
+    A-->>I: exact forwarded context<br/>owner address + absolute expires_at
+    I->>O: dedicated bidi stream<br/>ForwardOpen(context)
+    O->>O: O = exact reserve + replay entry
+    O->>Ls: provisional offer after O
     Ls-->>O: provisional accept
-    O->>O: record owner-local Accepted<br/>Open linearization point
+    O->>O: record AcceptedO + mint PipeId<br/>Open linearization point
     O-->>Ls: established + PipeId
     O-->>I: accepted + PipeId
     I->>I: record ingress-local OpenI
     Note over O,C: AcceptedUnconfirmed until caller observes ACK
-    I-->>C: ACK
+    I-->>C: PipeOpened(PipeId)
+    I->>O: activate after public write succeeds
 ```
 
-현재 Go Open slice는 ingress와 owner가 같은 Gateway process인 경우만 구현한다. 따라서 `I → O`는 process
-내부 call이며 remote owner forwarding, 그 hop의 loss와 serialized capability replay는 아직 구현 evidence가
-없다. 조건이 맞지 않으면 stable failure이고 canonical admission/linearization 의미는 바뀌지 않는다.
+이 sequence는 same-Gateway와 remote owner에 같은 admission/LP 의미를 준다. Current evidence에는 dedicated
+hop/context/replay unit·integration test와 isolated 3-node Compose H12 pass가 있다. Arbitrary fault matrix,
+peer auth/mTLS와 production trust는 아직 증명하지 않는다. 범위는 [TEST 001](../test/001-core-correctness-test-plan.md)의
+inventory로 판정한다.
 
-위 `OpenContext`는 `ClusterEpoch`, 발급 provenance인 `AuthorityId`, exact `AttemptId`, caller `AuthContext`와
-`BindingGeneration/ListenerBindingRef`에 묶인 single-use 결정이다. Authority는 해당 attempt의 quorum
-confirmation이 끝난 뒤에만 이를 발급한다. Fully asynchronous network에서 owner는 침묵만으로 remote
-authority 상실을 알 수 없으므로, **같은 epoch 안의** authority 변경은 이미 시작한 attempt를 소급 취소하지
-않는다. `AuthorityId`는 발급 provenance이며 owner가 current AuthorityId equality를 다시 요구하지 않는다.
-Owner는 authenticated context, current `ClusterEpoch`, single-use attempt, exact binding과 bound
-`ClientId/ApiKeyId`의 current local 허용·retirement 여부를 검사한다. Equality-only `auth_revision`이 달라졌다는
-이유만으로 유지된 immutable key의 attempt를 거부하지 않는다. Context는 consume, local
-cancel·credential/session/binding retirement·hop 종료 또는 epoch end를 관찰하면 끝난다. 구현이 quorum
-round-trip 대신 lease를 선택하면 필요한 clock bound를 별도로 명시해야 한다.
+`ForwardedOpenContext`는 `ClusterEpoch/AuthorityId/AttemptId`, exact ingress
+`GatewayId/GatewayInstanceId/ControlSessionId`, caller `AuthContext`, exact
+`BindingKey/BindingGeneration/ListenerBindingRef`, exact owner advertise address와 absolute `expires_at`을 묶는다.
+Authority는 quorum confirmation 뒤 `expires_at = issue_wall_clock + relay.open_timeout`으로 발급한다. Ingress는
+response의 ingress tuple이 자기 exact live control session과 일치함을 forwarding 전에 검사한다. Owner는 tuple의
+structural validity, current epoch, exact local binding/auth retirement와 `now < expires_at`을 검사한다.
+`ClockSkewBound < relay.open_timeout`을 증명하지 못하면 remote correctness를
+주장할 수 없다. Same-epoch authority 변경만으로 issued attempt를 소급 취소하지 않으며 `AuthorityId`는
+발급 provenance다. Equality-only `auth_revision` 차이만으로 유지된 immutable key를 취소하지 않는다.
+
+Owner는 exact O guard를 확인하고 local attempt reservation과 successful `AttemptId` replay entry insert를
+원자화한 뒤에만 Listener에게 offer한다. Entry는 Listener reject나 pre-LP terminal 뒤에도 같은 Owner process가
+살아 있는 동안 `expires_at`까지 남는다. Owner crash는 cache를 잃고 old instance/context를 fence한다. Reserved
+duplicate와 full cache는 fail closed하고 이전 response/PipeId를 replay하지 않는다. O guard
+실패는 consume하지 않아 unexpired 동안 재평가할 수 있다. O reservation 뒤 hop retry/redial/reconnect,
+same-Pipe resume/attach와 payload replay는 없다.
+
+Peer auth/mTLS 전에는 이 binding이 cryptographic peer proof가 아니다. Owner는 actual stream peer/current ingress
+session이나 자기 advertise address의 authority-currentness를 검증하지 않으며 trusted honest peer를 가정한다.
+Wire tamper·peer impersonation test는 production blocker이지 이 plaintext slice의 통과 주장이 아니다.
 
 ```text
 AdmitOpen = A ∧ L ∧ Q ∧ C ∧ V ∧ O
@@ -265,24 +297,21 @@ AdmitOpen = A ∧ L ∧ Q ∧ C ∧ V ∧ O
 | `Q` | 그 authority가 새 admission을 결정할 quorum을 확인함 | Authority admission decision |
 | `C` | 같은 `ClientId`와 current epoch에 exact generation/ref의 live committed `BindingSlot`이 있음 | Authority admission decision |
 | `V` | current `ControlSessionRef`로 재검증한 full snapshot에 exact ref가 있음 | Authority admission decision |
-| `O` | Context epoch가 current이고 bound credential/session이 local하게 허용되며, 같은 exact local ref와 single-use attempt를 capacity 안에서 reserve할 수 있다는 side-effect-free `OwnerCanReserve` predicate | Owning Gateway |
+| `O` | Structurally bound provenance, current epoch, expiry, exact local binding/auth와 capacity가 유효해 local reservation+replay entry를 원자적으로 만들 수 있음 | Owning Gateway의 pre-offer compare-and-reserve |
 
 `ClientId` namespace는 `A`와 `C`에 포함되며 별도 선택/fallback gate가 아니다. `OpenAll`은 target마다 이
 식을 독립적으로 평가하며 묶음 전체의 atomic success를 만들지 않는다.
 
 | Boolean vector `(A L Q C V O)` | System verdict |
 | --- | --- |
-| `1 1 1 1 1 1` | Owner가 predicate를 원자적으로 재확인해 attempt를 `Admitted`로 reserve하고 Listener에게 offer한다. 아직 Pipe success가 아니다. |
-| 나머지 63개 조합 | `Not admitted`; Listener에게 offer하지 않고 새 Pipe도 생기지 않는다. |
+| `1 1 1 1 1 1` | Owner가 exact attempt를 reserve하고 replay entry를 insert한 뒤 Listener에게 offer한다. 아직 Pipe success가 아니다. |
+| 나머지 63개 조합 | `Not admitted`; Listener offer와 새 Pipe/PipeId가 없다. Protocol invariant상 불가능한 vector는 proof를 남긴다. |
 
 이 식은 여섯 값을 한 process에서 동시에 CAS하라는 뜻이 아니다. `L·Q·C·V`는 single-use authority
-admission에서 평가하고 `O`는 side-effect-free predicate다. 앞선 gate가 하나라도 false면 short-circuit하며
-owner reservation은 일어나지 않는다. 모두 true일 때만 owning Gateway가 `O`를 원자적으로 재확인하며
-reservation을 순서화한다. 이미 발급한 context는 한 attempt에서만 consume할 수 있고 observed
-cancel·credential/session/binding retirement·terminal 또는 epoch end 뒤에는 사용할 수 없다. 여섯 gate는
-Listener offer만 허용하며 Pipe success가 아니다. Owner가 provisional Listener accept를 받아 local
-`Accepted`를 기록하는 순간 Open이 선형화되고, 그 뒤에만 Listener SDK와 caller path에 established를
-확인한다. Accept 뒤 ACK가
+admission에서 평가하고 O는 owning Gateway가 pre-offer reservation/replay insertion으로 순서화한다. O가
+성공한 attempt만 provisional offer로 간다. Listener accept를 Owner가 `AcceptedO`로 기록하고 `PipeId`를 만드는
+순간 Open이 선형화된다. Boolean vector 중 protocol invariant상 도달 불가능한 조합은 test가 아니라 proof를
+남긴다. Accept 뒤 ACK가
 유실되고 owner가 살아 있으면 internal truth는 `AcceptedUnconfirmed`, caller가 관찰하는 결과는 `Unknown`
 또는 transport failure다.
 
@@ -295,8 +324,8 @@ Listener offer만 허용하며 Pipe success가 아니다. Owner가 provisional L
 | Binding install/replace | Raft에서 expected generation/value CAS가 다음-generation live slot으로 apply되는 순간 | 같은 target generation/value replay만 idempotent하며 delayed old CAS는 tombstone 뒤에도 mismatch다. |
 | Explicit unbind/session retirement | Owner가 exact local binding을 `LiveB → RetiringB`로 만드는 순간 | 즉시 ineligible이며 conditional next-generation tombstone apply와 cleanup은 나중이어도 안전하다. |
 | Authority admission | Current authority가 `A·L·Q·C·V`를 만족한 single-use context를 확정하는 순간 | 아직 Pipe success가 아니다. Same-epoch quorum loss 뒤 새 context는 발급하지 않으며 consumed·cancelled context와 old-epoch context는 재사용할 수 없다. |
-| Owner attempt admission | Owner가 `O`를 만족해 exact binding에 attempt를 reserve하는 순간 | Unbind는 이 admitted attempt를 소급 취소하지 않지만 cancel/session terminal은 종료시킬 수 있다. |
-| Open | Reserved attempt의 provisional Listener accept를 Owner가 local `Accepted`로 기록하는 순간 | ACK 전에도 owner-local accepted다. Listener SDK는 owner confirmation 뒤에만 Pipe handle을 노출한다. Crash/ACK loss는 local terminal을 만들 수 있다. |
+| Owner attempt admission (`O`) | Owner가 exact binding에 local attempt reservation과 successful `AttemptId` replay entry insert를 원자적으로 적용하는 순간 | 이때부터 unbind는 attempt를 소급 취소하지 않는다. Entry는 Listener 결과와 무관하게 expiry까지 남지만 아직 Pipe/PipeId는 없다. |
+| Open | Reserved attempt의 provisional Listener accept를 Owner가 `AcceptedO`로 기록하며 `PipeId`를 만드는 순간 | ACK 전에도 owner-local accepted다. Listener SDK는 owner confirmation 뒤에만 Pipe handle을 노출한다. Crash/response loss는 caller `Unknown`일 수 있다. |
 | Pipe terminal | 각 participant/hop이 자기 첫 local terminal 전이를 확정하는 순간 | 이후 local terminal event는 no-op이고 전파는 best-effort·idempotent다. Peer는 signal 수신 또는 독립적인 hop/session failure 감지 뒤에만 terminal이다. |
 | Presence/config observation | Current authority가 해당 completeness snapshot을 publication하는 순간 | Authority 상실 뒤 이전 `complete/true`는 재사용하지 않는다. |
 
@@ -307,17 +336,24 @@ commit도 Open의 linearization point가 아니며 `V`와 `O` 없이 route가 �
 
 | Race | 먼저 선형화된 것 | 반드시 관찰할 결과 |
 | --- | --- | --- |
-| Authority loss ↔ owner admission | Quorum-confirmed single-use context가 먼저 발급됨 | Exact attempt와 local binding이 유효하면 `O`로 reserve할 수 있다. Authority loss는 이미 시작한 attempt를 소급 취소하지 않는다. |
-| Authority loss ↔ owner admission | 새 context 발급 차단 또는 local cancel/retirement | 새 attempt는 reserve할 수 없다. Consumed·cancelled context와 state-advancing old control message는 no-op이다. |
+| Authority loss ↔ O reservation | Quorum-confirmed context가 먼저 발급됨 | Same epoch provenance는 유지되지만 structural context, local binding/auth, expiry/replay guard를 O에서 검사한다. Authority loss만으로 issued attempt를 소급 취소하지 않는다. |
+| Authority loss ↔ O reservation | 새 context 발급 차단 또는 local cancel/retirement | 새 attempt를 reserve할 수 없다. Consumed·cancelled context와 state-advancing old control message는 no-op이다. |
 | Quorum loss ↔ new control op | Bind commit 또는 per-attempt context 발급 | 이미 확정된 결과와 시작한 attempt만 유지한다. 그 뒤 새 bind/resolve/context 발급은 멈춘다. |
-| Unbind ↔ owner admission | Owner `O` reservation | Admitted attempt는 Listener accept/reject까지 진행한다. Unbind는 뒤의 새 attempt만 막는다. |
-| Unbind ↔ owner admission | Local binding retirement | `O=false`; Listener에게 offer하지 않는다. |
-| Cancel ↔ Listener accept | Listener accept | Owner-local accepted 뒤 cancel이 local terminal을 만든다. Caller outcome은 ACK 순서에 따라 `Open` 또는 `Unknown`이다. |
-| Cancel ↔ Listener accept | Attempt cancel | Late Listener accept는 no-op이며 tentative attempt를 terminal로 만든다. |
+| Unbind ↔ O reservation | O reservation + replay insert | Admitted attempt는 Listener accept/reject까지 진행한다. Unbind는 뒤 attempt만 막는다. |
+| Unbind ↔ O reservation | Local binding retirement | `O=false`; Listener offer가 없고 context는 consume되지 않는다. |
+| Cancel ↔ Listener accept | Listener accept/AcceptedO | Accepted 뒤 cancel이 owner-local terminal을 만든다. Caller outcome은 ACK 순서에 따라 `Open` 또는 `Unknown`이다. |
+| Cancel ↔ Listener accept | Attempt cancel | Late Listener accept는 no-op이다. O에서 만든 replay entry는 expiry까지 남는다. |
 | Credential removal ↔ ClientSession auth | Final current-snapshot revalidation | 겹친 인증은 pre-swap session으로 선형화될 수 있지만 같은 reload가 `LocalRetirementDone` 전에 retire한다. |
 | Credential removal ↔ ClientSession auth | Auth snapshot swap | Final revalidation은 제거된 credential을 거부하고 session을 만들지 않는다. |
 | Credential removal/session close ↔ Open | Session이 authority admission 전에 terminal | `A=false`; 새 Pipe는 생기지 않는다. |
-| Credential removal/session close ↔ Open | Listener accept | Accepted 뒤 session terminal이 local Pipe를 닫는다. 중간 race는 owner reservation과 cancel 순서로 귀결된다. |
+| Credential removal/session close ↔ Open | Listener accept/AcceptedO | Accepted 뒤 session terminal이 local Pipe를 닫는다. 중간 race는 O reservation과 cancel 순서로 귀결된다. |
+| Context expiry ↔ O reservation | O reservation + replay insert | Attempt는 Listener accept/deadline ordering을 따르고 entry는 expiry까지 남는다. 열린 Pipe는 cache expiry로 닫히지 않는다. |
+| Context expiry ↔ O reservation | `now >= expires_at` | `O=false`; offer/Pipe/PipeId가 없고 expired context는 재평가할 수 없다. |
+| Original ↔ duplicate ForwardOpen | Original O reservation/replay entry | Listener reject 뒤에도 duplicate/full-cache request는 fail closed하고 response/PipeId를 replay하지 않는다. |
+| Owner/ingress identity change ↔ ForwardOpen | Ingress control session이 response와 불일치 또는 owner address dial이 실패 | Ingress는 mismatch를 send 전에 거부한다. Address는 dial selection일 뿐이다. Plaintext Owner는 actual peer/current-session 또는 자기 advertised-address currentness를 증명하지 않는다. |
+| Owner LP ↔ internal response/hop loss | Loss가 LP 미통과를 증명 | Stable failure가 가능하다. |
+| Owner LP ↔ internal response/hop loss | LP 통과 가능 또는 LP 뒤 loss | Ingress/caller outcome은 `Unknown`; redial, resume와 payload replay가 없다. |
+| Public ACK ↔ remote activation | Public `PipeOpened` write success 뒤 activation | Listener→caller payload release 가능하다. 이전 payload는 bounded hold이며 early terminal이 우선한다. |
 | ACK loss ↔ live owner | Owner-local accept | Owner가 살아 있는 동안만 `AcceptedUnconfirmed`이며 caller 결과는 `Unknown`일 수 있다. 같은 Pipe에 resume하지 않는다. |
 | Owner crash ↔ accepted delivery | Owner-local accept 전/후 crash | Accept 전이면 accepted Pipe가 없다. Accept 뒤 crash면 Open LP가 지났을 수 있지만 volatile owner state와 exact outcome은 복구 불가이고 caller는 `Unknown`이다. Peer는 failure를 local하게 감지한 뒤 terminal이다. |
 | Ingress crash ↔ owner accepted | Ingress apply 전/후 crash | Ingress state와 caller ACK는 소실된다. 살아 있는 owner는 `AcceptedUnconfirmed`일 수 있고 caller는 `Unknown`; same-Pipe attach/resume은 없다. |
@@ -334,7 +370,9 @@ message replay를 주입한다.
 | Flow | 필수 cut | Oracle |
 | --- | --- | --- |
 | Binding install | Generation/value CAS apply 전 / apply 뒤 ACK 전 / ACK 뒤 / remove+tombstone+rebind 뒤 old replay | 최신 slot 하나뿐이다. Same target-generation replay만 idempotent하며 old generation은 tombstone 뒤에도 no-op다. |
-| Open | Authority admission 전 / owner reservation 전후 / Listener accept 전송 전후 / owner accept apply 전후 / Listener confirm send·apply 전후 / owner accepted send와 ingress apply 전후 / ingress ACK send와 caller observation 전후 | Owner apply 전에는 accepted Pipe가 없다. 살아 있는 owner가 apply한 뒤에만 `AcceptedUnconfirmed`다. Listener handle은 confirmation apply 뒤, ingress는 owner accepted apply 뒤 open이다. Owner crash 뒤 live truth는 소실되고 caller는 `Unknown`; 어떤 중간 state도 resume하지 않는다. |
+| Open / remote hop | Context 발급과 ForwardOpen 전후 / O reservation+replay insert 전후 / Listener provisional accept와 AcceptedO+PipeId 전후 / accepted response와 ingress apply 전후 / public `PipeOpened` write와 activation 전후 | O 전에는 offer/entry가 없다. O 뒤 entry는 reject에도 expiry까지 남고, Open LP 전에는 PipeId가 없다. LP 통과 가능/이후 response loss는 `Unknown`; redial/resume/replay하지 않는다. |
+| Forwarded replay / expiry | Original/duplicate 순서 / cache full 전후 / Listener reject 전후 / `now <`, `==`, `>` expires_at / entry GC 전후 | 한 `AttemptId`에 최대 하나의 O reservation/offer와 AcceptedO/PipeId다. Duplicate/full/expired는 fail closed하고 prior result를 replay하지 않는다. Failed O guard는 consume하지 않으며 GC 뒤 context expiry가 ABA를 막는다. |
+| Remote payload | Public `PipeOpened` write 전후 / activation 전후 / 각 방향 enqueue·write 전후 / backpressure terminal 전후 / internal hop loss 전후 | Activation 전 listener payload는 release하지 않는다. 방향별 FIFO, silent-drop 금지, terminal priority와 no payload replay를 지킨다. Hop loss는 양 segment의 local terminal trigger다. |
 | Unbind/session end | Local retirement 전 / retirement 뒤 Raft remove 전 / remove 뒤 | Retirement 뒤에는 stale record가 남아도 ineligible이고 late cleanup은 새 ref를 손상하지 않는다. |
 | Config removal | Candidate validation 전 / snapshot swap 전 / swap 뒤 local attempt·session·binding·segment retirement 전 / retirement 뒤 report 전 | Swap 전에는 old snapshot, swap 뒤에는 제거 credential의 새 local admission 불가, retirement/report 전에는 convergence 불가다. |
 | Authority failover | Old authority fence 전 / fence 뒤 election 전 / new authority의 partial revalidation / completeness publication 뒤 | Fence 뒤 새 context 발급과 old state advancement는 없고, 이미 발급된 same-epoch single-use attempt는 race matrix를 따른다. Partial view는 incomplete다. |
@@ -356,6 +394,7 @@ generation, owner local state와 terminal propagation을 함께 본다.
 | `F5 Auth config` | converged / revision skew·unreported / invalid candidate |
 | `F6 Runtime/data capacity` | flowing·capacity available / interrupted / session·attempt·Pipe table 또는 bounded-buffer exhaustion |
 | `F7 Voter storage` | intact / one local store lost / same-epoch quorum state unavailable |
+| `F8 Remote owner hop` | exact·unexpired / stale·duplicate·full / interrupted before-or-after LP |
 
 최소 조합 기준은 모든 axis pair의 모든 equivalence-class pair를 한 번 이상 관찰하는 것이다. State
 invariant상 불가능한 pair는 생략하지 말고 도달 불가능성의 근거를 남긴다.
@@ -387,6 +426,10 @@ Pair가 linearization point와 경쟁하면 두 event order를 모두 시험한�
    not-admitted, admitted, accepted 또는 terminal일 수 있다. SDK accumulator는 이를 caller-visible
    `Opened`, `Failed`, `Cancelled`, `Unknown`으로만 노출하며 묶음 rollback, same-Pipe resume 또는 결과 추측은
    없다.
+7. **Forwarded duplicate × expiry boundary × owner response loss:** O reservation/offer가 한 번만 성공하고
+   Listener reject 뒤에도 cache entry는 `expires_at`까지 남는다. Duplicate/full/expired request에 response나
+   `PipeId`를 replay하지 않으며 LP 통과를
+   배제할 수 없는 ingress/caller outcome은 `Unknown`이다.
 
 In-band evidence는 [SPEC 002](002-client-configuration-and-presence.md)의 `config_converged=true`와
 operator-known removal `auth_revision` 일치를 요구한다. 하지만 current control set에서 빠진 old Gateway가
@@ -510,7 +553,7 @@ flowchart TD
 
 필수 state-product, sequence, race, crash-cut, fault-combination과 recovery 검증은
 [TEST 001](../test/001-core-correctness-test-plan.md)이 소유한다. 이 문서의 linearization point, crash-cut,
-`F1`–`F7` failure axis와 R0–R3 판정은 normative oracle로 남는다. 테스트 목록이 있다는 사실이나 문서
+`F1`–`F8` failure axis와 R0–R3 판정은 normative oracle로 남는다. 테스트 목록이 있다는 사실이나 문서
 검증 통과는 runtime correctness 통과를 의미하지 않는다.
 
 ## 관련 문서와 결정
@@ -523,3 +566,4 @@ flowchart TD
 - [ADR 002: Raft control state와 Gateway의 상태 경계](../adr/002-control-plane-and-gateway-topology.md)
 - [ADR 004: Raft safety state 최소 영속화](../adr/004-raft-safety-state-durability.md)
 - [ADR 006: Client 격리와 외부 credential source of truth](../adr/006-client-isolation-and-external-credentials.md)
+- [ADR 008: Cross-Gateway hop과 bounded replay fence](../adr/008-cross-gateway-hop-and-replay.md)

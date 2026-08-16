@@ -800,7 +800,9 @@ func TestRelayPayloadWaitsForExactCallerActivation(t *testing.T) {
 		t.Fatal("foreign full session ref activated Pipe")
 	}
 	assertNoPayload(t, callerEndpoint, 20*time.Millisecond)
-	if !h.manager.ActivatePipe(h.caller.Ref, result.PipeID) || !h.manager.ActivatePipe(h.caller.Ref, result.PipeID) {
+	firstActivation := h.manager.ActivatePipe(h.caller.Ref, result.PipeID)
+	secondActivation := h.manager.ActivatePipe(h.caller.Ref, result.PipeID)
+	if !firstActivation || !secondActivation {
 		t.Fatal("exact activation was not idempotent")
 	}
 	if err := <-relayed; err != nil {
@@ -901,7 +903,8 @@ func TestRelayPayloadSizeBoundariesAndCopy(t *testing.T) {
 	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, make([]byte, localbinding.MaxPayloadBytes+1)); !errors.Is(err, ErrPayloadInvalid) {
 		t.Fatalf("oversized RelayPayload() = %v, want ErrPayloadInvalid", err)
 	}
-	if err := h.manager.RelayPayload(nil, h.caller.Ref, result.PipeID, []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
+	var nilContext context.Context
+	if err := h.manager.RelayPayload(nilContext, h.caller.Ref, result.PipeID, []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
 		t.Fatalf("nil-context RelayPayload() = %v, want ErrPayloadInvalid", err)
 	}
 	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, "", []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
@@ -1128,6 +1131,250 @@ func TestTerminalPreActivationPayloadIsNotReplayedIntoNewPipe(t *testing.T) {
 	}
 }
 
+func TestForwardedOwnerSingleUseExpiryAndFailedGuard(t *testing.T) {
+	fixedNow := time.Unix(2_000_000_000, 0)
+
+	t.Run("exact reservation is single use", func(t *testing.T) {
+		h := newHarness(t, 2, time.Second, &scriptedEndpoint{})
+		defer h.manager.Close()
+		h.manager.now = func() time.Time { return fixedNow }
+		open := newForwardedOpenContext(t, "forwarded-1", h.caller.Ref, h.slot, fixedNow.Add(time.Minute))
+		callerEndpoint := &scriptedEndpoint{}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		result, err := h.manager.OpenForwarded(ctx, open, callerEndpoint)
+		if err != nil || result.PipeID == "" {
+			t.Fatalf("OpenForwarded() = %#v, %v", result, err)
+		}
+		duplicateCtx, cancelDuplicate := context.WithCancel(context.Background())
+		defer cancelDuplicate()
+		if _, err := h.manager.OpenForwarded(duplicateCtx, open.Clone(), callerEndpoint); !errors.Is(err, ErrAttemptReplay) {
+			t.Fatalf("duplicate OpenForwarded() = %v, want ErrAttemptReplay", err)
+		}
+		if h.endpoint.offerCount() != 1 || h.endpoint.confirmCount() != 1 {
+			t.Fatalf("duplicate forwarded attempt reached listener: offers=%d confirms=%d", h.endpoint.offerCount(), h.endpoint.confirmCount())
+		}
+	})
+
+	t.Run("failed exact owner guard does not consume attempt", func(t *testing.T) {
+		h := newHarness(t, 1, time.Second, &scriptedEndpoint{})
+		defer h.manager.Close()
+		h.manager.now = func() time.Time { return fixedNow }
+		open := newForwardedOpenContext(t, "forwarded-retry", h.caller.Ref, h.slot, fixedNow.Add(time.Minute))
+		h.store.setError(localbinding.ErrNotFound)
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		if _, err := h.manager.OpenForwarded(firstCtx, open, &scriptedEndpoint{}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("first OpenForwarded() = %v, want ErrNotFound", err)
+		}
+		cancelFirst()
+		h.store.setError(nil)
+		secondCtx, cancelSecond := context.WithCancel(context.Background())
+		defer cancelSecond()
+		if result, err := h.manager.OpenForwarded(secondCtx, open.Clone(), &scriptedEndpoint{}); err != nil || result.PipeID == "" {
+			t.Fatalf("retry OpenForwarded() = %#v, %v", result, err)
+		}
+	})
+
+	t.Run("listener rejection keeps serialized attempt consumed", func(t *testing.T) {
+		listenerEndpoint := &scriptedEndpoint{offer: func(context.Context, localbinding.Offer) error {
+			return localbinding.ErrOfferRejected
+		}}
+		h := newHarness(t, 1, time.Second, listenerEndpoint)
+		defer h.manager.Close()
+		h.manager.now = func() time.Time { return fixedNow }
+		open := newForwardedOpenContext(t, "forwarded-rejected", h.caller.Ref, h.slot, fixedNow.Add(time.Minute))
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		if _, err := h.manager.OpenForwarded(firstCtx, open, &scriptedEndpoint{}); !errors.Is(err, ErrListenerRejected) {
+			t.Fatalf("first OpenForwarded() = %v, want ErrListenerRejected", err)
+		}
+		cancelFirst()
+		listenerEndpoint.mu.Lock()
+		listenerEndpoint.offer = nil
+		listenerEndpoint.mu.Unlock()
+		secondCtx, cancelSecond := context.WithCancel(context.Background())
+		defer cancelSecond()
+		if _, err := h.manager.OpenForwarded(secondCtx, open.Clone(), &scriptedEndpoint{}); !errors.Is(err, ErrAttemptReplay) {
+			t.Fatalf("replayed rejected OpenForwarded() = %v, want ErrAttemptReplay", err)
+		}
+		if listenerEndpoint.offerCount() != 1 {
+			t.Fatalf("replayed rejected attempt offered %d times, want 1", listenerEndpoint.offerCount())
+		}
+	})
+
+	t.Run("expired and bounded replay cache fail closed", func(t *testing.T) {
+		h := newHarness(t, 1, time.Second, &scriptedEndpoint{})
+		defer h.manager.Close()
+		now := fixedNow
+		h.manager.now = func() time.Time { return now }
+		first := newForwardedOpenContext(t, "forwarded-cache-1", h.caller.Ref, h.slot, fixedNow.Add(time.Minute))
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		result, err := h.manager.OpenForwarded(firstCtx, first, &scriptedEndpoint{})
+		if err != nil {
+			t.Fatalf("first OpenForwarded(): %v", err)
+		}
+		if !h.manager.ClosePipe(h.caller.Ref, result.PipeID) {
+			t.Fatal("ClosePipe(first forwarded) failed")
+		}
+		cancelFirst()
+		receiveTermination(t, h.endpoint)
+		waitPendingCount(t, h.manager, 0)
+
+		second := newForwardedOpenContext(t, "forwarded-cache-2", h.caller.Ref, h.slot, fixedNow.Add(2*time.Minute))
+		secondCtx, cancelSecond := context.WithCancel(context.Background())
+		defer cancelSecond()
+		if _, err := h.manager.OpenForwarded(secondCtx, second, &scriptedEndpoint{}); !errors.Is(err, ErrCapacity) {
+			t.Fatalf("OpenForwarded(full replay cache) = %v, want ErrCapacity", err)
+		}
+
+		now = fixedNow.Add(90 * time.Second)
+		secondResult, err := h.manager.OpenForwarded(secondCtx, second.Clone(), &scriptedEndpoint{})
+		if err != nil || secondResult.PipeID == "" {
+			t.Fatalf("OpenForwarded(after expiry prune) = %#v, %v", secondResult, err)
+		}
+		if !h.manager.ClosePipe(h.caller.Ref, secondResult.PipeID) {
+			t.Fatal("ClosePipe(second forwarded) failed")
+		}
+		receiveTermination(t, h.endpoint)
+		waitPendingCount(t, h.manager, 0)
+		expired := newForwardedOpenContext(t, "forwarded-expired", h.caller.Ref, h.slot, fixedNow.Add(time.Minute))
+		expiredCtx, cancelExpired := context.WithCancel(context.Background())
+		defer cancelExpired()
+		if _, err := h.manager.OpenForwarded(expiredCtx, expired, &scriptedEndpoint{}); !errors.Is(err, ErrContextExpired) {
+			t.Fatalf("OpenForwarded(expired) = %v, want ErrContextExpired", err)
+		}
+	})
+}
+
+func TestRemoteIngressActivationPayloadAndClose(t *testing.T) {
+	h := newHarness(t, 1, time.Second, &scriptedEndpoint{})
+	remoteSlot := cloneSlot(h.slot)
+	remoteSlot.Ref.GatewayID = "gateway-2"
+	remoteSlot.Ref.GatewayInstanceID = "instance-2"
+	remote := newScriptedRemoteEndpoint()
+	remoteOpener := &fakeRemoteOpener{result: RemoteResult{
+		AttemptID: "remote-attempt",
+		PipeID:    "remote-pipe",
+		Binding:   remoteSlot,
+		Endpoint:  remote,
+	}}
+	manager, err := New(Config{ClusterEpoch: "epoch-1", MaxPipes: 1, OpenTimeout: time.Second}, h.admitter, h.store, remoteOpener)
+	if err != nil {
+		t.Fatalf("New(remote): %v", err)
+	}
+	defer manager.Close()
+	h.admitter.setContext(newForwardedOpenContext(t, "remote-attempt", h.caller.Ref, remoteSlot, time.Now().Add(time.Minute)))
+	callerEndpoint := &scriptedEndpoint{}
+
+	result, err := manager.OpenPipe(context.Background(), h.caller, callerEndpoint, testEndpoint, testTarget)
+	if err != nil || result.PipeID != "remote-pipe" || !slotsEqual(result.Binding, remoteSlot) {
+		t.Fatalf("remote OpenPipe() = %#v, %v", result, err)
+	}
+	if h.store.callCount() != 0 || remoteOpener.callCount() != 1 {
+		t.Fatalf("remote dispatch calls: local reserve=%d remote=%d", h.store.callCount(), remoteOpener.callCount())
+	}
+	if err := manager.RelayPayload(context.Background(), clientsession.Ref{}, result.PipeID, []byte("forged")); !errors.Is(err, ErrPipeNotOwned) {
+		t.Fatalf("RelayPayload(zero remote sender) = %v, want ErrPipeNotOwned", err)
+	}
+	assertNoPayload(t, remote.scriptedEndpoint, 20*time.Millisecond)
+	activated := manager.ActivatePipe(h.caller.Ref, result.PipeID)
+	if !activated || remote.activationCount() != 1 {
+		t.Fatalf("remote activation = ok/count %v/%d", activated, remote.activationCount())
+	}
+	if err := manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("across-gateways")); err != nil {
+		t.Fatalf("RelayPayload(remote): %v", err)
+	}
+	payload := receivePayload(t, remote.scriptedEndpoint)
+	if payload.PipeID != result.PipeID || string(payload.Data) != "across-gateways" {
+		t.Fatalf("remote payload = %#v", payload)
+	}
+	if !manager.ClosePipe(h.caller.Ref, result.PipeID) {
+		t.Fatal("ClosePipe(remote) rejected exact caller")
+	}
+	if pipeID := receivePipeTermination(t, callerEndpoint); pipeID != result.PipeID {
+		t.Fatalf("caller terminal PipeID = %q", pipeID)
+	}
+	remote.waitClosed(t)
+	waitPendingCount(t, manager, 0)
+}
+
+func TestRemoteOwnerAcceptedThenIngressTerminalIsUnknown(t *testing.T) {
+	h := newHarness(t, 1, time.Second, &scriptedEndpoint{})
+	remoteSlot := cloneSlot(h.slot)
+	remoteSlot.Ref.GatewayID = "gateway-2"
+	remoteSlot.Ref.GatewayInstanceID = "instance-2"
+	remote := newScriptedRemoteEndpoint()
+	remoteOpener := &fakeRemoteOpener{result: RemoteResult{
+		AttemptID: "remote-race",
+		PipeID:    "remote-race-pipe",
+		Binding:   remoteSlot,
+		Endpoint:  remote,
+	}}
+	manager, err := New(Config{ClusterEpoch: "epoch-1", MaxPipes: 1, OpenTimeout: time.Second}, h.admitter, h.store, remoteOpener)
+	if err != nil {
+		t.Fatalf("New(remote): %v", err)
+	}
+	defer manager.Close()
+	h.admitter.setContext(newForwardedOpenContext(t, "remote-race", h.caller.Ref, remoteSlot, time.Now().Add(time.Minute)))
+	remoteOpener.beforeReturn = func() {
+		if got := manager.RetireSession(h.caller.Ref); got != 1 {
+			t.Errorf("RetireSession() = %d, want in-flight ingress entry", got)
+		}
+	}
+
+	if _, err := manager.OpenPipe(context.Background(), h.caller, &scriptedEndpoint{}, testEndpoint, testTarget); !errors.Is(err, ErrUnknown) || !errors.Is(err, ErrSessionEnded) {
+		t.Fatalf("OpenPipe(owner accepted then ingress terminal) = %v, want Unknown wrapping session end", err)
+	}
+	remote.waitClosed(t)
+	waitActiveCount(t, manager, 0)
+}
+
+func TestRemoteIngressActivationFailureAndMalformedResultTerminalize(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*RemoteResult, *scriptedRemoteEndpoint)
+		activate  bool
+	}{
+		{name: "activation failure", activate: true, configure: func(_ *RemoteResult, endpoint *scriptedRemoteEndpoint) {
+			endpoint.activateErr = errors.New("hop activation failed")
+		}},
+		{name: "non exact owner result", configure: func(result *RemoteResult, _ *scriptedRemoteEndpoint) {
+			result.Binding.Generation++
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newHarness(t, 1, 50*time.Millisecond, &scriptedEndpoint{})
+			remoteSlot := cloneSlot(h.slot)
+			remoteSlot.Ref.GatewayID = "gateway-2"
+			remoteSlot.Ref.GatewayInstanceID = "instance-2"
+			endpoint := newScriptedRemoteEndpoint()
+			remoteResult := RemoteResult{AttemptID: "remote-attempt", PipeID: "remote-pipe", Binding: remoteSlot, Endpoint: endpoint}
+			test.configure(&remoteResult, endpoint)
+			remoteOpener := &fakeRemoteOpener{result: remoteResult}
+			manager, err := New(Config{ClusterEpoch: "epoch-1", MaxPipes: 1, OpenTimeout: 50 * time.Millisecond}, h.admitter, h.store, remoteOpener)
+			if err != nil {
+				t.Fatalf("New(remote): %v", err)
+			}
+			defer manager.Close()
+			h.admitter.setContext(newForwardedOpenContext(t, "remote-attempt", h.caller.Ref, remoteSlot, time.Now().Add(time.Minute)))
+			result, openErr := manager.OpenPipe(context.Background(), h.caller, &scriptedEndpoint{}, testEndpoint, testTarget)
+			if test.activate {
+				if openErr != nil {
+					t.Fatalf("OpenPipe(): %v", openErr)
+				}
+				if manager.ActivatePipe(h.caller.Ref, result.PipeID) {
+					t.Fatal("failed remote activation reported success")
+				}
+			} else if !errors.Is(openErr, ErrUnknown) {
+				t.Fatalf("OpenPipe(non-exact result) = %v, want ErrUnknown", openErr)
+			}
+			endpoint.waitClosed(t)
+			waitActiveCount(t, manager, 0)
+			waitPendingCount(t, manager, 0)
+		})
+	}
+}
+
 const (
 	testEndpoint = "/events"
 	testTarget   = "worker"
@@ -1219,13 +1466,21 @@ type fakeStore struct {
 func (f *fakeStore) GatewayID() string { return f.gatewayID }
 
 func (f *fakeStore) Reserve(open authority.OpenContext, caller clientsession.Ref) (localbinding.Reservation, error) {
+	return f.reserve(open, caller, true)
+}
+
+func (f *fakeStore) ReserveForwarded(open authority.OpenContext, caller clientsession.Ref) (localbinding.Reservation, error) {
+	return f.reserve(open, caller, false)
+}
+
+func (f *fakeStore) reserve(open authority.OpenContext, caller clientsession.Ref, consume bool) (localbinding.Reservation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	if f.err != nil {
 		return localbinding.Reservation{}, f.err
 	}
-	if !open.TryConsume() {
+	if consume && !open.TryConsume() {
 		return localbinding.Reservation{}, localbinding.ErrAttemptUsed
 	}
 	return localbinding.Reservation{
@@ -1242,6 +1497,89 @@ func (f *fakeStore) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeStore) setError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+type fakeRemoteOpener struct {
+	mu             sync.Mutex
+	result         RemoteResult
+	err            error
+	calls          int
+	callerEndpoint localbinding.CallerEndpoint
+	beforeReturn   func()
+}
+
+func (f *fakeRemoteOpener) Open(_ context.Context, _ authority.OpenContext, callerEndpoint localbinding.CallerEndpoint) (RemoteResult, error) {
+	f.mu.Lock()
+	f.calls++
+	f.callerEndpoint = callerEndpoint
+	result := f.result
+	beforeReturn := f.beforeReturn
+	result.Binding = cloneSlot(result.Binding)
+	err := f.err
+	f.mu.Unlock()
+	if beforeReturn != nil {
+		beforeReturn()
+	}
+	return result, err
+}
+
+func (f *fakeRemoteOpener) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+type scriptedRemoteEndpoint struct {
+	*scriptedEndpoint
+
+	mu          sync.Mutex
+	done        chan struct{}
+	closeOnce   sync.Once
+	activateErr error
+	activations int
+	closes      int
+}
+
+func newScriptedRemoteEndpoint() *scriptedRemoteEndpoint {
+	return &scriptedRemoteEndpoint{scriptedEndpoint: &scriptedEndpoint{}, done: make(chan struct{})}
+}
+
+func (s *scriptedRemoteEndpoint) Activate(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activations++
+	return s.activateErr
+}
+
+func (s *scriptedRemoteEndpoint) Close(context.Context) error {
+	s.mu.Lock()
+	s.closes++
+	s.mu.Unlock()
+	s.closeOnce.Do(func() { close(s.done) })
+	return nil
+}
+
+func (s *scriptedRemoteEndpoint) Done() <-chan struct{} { return s.done }
+
+func (s *scriptedRemoteEndpoint) activationCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activations
+}
+
+func (s *scriptedRemoteEndpoint) waitClosed(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.done:
+	case <-time.After(time.Second):
+		t.Fatal("remote endpoint was not closed")
+	}
 }
 
 type scriptedEndpoint struct {
@@ -1487,6 +1825,39 @@ func newOpenContext(t *testing.T, attemptID string, caller clientsession.Ref, sl
 	}, slot)
 	if err != nil {
 		t.Fatalf("NewOpenContext(): %v", err)
+	}
+	return open
+}
+
+func newForwardedOpenContext(
+	t *testing.T,
+	attemptID string,
+	caller clientsession.Ref,
+	slot controlstate.BindingSlot,
+	expiresAt time.Time,
+) authority.OpenContext {
+	t.Helper()
+	open, err := authority.NewForwardedOpenContext(
+		"epoch-1",
+		"authority-1",
+		attemptID,
+		authority.AuthContext{
+			ClientSessionID: caller.ClientSessionID,
+			ClientID:        caller.ClientID,
+			APIKeyID:        caller.APIKeyID,
+			AuthRevision:    caller.AuthRevision,
+		},
+		slot,
+		authority.ForwardingContext{
+			IngressGatewayID:         "gateway-1",
+			IngressGatewayInstanceID: "instance-1",
+			IngressControlSessionID:  "control-1",
+			OwnerRelayAddress:        "127.0.0.1:7300",
+			ExpiresAt:                expiresAt,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewForwardedOpenContext(): %v", err)
 	}
 	return open
 }

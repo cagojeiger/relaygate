@@ -11,6 +11,49 @@ import (
 	"github.com/cagojeiger/relaygate/internal/raftnode"
 )
 
+const testRelayAddress = "127.0.0.1:7300"
+
+func TestNewRequiresPositiveOpenContextTTL(t *testing.T) {
+	_, err := New(Config{
+		ClusterEpoch:        "epoch-1",
+		ProbeInterval:       time.Second,
+		ProbeTimeout:        time.Second,
+		RevalidationTimeout: time.Second,
+	}, &fakeRaftNode{})
+	if err == nil {
+		t.Fatal("New() accepted a zero Open context TTL")
+	}
+}
+
+func TestOpenSessionRejectsInvalidRelayAddress(t *testing.T) {
+	slot := controlstate.GatewaySlot{
+		GatewayID:  "gateway-1",
+		Generation: 1,
+		Ref:        &controlstate.GatewayRegistrationRef{GatewayInstanceID: "instance-1"},
+	}
+	node := &fakeRaftNode{
+		status: raftnode.Status{Role: "Leader", Term: 1, ClusterEpoch: "epoch-1"},
+		state:  controlstate.State{ClusterEpoch: "epoch-1", Gateways: []controlstate.GatewaySlot{slot}},
+	}
+	manager, err := New(Config{
+		ClusterEpoch:        "epoch-1",
+		ProbeInterval:       time.Second,
+		ProbeTimeout:        time.Second,
+		RevalidationTimeout: time.Second,
+		OpenContextTTL:      time.Second,
+	}, node)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	t.Cleanup(manager.Close)
+	if _, err := manager.Confirm(context.Background()); err != nil {
+		t.Fatalf("Confirm(): %v", err)
+	}
+	if _, err := manager.OpenSession(slot, "0.0.0.0:7300"); err == nil {
+		t.Fatal("OpenSession() accepted an unspecified relay address")
+	}
+}
+
 func TestAuthorityFencesSessionsAndRebuildsPresence(t *testing.T) {
 	node := &fakeRaftNode{
 		status: raftnode.Status{Role: "Leader", Term: 1, ClusterEpoch: "epoch-1"},
@@ -28,6 +71,7 @@ func TestAuthorityFencesSessionsAndRebuildsPresence(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -40,7 +84,7 @@ func TestAuthorityFencesSessionsAndRebuildsPresence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Confirm(): %v", err)
 	}
-	firstSession, err := manager.OpenSession(node.State().Gateways[0])
+	firstSession, err := manager.OpenSession(node.State().Gateways[0], testRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(): %v", err)
 	}
@@ -54,7 +98,7 @@ func TestAuthorityFencesSessionsAndRebuildsPresence(t *testing.T) {
 		t.Fatalf("presence after snapshot = %#v", presence)
 	}
 
-	replacement, err := manager.OpenSession(node.State().Gateways[0])
+	replacement, err := manager.OpenSession(node.State().Gateways[0], testRelayAddress)
 	if err != nil {
 		t.Fatalf("replacement OpenSession(): %v", err)
 	}
@@ -108,6 +152,7 @@ func TestObserveDoesNotReuseCompletePresenceAfterQuorumLoss(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -147,6 +192,7 @@ func TestCallerCancellationDoesNotFenceAuthorityOrSession(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -157,7 +203,7 @@ func TestCallerCancellationDoesNotFenceAuthorityOrSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Confirm(): %v", err)
 	}
-	session, err := manager.OpenSession(slot)
+	session, err := manager.OpenSession(slot, testRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(): %v", err)
 	}
@@ -204,6 +250,7 @@ func TestProbeTimeoutFencesAuthorityAndSession(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        10 * time.Millisecond,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -212,7 +259,7 @@ func TestProbeTimeoutFencesAuthorityAndSession(t *testing.T) {
 	if _, err := manager.Confirm(context.Background()); err != nil {
 		t.Fatalf("Confirm(): %v", err)
 	}
-	session, err := manager.OpenSession(slot)
+	session, err := manager.OpenSession(slot, testRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(): %v", err)
 	}
@@ -248,6 +295,7 @@ func TestCallerCancellationStillFencesDefinitiveRoleLoss(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -256,7 +304,7 @@ func TestCallerCancellationStillFencesDefinitiveRoleLoss(t *testing.T) {
 	if _, err := manager.Confirm(context.Background()); err != nil {
 		t.Fatalf("Confirm(): %v", err)
 	}
-	session, err := manager.OpenSession(slot)
+	session, err := manager.OpenSession(slot, testRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(): %v", err)
 	}
@@ -294,6 +342,7 @@ func TestTermChangeCreatesNewAuthorityAndFencesSessions(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -304,7 +353,7 @@ func TestTermChangeCreatesNewAuthorityAndFencesSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Confirm(first): %v", err)
 	}
-	session, err := manager.OpenSession(node.State().Gateways[0])
+	session, err := manager.OpenSession(node.State().Gateways[0], testRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(): %v", err)
 	}
@@ -338,6 +387,7 @@ func TestStaleGatewaySlotCannotOpenOrAdvanceSession(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -346,7 +396,7 @@ func TestStaleGatewaySlotCannotOpenOrAdvanceSession(t *testing.T) {
 	if _, err := manager.Confirm(context.Background()); err != nil {
 		t.Fatalf("Confirm(): %v", err)
 	}
-	oldSession, err := manager.OpenSession(oldSlot)
+	oldSession, err := manager.OpenSession(oldSlot, testRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(old): %v", err)
 	}
@@ -363,10 +413,10 @@ func TestStaleGatewaySlotCannotOpenOrAdvanceSession(t *testing.T) {
 	if err := manager.RequireRevalidated(oldSession.Ref); !errors.Is(err, ErrStaleSession) {
 		t.Fatalf("RequireRevalidated(old) = %v, want ErrStaleSession", err)
 	}
-	if _, err := manager.OpenSession(oldSlot); !errors.Is(err, ErrStaleSession) {
+	if _, err := manager.OpenSession(oldSlot, testRelayAddress); !errors.Is(err, ErrStaleSession) {
 		t.Fatalf("OpenSession(stale slot) = %v, want ErrStaleSession", err)
 	}
-	if _, err := manager.OpenSession(newSlot); err != nil {
+	if _, err := manager.OpenSession(newSlot, testRelayAddress); err != nil {
 		t.Fatalf("OpenSession(new): %v", err)
 	}
 	select {
@@ -391,6 +441,7 @@ func TestPresenceClassifiesUnreportedGatewayOnlyAfterTimeout(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -425,6 +476,7 @@ func TestSyncingSessionCannotRevalidateAfterTimeout(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Minute,
+		OpenContextTTL:      time.Second,
 	}, node)
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -434,7 +486,7 @@ func TestSyncingSessionCannotRevalidateAfterTimeout(t *testing.T) {
 	if _, err := manager.Confirm(context.Background()); err != nil {
 		t.Fatalf("Confirm(): %v", err)
 	}
-	session, err := manager.OpenSession(slot)
+	session, err := manager.OpenSession(slot, testRelayAddress)
 	if err != nil {
 		t.Fatalf("OpenSession(): %v", err)
 	}
@@ -458,6 +510,7 @@ func TestManagerDoesNotStartAfterClose(t *testing.T) {
 		ProbeInterval:       time.Second,
 		ProbeTimeout:        time.Second,
 		RevalidationTimeout: time.Second,
+		OpenContextTTL:      time.Second,
 	}, &fakeRaftNode{})
 	if err != nil {
 		t.Fatalf("New(): %v", err)

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cagojeiger/relaygate/internal/authority"
 	"github.com/cagojeiger/relaygate/internal/controlstate"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	"google.golang.org/grpc"
@@ -35,6 +36,7 @@ var (
 type Config struct {
 	ClusterEpoch     string
 	GatewayID        string
+	RelayAddress     string
 	ControlEndpoints []string
 	ConnectTimeout   time.Duration
 	RetryInterval    time.Duration
@@ -151,6 +153,9 @@ func (c Config) validate() error {
 	}
 	if c.GatewayID == "" || len(c.GatewayID) > controlstate.MaxIdentityBytes {
 		return fmt.Errorf("gateway ID must be 1..%d bytes", controlstate.MaxIdentityBytes)
+	}
+	if err := authority.ValidateRelayAddress(c.RelayAddress); err != nil {
+		return fmt.Errorf("relay address: %w", err)
 	}
 	if len(c.ControlEndpoints) == 0 {
 		return fmt.Errorf("at least one control endpoint is required")
@@ -321,6 +326,7 @@ func (c *Client) runEndpoint(ctx context.Context, endpoint string) (bool, error)
 			ClusterEpoch:      c.config.ClusterEpoch,
 			GatewayId:         c.config.GatewayID,
 			GatewayInstanceId: c.instanceID,
+			RelayAddress:      c.config.RelayAddress,
 		},
 	}}); err != nil {
 		return false, fmt.Errorf("send gateway hello: %w", err)
