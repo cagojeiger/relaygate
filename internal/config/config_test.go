@@ -211,4 +211,17 @@ func TestValidateRejectsInvalidRelayBounds(t *testing.T) {
 			t.Fatalf("Validate() error = %v, want max_pipes error", err)
 		}
 	})
+
+	t.Run("pipe capacity maximum", func(t *testing.T) {
+		config := valid
+		config.Relay.MaxPipes = maxRelayPipes
+		if err := config.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want maximum max_pipes accepted", err)
+		}
+
+		config.Relay.MaxPipes++
+		if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "max_pipes") {
+			t.Fatalf("Validate() error = %v, want max_pipes maximum error", err)
+		}
+	})
 }

@@ -79,9 +79,9 @@ clients만 atomic하게 교체하고, 제거된 credential의 local session을 �
 제한하며 범위는 1–512다. 이는 connection 수가 아니다. 초과 시 기존 binding을 evict하지 않고 새 Bind만 거부한다.
 `relay.open_timeout`은 admission·offer, Listener confirmation과 terminal control delivery의 각 bounded wait를 제한한다.
 `relay.max_pipes`는 process 전체의 Opening/Accepted Pipe와 listener termination cleanup 대기까지 묶은
-admission 상한이며 Open worker semaphore와 terminal history도 같은 크기로 제한한다. Stream 수를 곱해 worker가
-늘어나지 않으며 초과 시 기존 Pipe를 evict하지 않고 새 Open만 거부한다. `request_id`는 live stream의 in-flight
-correlation에만 쓰고 replay/resume하지 않는다. `CancelOpen` ACK는 signal 전달 여부, `ClosePipe` ACK는 exact
+admission 상한이며 범위는 1–100,000이다. Open worker semaphore와 terminal history도 같은 크기로 제한한다.
+Stream 수를 곱해 worker가 늘어나지 않으며 초과 시 기존 Pipe를 evict하지 않고 새 Open만 거부한다. `request_id`는
+live stream의 in-flight correlation에만 쓰고 replay/resume하지 않는다. `CancelOpen` ACK는 signal 전달 여부, `ClosePipe` ACK는 exact
 session ownership 여부만 나타낸다.
 한 정의의 `endpoint_pattern`은 최대 1024 bytes, `target_id`는 최대 128 bytes로 제한해 최대 snapshot도 internal
 gRPC 1 MiB envelope 안에 유지한다.

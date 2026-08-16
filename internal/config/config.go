@@ -85,6 +85,8 @@ type RelayConfig struct {
 	MaxPipes              uint32   `yaml:"max_pipes"`
 }
 
+const maxRelayPipes uint32 = 100_000
+
 type ControlConfig struct {
 	ClusterEpoch                   string   `yaml:"cluster_epoch"`
 	BindAddress                    string   `yaml:"bind_address"`
@@ -358,8 +360,8 @@ func (c Config) Validate() error {
 	if c.Relay.MaxListenerBindings == 0 || c.Relay.MaxListenerBindings > controlstate.MaxListenerBindingsPerGateway {
 		return fmt.Errorf("relay.max_listener_bindings must be between 1 and %d", controlstate.MaxListenerBindingsPerGateway)
 	}
-	if c.Relay.MaxPipes == 0 {
-		return fmt.Errorf("relay.max_pipes must be positive")
+	if c.Relay.MaxPipes == 0 || c.Relay.MaxPipes > maxRelayPipes {
+		return fmt.Errorf("relay.max_pipes must be between 1 and %d", maxRelayPipes)
 	}
 	if c.Control.ClusterEpoch == "" || len(c.Control.ClusterEpoch) > controlstate.MaxIdentityBytes {
 		return fmt.Errorf("control.cluster_epoch must be 1..%d bytes", controlstate.MaxIdentityBytes)
