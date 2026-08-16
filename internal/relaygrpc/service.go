@@ -31,6 +31,7 @@ type BindingManager interface {
 
 type Opener interface {
 	Open(context.Context, clientsession.Session, string, string) (opening.Result, error)
+	ClosePipe(clientsession.Ref, string) bool
 	RetireSession(clientsession.Ref) int
 }
 
@@ -40,9 +41,11 @@ type Service struct {
 	bindings              BindingManager
 	opener                Opener
 	authenticationTimeout time.Duration
+	terminalSendTimeout   time.Duration
+	openSlots             chan struct{}
 }
 
-func NewService(sessions SessionManager, bindings BindingManager, opener Opener, authenticationTimeout time.Duration) (*Service, error) {
+func NewService(sessions SessionManager, bindings BindingManager, opener Opener, authenticationTimeout, terminalSendTimeout time.Duration, maxInFlightOpens uint32) (*Service, error) {
 	if sessions == nil {
 		return nil, fmt.Errorf("client session manager is required")
 	}
@@ -55,13 +58,26 @@ func NewService(sessions SessionManager, bindings BindingManager, opener Opener,
 	if authenticationTimeout <= 0 {
 		return nil, fmt.Errorf("authentication timeout must be positive")
 	}
-	return &Service{sessions: sessions, bindings: bindings, opener: opener, authenticationTimeout: authenticationTimeout}, nil
+	if maxInFlightOpens == 0 {
+		return nil, fmt.Errorf("maximum in-flight Opens must be positive")
+	}
+	if terminalSendTimeout <= 0 {
+		return nil, fmt.Errorf("terminal send timeout must be positive")
+	}
+	return &Service{
+		sessions:              sessions,
+		bindings:              bindings,
+		opener:                opener,
+		authenticationTimeout: authenticationTimeout,
+		terminalSendTimeout:   terminalSendTimeout,
+		openSlots:             make(chan struct{}, maxInFlightOpens),
+	}, nil
 }
 
 func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
 	outbound := newOutboundActor(stream)
 	defer outbound.close()
-	listener := newStreamListenerEndpoint(stream.Context(), outbound)
+	listener := newStreamListenerEndpoint(stream.Context(), outbound, s.terminalSendTimeout)
 	defer listener.close()
 
 	received := receiveRequests(stream)
@@ -97,6 +113,8 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest
 	defer s.sessions.End(session.Ref)
 	defer s.bindings.RetireSession(session.Ref)
 	defer s.opener.RetireSession(session.Ref)
+	coordinator := newStreamCoordinator(stream.Context(), session, s.opener, outbound, s.openSlots)
+	defer coordinator.close()
 
 	if err := outbound.send(stream.Context(), &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ClientSessionOpened{
 		ClientSessionOpened: &relayv1.ClientSessionOpened{Session: sessionRefToProto(session.Ref)},
@@ -123,7 +141,7 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest
 			if orderBeforeOffers {
 				listener.requestOrder.Lock()
 			}
-			response, err := s.handleRequest(stream.Context(), session, listener, item.request)
+			response, err := s.handleRequest(stream.Context(), session, listener, coordinator, item.request)
 			if err != nil {
 				if orderBeforeOffers {
 					listener.requestOrder.Unlock()
@@ -149,7 +167,7 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest
 	}
 }
 
-func (s *Service) handleRequest(ctx context.Context, session clientsession.Session, listener *streamListenerEndpoint, request *relayv1.ConnectRequest) (*relayv1.ConnectResponse, error) {
+func (s *Service) handleRequest(ctx context.Context, session clientsession.Session, listener *streamListenerEndpoint, coordinator *streamCoordinator, request *relayv1.ConnectRequest) (*relayv1.ConnectResponse, error) {
 	if bind := request.GetBindListener(); bind != nil {
 		slot, err := s.bindings.Bind(ctx, session, bind.GetEndpointPattern(), bind.GetTargetId(), listener)
 		if err != nil {
@@ -177,7 +195,15 @@ func (s *Service) handleRequest(ctx context.Context, session clientsession.Sessi
 	}
 
 	if open := request.GetOpen(); open != nil {
-		return s.open(ctx, session, open), nil
+		return coordinator.startOpen(ctx, s, open), nil
+	}
+
+	if cancelOpen := request.GetCancelOpen(); cancelOpen != nil {
+		return coordinator.cancelOpen(cancelOpen), nil
+	}
+
+	if closePipe := request.GetClosePipe(); closePipe != nil {
+		return coordinator.closePipe(closePipe), nil
 	}
 
 	if accept := request.GetListenerAccept(); accept != nil {
@@ -272,6 +298,8 @@ func openFailure(err error) relayv1.OpenFailure {
 		return relayv1.OpenFailure_OPEN_FAILURE_LISTENER_REJECTED
 	case errors.Is(err, opening.ErrDeadline), errors.Is(err, context.DeadlineExceeded):
 		return relayv1.OpenFailure_OPEN_FAILURE_DEADLINE_EXCEEDED
+	case errors.Is(err, context.Canceled):
+		return relayv1.OpenFailure_OPEN_FAILURE_CANCELLED
 	default:
 		return relayv1.OpenFailure_OPEN_FAILURE_UNAVAILABLE
 	}
@@ -320,7 +348,7 @@ func listenerDecisionRejected(attemptID string, err error) *relayv1.ConnectRespo
 const outboundQueueCapacity = 32
 
 type outboundMessage struct {
-	ctx      context.Context
+	ctx      context.Context //nolint:containedctx // The outbound actor must preserve each Send caller's cancellation contract until dequeued.
 	response *relayv1.ConnectResponse
 	result   chan error
 }
@@ -330,7 +358,7 @@ type outboundMessage struct {
 // unbounded per-stream backlog.
 type outboundActor struct {
 	stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]
-	ctx    context.Context
+	ctx    context.Context //nolint:containedctx // Actor owns a stream-root context for queue shutdown.
 	cancel context.CancelFunc
 	queue  chan outboundMessage
 	failed chan error
@@ -406,17 +434,6 @@ func (a *outboundActor) send(ctx context.Context, response *relayv1.ConnectRespo
 	}
 }
 
-func (a *outboundActor) trySend(response *relayv1.ConnectResponse) {
-	if response == nil {
-		return
-	}
-	select {
-	case a.queue <- outboundMessage{ctx: a.ctx, response: response}:
-	case <-a.done:
-	default:
-	}
-}
-
 func (a *outboundActor) failures() <-chan error {
 	return a.failed
 }
@@ -467,8 +484,9 @@ type listenerAttempt struct {
 // streamListenerEndpoint adapts the protocol-neutral local listener boundary
 // to one authenticated Connect stream. It owns only volatile attempt state.
 type streamListenerEndpoint struct {
-	ctx      context.Context
-	outbound *outboundActor
+	ctx                 context.Context //nolint:containedctx // Endpoint owns the stream-root context for listener attempt retirement.
+	outbound            *outboundActor
+	terminalSendTimeout time.Duration
 
 	requestOrder sync.RWMutex
 	mu           sync.Mutex
@@ -476,11 +494,12 @@ type streamListenerEndpoint struct {
 	closed       bool
 }
 
-func newStreamListenerEndpoint(ctx context.Context, outbound *outboundActor) *streamListenerEndpoint {
+func newStreamListenerEndpoint(ctx context.Context, outbound *outboundActor, terminalSendTimeout time.Duration) *streamListenerEndpoint {
 	return &streamListenerEndpoint{
-		ctx:      ctx,
-		outbound: outbound,
-		attempts: make(map[string]*listenerAttempt),
+		ctx:                 ctx,
+		outbound:            outbound,
+		terminalSendTimeout: terminalSendTimeout,
+		attempts:            make(map[string]*listenerAttempt),
 	}
 }
 
@@ -533,10 +552,10 @@ func (e *streamListenerEndpoint) Offer(ctx context.Context, offer localbinding.O
 	case <-attempt.terminal:
 		return localbinding.ErrEndpointUnavailable
 	case <-e.ctx.Done():
-		e.cancelAttempt(offer.AttemptID, attempt, "")
+		e.cancelAttempt(ctx, offer.AttemptID, attempt, "")
 		return localbinding.ErrEndpointUnavailable
 	case <-ctx.Done():
-		e.cancelAttempt(offer.AttemptID, attempt, "")
+		e.cancelAttempt(ctx, offer.AttemptID, attempt, "")
 		return ctx.Err()
 	}
 }
@@ -577,11 +596,9 @@ func (e *streamListenerEndpoint) Confirm(ctx context.Context, confirmation local
 	response := &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerEstablished{
 		ListenerEstablished: &relayv1.ListenerEstablished{AttemptId: confirmation.AttemptID, PipeId: confirmation.PipeID},
 	}}
-	e.requestOrder.RLock()
 	err := e.outbound.send(ctx, response)
-	e.requestOrder.RUnlock()
 	if err != nil {
-		e.cancelAttempt(confirmation.AttemptID, attempt, confirmation.PipeID)
+		e.cancelAttempt(ctx, confirmation.AttemptID, attempt, confirmation.PipeID)
 		return endpointSendError(ctx, err)
 	}
 
@@ -591,10 +608,10 @@ func (e *streamListenerEndpoint) Confirm(ctx context.Context, confirmation local
 	case <-attempt.terminal:
 		return localbinding.ErrEndpointUnavailable
 	case <-e.ctx.Done():
-		e.cancelAttempt(confirmation.AttemptID, attempt, confirmation.PipeID)
+		e.cancelAttempt(ctx, confirmation.AttemptID, attempt, confirmation.PipeID)
 		return localbinding.ErrEndpointUnavailable
 	case <-ctx.Done():
-		e.cancelAttempt(confirmation.AttemptID, attempt, confirmation.PipeID)
+		e.cancelAttempt(ctx, confirmation.AttemptID, attempt, confirmation.PipeID)
 		return ctx.Err()
 	}
 }
@@ -603,7 +620,7 @@ func endpointSendError(ctx context.Context, err error) error {
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
-	return fmt.Errorf("%w: %v", localbinding.ErrEndpointUnavailable, err)
+	return fmt.Errorf("%w: %w", localbinding.ErrEndpointUnavailable, err)
 }
 
 func (e *streamListenerEndpoint) Terminate(ctx context.Context, termination localbinding.Termination) error {
@@ -621,11 +638,15 @@ func (e *streamListenerEndpoint) Terminate(ctx context.Context, termination loca
 	close(attempt.terminal)
 	e.mu.Unlock()
 
-	e.requestOrder.RLock()
 	err := e.outbound.send(ctx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerTerminated{
 		ListenerTerminated: &relayv1.ListenerTerminated{AttemptId: termination.AttemptID, PipeId: termination.PipeID},
 	}})
-	e.requestOrder.RUnlock()
+	if err != nil {
+		// The opening manager treats endpoint termination as best-effort. Turn a
+		// bounded delivery failure into stream failure so session retirement, not
+		// a silent terminal drop, is the fallback.
+		e.outbound.fail(err)
+	}
 	return err
 }
 
@@ -683,13 +704,20 @@ func (e *streamListenerEndpoint) confirmed(attemptID, pipeID string) error {
 	return nil
 }
 
-func (e *streamListenerEndpoint) cancelAttempt(attemptID string, attempt *listenerAttempt, pipeID string) {
+func (e *streamListenerEndpoint) cancelAttempt(parent context.Context, attemptID string, attempt *listenerAttempt, pipeID string) {
 	if !e.remove(attemptID, attempt) {
 		return
 	}
-	e.outbound.trySend(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerTerminated{
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), e.terminalSendTimeout)
+	err := e.outbound.send(ctx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerTerminated{
 		ListenerTerminated: &relayv1.ListenerTerminated{AttemptId: attemptID, PipeId: pipeID},
 	}})
+	cancel()
+	if err != nil {
+		// Terminal signals may not be silently dropped behind listener traffic.
+		// Failing the stream makes session retirement the bounded fallback.
+		e.outbound.fail(err)
+	}
 }
 
 func (e *streamListenerEndpoint) remove(attemptID string, attempt *listenerAttempt) bool {

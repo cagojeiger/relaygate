@@ -34,6 +34,19 @@ func TestResolveOpenReturnsExactContext(t *testing.T) {
 	}
 }
 
+func TestResolveOpenDoesNotReadFullControlState(t *testing.T) {
+	binding := admissionBinding("client-a", "/jobs/one", "worker")
+	manager, node, ingress := newAdmissionManager(t, []controlstate.BindingSlot{binding}, []controlstate.BindingSlot{binding})
+	node.resetStateCalls()
+
+	if _, err := manager.ResolveOpen(ingress, admissionAuth("client-a"), "/jobs/one", "worker"); err != nil {
+		t.Fatalf("ResolveOpen(): %v", err)
+	}
+	if calls := node.stateCallCount(); calls != 0 {
+		t.Fatalf("ResolveOpen() full State calls = %d, want 0", calls)
+	}
+}
+
 func TestOpenContextConsumptionIsSharedByValueCopiesAndClones(t *testing.T) {
 	openContext, err := NewOpenContext(
 		"epoch-1",

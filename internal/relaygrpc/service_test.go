@@ -664,6 +664,10 @@ func startTestServerWithDependencies(t *testing.T, bindings BindingManager, open
 }
 
 func startTestServerWithOptionsAndDependencies(t *testing.T, config map[string]clientauth.ClientConfig, maxSessions uint32, authenticationTimeout time.Duration, bindings BindingManager, opener Opener) (*clientauth.Store, *clientsession.Manager, *Server) {
+	return startTestServerWithRuntimeLimits(t, config, maxSessions, maxSessions, authenticationTimeout, bindings, opener)
+}
+
+func startTestServerWithRuntimeLimits(t *testing.T, config map[string]clientauth.ClientConfig, maxSessions, maxInFlightOpens uint32, authenticationTimeout time.Duration, bindings BindingManager, opener Opener) (*clientauth.Store, *clientsession.Manager, *Server) {
 	t.Helper()
 	store, err := clientauth.NewStore(config)
 	if err != nil {
@@ -673,7 +677,7 @@ func startTestServerWithOptionsAndDependencies(t *testing.T, config map[string]c
 	if err != nil {
 		t.Fatalf("NewManager(): %v", err)
 	}
-	service, err := NewService(sessions, bindings, opener, authenticationTimeout)
+	service, err := NewService(sessions, bindings, opener, authenticationTimeout, time.Second, maxInFlightOpens)
 	if err != nil {
 		t.Fatalf("NewService(): %v", err)
 	}
@@ -735,8 +739,9 @@ func (m *testBindingManager) RetireSession(session clientsession.Ref) int {
 }
 
 type testOpener struct {
-	open   func(context.Context, clientsession.Session, string, string) (opening.Result, error)
-	retire func(clientsession.Ref) int
+	open      func(context.Context, clientsession.Session, string, string) (opening.Result, error)
+	closePipe func(clientsession.Ref, string) bool
+	retire    func(clientsession.Ref) int
 }
 
 func (o *testOpener) Open(ctx context.Context, session clientsession.Session, endpoint, targetID string) (opening.Result, error) {
@@ -744,6 +749,13 @@ func (o *testOpener) Open(ctx context.Context, session clientsession.Session, en
 		return opening.Result{}, opening.ErrUnavailable
 	}
 	return o.open(ctx, session, endpoint, targetID)
+}
+
+func (o *testOpener) ClosePipe(session clientsession.Ref, pipeID string) bool {
+	if o.closePipe == nil {
+		return false
+	}
+	return o.closePipe(session, pipeID)
 }
 
 func (o *testOpener) RetireSession(session clientsession.Ref) int {

@@ -249,6 +249,15 @@ func (f *FSM) State() State {
 	return f.stateLocked()
 }
 
+// ClusterEpoch returns the current epoch without cloning the durable binding
+// and Gateway tables. Callers that need a complete snapshot must use State.
+func (f *FSM) ClusterEpoch() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	return f.clusterEpoch
+}
+
 func (f *FSM) Lookup(key BindingKey) BindingSlot {
 	f.mu.RLock()
 	defer f.mu.RUnlock()

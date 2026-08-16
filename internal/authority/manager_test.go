@@ -474,11 +474,12 @@ func TestManagerDoesNotStartAfterClose(t *testing.T) {
 }
 
 type fakeRaftNode struct {
-	mu        sync.RWMutex
-	status    raftnode.Status
-	state     controlstate.State
-	verifyErr error
-	verify    func(context.Context) error
+	mu         sync.RWMutex
+	status     raftnode.Status
+	state      controlstate.State
+	stateCalls uint64
+	verifyErr  error
+	verify     func(context.Context) error
 }
 
 func (n *fakeRaftNode) Status() raftnode.Status {
@@ -488,9 +489,38 @@ func (n *fakeRaftNode) Status() raftnode.Status {
 }
 
 func (n *fakeRaftNode) State() controlstate.State {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.stateCalls++
+	return n.state
+}
+
+func (n *fakeRaftNode) ClusterEpoch() string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return n.state
+	return n.state.ClusterEpoch
+}
+
+func (n *fakeRaftNode) Lookup(key controlstate.BindingKey) controlstate.BindingSlot {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for _, slot := range n.state.Bindings {
+		if slot.Key == key {
+			return slot
+		}
+	}
+	return controlstate.BindingSlot{Key: key}
+}
+
+func (n *fakeRaftNode) LookupGateway(gatewayID string) controlstate.GatewaySlot {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	for _, slot := range n.state.Gateways {
+		if slot.GatewayID == gatewayID {
+			return slot
+		}
+	}
+	return controlstate.GatewaySlot{GatewayID: gatewayID}
 }
 
 func (n *fakeRaftNode) VerifyLeader(ctx context.Context) error {
@@ -534,4 +564,16 @@ func (n *fakeRaftNode) setState(state controlstate.State) {
 	n.mu.Lock()
 	n.state = state
 	n.mu.Unlock()
+}
+
+func (n *fakeRaftNode) resetStateCalls() {
+	n.mu.Lock()
+	n.stateCalls = 0
+	n.mu.Unlock()
+}
+
+func (n *fakeRaftNode) stateCallCount() uint64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.stateCalls
 }

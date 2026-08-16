@@ -204,7 +204,14 @@ func run() error {
 		})
 	}
 	defer stopGateway()
-	relayService, err := relaygrpc.NewService(clientRuntime.Sessions(), bindingManager, openingManager, appConfig.Relay.AuthenticationTimeout.Value())
+	relayService, err := relaygrpc.NewService(
+		clientRuntime.Sessions(),
+		bindingManager,
+		openingManager,
+		appConfig.Relay.AuthenticationTimeout.Value(),
+		appConfig.Relay.OpenTimeout.Value(),
+		appConfig.Relay.MaxPipes,
+	)
 	if err != nil {
 		stopGateway()
 		authorityManager.Close()

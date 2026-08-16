@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	ErrInvalidOpen     = errors.New("invalid Open admission request")
-	ErrRouteNotFound   = errors.New("exact Open route not found")
-	ErrOpenUnavailable = errors.New("Open admission unavailable")
+	ErrInvalidOpen     = errors.New("invalid open admission request")
+	ErrRouteNotFound   = errors.New("exact open route not found")
+	ErrOpenUnavailable = errors.New("open admission unavailable")
 )
 
 // AuthContext is the authenticated caller identity captured by one Open
@@ -68,7 +68,7 @@ func NewOpenContext(
 		return OpenContext{}, fmt.Errorf("%w: exact committed live binding is required", ErrInvalidOpen)
 	}
 	if err := binding.Ref.Validate(); err != nil {
-		return OpenContext{}, fmt.Errorf("%w: invalid binding ref: %v", ErrInvalidOpen, err)
+		return OpenContext{}, fmt.Errorf("%w: invalid binding ref: %w", ErrInvalidOpen, err)
 	}
 	ref := *binding.Ref
 	binding.Ref = &ref
@@ -130,7 +130,7 @@ func ExactBindingKey(auth AuthContext, endpoint, targetID string) (controlstate.
 		TargetID:        targetID,
 	}
 	if err := key.Validate(); err != nil {
-		return controlstate.BindingKey{}, fmt.Errorf("%w: %v", ErrInvalidOpen, err)
+		return controlstate.BindingKey{}, fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 	}
 	return key, nil
 }

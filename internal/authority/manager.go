@@ -29,6 +29,9 @@ type Config struct {
 type RaftNode interface {
 	Status() raftnode.Status
 	State() controlstate.State
+	ClusterEpoch() string
+	Lookup(controlstate.BindingKey) controlstate.BindingSlot
+	LookupGateway(string) controlstate.GatewaySlot
 	VerifyLeader(context.Context) error
 }
 
@@ -326,20 +329,11 @@ func (m *Manager) ResolveOpen(ingress SessionRef, auth AuthContext, endpoint, ta
 		return OpenContext{}, fmt.Errorf("%w: ingress control session: %w", ErrOpenUnavailable, ErrSnapshotFirst)
 	}
 
-	state := m.node.State()
-	if m.current == nil || state.ClusterEpoch != m.current.ClusterEpoch {
+	if m.current == nil || m.node.ClusterEpoch() != m.current.ClusterEpoch {
 		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, ErrNoAuthority)
 	}
-	var committed controlstate.BindingSlot
-	found := false
-	for _, slot := range state.Bindings {
-		if slot.Key == key && !slot.IsTombstone() {
-			committed = slot
-			found = true
-			break
-		}
-	}
-	if !found || committed.Generation == 0 || committed.Ref == nil {
+	committed := m.node.Lookup(key)
+	if committed.Generation == 0 || committed.Ref == nil {
 		return OpenContext{}, ErrRouteNotFound
 	}
 
@@ -358,11 +352,11 @@ func (m *Manager) ResolveOpen(ingress SessionRef, auth AuthContext, endpoint, ta
 
 	attemptID, err := newID()
 	if err != nil {
-		return OpenContext{}, fmt.Errorf("%w: %v", ErrOpenUnavailable, err)
+		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, err)
 	}
 	result, err := NewOpenContext(m.current.ClusterEpoch, m.current.AuthorityID, attemptID, auth, committed)
 	if err != nil {
-		return OpenContext{}, fmt.Errorf("%w: construct Open context: %v", ErrOpenUnavailable, err)
+		return OpenContext{}, fmt.Errorf("%w: construct open context: %w", ErrOpenUnavailable, err)
 	}
 	return result, nil
 }
@@ -530,13 +524,8 @@ func (m *Manager) initializeDeadlinesLocked() {
 }
 
 func (m *Manager) gatewaySlotCurrentLocked(gatewayID string, generation uint64, gatewayInstanceID string) bool {
-	for _, slot := range m.node.State().Gateways {
-		if slot.GatewayID != gatewayID {
-			continue
-		}
-		return slot.Generation == generation && slot.Ref != nil && slot.Ref.GatewayInstanceID == gatewayInstanceID
-	}
-	return false
+	slot := m.node.LookupGateway(gatewayID)
+	return slot.Generation == generation && slot.Ref != nil && slot.Ref.GatewayInstanceID == gatewayInstanceID
 }
 
 func bindingSlotsEqual(left, right controlstate.BindingSlot) bool {

@@ -383,6 +383,10 @@ func (n *Node) State() controlstate.State {
 	return n.fsm.State()
 }
 
+func (n *Node) ClusterEpoch() string {
+	return n.fsm.ClusterEpoch()
+}
+
 func (n *Node) Lookup(key controlstate.BindingKey) controlstate.BindingSlot {
 	return n.fsm.Lookup(key)
 }
@@ -394,7 +398,6 @@ func (n *Node) LookupGateway(gatewayID string) controlstate.GatewaySlot {
 func (n *Node) Status() Status {
 	stats := n.raft.Stats()
 	leaderAddress, leaderID := n.raft.LeaderWithID()
-	state := n.fsm.State()
 	status := Status{
 		NodeID:             n.config.NodeID,
 		Role:               n.raft.State().String(),
@@ -406,7 +409,7 @@ func (n *Node) Status() Status {
 		LastSnapshotIndex:  parseStat(stats, "last_snapshot_index"),
 		PendingFSMCommands: parseStat(stats, "fsm_pending"),
 		PeerCount:          parseStat(stats, "num_peers"),
-		ClusterEpoch:       state.ClusterEpoch,
+		ClusterEpoch:       n.fsm.ClusterEpoch(),
 	}
 	status.Ready = !n.draining.Load() && status.LeaderAddress != "" && status.ClusterEpoch != ""
 	return status

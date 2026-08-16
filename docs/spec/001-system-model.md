@@ -204,6 +204,12 @@ global compare-and-set이 아니다. Authority가 바뀌면 재검증된 범위�
 > `endpoint_pattern == endpoint`인 literal binding과 ingress/owner가 같은 Gateway process인 경우만 진행한다.
 > 다른 owner면 fail closed한다. 이 제한은 여섯 gate를 완화하지 않는다.
 
+`request_id`는 한 authenticated Relay stream에서 아직 terminal response를 보내지 않은 Open을 구분하는
+correlation ID다. Retry/idempotency key가 아니며 완료된 ID를 다시 보내더라도 이전 outcome이나 `PipeId`를
+resume/replay하지 않는다. 같은 ID가 in-flight인 동안의 두 번째 Open은 `OpenRequestRejected`로 거부하고 원래
+Open만 `Opened/Failed/Unknown` 중 하나를 낸다. Open worker는 process 전체 `relay.max_pipes` semaphore를
+공유하므로 stream 수를 곱해 goroutine을 늘릴 수 없다.
+
 ## One, exact target, All
 
 ```mermaid
@@ -339,6 +345,14 @@ Listener의 accept 응답은 provisional이다. Owner가 `Accepted`를 기록한
 전에는 Listener SDK가 Pipe handle을 application에 노출하지 않는다. Confirmation 전 owner crash/hop failure는
 provisional attempt를 terminal로 만든다.
 
+`CancelOpen(request_id)`는 같은 stream의 아직 response-committed 되지 않은 worker에 cancel signal을
+idempotent하게 전달한다. `OpenCancelAcknowledged.was_pending`은 이 local signal 전달 여부일 뿐 최종 outcome이 아니다.
+Cancel과 Listener accept가 경쟁하면 owner의 기존 LP 순서가 그대로 이긴다. Cancel-first는 `Failed(Cancelled)`,
+accept-first는 terminal 전파 뒤 `Unknown`일 수 있다. Cancel ACK와 Open terminal response의 wire 도착 순서는
+정하지 않으며 SDK는 message kind와 `request_id`로 처리한다. Coordinator response LP 전에 `was_pending=true`가
+된 Open은 직전에 stable failure를 계산했더라도 `Cancelled`로 정규화하고, 이미 accept LP를 지난 `Unknown`은
+보존한다.
+
 현재 same-process slice는 authority 응답을 decode할 때 process-local atomic single-use capability를 만들고,
 모든 value copy가 같은 consume state를 공유한다. Manager에 영구 replay tombstone을 쌓지 않으므로 memory는
 bounded하다. 이 capability를 remote owner로 serialize/forward하지 않으며, cross-Gateway replay 계약은 아직
@@ -381,6 +395,13 @@ flowchart LR
   우회하며 폐기된 volatile payload를 재전송하지 않는다.
 - Session, listener, unconsumed attempt와 Pipe table도 configured bound를 가진다. 한계에서는 새 항목을
   fail closed하고 기존 live state를 묵시적으로 제거하지 않는다.
+- `ClosePipe(pipe_id)`는 그 Relay stream의 exact caller session이 소유한 accepted Pipe만 terminal로 만든다.
+  `owned=false`는 unknown ID와 다른 session 소유 ID를 구분하지 않는다. `owned=true` close replay는 process의
+  `relay.max_pipes` 크기 terminal history에 record가 남아 있는 동안 idempotent no-op이며 영속 tombstone은 없다.
+  Session/credential retirement와 Close는 같은 owner table mutex에서 first local terminal effect 하나로 순서화한다.
+- Stream/Session 종료는 모든 in-flight Open worker를 cancel하고 join한 뒤 caller 소유 Pipe를 retire한다.
+  Listener terminal signal은 bounded wait로 single-Send actor에 전달하며 queue 압력으로 전달할 수 없으면
+  stream을 실패시켜 session retirement로 수렴한다. Terminal을 조용히 drop하지 않는다.
 
 ## 상태 소유권
 

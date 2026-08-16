@@ -97,7 +97,9 @@ jobs:
           cache: true
       - name: Start three-node cluster
         run: docker compose up -d --build
-      - name: Verify gateway registration, failover, and control smoke
+      - name: Build public Relay smoke client
+        run: docker build --file Dockerfile.compose-test --tag relaygate-compose-test:ci .
+      - name: Verify public Relay lifecycle, gateway failover, and control smoke
         shell: bash
         run: |
           leader_service=""
@@ -115,6 +117,13 @@ jobs:
           test -n "$leader_service"
           RELAYGATE_COMPOSE_ADMIN_ADDRS="127.0.0.1:9091,127.0.0.1:9092,127.0.0.1:9093" \
             go test -race -count=1 ./internal/gatewaycontrol -run '^TestComposeGatewayControlReady$' -v
+
+          relay_container=$(docker compose ps -q relaygate-1)
+          test -n "$relay_container"
+          docker run --rm \
+            --network "container:${relay_container}" \
+            --env RELAYGATE_COMPOSE_RELAY_ADDR=127.0.0.1:7200 \
+            relaygate-compose-test:ci
 
           docker compose stop "$leader_service"
           survivor_admin_addrs=()

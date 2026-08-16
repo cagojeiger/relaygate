@@ -72,7 +72,7 @@ const (
 
 type pendingMutation struct {
 	kind mutationKind
-	ctx  context.Context
+	ctx  context.Context //nolint:containedctx // Pending mutations own the caller deadline until Raft commit or retry completes.
 	done chan mutationOutcome
 
 	key      controlstate.BindingKey
@@ -180,10 +180,10 @@ func (c *Client) Install(ctx context.Context, key controlstate.BindingKey, ref c
 		return controlstate.BindingSlot{}, fmt.Errorf("%w: context is required", ErrInvalidMutation)
 	}
 	if err := key.Validate(); err != nil {
-		return controlstate.BindingSlot{}, fmt.Errorf("%w: %v", ErrInvalidMutation, err)
+		return controlstate.BindingSlot{}, fmt.Errorf("%w: %w", ErrInvalidMutation, err)
 	}
 	if err := ref.Validate(); err != nil {
-		return controlstate.BindingSlot{}, fmt.Errorf("%w: %v", ErrInvalidMutation, err)
+		return controlstate.BindingSlot{}, fmt.Errorf("%w: %w", ErrInvalidMutation, err)
 	}
 	if ref.GatewayID != c.config.GatewayID || ref.GatewayInstanceID != c.instanceID {
 		return controlstate.BindingSlot{}, fmt.Errorf("%w: install ref does not belong to this gateway instance", ErrInvalidMutation)
@@ -214,13 +214,13 @@ func (c *Client) Remove(ctx context.Context, slot controlstate.BindingSlot) erro
 		return fmt.Errorf("%w: context is required", ErrInvalidMutation)
 	}
 	if err := slot.Key.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidMutation, err)
+		return fmt.Errorf("%w: %w", ErrInvalidMutation, err)
 	}
 	if slot.Generation == 0 || slot.Generation == ^uint64(0) || slot.Ref == nil {
 		return fmt.Errorf("%w: remove requires a committed live slot", ErrInvalidMutation)
 	}
 	if err := slot.Ref.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidMutation, err)
+		return fmt.Errorf("%w: %w", ErrInvalidMutation, err)
 	}
 	if slot.Ref.GatewayID != c.config.GatewayID {
 		return fmt.Errorf("%w: remove ref belongs to another gateway", ErrInvalidMutation)
@@ -564,15 +564,21 @@ func (c *Client) handleMutationResult(mutation *pendingMutation, result *control
 	case controlv1.MutationCode_MUTATION_CODE_APPLIED, controlv1.MutationCode_MUTATION_CODE_ALREADY_APPLIED:
 		if mutation.kind == mutationInstall {
 			slot, err := bindingSlotFromProto(result.GetSlot(), c.config.GatewayID, true)
-			if err != nil || !bindingSlotsEqual(slot, mutation.installTarget()) {
-				return false, mutationOutcome{}, fmt.Errorf("control returned an invalid install result: %v", err)
+			if err != nil {
+				return false, mutationOutcome{}, fmt.Errorf("control returned an invalid install result: %w", err)
+			}
+			if !bindingSlotsEqual(slot, mutation.installTarget()) {
+				return false, mutationOutcome{}, fmt.Errorf("control returned a mismatched install result")
 			}
 			c.owned[slot.Key] = cloneBindingSlot(slot)
 			return false, mutationOutcome{slot: cloneBindingSlot(slot)}, nil
 		}
 		slot, err := bindingSlotFromProto(result.GetSlot(), c.config.GatewayID, false)
-		if err != nil || slot.Key != mutation.remove.Key || slot.Ref != nil || slot.Generation != mutation.remove.Generation+1 {
-			return false, mutationOutcome{}, fmt.Errorf("control returned an invalid remove result: %v", err)
+		if err != nil {
+			return false, mutationOutcome{}, fmt.Errorf("control returned an invalid remove result: %w", err)
+		}
+		if slot.Key != mutation.remove.Key || slot.Ref != nil || slot.Generation != mutation.remove.Generation+1 {
+			return false, mutationOutcome{}, fmt.Errorf("control returned a mismatched remove result")
 		}
 		c.owned[slot.Key] = cloneBindingSlot(slot)
 		return false, mutationOutcome{}, nil
@@ -610,8 +616,11 @@ func (c *Client) rejectedInstallSlotLocked(mutation *pendingMutation, wire *cont
 		return controlstate.BindingSlot{}, false, fmt.Errorf("control rejected install without a current slot")
 	}
 	key, err := bindingKeyFromProto(wire.GetKey())
-	if err != nil || key != mutation.key {
-		return controlstate.BindingSlot{}, false, fmt.Errorf("control rejected install with an invalid current key: %v", err)
+	if err != nil {
+		return controlstate.BindingSlot{}, false, fmt.Errorf("control rejected install with an invalid current key: %w", err)
+	}
+	if key != mutation.key {
+		return controlstate.BindingSlot{}, false, fmt.Errorf("control rejected install with a mismatched current key")
 	}
 	current := controlstate.BindingSlot{Key: key, Generation: wire.GetGeneration()}
 	if wire.GetRef() == nil {
@@ -953,7 +962,7 @@ func (c *Client) stop(cause error) {
 	if cause == nil {
 		cause = ErrClientClosed
 	} else {
-		cause = fmt.Errorf("%w: %v", ErrClientClosed, cause)
+		cause = fmt.Errorf("%w: %w", ErrClientClosed, cause)
 	}
 	c.mu.Lock()
 	c.status = Status{GatewayID: c.config.GatewayID, GatewayInstanceID: c.instanceID, State: StateDisconnected}

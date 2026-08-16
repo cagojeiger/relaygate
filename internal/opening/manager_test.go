@@ -184,6 +184,29 @@ func TestLateOriginalAttemptDeadlineIsNoOpAfterAccepted(t *testing.T) {
 	}
 }
 
+func TestSuccessfulOpenDetachesAttemptContextFromPipeLifetime(t *testing.T) {
+	h := newHarness(t, 1, time.Second, &scriptedEndpoint{})
+	defer h.manager.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := h.manager.Open(ctx, h.caller, testEndpoint, testTarget)
+	if err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	snapshot, ok := h.manager.Inspect(result.AttemptID)
+	if !ok || snapshot.State != StateAccepted || snapshot.PipeID != result.PipeID || h.manager.ActiveCount() != 1 {
+		t.Fatalf("attempt context ended accepted Pipe: %#v, found=%v active=%d", snapshot, ok, h.manager.ActiveCount())
+	}
+	if !h.manager.ClosePipe(h.caller.Ref, result.PipeID) {
+		t.Fatal("ClosePipe did not terminalize detached Pipe")
+	}
+	if termination := receiveTermination(t, h.endpoint); termination.PipeID != result.PipeID {
+		t.Fatalf("termination = %#v", termination)
+	}
+}
+
 func TestConfirmationLossIsUnknown(t *testing.T) {
 	endpoint := &scriptedEndpoint{confirm: func(context.Context, localbinding.Confirmation) error {
 		return localbinding.ErrEndpointUnavailable
@@ -276,6 +299,89 @@ func TestCallerListenerAndCredentialRetirementSynchronouslyTerminalize(t *testin
 	}
 }
 
+func TestClosePipeIsExactSessionOwnedAndIdempotent(t *testing.T) {
+	endpoint := &scriptedEndpoint{}
+	h := newSequenceHarness(t, 2, endpoint)
+	defer h.manager.Close()
+
+	first, err := h.manager.Open(context.Background(), h.caller, testEndpoint, testTarget)
+	if err != nil {
+		t.Fatalf("first Open(): %v", err)
+	}
+	h.admitter.setContext(newOpenContext(t, "attempt-2", h.caller.Ref, h.slot))
+	second, err := h.manager.Open(context.Background(), h.caller, testEndpoint, testTarget)
+	if err != nil {
+		t.Fatalf("second Open(): %v", err)
+	}
+
+	foreign := h.caller.Ref
+	foreign.ClientSessionID = "other-session"
+	if h.manager.ClosePipe(foreign, first.PipeID) {
+		t.Fatal("foreign session closed caller Pipe")
+	}
+	if h.manager.ActiveCount() != 2 {
+		t.Fatalf("foreign close changed active count to %d", h.manager.ActiveCount())
+	}
+
+	if !h.manager.ClosePipe(h.caller.Ref, first.PipeID) {
+		t.Fatal("caller could not close owned Pipe")
+	}
+	if termination := receiveTermination(t, endpoint); termination.PipeID != first.PipeID {
+		t.Fatalf("first termination = %#v", termination)
+	}
+	if snapshot, ok := h.manager.Inspect(second.AttemptID); !ok || snapshot.State != StateAccepted {
+		t.Fatalf("second Pipe changed while closing first: %#v, found=%v", snapshot, ok)
+	}
+	if !h.manager.ClosePipe(h.caller.Ref, first.PipeID) {
+		t.Fatal("duplicate owned close was not idempotent")
+	}
+	assertNoTermination(t, endpoint, 20*time.Millisecond)
+
+	if !h.manager.ClosePipe(h.caller.Ref, second.PipeID) {
+		t.Fatal("caller could not close second Pipe")
+	}
+	if termination := receiveTermination(t, endpoint); termination.PipeID != second.PipeID {
+		t.Fatalf("second termination = %#v", termination)
+	}
+	if h.manager.ActiveCount() != 0 {
+		t.Fatalf("active count = %d, want 0", h.manager.ActiveCount())
+	}
+}
+
+func TestClosePipeAndSessionRetirementHaveOneTerminalEffect(t *testing.T) {
+	endpoint := &scriptedEndpoint{}
+	h := newHarness(t, 1, time.Second, endpoint)
+	defer h.manager.Close()
+	result, err := h.manager.Open(context.Background(), h.caller, testEndpoint, testTarget)
+	if err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		h.manager.ClosePipe(h.caller.Ref, result.PipeID)
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		h.manager.RetireSession(h.caller.Ref)
+	}()
+	close(start)
+	wait.Wait()
+
+	if termination := receiveTermination(t, endpoint); termination.PipeID != result.PipeID {
+		t.Fatalf("termination = %#v", termination)
+	}
+	assertNoTermination(t, endpoint, 20*time.Millisecond)
+	if snapshot, ok := h.manager.Inspect(result.AttemptID); !ok || snapshot.State != StateTerminal {
+		t.Fatalf("terminal snapshot = %#v, found=%v", snapshot, ok)
+	}
+}
+
 func TestOpenCapacityAndTerminalHistoryAreBounded(t *testing.T) {
 	h := newHarness(t, 1, time.Second, &scriptedEndpoint{})
 	defer h.manager.Close()
@@ -303,9 +409,10 @@ func TestOpenCapacityAndTerminalHistoryAreBounded(t *testing.T) {
 	entries := len(terminalHarness.manager.entries)
 	terminals := len(terminalHarness.manager.terminalOrder)
 	attempts := len(terminalHarness.manager.byAttempt)
+	pipes := len(terminalHarness.manager.byPipe)
 	terminalHarness.manager.mu.Unlock()
-	if entries > 2 || terminals > 2 || attempts > 2 {
-		t.Fatalf("bounded terminal cache = entries %d terminals %d attempts %d", entries, terminals, attempts)
+	if entries > 2 || terminals > 2 || attempts > 2 || pipes > 2 {
+		t.Fatalf("bounded terminal cache = entries %d terminals %d attempts %d pipes %d", entries, terminals, attempts, pipes)
 	}
 }
 
@@ -775,6 +882,21 @@ func receiveTermination(t *testing.T, endpoint *scriptedEndpoint) localbinding.T
 	case <-time.After(time.Second):
 		t.Fatal("listener did not receive termination")
 		return localbinding.Termination{}
+	}
+}
+
+func assertNoTermination(t *testing.T, endpoint *scriptedEndpoint, wait time.Duration) {
+	t.Helper()
+	endpoint.mu.Lock()
+	if endpoint.terminations == nil {
+		endpoint.terminations = make(chan localbinding.Termination, 16)
+	}
+	terminations := endpoint.terminations
+	endpoint.mu.Unlock()
+	select {
+	case termination := <-terminations:
+		t.Fatalf("unexpected duplicate termination: %#v", termination)
+	case <-time.After(wait):
 	}
 }
 

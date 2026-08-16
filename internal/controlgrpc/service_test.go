@@ -111,6 +111,7 @@ func TestAdmitOpenReturnsExactContextWithoutDisruptingMutationStream(t *testing.
 		ApiKeyId:        "key-a",
 		AuthRevision:    "revision-a",
 	}
+	harness.node.resetStateCalls()
 
 	response, err := harness.client.AdmitOpen(harness.ctx, &controlv1.AdmitOpenRequest{
 		Session:  session,
@@ -120,6 +121,9 @@ func TestAdmitOpenReturnsExactContextWithoutDisruptingMutationStream(t *testing.
 	})
 	if err != nil {
 		t.Fatalf("AdmitOpen(): %v", err)
+	}
+	if calls := harness.node.stateCallCount(); calls != 0 {
+		t.Fatalf("AdmitOpen() full State calls = %d, want 0", calls)
 	}
 	openContext := response.GetContext()
 	if openContext.GetClusterEpoch() != testEpoch || openContext.GetAuthorityId() != session.GetAuthorityId() ||
@@ -739,9 +743,10 @@ func installBinding(
 type fakeNode struct {
 	fsm *controlstate.FSM
 
-	mu        sync.RWMutex
-	role      string
-	verifyErr error
+	mu         sync.RWMutex
+	role       string
+	verifyErr  error
+	stateCalls uint64
 }
 
 func newFakeNode(t *testing.T) *fakeNode {
@@ -769,7 +774,14 @@ func (n *fakeNode) Status() raftnode.Status {
 }
 
 func (n *fakeNode) State() controlstate.State {
+	n.mu.Lock()
+	n.stateCalls++
+	n.mu.Unlock()
 	return n.fsm.State()
+}
+
+func (n *fakeNode) ClusterEpoch() string {
+	return n.fsm.ClusterEpoch()
 }
 
 func (n *fakeNode) VerifyLeader(context.Context) error {
@@ -800,4 +812,16 @@ func (n *fakeNode) setRole(role string) {
 	n.mu.Lock()
 	n.role = role
 	n.mu.Unlock()
+}
+
+func (n *fakeNode) resetStateCalls() {
+	n.mu.Lock()
+	n.stateCalls = 0
+	n.mu.Unlock()
+}
+
+func (n *fakeNode) stateCallCount() uint64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.stateCalls
 }

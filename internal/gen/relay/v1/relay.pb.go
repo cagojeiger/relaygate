@@ -31,6 +31,7 @@ const (
 	OpenFailure_OPEN_FAILURE_CAPACITY_REACHED  OpenFailure = 4
 	OpenFailure_OPEN_FAILURE_LISTENER_REJECTED OpenFailure = 5
 	OpenFailure_OPEN_FAILURE_DEADLINE_EXCEEDED OpenFailure = 6
+	OpenFailure_OPEN_FAILURE_CANCELLED         OpenFailure = 7
 )
 
 // Enum value maps for OpenFailure.
@@ -43,6 +44,7 @@ var (
 		4: "OPEN_FAILURE_CAPACITY_REACHED",
 		5: "OPEN_FAILURE_LISTENER_REJECTED",
 		6: "OPEN_FAILURE_DEADLINE_EXCEEDED",
+		7: "OPEN_FAILURE_CANCELLED",
 	}
 	OpenFailure_value = map[string]int32{
 		"OPEN_FAILURE_UNSPECIFIED":       0,
@@ -52,6 +54,7 @@ var (
 		"OPEN_FAILURE_CAPACITY_REACHED":  4,
 		"OPEN_FAILURE_LISTENER_REJECTED": 5,
 		"OPEN_FAILURE_DEADLINE_EXCEEDED": 6,
+		"OPEN_FAILURE_CANCELLED":         7,
 	}
 )
 
@@ -80,6 +83,52 @@ func (x OpenFailure) Number() protoreflect.EnumNumber {
 // Deprecated: Use OpenFailure.Descriptor instead.
 func (OpenFailure) EnumDescriptor() ([]byte, []int) {
 	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{0}
+}
+
+type OpenRequestFailure int32
+
+const (
+	OpenRequestFailure_OPEN_REQUEST_FAILURE_UNSPECIFIED         OpenRequestFailure = 0
+	OpenRequestFailure_OPEN_REQUEST_FAILURE_DUPLICATE_IN_FLIGHT OpenRequestFailure = 1
+)
+
+// Enum value maps for OpenRequestFailure.
+var (
+	OpenRequestFailure_name = map[int32]string{
+		0: "OPEN_REQUEST_FAILURE_UNSPECIFIED",
+		1: "OPEN_REQUEST_FAILURE_DUPLICATE_IN_FLIGHT",
+	}
+	OpenRequestFailure_value = map[string]int32{
+		"OPEN_REQUEST_FAILURE_UNSPECIFIED":         0,
+		"OPEN_REQUEST_FAILURE_DUPLICATE_IN_FLIGHT": 1,
+	}
+)
+
+func (x OpenRequestFailure) Enum() *OpenRequestFailure {
+	p := new(OpenRequestFailure)
+	*p = x
+	return p
+}
+
+func (x OpenRequestFailure) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (OpenRequestFailure) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_relaygate_relay_v1_relay_proto_enumTypes[1].Descriptor()
+}
+
+func (OpenRequestFailure) Type() protoreflect.EnumType {
+	return &file_proto_relaygate_relay_v1_relay_proto_enumTypes[1]
+}
+
+func (x OpenRequestFailure) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use OpenRequestFailure.Descriptor instead.
+func (OpenRequestFailure) EnumDescriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{1}
 }
 
 type ListenerDecisionFailure int32
@@ -118,11 +167,11 @@ func (x ListenerDecisionFailure) String() string {
 }
 
 func (ListenerDecisionFailure) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_relaygate_relay_v1_relay_proto_enumTypes[1].Descriptor()
+	return file_proto_relaygate_relay_v1_relay_proto_enumTypes[2].Descriptor()
 }
 
 func (ListenerDecisionFailure) Type() protoreflect.EnumType {
-	return &file_proto_relaygate_relay_v1_relay_proto_enumTypes[1]
+	return &file_proto_relaygate_relay_v1_relay_proto_enumTypes[2]
 }
 
 func (x ListenerDecisionFailure) Number() protoreflect.EnumNumber {
@@ -131,7 +180,7 @@ func (x ListenerDecisionFailure) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ListenerDecisionFailure.Descriptor instead.
 func (ListenerDecisionFailure) EnumDescriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{1}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{2}
 }
 
 type ConnectRequest struct {
@@ -145,6 +194,8 @@ type ConnectRequest struct {
 	//	*ConnectRequest_ListenerAccept
 	//	*ConnectRequest_ListenerReject
 	//	*ConnectRequest_ListenerConfirmed
+	//	*ConnectRequest_CancelOpen
+	//	*ConnectRequest_ClosePipe
 	Message       isConnectRequest_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -250,6 +301,24 @@ func (x *ConnectRequest) GetListenerConfirmed() *ListenerConfirmed {
 	return nil
 }
 
+func (x *ConnectRequest) GetCancelOpen() *CancelOpen {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectRequest_CancelOpen); ok {
+			return x.CancelOpen
+		}
+	}
+	return nil
+}
+
+func (x *ConnectRequest) GetClosePipe() *ClosePipe {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectRequest_ClosePipe); ok {
+			return x.ClosePipe
+		}
+	}
+	return nil
+}
+
 type isConnectRequest_Message interface {
 	isConnectRequest_Message()
 }
@@ -282,6 +351,14 @@ type ConnectRequest_ListenerConfirmed struct {
 	ListenerConfirmed *ListenerConfirmed `protobuf:"bytes,7,opt,name=listener_confirmed,json=listenerConfirmed,proto3,oneof"`
 }
 
+type ConnectRequest_CancelOpen struct {
+	CancelOpen *CancelOpen `protobuf:"bytes,8,opt,name=cancel_open,json=cancelOpen,proto3,oneof"`
+}
+
+type ConnectRequest_ClosePipe struct {
+	ClosePipe *ClosePipe `protobuf:"bytes,9,opt,name=close_pipe,json=closePipe,proto3,oneof"`
+}
+
 func (*ConnectRequest_Authenticate) isConnectRequest_Message() {}
 
 func (*ConnectRequest_BindListener) isConnectRequest_Message() {}
@@ -295,6 +372,10 @@ func (*ConnectRequest_ListenerAccept) isConnectRequest_Message() {}
 func (*ConnectRequest_ListenerReject) isConnectRequest_Message() {}
 
 func (*ConnectRequest_ListenerConfirmed) isConnectRequest_Message() {}
+
+func (*ConnectRequest_CancelOpen) isConnectRequest_Message() {}
+
+func (*ConnectRequest_ClosePipe) isConnectRequest_Message() {}
 
 type ConnectResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -310,6 +391,9 @@ type ConnectResponse struct {
 	//	*ConnectResponse_PipeOpenFailed
 	//	*ConnectResponse_PipeOpenUnknown
 	//	*ConnectResponse_ListenerDecisionRejected
+	//	*ConnectResponse_OpenCancelAcknowledged
+	//	*ConnectResponse_PipeCloseAcknowledged
+	//	*ConnectResponse_OpenRequestRejected
 	Message       isConnectResponse_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -442,6 +526,33 @@ func (x *ConnectResponse) GetListenerDecisionRejected() *ListenerDecisionRejecte
 	return nil
 }
 
+func (x *ConnectResponse) GetOpenCancelAcknowledged() *OpenCancelAcknowledged {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectResponse_OpenCancelAcknowledged); ok {
+			return x.OpenCancelAcknowledged
+		}
+	}
+	return nil
+}
+
+func (x *ConnectResponse) GetPipeCloseAcknowledged() *PipeCloseAcknowledged {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectResponse_PipeCloseAcknowledged); ok {
+			return x.PipeCloseAcknowledged
+		}
+	}
+	return nil
+}
+
+func (x *ConnectResponse) GetOpenRequestRejected() *OpenRequestRejected {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectResponse_OpenRequestRejected); ok {
+			return x.OpenRequestRejected
+		}
+	}
+	return nil
+}
+
 type isConnectResponse_Message interface {
 	isConnectResponse_Message()
 }
@@ -486,6 +597,18 @@ type ConnectResponse_ListenerDecisionRejected struct {
 	ListenerDecisionRejected *ListenerDecisionRejected `protobuf:"bytes,10,opt,name=listener_decision_rejected,json=listenerDecisionRejected,proto3,oneof"`
 }
 
+type ConnectResponse_OpenCancelAcknowledged struct {
+	OpenCancelAcknowledged *OpenCancelAcknowledged `protobuf:"bytes,11,opt,name=open_cancel_acknowledged,json=openCancelAcknowledged,proto3,oneof"`
+}
+
+type ConnectResponse_PipeCloseAcknowledged struct {
+	PipeCloseAcknowledged *PipeCloseAcknowledged `protobuf:"bytes,12,opt,name=pipe_close_acknowledged,json=pipeCloseAcknowledged,proto3,oneof"`
+}
+
+type ConnectResponse_OpenRequestRejected struct {
+	OpenRequestRejected *OpenRequestRejected `protobuf:"bytes,13,opt,name=open_request_rejected,json=openRequestRejected,proto3,oneof"`
+}
+
 func (*ConnectResponse_ClientSessionOpened) isConnectResponse_Message() {}
 
 func (*ConnectResponse_ListenerBound) isConnectResponse_Message() {}
@@ -505,6 +628,12 @@ func (*ConnectResponse_PipeOpenFailed) isConnectResponse_Message() {}
 func (*ConnectResponse_PipeOpenUnknown) isConnectResponse_Message() {}
 
 func (*ConnectResponse_ListenerDecisionRejected) isConnectResponse_Message() {}
+
+func (*ConnectResponse_OpenCancelAcknowledged) isConnectResponse_Message() {}
+
+func (*ConnectResponse_PipeCloseAcknowledged) isConnectResponse_Message() {}
+
+func (*ConnectResponse_OpenRequestRejected) isConnectResponse_Message() {}
 
 type Authenticate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -982,6 +1111,94 @@ func (x *Open) GetTargetId() string {
 	return ""
 }
 
+type CancelOpen struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelOpen) Reset() {
+	*x = CancelOpen{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelOpen) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelOpen) ProtoMessage() {}
+
+func (x *CancelOpen) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelOpen.ProtoReflect.Descriptor instead.
+func (*CancelOpen) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *CancelOpen) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+type ClosePipe struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PipeId        string                 `protobuf:"bytes,1,opt,name=pipe_id,json=pipeId,proto3" json:"pipe_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClosePipe) Reset() {
+	*x = ClosePipe{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClosePipe) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClosePipe) ProtoMessage() {}
+
+func (x *ClosePipe) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClosePipe.ProtoReflect.Descriptor instead.
+func (*ClosePipe) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ClosePipe) GetPipeId() string {
+	if x != nil {
+		return x.PipeId
+	}
+	return ""
+}
+
 type ListenerAccept struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AttemptId     string                 `protobuf:"bytes,1,opt,name=attempt_id,json=attemptId,proto3" json:"attempt_id,omitempty"`
@@ -991,7 +1208,7 @@ type ListenerAccept struct {
 
 func (x *ListenerAccept) Reset() {
 	*x = ListenerAccept{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[11]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1003,7 +1220,7 @@ func (x *ListenerAccept) String() string {
 func (*ListenerAccept) ProtoMessage() {}
 
 func (x *ListenerAccept) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[11]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1016,7 +1233,7 @@ func (x *ListenerAccept) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListenerAccept.ProtoReflect.Descriptor instead.
 func (*ListenerAccept) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{11}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListenerAccept) GetAttemptId() string {
@@ -1035,7 +1252,7 @@ type ListenerReject struct {
 
 func (x *ListenerReject) Reset() {
 	*x = ListenerReject{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[12]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1047,7 +1264,7 @@ func (x *ListenerReject) String() string {
 func (*ListenerReject) ProtoMessage() {}
 
 func (x *ListenerReject) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[12]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1060,7 +1277,7 @@ func (x *ListenerReject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListenerReject.ProtoReflect.Descriptor instead.
 func (*ListenerReject) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{12}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ListenerReject) GetAttemptId() string {
@@ -1080,7 +1297,7 @@ type ListenerConfirmed struct {
 
 func (x *ListenerConfirmed) Reset() {
 	*x = ListenerConfirmed{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[13]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1092,7 +1309,7 @@ func (x *ListenerConfirmed) String() string {
 func (*ListenerConfirmed) ProtoMessage() {}
 
 func (x *ListenerConfirmed) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[13]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1105,7 +1322,7 @@ func (x *ListenerConfirmed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListenerConfirmed.ProtoReflect.Descriptor instead.
 func (*ListenerConfirmed) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{13}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ListenerConfirmed) GetAttemptId() string {
@@ -1135,7 +1352,7 @@ type ListenerOffer struct {
 
 func (x *ListenerOffer) Reset() {
 	*x = ListenerOffer{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[14]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1147,7 +1364,7 @@ func (x *ListenerOffer) String() string {
 func (*ListenerOffer) ProtoMessage() {}
 
 func (x *ListenerOffer) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[14]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1160,7 +1377,7 @@ func (x *ListenerOffer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListenerOffer.ProtoReflect.Descriptor instead.
 func (*ListenerOffer) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{14}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListenerOffer) GetAttemptId() string {
@@ -1208,7 +1425,7 @@ type ListenerEstablished struct {
 
 func (x *ListenerEstablished) Reset() {
 	*x = ListenerEstablished{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[15]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1220,7 +1437,7 @@ func (x *ListenerEstablished) String() string {
 func (*ListenerEstablished) ProtoMessage() {}
 
 func (x *ListenerEstablished) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[15]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1233,7 +1450,7 @@ func (x *ListenerEstablished) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListenerEstablished.ProtoReflect.Descriptor instead.
 func (*ListenerEstablished) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{15}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ListenerEstablished) GetAttemptId() string {
@@ -1260,7 +1477,7 @@ type ListenerTerminated struct {
 
 func (x *ListenerTerminated) Reset() {
 	*x = ListenerTerminated{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[16]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1272,7 +1489,7 @@ func (x *ListenerTerminated) String() string {
 func (*ListenerTerminated) ProtoMessage() {}
 
 func (x *ListenerTerminated) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[16]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1285,7 +1502,7 @@ func (x *ListenerTerminated) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListenerTerminated.ProtoReflect.Descriptor instead.
 func (*ListenerTerminated) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{16}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListenerTerminated) GetAttemptId() string {
@@ -1315,7 +1532,7 @@ type PipeOpened struct {
 
 func (x *PipeOpened) Reset() {
 	*x = PipeOpened{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[17]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1327,7 +1544,7 @@ func (x *PipeOpened) String() string {
 func (*PipeOpened) ProtoMessage() {}
 
 func (x *PipeOpened) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[17]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1340,7 +1557,7 @@ func (x *PipeOpened) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipeOpened.ProtoReflect.Descriptor instead.
 func (*PipeOpened) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{17}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *PipeOpened) GetRequestId() string {
@@ -1390,7 +1607,7 @@ type PipeOpenFailed struct {
 
 func (x *PipeOpenFailed) Reset() {
 	*x = PipeOpenFailed{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[18]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1402,7 +1619,7 @@ func (x *PipeOpenFailed) String() string {
 func (*PipeOpenFailed) ProtoMessage() {}
 
 func (x *PipeOpenFailed) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[18]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1415,7 +1632,7 @@ func (x *PipeOpenFailed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipeOpenFailed.ProtoReflect.Descriptor instead.
 func (*PipeOpenFailed) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{18}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *PipeOpenFailed) GetRequestId() string {
@@ -1457,7 +1674,7 @@ type PipeOpenUnknown struct {
 
 func (x *PipeOpenUnknown) Reset() {
 	*x = PipeOpenUnknown{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[19]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1469,7 +1686,7 @@ func (x *PipeOpenUnknown) String() string {
 func (*PipeOpenUnknown) ProtoMessage() {}
 
 func (x *PipeOpenUnknown) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[19]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1482,7 +1699,7 @@ func (x *PipeOpenUnknown) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipeOpenUnknown.ProtoReflect.Descriptor instead.
 func (*PipeOpenUnknown) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{19}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *PipeOpenUnknown) GetRequestId() string {
@@ -1506,6 +1723,162 @@ func (x *PipeOpenUnknown) GetTargetId() string {
 	return ""
 }
 
+type OpenCancelAcknowledged struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	WasPending    bool                   `protobuf:"varint,2,opt,name=was_pending,json=wasPending,proto3" json:"was_pending,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OpenCancelAcknowledged) Reset() {
+	*x = OpenCancelAcknowledged{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenCancelAcknowledged) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenCancelAcknowledged) ProtoMessage() {}
+
+func (x *OpenCancelAcknowledged) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenCancelAcknowledged.ProtoReflect.Descriptor instead.
+func (*OpenCancelAcknowledged) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *OpenCancelAcknowledged) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *OpenCancelAcknowledged) GetWasPending() bool {
+	if x != nil {
+		return x.WasPending
+	}
+	return false
+}
+
+type PipeCloseAcknowledged struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PipeId        string                 `protobuf:"bytes,1,opt,name=pipe_id,json=pipeId,proto3" json:"pipe_id,omitempty"`
+	Owned         bool                   `protobuf:"varint,2,opt,name=owned,proto3" json:"owned,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PipeCloseAcknowledged) Reset() {
+	*x = PipeCloseAcknowledged{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PipeCloseAcknowledged) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PipeCloseAcknowledged) ProtoMessage() {}
+
+func (x *PipeCloseAcknowledged) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PipeCloseAcknowledged.ProtoReflect.Descriptor instead.
+func (*PipeCloseAcknowledged) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *PipeCloseAcknowledged) GetPipeId() string {
+	if x != nil {
+		return x.PipeId
+	}
+	return ""
+}
+
+func (x *PipeCloseAcknowledged) GetOwned() bool {
+	if x != nil {
+		return x.Owned
+	}
+	return false
+}
+
+type OpenRequestRejected struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Failure       OpenRequestFailure     `protobuf:"varint,2,opt,name=failure,proto3,enum=relaygate.relay.v1.OpenRequestFailure" json:"failure,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OpenRequestRejected) Reset() {
+	*x = OpenRequestRejected{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpenRequestRejected) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpenRequestRejected) ProtoMessage() {}
+
+func (x *OpenRequestRejected) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpenRequestRejected.ProtoReflect.Descriptor instead.
+func (*OpenRequestRejected) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *OpenRequestRejected) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *OpenRequestRejected) GetFailure() OpenRequestFailure {
+	if x != nil {
+		return x.Failure
+	}
+	return OpenRequestFailure_OPEN_REQUEST_FAILURE_UNSPECIFIED
+}
+
 type ListenerDecisionRejected struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	AttemptId     string                  `protobuf:"bytes,1,opt,name=attempt_id,json=attemptId,proto3" json:"attempt_id,omitempty"`
@@ -1516,7 +1889,7 @@ type ListenerDecisionRejected struct {
 
 func (x *ListenerDecisionRejected) Reset() {
 	*x = ListenerDecisionRejected{}
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[20]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1528,7 +1901,7 @@ func (x *ListenerDecisionRejected) String() string {
 func (*ListenerDecisionRejected) ProtoMessage() {}
 
 func (x *ListenerDecisionRejected) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[20]
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1541,7 +1914,7 @@ func (x *ListenerDecisionRejected) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListenerDecisionRejected.ProtoReflect.Descriptor instead.
 func (*ListenerDecisionRejected) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{20}
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListenerDecisionRejected) GetAttemptId() string {
@@ -1562,7 +1935,7 @@ var File_proto_relaygate_relay_v1_relay_proto protoreflect.FileDescriptor
 
 const file_proto_relaygate_relay_v1_relay_proto_rawDesc = "" +
 	"\n" +
-	"$proto/relaygate/relay/v1/relay.proto\x12\x12relaygate.relay.v1\"\xa1\x04\n" +
+	"$proto/relaygate/relay/v1/relay.proto\x12\x12relaygate.relay.v1\"\xa4\x05\n" +
 	"\x0eConnectRequest\x12F\n" +
 	"\fauthenticate\x18\x01 \x01(\v2 .relaygate.relay.v1.AuthenticateH\x00R\fauthenticate\x12G\n" +
 	"\rbind_listener\x18\x02 \x01(\v2 .relaygate.relay.v1.BindListenerH\x00R\fbindListener\x12M\n" +
@@ -1570,8 +1943,12 @@ const file_proto_relaygate_relay_v1_relay_proto_rawDesc = "" +
 	"\x04open\x18\x04 \x01(\v2\x18.relaygate.relay.v1.OpenH\x00R\x04open\x12M\n" +
 	"\x0flistener_accept\x18\x05 \x01(\v2\".relaygate.relay.v1.ListenerAcceptH\x00R\x0elistenerAccept\x12M\n" +
 	"\x0flistener_reject\x18\x06 \x01(\v2\".relaygate.relay.v1.ListenerRejectH\x00R\x0elistenerReject\x12V\n" +
-	"\x12listener_confirmed\x18\a \x01(\v2%.relaygate.relay.v1.ListenerConfirmedH\x00R\x11listenerConfirmedB\t\n" +
-	"\amessage\"\xf2\x06\n" +
+	"\x12listener_confirmed\x18\a \x01(\v2%.relaygate.relay.v1.ListenerConfirmedH\x00R\x11listenerConfirmed\x12A\n" +
+	"\vcancel_open\x18\b \x01(\v2\x1e.relaygate.relay.v1.CancelOpenH\x00R\n" +
+	"cancelOpen\x12>\n" +
+	"\n" +
+	"close_pipe\x18\t \x01(\v2\x1d.relaygate.relay.v1.ClosePipeH\x00R\tclosePipeB\t\n" +
+	"\amessage\"\x9e\t\n" +
 	"\x0fConnectResponse\x12]\n" +
 	"\x15client_session_opened\x18\x01 \x01(\v2'.relaygate.relay.v1.ClientSessionOpenedH\x00R\x13clientSessionOpened\x12J\n" +
 	"\x0elistener_bound\x18\x02 \x01(\v2!.relaygate.relay.v1.ListenerBoundH\x00R\rlistenerBound\x12P\n" +
@@ -1584,7 +1961,10 @@ const file_proto_relaygate_relay_v1_relay_proto_rawDesc = "" +
 	"\x10pipe_open_failed\x18\b \x01(\v2\".relaygate.relay.v1.PipeOpenFailedH\x00R\x0epipeOpenFailed\x12Q\n" +
 	"\x11pipe_open_unknown\x18\t \x01(\v2#.relaygate.relay.v1.PipeOpenUnknownH\x00R\x0fpipeOpenUnknown\x12l\n" +
 	"\x1alistener_decision_rejected\x18\n" +
-	" \x01(\v2,.relaygate.relay.v1.ListenerDecisionRejectedH\x00R\x18listenerDecisionRejectedB\t\n" +
+	" \x01(\v2,.relaygate.relay.v1.ListenerDecisionRejectedH\x00R\x18listenerDecisionRejected\x12f\n" +
+	"\x18open_cancel_acknowledged\x18\v \x01(\v2*.relaygate.relay.v1.OpenCancelAcknowledgedH\x00R\x16openCancelAcknowledged\x12c\n" +
+	"\x17pipe_close_acknowledged\x18\f \x01(\v2).relaygate.relay.v1.PipeCloseAcknowledgedH\x00R\x15pipeCloseAcknowledged\x12]\n" +
+	"\x15open_request_rejected\x18\r \x01(\v2'.relaygate.relay.v1.OpenRequestRejectedH\x00R\x13openRequestRejectedB\t\n" +
 	"\amessage\"b\n" +
 	"\fAuthenticate\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x1c\n" +
@@ -1616,7 +1996,13 @@ const file_proto_relaygate_relay_v1_relay_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1a\n" +
 	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12\x1b\n" +
-	"\ttarget_id\x18\x03 \x01(\tR\btargetId\"/\n" +
+	"\ttarget_id\x18\x03 \x01(\tR\btargetId\"+\n" +
+	"\n" +
+	"CancelOpen\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\"$\n" +
+	"\tClosePipe\x12\x17\n" +
+	"\apipe_id\x18\x01 \x01(\tR\x06pipeId\"/\n" +
 	"\x0eListenerAccept\x12\x1d\n" +
 	"\n" +
 	"attempt_id\x18\x01 \x01(\tR\tattemptId\"/\n" +
@@ -1661,11 +2047,23 @@ const file_proto_relaygate_relay_v1_relay_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1a\n" +
 	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12\x1b\n" +
-	"\ttarget_id\x18\x03 \x01(\tR\btargetId\"\x80\x01\n" +
+	"\ttarget_id\x18\x03 \x01(\tR\btargetId\"X\n" +
+	"\x16OpenCancelAcknowledged\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1f\n" +
+	"\vwas_pending\x18\x02 \x01(\bR\n" +
+	"wasPending\"F\n" +
+	"\x15PipeCloseAcknowledged\x12\x17\n" +
+	"\apipe_id\x18\x01 \x01(\tR\x06pipeId\x12\x14\n" +
+	"\x05owned\x18\x02 \x01(\bR\x05owned\"v\n" +
+	"\x13OpenRequestRejected\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12@\n" +
+	"\afailure\x18\x02 \x01(\x0e2&.relaygate.relay.v1.OpenRequestFailureR\afailure\"\x80\x01\n" +
 	"\x18ListenerDecisionRejected\x12\x1d\n" +
 	"\n" +
 	"attempt_id\x18\x01 \x01(\tR\tattemptId\x12E\n" +
-	"\afailure\x18\x02 \x01(\x0e2+.relaygate.relay.v1.ListenerDecisionFailureR\afailure*\xf8\x01\n" +
+	"\afailure\x18\x02 \x01(\x0e2+.relaygate.relay.v1.ListenerDecisionFailureR\afailure*\x94\x02\n" +
 	"\vOpenFailure\x12\x1c\n" +
 	"\x18OPEN_FAILURE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cOPEN_FAILURE_INVALID_REQUEST\x10\x01\x12 \n" +
@@ -1673,7 +2071,11 @@ const file_proto_relaygate_relay_v1_relay_proto_rawDesc = "" +
 	"\x18OPEN_FAILURE_UNAVAILABLE\x10\x03\x12!\n" +
 	"\x1dOPEN_FAILURE_CAPACITY_REACHED\x10\x04\x12\"\n" +
 	"\x1eOPEN_FAILURE_LISTENER_REJECTED\x10\x05\x12\"\n" +
-	"\x1eOPEN_FAILURE_DEADLINE_EXCEEDED\x10\x06*\xd1\x01\n" +
+	"\x1eOPEN_FAILURE_DEADLINE_EXCEEDED\x10\x06\x12\x1a\n" +
+	"\x16OPEN_FAILURE_CANCELLED\x10\a*h\n" +
+	"\x12OpenRequestFailure\x12$\n" +
+	" OPEN_REQUEST_FAILURE_UNSPECIFIED\x10\x00\x12,\n" +
+	"(OPEN_REQUEST_FAILURE_DUPLICATE_IN_FLIGHT\x10\x01*\xd1\x01\n" +
 	"\x17ListenerDecisionFailure\x12)\n" +
 	"%LISTENER_DECISION_FAILURE_UNSPECIFIED\x10\x00\x12-\n" +
 	")LISTENER_DECISION_FAILURE_INVALID_REQUEST\x10\x01\x121\n" +
@@ -1694,62 +2096,74 @@ func file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP() []byte {
 	return file_proto_relaygate_relay_v1_relay_proto_rawDescData
 }
 
-var file_proto_relaygate_relay_v1_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_relaygate_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_proto_relaygate_relay_v1_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_proto_relaygate_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_proto_relaygate_relay_v1_relay_proto_goTypes = []any{
 	(OpenFailure)(0),                 // 0: relaygate.relay.v1.OpenFailure
-	(ListenerDecisionFailure)(0),     // 1: relaygate.relay.v1.ListenerDecisionFailure
-	(*ConnectRequest)(nil),           // 2: relaygate.relay.v1.ConnectRequest
-	(*ConnectResponse)(nil),          // 3: relaygate.relay.v1.ConnectResponse
-	(*Authenticate)(nil),             // 4: relaygate.relay.v1.Authenticate
-	(*ClientSessionRef)(nil),         // 5: relaygate.relay.v1.ClientSessionRef
-	(*ClientSessionOpened)(nil),      // 6: relaygate.relay.v1.ClientSessionOpened
-	(*BindListener)(nil),             // 7: relaygate.relay.v1.BindListener
-	(*UnbindListener)(nil),           // 8: relaygate.relay.v1.UnbindListener
-	(*ListenerBinding)(nil),          // 9: relaygate.relay.v1.ListenerBinding
-	(*ListenerBound)(nil),            // 10: relaygate.relay.v1.ListenerBound
-	(*ListenerUnbound)(nil),          // 11: relaygate.relay.v1.ListenerUnbound
-	(*Open)(nil),                     // 12: relaygate.relay.v1.Open
-	(*ListenerAccept)(nil),           // 13: relaygate.relay.v1.ListenerAccept
-	(*ListenerReject)(nil),           // 14: relaygate.relay.v1.ListenerReject
-	(*ListenerConfirmed)(nil),        // 15: relaygate.relay.v1.ListenerConfirmed
-	(*ListenerOffer)(nil),            // 16: relaygate.relay.v1.ListenerOffer
-	(*ListenerEstablished)(nil),      // 17: relaygate.relay.v1.ListenerEstablished
-	(*ListenerTerminated)(nil),       // 18: relaygate.relay.v1.ListenerTerminated
-	(*PipeOpened)(nil),               // 19: relaygate.relay.v1.PipeOpened
-	(*PipeOpenFailed)(nil),           // 20: relaygate.relay.v1.PipeOpenFailed
-	(*PipeOpenUnknown)(nil),          // 21: relaygate.relay.v1.PipeOpenUnknown
-	(*ListenerDecisionRejected)(nil), // 22: relaygate.relay.v1.ListenerDecisionRejected
+	(OpenRequestFailure)(0),          // 1: relaygate.relay.v1.OpenRequestFailure
+	(ListenerDecisionFailure)(0),     // 2: relaygate.relay.v1.ListenerDecisionFailure
+	(*ConnectRequest)(nil),           // 3: relaygate.relay.v1.ConnectRequest
+	(*ConnectResponse)(nil),          // 4: relaygate.relay.v1.ConnectResponse
+	(*Authenticate)(nil),             // 5: relaygate.relay.v1.Authenticate
+	(*ClientSessionRef)(nil),         // 6: relaygate.relay.v1.ClientSessionRef
+	(*ClientSessionOpened)(nil),      // 7: relaygate.relay.v1.ClientSessionOpened
+	(*BindListener)(nil),             // 8: relaygate.relay.v1.BindListener
+	(*UnbindListener)(nil),           // 9: relaygate.relay.v1.UnbindListener
+	(*ListenerBinding)(nil),          // 10: relaygate.relay.v1.ListenerBinding
+	(*ListenerBound)(nil),            // 11: relaygate.relay.v1.ListenerBound
+	(*ListenerUnbound)(nil),          // 12: relaygate.relay.v1.ListenerUnbound
+	(*Open)(nil),                     // 13: relaygate.relay.v1.Open
+	(*CancelOpen)(nil),               // 14: relaygate.relay.v1.CancelOpen
+	(*ClosePipe)(nil),                // 15: relaygate.relay.v1.ClosePipe
+	(*ListenerAccept)(nil),           // 16: relaygate.relay.v1.ListenerAccept
+	(*ListenerReject)(nil),           // 17: relaygate.relay.v1.ListenerReject
+	(*ListenerConfirmed)(nil),        // 18: relaygate.relay.v1.ListenerConfirmed
+	(*ListenerOffer)(nil),            // 19: relaygate.relay.v1.ListenerOffer
+	(*ListenerEstablished)(nil),      // 20: relaygate.relay.v1.ListenerEstablished
+	(*ListenerTerminated)(nil),       // 21: relaygate.relay.v1.ListenerTerminated
+	(*PipeOpened)(nil),               // 22: relaygate.relay.v1.PipeOpened
+	(*PipeOpenFailed)(nil),           // 23: relaygate.relay.v1.PipeOpenFailed
+	(*PipeOpenUnknown)(nil),          // 24: relaygate.relay.v1.PipeOpenUnknown
+	(*OpenCancelAcknowledged)(nil),   // 25: relaygate.relay.v1.OpenCancelAcknowledged
+	(*PipeCloseAcknowledged)(nil),    // 26: relaygate.relay.v1.PipeCloseAcknowledged
+	(*OpenRequestRejected)(nil),      // 27: relaygate.relay.v1.OpenRequestRejected
+	(*ListenerDecisionRejected)(nil), // 28: relaygate.relay.v1.ListenerDecisionRejected
 }
 var file_proto_relaygate_relay_v1_relay_proto_depIdxs = []int32{
-	4,  // 0: relaygate.relay.v1.ConnectRequest.authenticate:type_name -> relaygate.relay.v1.Authenticate
-	7,  // 1: relaygate.relay.v1.ConnectRequest.bind_listener:type_name -> relaygate.relay.v1.BindListener
-	8,  // 2: relaygate.relay.v1.ConnectRequest.unbind_listener:type_name -> relaygate.relay.v1.UnbindListener
-	12, // 3: relaygate.relay.v1.ConnectRequest.open:type_name -> relaygate.relay.v1.Open
-	13, // 4: relaygate.relay.v1.ConnectRequest.listener_accept:type_name -> relaygate.relay.v1.ListenerAccept
-	14, // 5: relaygate.relay.v1.ConnectRequest.listener_reject:type_name -> relaygate.relay.v1.ListenerReject
-	15, // 6: relaygate.relay.v1.ConnectRequest.listener_confirmed:type_name -> relaygate.relay.v1.ListenerConfirmed
-	6,  // 7: relaygate.relay.v1.ConnectResponse.client_session_opened:type_name -> relaygate.relay.v1.ClientSessionOpened
-	10, // 8: relaygate.relay.v1.ConnectResponse.listener_bound:type_name -> relaygate.relay.v1.ListenerBound
-	11, // 9: relaygate.relay.v1.ConnectResponse.listener_unbound:type_name -> relaygate.relay.v1.ListenerUnbound
-	16, // 10: relaygate.relay.v1.ConnectResponse.listener_offer:type_name -> relaygate.relay.v1.ListenerOffer
-	17, // 11: relaygate.relay.v1.ConnectResponse.listener_established:type_name -> relaygate.relay.v1.ListenerEstablished
-	18, // 12: relaygate.relay.v1.ConnectResponse.listener_terminated:type_name -> relaygate.relay.v1.ListenerTerminated
-	19, // 13: relaygate.relay.v1.ConnectResponse.pipe_opened:type_name -> relaygate.relay.v1.PipeOpened
-	20, // 14: relaygate.relay.v1.ConnectResponse.pipe_open_failed:type_name -> relaygate.relay.v1.PipeOpenFailed
-	21, // 15: relaygate.relay.v1.ConnectResponse.pipe_open_unknown:type_name -> relaygate.relay.v1.PipeOpenUnknown
-	22, // 16: relaygate.relay.v1.ConnectResponse.listener_decision_rejected:type_name -> relaygate.relay.v1.ListenerDecisionRejected
-	5,  // 17: relaygate.relay.v1.ClientSessionOpened.session:type_name -> relaygate.relay.v1.ClientSessionRef
-	9,  // 18: relaygate.relay.v1.ListenerBound.binding:type_name -> relaygate.relay.v1.ListenerBinding
-	0,  // 19: relaygate.relay.v1.PipeOpenFailed.failure:type_name -> relaygate.relay.v1.OpenFailure
-	1,  // 20: relaygate.relay.v1.ListenerDecisionRejected.failure:type_name -> relaygate.relay.v1.ListenerDecisionFailure
-	2,  // 21: relaygate.relay.v1.Relay.Connect:input_type -> relaygate.relay.v1.ConnectRequest
-	3,  // 22: relaygate.relay.v1.Relay.Connect:output_type -> relaygate.relay.v1.ConnectResponse
-	22, // [22:23] is the sub-list for method output_type
-	21, // [21:22] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	5,  // 0: relaygate.relay.v1.ConnectRequest.authenticate:type_name -> relaygate.relay.v1.Authenticate
+	8,  // 1: relaygate.relay.v1.ConnectRequest.bind_listener:type_name -> relaygate.relay.v1.BindListener
+	9,  // 2: relaygate.relay.v1.ConnectRequest.unbind_listener:type_name -> relaygate.relay.v1.UnbindListener
+	13, // 3: relaygate.relay.v1.ConnectRequest.open:type_name -> relaygate.relay.v1.Open
+	16, // 4: relaygate.relay.v1.ConnectRequest.listener_accept:type_name -> relaygate.relay.v1.ListenerAccept
+	17, // 5: relaygate.relay.v1.ConnectRequest.listener_reject:type_name -> relaygate.relay.v1.ListenerReject
+	18, // 6: relaygate.relay.v1.ConnectRequest.listener_confirmed:type_name -> relaygate.relay.v1.ListenerConfirmed
+	14, // 7: relaygate.relay.v1.ConnectRequest.cancel_open:type_name -> relaygate.relay.v1.CancelOpen
+	15, // 8: relaygate.relay.v1.ConnectRequest.close_pipe:type_name -> relaygate.relay.v1.ClosePipe
+	7,  // 9: relaygate.relay.v1.ConnectResponse.client_session_opened:type_name -> relaygate.relay.v1.ClientSessionOpened
+	11, // 10: relaygate.relay.v1.ConnectResponse.listener_bound:type_name -> relaygate.relay.v1.ListenerBound
+	12, // 11: relaygate.relay.v1.ConnectResponse.listener_unbound:type_name -> relaygate.relay.v1.ListenerUnbound
+	19, // 12: relaygate.relay.v1.ConnectResponse.listener_offer:type_name -> relaygate.relay.v1.ListenerOffer
+	20, // 13: relaygate.relay.v1.ConnectResponse.listener_established:type_name -> relaygate.relay.v1.ListenerEstablished
+	21, // 14: relaygate.relay.v1.ConnectResponse.listener_terminated:type_name -> relaygate.relay.v1.ListenerTerminated
+	22, // 15: relaygate.relay.v1.ConnectResponse.pipe_opened:type_name -> relaygate.relay.v1.PipeOpened
+	23, // 16: relaygate.relay.v1.ConnectResponse.pipe_open_failed:type_name -> relaygate.relay.v1.PipeOpenFailed
+	24, // 17: relaygate.relay.v1.ConnectResponse.pipe_open_unknown:type_name -> relaygate.relay.v1.PipeOpenUnknown
+	28, // 18: relaygate.relay.v1.ConnectResponse.listener_decision_rejected:type_name -> relaygate.relay.v1.ListenerDecisionRejected
+	25, // 19: relaygate.relay.v1.ConnectResponse.open_cancel_acknowledged:type_name -> relaygate.relay.v1.OpenCancelAcknowledged
+	26, // 20: relaygate.relay.v1.ConnectResponse.pipe_close_acknowledged:type_name -> relaygate.relay.v1.PipeCloseAcknowledged
+	27, // 21: relaygate.relay.v1.ConnectResponse.open_request_rejected:type_name -> relaygate.relay.v1.OpenRequestRejected
+	6,  // 22: relaygate.relay.v1.ClientSessionOpened.session:type_name -> relaygate.relay.v1.ClientSessionRef
+	10, // 23: relaygate.relay.v1.ListenerBound.binding:type_name -> relaygate.relay.v1.ListenerBinding
+	0,  // 24: relaygate.relay.v1.PipeOpenFailed.failure:type_name -> relaygate.relay.v1.OpenFailure
+	1,  // 25: relaygate.relay.v1.OpenRequestRejected.failure:type_name -> relaygate.relay.v1.OpenRequestFailure
+	2,  // 26: relaygate.relay.v1.ListenerDecisionRejected.failure:type_name -> relaygate.relay.v1.ListenerDecisionFailure
+	3,  // 27: relaygate.relay.v1.Relay.Connect:input_type -> relaygate.relay.v1.ConnectRequest
+	4,  // 28: relaygate.relay.v1.Relay.Connect:output_type -> relaygate.relay.v1.ConnectResponse
+	28, // [28:29] is the sub-list for method output_type
+	27, // [27:28] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_proto_relaygate_relay_v1_relay_proto_init() }
@@ -1765,6 +2179,8 @@ func file_proto_relaygate_relay_v1_relay_proto_init() {
 		(*ConnectRequest_ListenerAccept)(nil),
 		(*ConnectRequest_ListenerReject)(nil),
 		(*ConnectRequest_ListenerConfirmed)(nil),
+		(*ConnectRequest_CancelOpen)(nil),
+		(*ConnectRequest_ClosePipe)(nil),
 	}
 	file_proto_relaygate_relay_v1_relay_proto_msgTypes[1].OneofWrappers = []any{
 		(*ConnectResponse_ClientSessionOpened)(nil),
@@ -1777,14 +2193,17 @@ func file_proto_relaygate_relay_v1_relay_proto_init() {
 		(*ConnectResponse_PipeOpenFailed)(nil),
 		(*ConnectResponse_PipeOpenUnknown)(nil),
 		(*ConnectResponse_ListenerDecisionRejected)(nil),
+		(*ConnectResponse_OpenCancelAcknowledged)(nil),
+		(*ConnectResponse_PipeCloseAcknowledged)(nil),
+		(*ConnectResponse_OpenRequestRejected)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_relaygate_relay_v1_relay_proto_rawDesc), len(file_proto_relaygate_relay_v1_relay_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   21,
+			NumEnums:      3,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

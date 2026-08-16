@@ -42,7 +42,7 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 	if err != nil {
 		t.Fatalf("opening.New(): %v", err)
 	}
-	service, err := NewService(sessions, bindings, opener, time.Second)
+	service, err := NewService(sessions, bindings, opener, time.Second, time.Second, 10)
 	if err != nil {
 		t.Fatalf("NewService(): %v", err)
 	}

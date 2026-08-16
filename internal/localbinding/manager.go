@@ -95,7 +95,7 @@ type Manager struct {
 	committer         Committer
 	sessions          SessionValidator
 
-	ctx    context.Context
+	ctx    context.Context //nolint:containedctx // Manager owns one process-lifetime root context for watcher shutdown.
 	cancel context.CancelFunc
 
 	mu           sync.Mutex
@@ -168,7 +168,7 @@ func (m *Manager) Bind(ctx context.Context, session clientsession.Session, endpo
 		TargetID:        targetID,
 	}
 	if err := key.Validate(); err != nil {
-		return controlstate.BindingSlot{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return controlstate.BindingSlot{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 
 	m.mu.Lock()
@@ -283,10 +283,10 @@ func (m *Manager) Reserve(open authority.OpenContext, caller clientsession.Ref) 
 		return Reservation{}, fmt.Errorf("%w: incomplete open context", ErrInvalid)
 	}
 	if err := open.Auth.Validate(); err != nil {
-		return Reservation{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return Reservation{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if err := open.Binding.Ref.Validate(); err != nil {
-		return Reservation{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return Reservation{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if open.Auth.ClientSessionID != caller.ClientSessionID ||
 		open.Auth.ClientID != caller.ClientID ||

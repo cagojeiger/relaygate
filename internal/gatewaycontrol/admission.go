@@ -106,7 +106,7 @@ func openContextFromProto(
 		ListenerBindingID: wireBinding.GetRef().GetListenerBindingId(),
 	}
 	if err := ref.Validate(); err != nil {
-		return authority.OpenContext{}, fmt.Errorf("%w: control returned an invalid full binding ref: %v", ErrOpenUnavailable, err)
+		return authority.OpenContext{}, fmt.Errorf("%w: control returned an invalid full binding ref: %w", ErrOpenUnavailable, err)
 	}
 	openContext, err := authority.NewOpenContext(
 		wire.GetClusterEpoch(),
@@ -120,7 +120,7 @@ func openContextFromProto(
 		},
 	)
 	if err != nil {
-		return authority.OpenContext{}, fmt.Errorf("%w: control returned an invalid Open context: %v", ErrOpenUnavailable, err)
+		return authority.OpenContext{}, fmt.Errorf("%w: control returned an invalid Open context: %w", ErrOpenUnavailable, err)
 	}
 	return openContext, nil
 }
@@ -128,15 +128,15 @@ func openContextFromProto(
 func mapAdmitOpenRPCError(err error) error {
 	switch status.Code(err) {
 	case codes.InvalidArgument:
-		return fmt.Errorf("%w: %v", ErrInvalidOpen, err)
+		return fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 	case codes.NotFound:
-		return fmt.Errorf("%w: %v", ErrRouteNotFound, err)
+		return fmt.Errorf("%w: %w", ErrRouteNotFound, err)
 	case codes.Unavailable, codes.Canceled, codes.DeadlineExceeded:
 		return fmt.Errorf("%w: %w", ErrOpenUnavailable, err)
 	default:
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("%w: %w", ErrOpenUnavailable, err)
 		}
-		return fmt.Errorf("%w: admission RPC failed: %v", ErrOpenUnavailable, err)
+		return fmt.Errorf("%w: admission RPC failed: %w", ErrOpenUnavailable, err)
 	}
 }

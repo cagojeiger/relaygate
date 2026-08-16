@@ -99,6 +99,22 @@ Protocol은 wire message를 이 event에 매핑할 수 있지만 집합 밖의 �
 `ListenerPipe`는 exact offer가 검증된 뒤 `OfferedL`로 생성된다. Stale/invalid offer는 machine을 만들지 않고
 stable rejection이다. 나머지 per-operation machine도 표의 initial state로 생성되기 전에는 state entry가 없다.
 
+Public Relay wire mapping은 다음으로 닫힌다.
+
+| Wire input | Canonical event/effect |
+| --- | --- |
+| Valid new `Open(request_id, endpoint, target_id)` | `CallerPipe=OpeningC`와 bounded owner attempt를 생성한다. `request_id`는 해당 stream에서 terminal response 전까지만 correlation identity다. |
+| Duplicate in-flight `request_id` | 새 machine/effect 없음 + `OpenRequestRejected(DuplicateInFlight)`. 원래 Open만 Pipe outcome을 낸다. |
+| `CancelOpen(request_id)` | Live in-flight worker면 exact `Cancel` 전달 + `was_pending=true`, 아니면 no-op + `was_pending=false`. ACK는 최종 outcome이나 remote never-accept 증명이 아니다. |
+| `ClosePipe(pipe_id)` | Exact caller session이 소유한 accepted Pipe면 `Cancel`을 적용한다. Unknown/foreign이면 state 불변 + `owned=false`; bounded terminal record replay면 no-op + `owned=true`. |
+| Relay stream/session 종료 | In-flight worker 전부 cancel/join, 그 session의 child Pipe에 `SessionOrHopEnded/TransportEnded` 적용. |
+
+Cancel ACK와 그 Open의 `Failed/Unknown` response는 single-Send actor 안에서 각각 원자적으로 전송되지만 둘 사이
+도착 순서는 정의하지 않는다. SDK는 `request_id`와 message kind로 둘을 독립 처리한다. 완료된 `request_id`는
+같은 Pipe의 replay/resume key가 아니며 재사용 Open은 언제나 새 attempt다. Response commit 전 cancel이
+`was_pending=true`로 선형화되면 pre-accept stable failure는 `Cancelled`로 정규화하고 accepted/unknown outcome은
+`Unknown`으로 보존한다.
+
 ## Control state transitions
 
 ### Authority와 Quorum
@@ -206,6 +222,11 @@ generation/ref mismatch와 capacity를 넘는 새 `GatewayId`는 stable rejectio
 | `AcceptedO` | `AttemptDeadline` | Open LP 뒤의 late timer | `AcceptedO` | No-op; attempt timer 폐기 |
 | `AcceptedO` | `Cancel/SessionOrHopEnded/TerminalReceived/EpochEnded` | 첫 local terminal | `TerminalO` | Best-effort·idempotent terminal 전파 |
 
+`CancelOpen`이 `ListenerAccepted`보다 먼저 owner lock에 도달하면 `AdmittedO → TerminalO`이고 late accept는
+no-op이다. `ListenerAccepted`가 먼저면 `AcceptedO → TerminalO`이며 caller outcome은 `Unknown`일 수 있다.
+`ClosePipe`와 session/credential retirement도 같은 owner table lock에서 이 마지막 row의 first effect 하나로
+순서화한다.
+
 ### IngressPipe
 
 | From | Event | Guard | To | Effect |
@@ -234,6 +255,10 @@ generation/ref mismatch와 capacity를 넘는 새 `GatewayId`는 stable rejectio
 | `OpeningC` | `Rejected/Cancel/Deadline/TransportEnded/TerminalReceived/EpochEnded` | 해당 attempt | `TerminalC` | `Failed`, `Cancelled` 또는 `Unknown` |
 | `OpenC` | `Deadline` | ACK 뒤의 late timer | `OpenC` | No-op; attempt timer 폐기 |
 | `OpenC` | `Cancel/TransportEnded/TerminalReceived/EpochEnded` | 첫 local terminal | `TerminalC` | Best-effort terminal 전파 |
+
+`OpenCancelAcknowledged.was_pending`은 `CallerPipe` outcome 전이가 아니다. `ClosePipe`의 `owned=true`도 peer
+terminal 완료 증명이 아니라 exact caller-owned local terminal 적용/duplicate no-op의 ACK다. Terminal history는
+`relay.max_pipes`로 bounded하며 eviction 뒤 unknown과 foreign replay는 동일한 `owned=false`다.
 
 ### OpenAllAccumulator
 

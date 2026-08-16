@@ -84,6 +84,8 @@ type entry struct {
 	state           State
 	terminalErr     error
 	done            chan struct{}
+	attemptDone     chan struct{}
+	attemptDetached bool
 	cancelPhase     context.CancelCauseFunc
 	provisional     bool
 	offerStarted    bool
@@ -101,7 +103,7 @@ type Manager struct {
 	admitter Admitter
 	bindings ReservationStore
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx // Manager owns one process-lifetime root context for opener and termination workers.
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	opens     sync.WaitGroup
@@ -116,6 +118,7 @@ type Manager struct {
 	mu            sync.Mutex
 	entries       map[*entry]struct{}
 	byAttempt     map[string]*entry
+	byPipe        map[string]*entry
 	terminalOrder []*entry
 	active        uint32
 	pending       uint32
@@ -147,6 +150,7 @@ func New(config Config, admitter Admitter, bindings ReservationStore) (*Manager,
 		cancel:       cancel,
 		entries:      make(map[*entry]struct{}),
 		byAttempt:    make(map[string]*entry),
+		byPipe:       make(map[string]*entry),
 		terminations: make(chan termination, config.MaxPipes),
 	}
 	m.terminationWorker.Add(1)
@@ -171,10 +175,11 @@ func (m *Manager) Open(ctx context.Context, caller clientsession.Session, endpoi
 	}
 
 	e := &entry{
-		caller:     caller.Ref,
-		callerDone: caller.Done,
-		state:      StateOpening,
-		done:       make(chan struct{}),
+		caller:      caller.Ref,
+		callerDone:  caller.Done,
+		state:       StateOpening,
+		done:        make(chan struct{}),
+		attemptDone: make(chan struct{}),
 	}
 	if err := m.insert(ctx, e); err != nil {
 		return Result{}, err
@@ -213,7 +218,7 @@ func (m *Manager) Open(ctx context.Context, caller clientsession.Session, endpoi
 		Binding:   cloneSlot(reservation.Binding),
 	}
 	offerErr := reservation.Endpoint.Offer(attemptCtx, offer)
-	terminalErr, work := m.finishOffer(e, offerErr == nil)
+	work, terminalErr := m.finishOffer(e, offerErr == nil)
 	m.launchTermination(work)
 	if terminalErr != nil {
 		return Result{}, terminalErr
@@ -227,12 +232,12 @@ func (m *Manager) Open(ctx context.Context, caller clientsession.Session, endpoi
 
 	pipeID, err := newPipeID()
 	if err != nil {
-		return Result{}, m.fail(e, fmt.Errorf("%w: generate PipeID: %v", ErrUnavailable, err))
+		return Result{}, m.fail(e, fmt.Errorf("%w: generate PipeID: %w", ErrUnavailable, err))
 	}
 
 	confirmBase, cancelConfirm := context.WithCancelCause(ctx)
 	confirmCtx, cancelConfirmTimeout := context.WithTimeoutCause(confirmBase, m.config.OpenTimeout, ErrDeadline)
-	accepted, terminalErr, work := m.accept(e, pipeID, cancelConfirm, attemptCtx)
+	accepted, work, terminalErr := m.accept(e, pipeID, cancelConfirm, attemptCtx)
 	cancelTimeout()
 	cancelPhase(nil)
 	if !accepted {
@@ -277,7 +282,7 @@ func validateOpenInput(ctx context.Context, caller clientsession.Session, endpoi
 		AuthRevision:    caller.Ref.AuthRevision,
 	}
 	if _, err := authority.ExactBindingKey(auth, endpoint, targetID); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	return nil
 }
@@ -295,11 +300,14 @@ func validateOpenContext(clusterEpoch string, caller clientsession.Ref, endpoint
 		return fmt.Errorf("%w: Open context has no exact live binding", ErrUnavailable)
 	}
 	expected, err := authority.ExactBindingKey(open.Auth, endpoint, targetID)
-	if err != nil || open.Binding.Key != expected {
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if open.Binding.Key != expected {
 		return fmt.Errorf("%w: Open context has a mismatched binding", ErrUnavailable)
 	}
 	if err := open.Binding.Ref.Validate(); err != nil {
-		return fmt.Errorf("%w: invalid owner ref: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: invalid owner ref: %w", ErrUnavailable, err)
 	}
 	return nil
 }
@@ -319,10 +327,14 @@ func (m *Manager) insert(ctx context.Context, e *entry) error {
 	m.entries[e] = struct{}{}
 	m.active++
 	m.opens.Add(1)
-	m.watchers.Add(1)
+	m.watchers.Add(2)
 	go func() {
 		defer m.watchers.Done()
-		m.watchCaller(ctx, e)
+		m.watchAttempt(ctx, e)
+	}()
+	go func() {
+		defer m.watchers.Done()
+		m.watchCaller(e)
 	}()
 	return nil
 }
@@ -405,49 +417,54 @@ func (m *Manager) beginOffer(e *entry, ctx context.Context, callerDone, listener
 // terminalization. If terminal won while Offer was in flight, its active slot
 // was retained as pending cleanup and is either released on error/reject or
 // transferred to exactly one compensating Terminate on provisional accept.
-func (m *Manager) finishOffer(e *entry, provisional bool) (error, *termination) {
+func (m *Manager) finishOffer(e *entry, provisional bool) (*termination, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !e.offerStarted {
 		if e.state == StateTerminal {
-			return e.terminalErr, nil
+			return nil, e.terminalErr
 		}
-		return ErrUnavailable, nil
+		return nil, ErrUnavailable
 	}
 	e.offerStarted = false
 	if e.state == StateTerminal {
 		if !provisional {
 			m.releaseTerminationLocked(e)
-			return e.terminalErr, nil
+			return nil, e.terminalErr
 		}
 		e.provisional = true
-		return e.terminalErr, m.terminationLocked(e)
+		return m.terminationLocked(e), e.terminalErr
 	}
 	if e.state != StateAdmitted {
-		return ErrUnavailable, nil
+		return nil, ErrUnavailable
 	}
 	e.provisional = provisional
 	return nil, nil
 }
 
-func (m *Manager) accept(e *entry, pipeID string, cancel context.CancelCauseFunc, attemptCtx context.Context) (bool, error, *termination) {
+func (m *Manager) accept(e *entry, pipeID string, cancel context.CancelCauseFunc, attemptCtx context.Context) (bool, *termination, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if e.state == StateTerminal {
-		return false, e.terminalErr, nil
+		return false, nil, e.terminalErr
 	}
 	if e.state != StateAdmitted {
-		return false, fmt.Errorf("%w: attempt is not admitted", ErrUnavailable), nil
+		return false, nil, fmt.Errorf("%w: attempt is not admitted", ErrUnavailable)
 	}
 	if cause := context.Cause(attemptCtx); cause != nil {
 		e.provisional = true
 		work, terminalErr := m.terminalizeLocked(e, mapContextError(cause))
-		return false, terminalErr, work
+		return false, work, terminalErr
+	}
+	if existing := m.byPipe[pipeID]; existing != nil && existing != e {
+		work, terminalErr := m.terminalizeLocked(e, fmt.Errorf("%w: duplicate PipeID", ErrUnavailable))
+		return false, work, terminalErr
 	}
 	e.pipeID = pipeID
 	e.state = StateAccepted
 	e.provisional = true
 	e.cancelPhase = cancel
+	m.byPipe[pipeID] = e
 	return true, nil, nil
 }
 
@@ -459,6 +476,10 @@ func (m *Manager) result(e *entry) (Result, error) {
 	}
 	if e.state != StateAccepted {
 		return Result{}, ErrUnavailable
+	}
+	if !e.attemptDetached {
+		e.attemptDetached = true
+		close(e.attemptDone)
 	}
 	return Result{AttemptID: e.attemptID, PipeID: e.pipeID, Binding: cloneSlot(e.binding)}, nil
 }
@@ -533,7 +554,7 @@ func (m *Manager) releaseTerminationLocked(e *entry) {
 }
 
 func (m *Manager) trimTerminalLocked() {
-	for uint32(len(m.terminalOrder)) > m.config.MaxPipes {
+	for uint64(len(m.terminalOrder)) > uint64(m.config.MaxPipes) {
 		oldest := m.terminalOrder[0]
 		m.terminalOrder = m.terminalOrder[1:]
 		if oldest.state != StateTerminal {
@@ -542,6 +563,9 @@ func (m *Manager) trimTerminalLocked() {
 		delete(m.entries, oldest)
 		if m.byAttempt[oldest.attemptID] == oldest {
 			delete(m.byAttempt, oldest.attemptID)
+		}
+		if oldest.pipeID != "" && m.byPipe[oldest.pipeID] == oldest {
+			delete(m.byPipe, oldest.pipeID)
 		}
 	}
 }
@@ -583,14 +607,34 @@ func (m *Manager) completeTermination(work termination) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) watchCaller(ctx context.Context, e *entry) {
+func (m *Manager) watchAttempt(ctx context.Context, e *entry) {
 	select {
 	case <-ctx.Done():
-		m.fail(e, mapContextError(context.Cause(ctx)))
-	case <-e.callerDone:
-		m.fail(e, ErrSessionEnded)
+		m.failAttempt(e, mapContextError(context.Cause(ctx)))
 	case <-m.ctx.Done():
-		m.fail(e, ErrUnavailable)
+		m.failAttempt(e, ErrUnavailable)
+	case <-e.attemptDone:
+	case <-e.done:
+	}
+}
+
+func (m *Manager) failAttempt(e *entry, cause error) {
+	m.mu.Lock()
+	if e.state == StateTerminal || e.attemptDetached {
+		m.mu.Unlock()
+		return
+	}
+	work, _ := m.terminalizeLocked(e, cause)
+	m.mu.Unlock()
+	m.launchTermination(work)
+}
+
+func (m *Manager) watchCaller(e *entry) {
+	select {
+	case <-e.callerDone:
+		_ = m.fail(e, ErrSessionEnded)
+	case <-m.ctx.Done():
+		_ = m.fail(e, ErrUnavailable)
 	case <-e.done:
 	}
 }
@@ -598,9 +642,9 @@ func (m *Manager) watchCaller(ctx context.Context, e *entry) {
 func (m *Manager) watchListener(e *entry) {
 	select {
 	case <-e.listenerDone:
-		m.fail(e, ErrSessionEnded)
+		_ = m.fail(e, ErrSessionEnded)
 	case <-m.ctx.Done():
-		m.fail(e, ErrUnavailable)
+		_ = m.fail(e, ErrUnavailable)
 	case <-e.done:
 	}
 }
@@ -617,6 +661,36 @@ func (m *Manager) Retire(change clientauth.ChangeSet) int {
 
 func (m *Manager) RetireAll() int {
 	return m.retireMatching(func(*entry) bool { return true }, ErrUnavailable)
+}
+
+// ClosePipe applies the caller session's exact local terminal transition. A
+// true result means the Pipe belongs to caller and is now terminal; repeating
+// the request while its bounded terminal record is retained is a no-op that
+// also returns true. Unknown and foreign-session Pipe IDs are indistinguishable
+// and never change state.
+func (m *Manager) ClosePipe(caller clientsession.Ref, pipeID string) bool {
+	if caller.ClientSessionID == "" || pipeID == "" || len(pipeID) > controlstate.MaxIdentityBytes {
+		return false
+	}
+
+	m.mu.Lock()
+	e := m.byPipe[pipeID]
+	if e == nil || e.caller != caller {
+		m.mu.Unlock()
+		return false
+	}
+	if e.state == StateTerminal {
+		m.mu.Unlock()
+		return true
+	}
+	if e.state != StateAccepted {
+		m.mu.Unlock()
+		return false
+	}
+	work, _ := m.terminalizeLocked(e, context.Canceled)
+	m.mu.Unlock()
+	m.launchTermination(work)
+	return true
 }
 
 func (m *Manager) retireMatching(match func(*entry) bool, cause error) int {
@@ -710,13 +784,13 @@ func classifyAdmissionError(ctx context.Context, err error) error {
 	}
 	switch {
 	case errors.Is(err, authority.ErrInvalidOpen):
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	case errors.Is(err, authority.ErrRouteNotFound):
-		return fmt.Errorf("%w: %v", ErrNotFound, err)
+		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("%w: %v", ErrDeadline, err)
+		return fmt.Errorf("%w: %w", ErrDeadline, err)
 	default:
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 }
 
@@ -725,15 +799,15 @@ func classifyReservationError(err error) error {
 	case errors.Is(err, ErrInvalid):
 		return err
 	case errors.Is(err, localbinding.ErrInvalid):
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	case errors.Is(err, localbinding.ErrAttemptUsed):
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	case errors.Is(err, localbinding.ErrNotFound):
-		return fmt.Errorf("%w: %v", ErrNotFound, err)
+		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	case errors.Is(err, localbinding.ErrSessionEnded):
-		return fmt.Errorf("%w: %v", ErrSessionEnded, err)
+		return fmt.Errorf("%w: %w", ErrSessionEnded, err)
 	default:
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 }
 
@@ -743,15 +817,15 @@ func classifyOfferError(ctx context.Context, err error) error {
 	}
 	switch {
 	case errors.Is(err, ErrSessionEnded), errors.Is(err, localbinding.ErrSessionEnded):
-		return fmt.Errorf("%w: %v", ErrSessionEnded, err)
+		return fmt.Errorf("%w: %w", ErrSessionEnded, err)
 	case errors.Is(err, ErrDeadline), errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("%w: %v", ErrDeadline, err)
+		return fmt.Errorf("%w: %w", ErrDeadline, err)
 	case errors.Is(err, localbinding.ErrEndpointUnavailable):
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	case errors.Is(err, localbinding.ErrOfferRejected):
-		return fmt.Errorf("%w: %v", ErrListenerRejected, err)
+		return fmt.Errorf("%w: %w", ErrListenerRejected, err)
 	default:
-		return fmt.Errorf("%w: %v", ErrListenerRejected, err)
+		return fmt.Errorf("%w: %w", ErrListenerRejected, err)
 	}
 }
 
@@ -761,11 +835,11 @@ func classifyConfirmationError(ctx context.Context, err error) error {
 	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrDeadline):
-		return fmt.Errorf("%w: %v", ErrDeadline, err)
+		return fmt.Errorf("%w: %w", ErrDeadline, err)
 	case errors.Is(err, localbinding.ErrSessionEnded), errors.Is(err, ErrSessionEnded):
-		return fmt.Errorf("%w: %v", ErrSessionEnded, err)
+		return fmt.Errorf("%w: %w", ErrSessionEnded, err)
 	case errors.Is(err, localbinding.ErrEndpointUnavailable):
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	return err
 }
@@ -773,7 +847,7 @@ func classifyConfirmationError(ctx context.Context, err error) error {
 func mapContextError(err error) error {
 	switch {
 	case errors.Is(err, ErrDeadline), errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("%w: %v", ErrDeadline, err)
+		return fmt.Errorf("%w: %w", ErrDeadline, err)
 	case errors.Is(err, ErrSessionEnded):
 		return ErrSessionEnded
 	case errors.Is(err, context.Canceled):

@@ -1,0 +1,19 @@
+ARG GO_VERSION=1.26.6
+FROM golang:${GO_VERSION}-alpine AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN mkdir -p /out && \
+    CGO_ENABLED=0 go test -c -trimpath \
+      -o /out/relaygrpc-compose.test ./internal/relaygrpc
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /out/relaygrpc-compose.test /relaygrpc-compose.test
+
+USER nonroot:nonroot
+ENTRYPOINT ["/relaygrpc-compose.test"]
+CMD ["-test.run", "^TestComposePublicRelaySmoke$", "-test.v", "-test.count=1"]
