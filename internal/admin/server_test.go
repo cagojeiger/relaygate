@@ -30,17 +30,20 @@ func TestHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 		GatewayInstanceID: "instance-1",
 		State:             gatewaycontrol.StateRevalidated,
 	}}
-	presenceProvider := staticPresenceProvider{presence: authority.Presence{
-		State:       authority.PresenceComplete,
-		Committed:   1,
-		Classified:  1,
-		Revalidated: 1,
-	}}
+	presenceProvider := staticPresenceProvider{
+		ref: authority.Ref{ClusterEpoch: "epoch-1", AuthorityID: "authority-1"},
+		presence: authority.Presence{
+			State:       authority.PresenceComplete,
+			Committed:   1,
+			Classified:  1,
+			Revalidated: 1,
+		},
+	}
 	server, err := Start(context.Background(), Config{
 		BindAddress:  "127.0.0.1:0",
 		ReadTimeout:  time.Second,
 		WriteTimeout: time.Second,
-	}, provider, gatewayProvider, presenceProvider, registry)
+	}, provider, gatewayProvider, presenceProvider, staticAuthRevisionProvider("sha256:revision-1"), registry)
 	if err != nil {
 		t.Fatalf("Start(): %v", err)
 	}
@@ -85,7 +88,7 @@ func TestHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&runtimeStatus); err != nil {
 		t.Fatalf("decode runtime status: %v", err)
 	}
-	if !runtimeStatus.GatewayControl.Ready() || runtimeStatus.Presence.State != authority.PresenceComplete {
+	if !runtimeStatus.GatewayControl.Ready() || runtimeStatus.Presence.State != authority.PresenceComplete || runtimeStatus.AuthorityID != "authority-1" || runtimeStatus.AuthRevision != "sha256:revision-1" {
 		t.Fatalf("runtime status = %#v", runtimeStatus)
 	}
 
@@ -103,6 +106,53 @@ func TestHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 	}
 }
 
+func TestStatusFailsClosedWhenAuthorityCannotBeConfirmed(t *testing.T) {
+	server, err := Start(context.Background(), Config{
+		BindAddress:  "127.0.0.1:0",
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	}, staticStatusProvider{status: raftnode.Status{
+		Role:         "Leader",
+		ClusterEpoch: "epoch-1",
+		Ready:        true,
+	}}, staticGatewayStatusProvider{status: gatewaycontrol.Status{
+		State: gatewaycontrol.StateRevalidated,
+	}}, staticPresenceProvider{
+		ref: authority.Ref{ClusterEpoch: "epoch-1", AuthorityID: "stale-authority"},
+		presence: authority.Presence{
+			State:       authority.PresenceComplete,
+			Committed:   1,
+			Classified:  1,
+			Revalidated: 1,
+		},
+		err: authority.ErrNoAuthority,
+	}, staticAuthRevisionProvider("sha256:revision-1"), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	})
+
+	response, err := http.Get("http://" + server.Address() + "/status")
+	if err != nil {
+		t.Fatalf("GET /status: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /status status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
+	}
+	var runtimeStatus RuntimeStatus
+	if err := json.NewDecoder(response.Body).Decode(&runtimeStatus); err != nil {
+		t.Fatalf("decode runtime status: %v", err)
+	}
+	if runtimeStatus.AuthorityID != "" || runtimeStatus.Presence.State != authority.PresenceNoAuthority {
+		t.Fatalf("runtime status reused stale authority: %#v", runtimeStatus)
+	}
+}
+
 func TestReadyRequiresGatewayControlRevalidation(t *testing.T) {
 	server, err := Start(context.Background(), Config{
 		BindAddress:  "127.0.0.1:0",
@@ -110,7 +160,7 @@ func TestReadyRequiresGatewayControlRevalidation(t *testing.T) {
 		WriteTimeout: time.Second,
 	}, staticStatusProvider{status: raftnode.Status{Ready: true}}, staticGatewayStatusProvider{
 		status: gatewaycontrol.Status{State: gatewaycontrol.StateDisconnected},
-	}, staticPresenceProvider{}, prometheus.NewRegistry())
+	}, staticPresenceProvider{}, staticAuthRevisionProvider("sha256:revision-1"), prometheus.NewRegistry())
 	if err != nil {
 		t.Fatalf("Start(): %v", err)
 	}
@@ -146,9 +196,17 @@ func (p staticGatewayStatusProvider) Status() gatewaycontrol.Status {
 }
 
 type staticPresenceProvider struct {
+	ref      authority.Ref
 	presence authority.Presence
+	err      error
 }
 
-func (p staticPresenceProvider) Presence() authority.Presence {
-	return p.presence
+type staticAuthRevisionProvider string
+
+func (p staticAuthRevisionProvider) Revision() string {
+	return string(p)
+}
+
+func (p staticPresenceProvider) Observe(context.Context) (authority.Ref, authority.Presence, error) {
+	return p.ref, p.presence, p.err
 }

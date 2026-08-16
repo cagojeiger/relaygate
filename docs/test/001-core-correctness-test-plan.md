@@ -104,6 +104,7 @@ flowchart LR
 | `C13` | Control protocol order | Hello 전, snapshot 전 mutation, 두 번째 Hello/Snapshot, missing mutation을 각각 전송 | 허용된 `Hello → Snapshot → Mutation*` 외 입력은 stable gRPC rejection이고 durable state는 전진하지 않는다. |
 | `C14` | Mutation response loss | Binding mutation commit 직전/직후 stream을 끊고 새 session에서 snapshot/replay | Commit 전이면 미적용, commit 뒤 replay는 `AlreadyApplied`; 같은 stream을 resume하지 않는다. |
 | `C15` | Follower endpoint | 같은 Hello를 follower와 quorum-confirmed leader에 전송 | Follower는 `UNAVAILABLE`이고 registration이 없으며 leader만 session을 연다. Redirect state는 없다. |
+| `C16` | Caller verification cancellation | Healthy leader/quorum에서 `/status` 또는 control RPC verification 중 caller context cancel/deadline | 해당 호출만 `UNAVAILABLE`; current AuthorityId와 다른 control session은 유지된다. Manager-owned probe failure는 계속 global fence한다. |
 
 ## K — Config, revocation and presence tests
 
@@ -111,9 +112,9 @@ flowchart LR
 | --- | --- | --- | --- |
 | `K01` | Invalid startup | Parse/validation 실패 config | `StartupBlocked`; service와 partial auth snapshot이 없다. |
 | `K02` | Invalid reload | Active 중 invalid candidate SIGHUP | 기존 revision/session/binding/Pipe가 그대로 유지된다. |
-| `K03` | Valid addition/rotation | New immutable ApiKeyId 추가 후 old ID 제거 | Addition은 기존 session에 영향 없고 removal swap 뒤 matching local state를 retire한다. |
+| `K03` | Valid addition/rotation | New immutable ApiKeyId 추가 후 old ID 제거; final auth revalidation과 swap의 두 순서를 barrier로 재현 | Addition은 기존 session에 영향 없다. Revalidation이 먼저면 성공한 session을 같은 reload가 retire하고, swap이 먼저면 session을 만들지 않는다. |
 | `K04` | Verifier mutation rejected | 같은 ApiKeyId의 verifier만 변경 | Reload 전체가 거부되고 기존 snapshot을 유지한다. |
-| `K05` | Local removal completeness | Key/Client 제거 후 unconsumed attempt, session, binding, Pipe segment 존재 | 모두 local retired/terminal 전에는 `LocalRetirementDone=false`다. |
+| `K05` | Local removal completeness | Key/Client 제거 후 unconsumed attempt, 겹친 auth session, binding, Pipe segment 존재 | 모두 local retired/terminal 전에는 `LocalRetirementDone=false`이며 완료 뒤 제거 credential의 session은 없다. |
 | `K06` | Revision skew | Gateway 일부만 removal revision으로 reload | `config_converged=false`; stale Gateway는 cluster-wide revocation proof를 막는다. |
 | `K07` | Convergence | 모든 current committed Gateway가 같은 revision·retirement 완료 보고 | Quorum-confirmed observation에서만 `config_converged=true`다. |
 | `K08` | Candidate timeout/removal | Removal interval candidate를 timeout 또는 control set에서 제거 | Candidate에서 빠지지 않으며 retirement, clean termination 또는 external fence가 필요하다. |
@@ -123,6 +124,7 @@ flowchart LR
 | `K12` | Stale REST publication | Authority/quorum 상실 뒤 old `complete=true/config_converged=true` 요청 | Unavailable/incomplete이며 old true를 current로 재사용하지 않는다. |
 | `K13` | Authentication boundary | Valid, missing, invalid와 다른 ClientId의 `(ClientId, ApiKeyId, presented key)` 조합 | Current exact credential만 새 session을 만들며 실패한 인증은 session/namespace를 만들거나 다른 client로 fallback하지 않는다. |
 | `K14` | REST authorization and redaction | Missing/invalid, client와 administrator credential로 own/other/cluster presence 요청 | Client는 자기 ClientId만, admin은 read-only cluster view만 본다. Verifier/secret/payload/buffer와 mutation/relay surface는 노출되지 않는다. |
+| `K15` | Authentication resource bounds | First message를 보내지 않고 deadline을 넘기며, 서로 다른 connection에서 session 상한을 초과 | Deadline 뒤 session 없이 종료되고 global active-session 상한은 기존 session을 보존한 채 `ResourceExhausted`로 거부한다. |
 
 ## P — Pipe terminal and flow-control tests
 
@@ -178,10 +180,10 @@ point와 경쟁하면 두 event order가 각각 독립 test다.
 | Contract | Mandatory tests |
 | --- | --- |
 | State totality, lifecycle completion, terminal absorbing | `M01–M04`, `M09`, `P01–P03` |
-| Client isolation, authentication, REST boundary and admission | `M05–M06`, `O01–O05`, `K13–K14` |
+| Client isolation, authentication, REST boundary and admission | `M05–M06`, `O01–O05`, `K13–K15` |
 | Binding/Gateway ABA and bounded durable state | `B01–B14` |
 | Open observation and SDK compatibility | `O06–O13` |
-| Authority, quorum, control order and epoch safety | `C01–C15`, `X01`, `X04` |
+| Authority, quorum, control order and epoch safety | `C01–C16`, `X01`, `X04` |
 | Config revocation and presence | `K01–K12`, `X02` |
 | Bounded flow and volatile payload | `M08`, `P04–P07`, `X05` |
 | Partial/unknown outcomes | `O07–O11`, `X03`, `X06`, `R06–R07` |
@@ -208,10 +210,13 @@ v0 correctness 완료를 주장하려면 다음을 모두 만족해야 한다.
 | Raft FSM | Binding/Gateway CAS replay, rejection, ABA, cap과 deterministic snapshot unit test | Process crash-cut 전체와 route eligibility |
 | Control stream | Hello/snapshot 순서, 누락·extra를 거부하는 exact full-set snapshot, 직렬 mutation, exact GatewaySlot fence, cross-owner mutation 거부, instance replacement와 quorum-loss fence gRPC test | Auth, payload relay와 arbitrary packet loss |
 | Gateway control client | Process별 새 GatewayInstanceId, follower endpoint 순회, 같은 instance의 새 control session reconnect, silent transport blackhole 뒤 bounded readiness 철회와 Admin readiness unit/Compose test | Listener binding snapshot, auth revision과 gateway-only deployment |
+| Client auth/session | Strict verifier parse, deterministic revision, exact ClientId/ApiKeyId 인증, rotation/removal, immutable key rejection, first-message deadline, global session cap과 removal terminal race/unit gRPC test | TLS network deployment, child binding/Pipe retirement와 SDK interoperability |
+| Read-only observation | `/status`의 quorum-confirmed AuthorityId와 local auth revision publication, quorum-loss 직후 `503 + NoAuthority` K12와 caller cancellation non-fencing C16 unit test | Config convergence와 REST administrator/client authorization |
 | 3 voter | 정적 bootstrap/복제/leader replacement/rejoin, old control stream fence와 new authority full-snapshot 후 mutation integration test | Dynamic membership, full pairwise failure matrix |
 | Container wiring | CI에서 새 3-node Compose cluster의 세 Gateway 자동 등록, leader stop 뒤 surviving Gateway 재검증과 실제 control smoke | 장기 soak, resource pressure와 arbitrary container partition |
 
-이는 `M03`, `B01–B03`, `B07–B08`, `B10–B14`, `C01`, `C04–C06`, `C08`, `C13–C15`의 일부 전제에 대한
+이는 `M03`, `M08`, `B01–B03`, `B07–B08`, `B10–B14`, `C01`, `C04–C06`, `C08`, `C13–C16`,
+`K01–K05`, `K13`, `K15`의 일부 전제에 대한
 구현 증거일 뿐, 각 항목의 모든 crash-cut과 route oracle을 충족하지 않는다. 따라서 test ID 전체를 아직
 `passed`로 판정하지 않는다. 부분 unit/integration test는 전체 runtime correctness 증명이 아니다.
 

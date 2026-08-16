@@ -32,11 +32,17 @@ clients:
       <ApiKeyId>: <verifier>
 ```
 
-- 형식과 verifier 알고리즘은 정하지 않는다. RelayGate 내부 DB나 client/key CRUD API는 없다.
+- API key는 operator가 생성한 high-entropy bearer secret이다. Verifier는
+  `sha256:<64 lowercase hex>` 형식이며 같은 verifier를 여러 credential에 공유할 수 없다.
+  RelayGate 내부 DB나 client/key CRUD API는 없다.
 - 각 Gateway는 전체 config를 검증해 immutable snapshot으로 사용한다.
 - Startup config가 유효하지 않으면 service를 열지 않는다.
 - 인증은 `(ClientId, ApiKeyId, auth_revision)`에 묶인 `ClientSessionId`를 만든다. Request는 다른
   `ClientId`를 선택할 수 없다.
+- Public `Relay.Connect` stream은 첫 메시지로 exact `(ClientId, ApiKeyId, presented key)`를 인증한다.
+  성공한 session은 stream lifetime에 묶이며 raw key를 config, log, status 또는 Raft에 저장하지 않는다.
+  첫 메시지가 `relay.authentication_timeout` 안에 도착하지 않으면 session 없이 종료한다. Active session은
+  `relay.max_client_sessions`로 제한한다. Relay TLS 전까지 production network bind는 허용하지 않는다.
 
 ## SIGHUP atomic reload
 
@@ -64,9 +70,9 @@ sequenceDiagram
 서로 다른 snapshot이 동시에 활성일 수 있다. 아직 reload하지 않은 Gateway는 제거된 credential을
 계속 받아들일 수 있으므로 cluster-wide 즉시 revocation은 보장하지 않는다.
 
-같은 validated snapshot은 모든 Gateway에서 같은 non-secret `auth_revision`을 노출해야 한다. 이 값은
-equality 확인을 위한 opaque token일 뿐 순서, cluster-wide transaction 또는 authority를 의미하지
-않는다. Token의 source와 계산 방식은 이 spec에서 정하지 않는다.
+같은 validated snapshot은 모든 Gateway에서 같은 non-secret `auth_revision`을 노출해야 한다. Go runtime은
+정렬한 `(ClientId, ApiKeyId, verifier)` tuple의 canonical digest로 이를 계산한다. 이 값은 equality 확인을
+위한 opaque token일 뿐 순서, cluster-wide transaction 또는 authority를 의미하지 않는다.
 
 | 상황 | 새 인증 | 기존 runtime |
 | --- | --- | --- |
@@ -76,8 +82,15 @@ equality 확인을 위한 opaque token일 뿐 순서, cluster-wide transaction �
 | 유효한 snapshot에서 `ClientId`가 제거됨 | swap 직후 그 client의 모든 key를 거부한다. | 해당 `ClientId`에 묶인 local unconsumed attempt, session, binding과 Pipe segment를 retire한다. |
 | key가 그대로 유지됨 | 새 connection은 새 `auth_revision`을 관찰한다. | 기존 session은 인증 당시 관찰한 revision을 유지한다. |
 
+인증과 removal swap이 겹치면 final current-snapshot revalidation이 먼저 선형화된 인증은 기존 session으로
+취급하고 같은 reload의 local retirement가 회수한다. Swap이 먼저 선형화되면 revalidation은 실패하며 session을
+만들지 않는다. 어느 경우든 `LocalRetirementDone` 뒤 제거 credential의 session은 남지 않는다.
+
 `ApiKeyId`는 immutable하다. 같은 ID의 verifier 변경은 reload 전체를 거부한다. Rotation은 새 ID를
 추가한 뒤 이전 ID를 제거하며 successful swap 전에는 어떤 변경도 노출하지 않는다.
+
+현재 Go runtime은 canonical `relaygate.yaml` 전체를 다시 검증하되 `SIGHUP`에서 clients 이외의 변경은
+거부한다. Static listener, Raft와 timeout 변경은 process restart가 필요하다.
 
 `LocalRetirementDone(g, revision)`은 해당 Gateway가 제거 대상에 묶인 local unconsumed attempt, session,
 binding과 Pipe segment를 모두 terminal/retired로 만들고 새 admission을 막았다는 뜻이다. Remote participant는
@@ -157,6 +170,14 @@ stateDiagram-v2
 
 - Current leader 또는 authority를 확인할 수 없으면 cluster-wide observation은 unavailable이거나 명시적으로
   incomplete여야 한다. 빈 결과를 authoritative한 complete view로 반환하지 않는다.
+- Go runtime의 `GET /status`는 요청마다 quorum-confirmed barrier를 수행한다. 성공 응답은
+  `(ClusterEpoch, AuthorityId)`를 포함하며, barrier 실패는 `503`과 `NoAuthority`로 반환하고 이전
+  `Complete`를 재사용하지 않는다.
+- 이 barrier가 확정하는 observation은 `(ClusterEpoch, AuthorityId, presence)`다. 같은 응답의 Raft와
+  Gateway diagnostic field는 응답 시점의 best-effort local status이며 cluster-wide atomic snapshot이 아니다.
+- Caller-owned HTTP/control RPC의 cancel 또는 deadline은 해당 호출만 실패시킨다. 이는 `QuorumLost`나
+  `AuthorityEnded`가 아니며 current authority와 다른 control session을 fence하지 않는다. Manager-owned
+  authority probe가 관찰한 실패는 별도 global fence 경로다.
 - 새 leader는 presence를 빈 상태에서 재구축한다.
 - 모든 committed Gateway가 snapshot 재검증 또는 timeout으로 분류된 뒤에만 `complete=true`다.
 - Committed Gateway set이나 current control generation이 바뀌면 이전 `complete`와 `config_converged`를
@@ -174,3 +195,4 @@ stateDiagram-v2
 - [SPEC 004: State Transition Model](004-state-transition-model.md)
 - [TEST 001: Core Correctness Test Plan](../test/001-core-correctness-test-plan.md)
 - [ADR 006: Client 격리와 외부 credential source of truth](../adr/006-client-isolation-and-external-credentials.md)
+- [ADR 007: High-entropy API key 검증](../adr/007-high-entropy-api-key-verification.md)

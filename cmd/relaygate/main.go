@@ -17,10 +17,12 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/admin"
 	"github.com/cagojeiger/relaygate/internal/authority"
+	"github.com/cagojeiger/relaygate/internal/clientruntime"
 	"github.com/cagojeiger/relaygate/internal/config"
 	"github.com/cagojeiger/relaygate/internal/controlgrpc"
 	"github.com/cagojeiger/relaygate/internal/gatewaycontrol"
 	"github.com/cagojeiger/relaygate/internal/raftnode"
+	"github.com/cagojeiger/relaygate/internal/relaygrpc"
 )
 
 var version = "dev"
@@ -50,6 +52,11 @@ func run() error {
 		"node_id", appConfig.Raft.NodeID,
 	)
 	slog.SetDefault(logger)
+	clientRuntime, err := clientruntime.New(appConfig)
+	if err != nil {
+		return err
+	}
+	defer clientRuntime.Close()
 
 	raftLogger := hclog.New(&hclog.LoggerOptions{
 		Name:       "relaygate.raft",
@@ -153,14 +160,39 @@ func run() error {
 		})
 	}
 	defer stopGateway()
+	relayService, err := relaygrpc.NewService(clientRuntime.Sessions(), appConfig.Relay.AuthenticationTimeout.Value())
+	if err != nil {
+		stopGateway()
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("configure relay service: %w", err)
+	}
+	relayServer, err := relaygrpc.Start(context.Background(), relaygrpc.Config{
+		BindAddress:          appConfig.Relay.BindAddress,
+		MaxConcurrentStreams: appConfig.Relay.MaxClientSessions,
+	}, relayService)
+	if err != nil {
+		stopGateway()
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return err
+	}
 
 	adminServer, err := admin.Start(context.Background(), admin.Config{
 		BindAddress:  appConfig.Admin.BindAddress,
 		ReadTimeout:  appConfig.Admin.ReadTimeout.Value(),
 		WriteTimeout: appConfig.Admin.WriteTimeout.Value(),
-	}, node, gatewayClient, authorityManager, registry)
+	}, node, gatewayClient, authorityManager, clientRuntime, registry)
 	if err != nil {
 		stopGateway()
+		clientRuntime.Close()
+		relayShutdownContext, cancelRelayShutdown := context.WithTimeout(context.Background(), appConfig.Relay.ShutdownTimeout.Value())
+		_ = relayServer.Shutdown(relayShutdownContext)
+		cancelRelayShutdown()
 		authorityManager.Close()
 		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
 		defer cancelShutdown()
@@ -170,36 +202,77 @@ func run() error {
 	logger.Info("relaygate started",
 		"raft_address", appConfig.Raft.AdvertiseAddress,
 		"control_address", controlServer.Address(),
+		"relay_address", relayServer.Address(),
 		"admin_address", adminServer.Address(),
 		"gateway_id", appConfig.Gateway.ID,
 		"gateway_instance_id", gatewayClient.Status().GatewayInstanceID,
+		"auth_revision", clientRuntime.Revision(),
 		"raft_role", node.Status().Role,
 	)
 
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
+	reloadSignals := make(chan os.Signal, 1)
+	signal.Notify(reloadSignals, syscall.SIGHUP)
+	defer signal.Stop(reloadSignals)
 	var runErr error
-	select {
-	case <-signalContext.Done():
-		logger.Info("shutdown requested")
-	case err := <-adminServer.Errors():
-		if err != nil {
-			runErr = err
-		} else {
-			runErr = fmt.Errorf("admin server stopped unexpectedly")
-		}
-	case err := <-controlServer.Errors():
-		if err != nil {
-			runErr = err
-		} else {
-			runErr = fmt.Errorf("control server stopped unexpectedly")
+	running := true
+	for running {
+		select {
+		case <-signalContext.Done():
+			logger.Info("shutdown requested")
+			running = false
+		case <-reloadSignals:
+			candidate, err := config.Load(configPath)
+			if err != nil {
+				logger.Error("client config reload rejected", "error", err)
+				continue
+			}
+			result, err := clientRuntime.Apply(candidate)
+			if err != nil {
+				logger.Error("client config reload rejected", "error", err)
+				continue
+			}
+			logger.Info("client config reloaded",
+				"auth_revision", result.Revision,
+				"removed_credentials", result.Removed,
+				"retired_sessions", result.RetiredSessions,
+			)
+		case err := <-adminServer.Errors():
+			if err != nil {
+				runErr = err
+			} else {
+				runErr = fmt.Errorf("admin server stopped unexpectedly")
+			}
+			running = false
+		case err := <-controlServer.Errors():
+			if err != nil {
+				runErr = err
+			} else {
+				runErr = fmt.Errorf("control server stopped unexpectedly")
+			}
+			running = false
+		case err := <-relayServer.Errors():
+			if err != nil {
+				runErr = err
+			} else {
+				runErr = fmt.Errorf("relay server stopped unexpectedly")
+			}
+			running = false
 		}
 	}
 
 	stopGateway()
 	node.BeginShutdown()
 	authorityManager.Close()
+	clientRuntime.Close()
 	shutdownErr := runErr
+	relayShutdownContext, cancelRelayShutdown := context.WithTimeout(context.Background(), appConfig.Relay.ShutdownTimeout.Value())
+	if err := relayServer.Shutdown(relayShutdownContext); err != nil {
+		shutdownErr = errors.Join(shutdownErr, err)
+		logger.Error("relay shutdown failed", "error", err)
+	}
+	cancelRelayShutdown()
 	controlShutdownContext, cancelControlShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
 	if err := controlServer.Shutdown(controlShutdownContext); err != nil {
 		shutdownErr = errors.Join(shutdownErr, err)

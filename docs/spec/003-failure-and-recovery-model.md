@@ -43,6 +43,10 @@ flowchart LR
 | Config | Process별 reload 성공·실패·지연과 revision skew | 각 process는 validated snapshot만 atomic하게 사용한다. Cluster-wide 동시 적용을 가정하지 않는다. |
 | Operator | 명시적인 offline reset/bootstrap | 모든 old authority/admission path를 외부적으로 fence한 뒤에만 새 `ClusterEpoch`를 활성화한다. Hot epoch 전환은 없다. |
 
+HTTP/RPC caller cancellation과 caller-owned deadline은 authority 또는 quorum 상실의 증거가 아니다. 해당
+호출만 unavailable로 끝내며 current authority와 다른 control session은 유지한다. Global fence는 definitive
+role/epoch 상실 또는 manager-owned authority probe의 failure observation이 소유한다.
+
 Crash와 partition은 관찰만으로 구분할 수 없다. Timeout은 death proof가 아니라 suspicion이다. Suspect
 판정은 route를 ineligible로 만들어 false positive 때 availability를 줄일 수 있지만, 어떤 admission gate도
 참으로 만들거나 stale state를 current로 승격할 수 없다. Timeout 값은 correctness 조건이 아니다. 공통
@@ -306,6 +310,8 @@ commit도 Open의 linearization point가 아니며 `V`와 `O` 없이 route가 �
 | Unbind ↔ owner admission | Local binding retirement | `O=false`; Listener에게 offer하지 않는다. |
 | Cancel ↔ Listener accept | Listener accept | Owner-local accepted 뒤 cancel이 local terminal을 만든다. Caller outcome은 ACK 순서에 따라 `Open` 또는 `Unknown`이다. |
 | Cancel ↔ Listener accept | Attempt cancel | Late Listener accept는 no-op이며 tentative attempt를 terminal로 만든다. |
+| Credential removal ↔ ClientSession auth | Final current-snapshot revalidation | 겹친 인증은 pre-swap session으로 선형화될 수 있지만 같은 reload가 `LocalRetirementDone` 전에 retire한다. |
+| Credential removal ↔ ClientSession auth | Auth snapshot swap | Final revalidation은 제거된 credential을 거부하고 session을 만들지 않는다. |
 | Credential removal/session close ↔ Open | Session이 authority admission 전에 terminal | `A=false`; 새 Pipe는 생기지 않는다. |
 | Credential removal/session close ↔ Open | Listener accept | Accepted 뒤 session terminal이 local Pipe를 닫는다. 중간 race는 owner reservation과 cancel 순서로 귀결된다. |
 | ACK loss ↔ live owner | Owner-local accept | Owner가 살아 있는 동안만 `AcceptedUnconfirmed`이며 caller 결과는 `Unknown`일 수 있다. 같은 Pipe에 resume하지 않는다. |

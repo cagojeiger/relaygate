@@ -38,11 +38,17 @@ type GatewayStatusProvider interface {
 }
 
 type PresenceProvider interface {
-	Presence() authority.Presence
+	Observe(context.Context) (authority.Ref, authority.Presence, error)
+}
+
+type AuthRevisionProvider interface {
+	Revision() string
 }
 
 type RuntimeStatus struct {
 	raftnode.Status
+	AuthorityID    string                `json:"authority_id,omitempty"`
+	AuthRevision   string                `json:"auth_revision"`
 	GatewayControl gatewaycontrol.Status `json:"gateway_control"`
 	Presence       authority.Presence    `json:"presence"`
 }
@@ -53,6 +59,7 @@ func Start(
 	node StatusProvider,
 	gateway GatewayStatusProvider,
 	presence PresenceProvider,
+	auth AuthRevisionProvider,
 	gatherer prometheus.Gatherer,
 ) (*Server, error) {
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", config.BindAddress)
@@ -81,13 +88,27 @@ func Start(
 			"gateway_control": gatewayStatus.State,
 		})
 	})
-	mux.HandleFunc("GET /status", func(writer http.ResponseWriter, _ *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(RuntimeStatus{
+	mux.HandleFunc("GET /status", func(writer http.ResponseWriter, request *http.Request) {
+		observationContext, cancelObservation := context.WithTimeout(request.Context(), config.ReadTimeout)
+		authorityRef, currentPresence, observationErr := presence.Observe(observationContext)
+		cancelObservation()
+		runtimeStatus := RuntimeStatus{
 			Status:         node.Status(),
+			AuthRevision:   auth.Revision(),
 			GatewayControl: gateway.Status(),
-			Presence:       presence.Presence(),
-		})
+			Presence:       currentPresence,
+		}
+		if observationErr == nil {
+			runtimeStatus.ClusterEpoch = authorityRef.ClusterEpoch
+			runtimeStatus.AuthorityID = authorityRef.AuthorityID
+		} else {
+			runtimeStatus.Presence = authority.Presence{State: authority.PresenceNoAuthority}
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if observationErr != nil {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(writer).Encode(runtimeStatus)
 	})
 	mux.Handle("GET /metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{
 		MaxRequestsInFlight: 5,

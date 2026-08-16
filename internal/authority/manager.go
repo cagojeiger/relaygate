@@ -166,13 +166,25 @@ func (m *Manager) Current() (Ref, bool) {
 }
 
 func (m *Manager) Confirm(ctx context.Context) (Ref, error) {
+	return m.confirm(ctx, false)
+}
+
+func (m *Manager) confirm(ctx context.Context, fenceOnContextError bool) (Ref, error) {
 	status := m.node.Status()
 	if status.Role != "Leader" || status.ClusterEpoch != m.config.ClusterEpoch {
 		m.fence()
 		return Ref{}, ErrNoAuthority
 	}
 	if err := m.node.VerifyLeader(ctx); err != nil {
-		m.fence()
+		callerEnded := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		shouldFence := !callerEnded || fenceOnContextError
+		if callerEnded && !fenceOnContextError {
+			observed := m.node.Status()
+			shouldFence = observed.Role != "Leader" || observed.ClusterEpoch != m.config.ClusterEpoch
+		}
+		if shouldFence {
+			m.fence()
+		}
 		return Ref{}, fmt.Errorf("%w: %w", ErrNoAuthority, err)
 	}
 	confirmed := m.node.Status()
@@ -196,6 +208,23 @@ func (m *Manager) Confirm(ctx context.Context) (Ref, error) {
 		m.initializeDeadlinesLocked()
 	}
 	return *m.current, nil
+}
+
+// Observe returns a presence view only after confirming this process is the
+// current quorum-backed authority. Callers must not reuse a prior successful
+// observation when this method returns an error.
+func (m *Manager) Observe(ctx context.Context) (Ref, Presence, error) {
+	ref, err := m.Confirm(ctx)
+	if err != nil {
+		return Ref{}, Presence{State: PresenceNoAuthority}, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.current == nil || *m.current != ref {
+		return Ref{}, Presence{State: PresenceNoAuthority}, ErrNoAuthority
+	}
+	return ref, m.presenceLocked(), nil
 }
 
 func (m *Manager) OpenSession(slot controlstate.GatewaySlot) (Session, error) {
@@ -313,6 +342,10 @@ func (m *Manager) EndSession(ref SessionRef) {
 func (m *Manager) Presence() Presence {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.presenceLocked()
+}
+
+func (m *Manager) presenceLocked() Presence {
 	if m.current == nil {
 		return Presence{State: PresenceNoAuthority}
 	}
@@ -380,7 +413,7 @@ func (m *Manager) finish() {
 
 func (m *Manager) probe(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, m.config.ProbeTimeout)
-	if _, err := m.Confirm(ctx); err == nil {
+	if _, err := m.confirm(ctx, true); err == nil {
 		m.expireSyncingSessions()
 	}
 	cancel()

@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package relaygate.relay.v1;
+
+option go_package = "github.com/cagojeiger/relaygate/internal/gen/relay/v1;relayv1";
+
+service Relay {
+  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
+}
+
+message ConnectRequest {
+  oneof message {
+    Authenticate authenticate = 1;
+  }
+}
+
+message ConnectResponse {
+  oneof message {
+    ClientSessionOpened client_session_opened = 1;
+  }
+}
+
+message Authenticate {
+  string client_id = 1;
+  string api_key_id = 2;
+  string api_key = 3;
+}
+
+message ClientSessionRef {
+  string client_session_id = 1;
+  string client_id = 2;
+  string api_key_id = 3;
+  string auth_revision = 4;
+}
+
+message ClientSessionOpened {
+  ClientSessionRef session = 1;
+}

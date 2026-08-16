@@ -9,6 +9,9 @@ x-relaygate: &relaygate
   restart: unless-stopped
 
 x-relaygate-environment: &relaygate-environment
+  RELAYGATE_RAFT_BIND_ADDRESS: 0.0.0.0:7000
+  RELAYGATE_CONTROL_BIND_ADDRESS: 0.0.0.0:7100
+  RELAYGATE_ADMIN_BIND_ADDRESS: 0.0.0.0:9090
   RELAYGATE_CONTROL_CLUSTER_EPOCH: local-compose-1
   RELAYGATE_GATEWAY_CONTROL_ENDPOINTS: >-
     ["relaygate-1:7100","relaygate-2:7100","relaygate-3:7100"]

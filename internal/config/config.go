@@ -10,10 +10,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cagojeiger/relaygate/internal/clientauth"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,11 +35,13 @@ func (d Duration) Value() time.Duration {
 }
 
 type Config struct {
-	Raft    RaftConfig    `yaml:"raft"`
-	Gateway GatewayConfig `yaml:"gateway"`
-	Control ControlConfig `yaml:"control"`
-	Admin   AdminConfig   `yaml:"admin"`
-	Logging LoggingConfig `yaml:"logging"`
+	Raft    RaftConfig                         `yaml:"raft"`
+	Gateway GatewayConfig                      `yaml:"gateway"`
+	Relay   RelayConfig                        `yaml:"relay"`
+	Control ControlConfig                      `yaml:"control"`
+	Admin   AdminConfig                        `yaml:"admin"`
+	Logging LoggingConfig                      `yaml:"logging"`
+	Clients map[string]clientauth.ClientConfig `yaml:"clients"`
 }
 
 type RaftConfig struct {
@@ -68,6 +72,13 @@ type GatewayConfig struct {
 	ControlEndpoints []string `yaml:"control_endpoints"`
 	ConnectTimeout   Duration `yaml:"connect_timeout"`
 	RetryInterval    Duration `yaml:"retry_interval"`
+}
+
+type RelayConfig struct {
+	BindAddress           string   `yaml:"bind_address"`
+	AuthenticationTimeout Duration `yaml:"authentication_timeout"`
+	ShutdownTimeout       Duration `yaml:"shutdown_timeout"`
+	MaxClientSessions     uint32   `yaml:"max_client_sessions"`
 }
 
 type ControlConfig struct {
@@ -112,6 +123,12 @@ func Defaults() Config {
 			ControlEndpoints: []string{"127.0.0.1:7100"},
 			ConnectTimeout:   Duration(2 * time.Second),
 			RetryInterval:    Duration(250 * time.Millisecond),
+		},
+		Relay: RelayConfig{
+			BindAddress:           "127.0.0.1:7200",
+			AuthenticationTimeout: Duration(5 * time.Second),
+			ShutdownTimeout:       Duration(5 * time.Second),
+			MaxClientSessions:     10_000,
 		},
 		Control: ControlConfig{
 			BindAddress:                    "127.0.0.1:7100",
@@ -165,6 +182,9 @@ func applyEnvironment(config *Config, lookupEnv func(string) (string, bool)) err
 	if value, ok := lookupEnv("RELAYGATE_RAFT_NODE_ID"); ok {
 		config.Raft.NodeID = value
 	}
+	if value, ok := lookupEnv("RELAYGATE_RAFT_BIND_ADDRESS"); ok {
+		config.Raft.BindAddress = value
+	}
 	if value, ok := lookupEnv("RELAYGATE_RAFT_ADVERTISE_ADDRESS"); ok {
 		config.Raft.AdvertiseAddress = value
 	}
@@ -188,6 +208,9 @@ func applyEnvironment(config *Config, lookupEnv func(string) (string, bool)) err
 	if value, ok := lookupEnv("RELAYGATE_CONTROL_CLUSTER_EPOCH"); ok {
 		config.Control.ClusterEpoch = value
 	}
+	if value, ok := lookupEnv("RELAYGATE_CONTROL_BIND_ADDRESS"); ok {
+		config.Control.BindAddress = value
+	}
 	if value, ok := lookupEnv("RELAYGATE_GATEWAY_ID"); ok {
 		config.Gateway.ID = value
 	}
@@ -197,6 +220,9 @@ func applyEnvironment(config *Config, lookupEnv func(string) (string, bool)) err
 			return fmt.Errorf("RELAYGATE_GATEWAY_CONTROL_ENDPOINTS: %w", err)
 		}
 		config.Gateway.ControlEndpoints = endpoints
+	}
+	if value, ok := lookupEnv("RELAYGATE_ADMIN_BIND_ADDRESS"); ok {
+		config.Admin.BindAddress = value
 	}
 	return nil
 }
@@ -313,6 +339,15 @@ func (c Config) Validate() error {
 	if c.Gateway.ConnectTimeout.Value() <= 0 || c.Gateway.RetryInterval.Value() <= 0 {
 		return fmt.Errorf("gateway timeouts must be positive")
 	}
+	if err := validateLoopbackListenAddress("relay.bind_address", c.Relay.BindAddress); err != nil {
+		return err
+	}
+	if c.Relay.AuthenticationTimeout.Value() <= 0 || c.Relay.ShutdownTimeout.Value() <= 0 {
+		return fmt.Errorf("relay timeouts must be positive")
+	}
+	if c.Relay.MaxClientSessions == 0 {
+		return fmt.Errorf("relay.max_client_sessions must be positive")
+	}
 	if c.Control.ClusterEpoch == "" {
 		return fmt.Errorf("control.cluster_epoch is required")
 	}
@@ -347,12 +382,36 @@ func (c Config) LogLevel() slog.Level {
 	return level
 }
 
+func ValidateClientReload(current, candidate Config) error {
+	current.Clients = nil
+	candidate.Clients = nil
+	if !reflect.DeepEqual(current, candidate) {
+		return fmt.Errorf("SIGHUP may change clients only; restart is required for other config changes")
+	}
+	return nil
+}
+
 func validateListenAddress(name, address string) error {
 	if address == "" {
 		return fmt.Errorf("%s is required", name)
 	}
 	if _, _, err := net.SplitHostPort(address); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
+func validateLoopbackListenAddress(name, address string) error {
+	if err := validateListenAddress(name, address); err != nil {
+		return err
+	}
+	host, _, _ := net.SplitHostPort(address)
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%s must use a loopback host until relay TLS is implemented", name)
 	}
 	return nil
 }

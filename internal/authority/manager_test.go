@@ -98,6 +98,188 @@ func TestAuthorityFencesSessionsAndRebuildsPresence(t *testing.T) {
 	}
 }
 
+func TestObserveDoesNotReuseCompletePresenceAfterQuorumLoss(t *testing.T) {
+	node := &fakeRaftNode{
+		status: raftnode.Status{Role: "Leader", Term: 1, ClusterEpoch: "epoch-1"},
+		state:  controlstate.State{ClusterEpoch: "epoch-1"},
+	}
+	manager, err := New(Config{
+		ClusterEpoch:        "epoch-1",
+		ProbeInterval:       time.Second,
+		ProbeTimeout:        time.Second,
+		RevalidationTimeout: time.Minute,
+	}, node)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	t.Cleanup(manager.Close)
+
+	ref, presence, err := manager.Observe(context.Background())
+	if err != nil {
+		t.Fatalf("Observe(): %v", err)
+	}
+	if ref.AuthorityID == "" || presence.State != PresenceComplete {
+		t.Fatalf("initial observation = ref %#v, presence %#v", ref, presence)
+	}
+
+	node.setVerifyError(errors.New("quorum unavailable"))
+	ref, presence, err = manager.Observe(context.Background())
+	if !errors.Is(err, ErrNoAuthority) {
+		t.Fatalf("Observe() error = %v, want ErrNoAuthority", err)
+	}
+	if ref != (Ref{}) || presence.State != PresenceNoAuthority {
+		t.Fatalf("failed observation reused old result: ref %#v, presence %#v", ref, presence)
+	}
+}
+
+func TestCallerCancellationDoesNotFenceAuthorityOrSession(t *testing.T) {
+	slot := controlstate.GatewaySlot{
+		GatewayID:  "gateway-1",
+		Generation: 1,
+		Ref:        &controlstate.GatewayRegistrationRef{GatewayInstanceID: "instance-1"},
+	}
+	node := &fakeRaftNode{
+		status: raftnode.Status{Role: "Leader", Term: 1, ClusterEpoch: "epoch-1"},
+		state:  controlstate.State{ClusterEpoch: "epoch-1", Gateways: []controlstate.GatewaySlot{slot}},
+	}
+	manager, err := New(Config{
+		ClusterEpoch:        "epoch-1",
+		ProbeInterval:       time.Second,
+		ProbeTimeout:        time.Second,
+		RevalidationTimeout: time.Minute,
+	}, node)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	t.Cleanup(manager.Close)
+
+	authorityRef, err := manager.Confirm(context.Background())
+	if err != nil {
+		t.Fatalf("Confirm(): %v", err)
+	}
+	session, err := manager.OpenSession(slot)
+	if err != nil {
+		t.Fatalf("OpenSession(): %v", err)
+	}
+	if err := manager.Revalidate(session.Ref, nil); err != nil {
+		t.Fatalf("Revalidate(): %v", err)
+	}
+
+	node.setVerify(func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := manager.Observe(ctx); !errors.Is(err, ErrNoAuthority) {
+		t.Fatalf("Observe(canceled) error = %v, want ErrNoAuthority", err)
+	}
+
+	current, ok := manager.Current()
+	if !ok || current != authorityRef {
+		t.Fatalf("caller cancellation changed authority: current=%#v ok=%v", current, ok)
+	}
+	if err := manager.RequireRevalidated(session.Ref); err != nil {
+		t.Fatalf("caller cancellation changed session: %v", err)
+	}
+	select {
+	case <-session.Done:
+		t.Fatal("caller cancellation fenced the control session")
+	default:
+	}
+}
+
+func TestProbeTimeoutFencesAuthorityAndSession(t *testing.T) {
+	slot := controlstate.GatewaySlot{
+		GatewayID:  "gateway-1",
+		Generation: 1,
+		Ref:        &controlstate.GatewayRegistrationRef{GatewayInstanceID: "instance-1"},
+	}
+	node := &fakeRaftNode{
+		status: raftnode.Status{Role: "Leader", Term: 1, ClusterEpoch: "epoch-1"},
+		state:  controlstate.State{ClusterEpoch: "epoch-1", Gateways: []controlstate.GatewaySlot{slot}},
+	}
+	manager, err := New(Config{
+		ClusterEpoch:        "epoch-1",
+		ProbeInterval:       time.Second,
+		ProbeTimeout:        10 * time.Millisecond,
+		RevalidationTimeout: time.Minute,
+	}, node)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	t.Cleanup(manager.Close)
+	if _, err := manager.Confirm(context.Background()); err != nil {
+		t.Fatalf("Confirm(): %v", err)
+	}
+	session, err := manager.OpenSession(slot)
+	if err != nil {
+		t.Fatalf("OpenSession(): %v", err)
+	}
+
+	node.setVerify(func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	manager.probe(context.Background())
+
+	if _, ok := manager.Current(); ok {
+		t.Fatal("probe timeout did not fence authority")
+	}
+	select {
+	case <-session.Done:
+	default:
+		t.Fatal("probe timeout did not fence the control session")
+	}
+}
+
+func TestCallerCancellationStillFencesDefinitiveRoleLoss(t *testing.T) {
+	slot := controlstate.GatewaySlot{
+		GatewayID:  "gateway-1",
+		Generation: 1,
+		Ref:        &controlstate.GatewayRegistrationRef{GatewayInstanceID: "instance-1"},
+	}
+	node := &fakeRaftNode{
+		status: raftnode.Status{Role: "Leader", Term: 1, ClusterEpoch: "epoch-1"},
+		state:  controlstate.State{ClusterEpoch: "epoch-1", Gateways: []controlstate.GatewaySlot{slot}},
+	}
+	manager, err := New(Config{
+		ClusterEpoch:        "epoch-1",
+		ProbeInterval:       time.Second,
+		ProbeTimeout:        time.Second,
+		RevalidationTimeout: time.Minute,
+	}, node)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	t.Cleanup(manager.Close)
+	if _, err := manager.Confirm(context.Background()); err != nil {
+		t.Fatalf("Confirm(): %v", err)
+	}
+	session, err := manager.OpenSession(slot)
+	if err != nil {
+		t.Fatalf("OpenSession(): %v", err)
+	}
+
+	node.setVerify(func(ctx context.Context) error {
+		node.setRole("Follower")
+		return ctx.Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.Confirm(ctx); !errors.Is(err, ErrNoAuthority) {
+		t.Fatalf("Confirm(canceled) error = %v, want ErrNoAuthority", err)
+	}
+	if _, ok := manager.Current(); ok {
+		t.Fatal("definitive role loss did not fence authority")
+	}
+	select {
+	case <-session.Done:
+	default:
+		t.Fatal("definitive role loss did not fence the control session")
+	}
+}
+
 func TestTermChangeCreatesNewAuthorityAndFencesSessions(t *testing.T) {
 	node := &fakeRaftNode{
 		status: raftnode.Status{Role: "Leader", Term: 1, ClusterEpoch: "epoch-1"},
@@ -296,6 +478,7 @@ type fakeRaftNode struct {
 	status    raftnode.Status
 	state     controlstate.State
 	verifyErr error
+	verify    func(context.Context) error
 }
 
 func (n *fakeRaftNode) Status() raftnode.Status {
@@ -310,21 +493,40 @@ func (n *fakeRaftNode) State() controlstate.State {
 	return n.state
 }
 
-func (n *fakeRaftNode) VerifyLeader(context.Context) error {
+func (n *fakeRaftNode) VerifyLeader(ctx context.Context) error {
 	n.mu.RLock()
-	defer n.mu.RUnlock()
-	return n.verifyErr
+	verify := n.verify
+	verifyErr := n.verifyErr
+	n.mu.RUnlock()
+	if verify != nil {
+		return verify(ctx)
+	}
+	return verifyErr
 }
 
 func (n *fakeRaftNode) setVerifyError(err error) {
 	n.mu.Lock()
 	n.verifyErr = err
+	n.verify = nil
+	n.mu.Unlock()
+}
+
+func (n *fakeRaftNode) setVerify(verify func(context.Context) error) {
+	n.mu.Lock()
+	n.verify = verify
+	n.verifyErr = nil
 	n.mu.Unlock()
 }
 
 func (n *fakeRaftNode) setTerm(term uint64) {
 	n.mu.Lock()
 	n.status.Term = term
+	n.mu.Unlock()
+}
+
+func (n *fakeRaftNode) setRole(role string) {
+	n.mu.Lock()
+	n.status.Role = role
 	n.mu.Unlock()
 }
 

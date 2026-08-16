@@ -81,13 +81,13 @@ Protocol은 wire message를 이 event에 매핑할 수 있지만 집합 밖의 �
 
 | Machine | `StateM` | `EventM` |
 | --- | --- | --- |
-| Authority | `Absent`, `Current`, `Fenced` | `AuthorityConfirmed`, `StepDown`, `QuorumLost`, `EpochEnded` |
+| Authority | `Absent`, `Current`, `Fenced` | `AuthorityConfirmed`, `CallerVerificationAborted`, `StepDown`, `QuorumLost`, `EpochEnded` |
 | Quorum | `Unavailable`, `Available` | `QuorumConfirmed`, `QuorumLost`, `EpochEnded` |
 | GatewayRegistration | `AbsentG`, `LiveG`, `TombstonedG` | `Register`, `ReplaceInstance`, `Remove`, `EpochEnded` |
 | ControlSession | `AbsentC`, `Syncing`, `Revalidated`, `EndedC` | `SyncStarted`, `SnapshotValidated`, `Close`, `Timeout`, `AuthorityEnded`, `GatewayEnded` |
 | Presence | `NoAuthority`, `Rebuilding`, `Complete` | `AuthorityConfirmed`, `AllGatewaysClassified`, `CommittedSetChanged`, `ControlGenerationChanged`, `AuthorityEnded` |
 | AuthSnapshot | `StartupBlocked`, `ActiveAuth`, `Validating` | `StartupValid`, `StartupInvalid`, `ReloadStarted`, `ReloadValid`, `ReloadInvalid` |
-| ClientSession | `Authenticating`, `Active`, `RetiringS`, `TerminalS` | `AuthSucceeded`, `AuthFailed`, `Close`, `CredentialRevoked`, `TransportEnded`, `GatewayEnded`, `RetirementDone`, `EpochEnded` |
+| ClientSession | `Authenticating`, `Active`, `RetiringS`, `TerminalS` | `AuthSucceeded`, `AuthFailed`, `AuthenticationTimedOut`, `Close`, `CredentialRevoked`, `TransportEnded`, `GatewayEnded`, `RetirementDone`, `EpochEnded` |
 | LocalBinding | `AbsentB`, `RegisteringB`, `LiveB`, `RetiringB`, `RetiredB` | `BindStarted`, `InstallApplied`, `InstallRejected`, `Cancel`, `Unbind`, `SessionEnded`, `GatewayEnded`, `RetirementDone`, `EpochEnded` |
 | FlowControl | `Flowing`, `Backpressured`, `Exhausted`, `TerminalRequested`, `TerminalF` | `QueueHigh`, `DownstreamDrained`, `BoundExceeded`, `RequestTerminal`, `PipeTerminal`, `LocalTerminalConfirmed` |
 | OwnerPipe | `OpeningO`, `AdmittedO`, `AcceptedO`, `TerminalO` | `ReservationSucceeded`, `ReservationRejected`, `ListenerAccepted`, `ListenerRejected`, `AttemptDeadline`, `Cancel`, `SessionOrHopEnded`, `TerminalReceived`, `EpochEnded` |
@@ -106,6 +106,7 @@ stable rejection이다. 나머지 per-operation machine도 표의 initial state�
 | Machine | From | Event | Guard | To | Effect |
 | --- | --- | --- | --- | --- | --- |
 | Authority | `Absent` | `AuthorityConfirmed` | Same epoch, quorum-confirmed acquisition | `Current` | 새 `AuthorityId`; presence rebuild 시작 |
+| Authority | `Absent/Current/Fenced` | `CallerVerificationAborted` | Caller-owned HTTP/RPC context cancel 또는 deadline; definitive role/epoch loss 아님 | Same state | 해당 호출만 unavailable; authority와 다른 control session은 불변 |
 | Authority | `Current` | `StepDown` | Current identity | `Fenced` | 새 control operation과 context 발급 중단 |
 | Authority | `Current` | `QuorumLost` | Current identity | `Fenced` | 새 context 발급 중단; same-epoch issued attempt만 유지 |
 | Authority | `Current` | `EpochEnded` | Current epoch | `Fenced` | Old context와 runtime을 terminal/fenced 처리 |
@@ -158,11 +159,15 @@ generation/ref mismatch와 capacity를 넘는 새 `GatewayId`는 stable rejectio
 
 | From | Event | Guard | To | Effect |
 | --- | --- | --- | --- | --- |
-| `Authenticating` | `AuthSucceeded` | Current snapshot에서 `(ClientId, ApiKeyId)` 유효 | `Active` | 새 `ClientSessionId`와 implicit `ClientId` 고정 |
-| `Authenticating` | `AuthFailed/Close/CredentialRevoked/TransportEnded/GatewayEnded/EpochEnded` | 해당 attempt/identity 종료 | `TerminalS` | Session 생성 안 함 |
+| `Authenticating` | `AuthSucceeded` | `Relay.Connect` 첫 메시지의 exact `(ClientId, ApiKeyId, presented key)`가 current snapshot에서 유효 | `Active` | 새 `ClientSessionId`와 implicit `ClientId`를 stream lifetime에 고정 |
+| `Authenticating` | `AuthFailed/AuthenticationTimedOut/Close/CredentialRevoked/TransportEnded/GatewayEnded/EpochEnded` | 인증 실패, first-message deadline 또는 해당 attempt/identity 종료 | `TerminalS` | Session 생성 안 함 |
 | `Active` | `Close/CredentialRevoked` | Exact session | `RetiringS` | 새 attempt/bind 금지; local child retirement 시작 |
 | `Active` | `TransportEnded/GatewayEnded/EpochEnded` | 해당 identity 종료 | `TerminalS` | Local child terminal 전파 |
 | `RetiringS` | `RetirementDone/TransportEnded/GatewayEnded/EpochEnded` | Local child 정리 완료 또는 identity 종료 | `TerminalS` | Identity 재사용 금지 |
+
+`AuthSucceeded`는 local session admission ordering 안에서 exact credential을 current immutable snapshot으로
+마지막 재검증하는 순간 선형화된다. 이 revalidation 뒤 removal swap이 오면 session 등록보다 retirement가 먼저
+지나갈 수 없으므로 같은 reload가 그 session을 retire한다. Swap이 먼저면 `AuthSucceeded` guard는 false다.
 
 ### LocalBinding
 
