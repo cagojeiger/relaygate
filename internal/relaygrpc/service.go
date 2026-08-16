@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/clientsession"
@@ -30,7 +31,9 @@ type BindingManager interface {
 }
 
 type Opener interface {
-	Open(context.Context, clientsession.Session, string, string) (opening.Result, error)
+	OpenPipe(context.Context, clientsession.Session, localbinding.CallerEndpoint, string, string) (opening.Result, error)
+	ActivatePipe(clientsession.Ref, string) bool
+	RelayPayload(context.Context, clientsession.Ref, string, []byte) error
 	ClosePipe(clientsession.Ref, string) bool
 	RetireSession(clientsession.Ref) int
 }
@@ -43,7 +46,10 @@ type Service struct {
 	authenticationTimeout time.Duration
 	terminalSendTimeout   time.Duration
 	openSlots             chan struct{}
+	payloadSlots          chan struct{}
 }
+
+const maxGlobalPayloadSlots = 1024
 
 func NewService(sessions SessionManager, bindings BindingManager, opener Opener, authenticationTimeout, terminalSendTimeout time.Duration, maxInFlightOpens uint32) (*Service, error) {
 	if sessions == nil {
@@ -71,13 +77,15 @@ func NewService(sessions SessionManager, bindings BindingManager, opener Opener,
 		authenticationTimeout: authenticationTimeout,
 		terminalSendTimeout:   terminalSendTimeout,
 		openSlots:             make(chan struct{}, maxInFlightOpens),
+		payloadSlots:          make(chan struct{}, min(maxInFlightOpens, uint32(maxGlobalPayloadSlots))),
 	}, nil
 }
 
 func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
-	outbound := newOutboundActor(stream)
+	outbound := newOutboundActor(stream, s.payloadSlots, s.terminalSendTimeout)
 	defer outbound.close()
-	listener := newStreamListenerEndpoint(stream.Context(), outbound, s.terminalSendTimeout)
+	pipeEndpoint := newStreamPipeEndpoint(outbound, s.terminalSendTimeout)
+	listener := newStreamListenerEndpoint(stream.Context(), outbound, pipeEndpoint, s.terminalSendTimeout)
 	defer listener.close()
 
 	received := receiveRequests(stream)
@@ -113,7 +121,7 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest
 	defer s.sessions.End(session.Ref)
 	defer s.bindings.RetireSession(session.Ref)
 	defer s.opener.RetireSession(session.Ref)
-	coordinator := newStreamCoordinator(stream.Context(), session, s.opener, outbound, s.openSlots)
+	coordinator := newStreamCoordinator(stream.Context(), session, s.opener, pipeEndpoint, outbound, s.openSlots)
 	defer coordinator.close()
 
 	if err := outbound.send(stream.Context(), &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ClientSessionOpened{
@@ -136,6 +144,12 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest
 			}
 			if item.err != nil {
 				return item.err
+			}
+			if item.request.GetPipePayload() != nil || item.request.GetClosePipe() != nil {
+				if err := coordinator.enqueuePipeWork(s, item.request); err != nil {
+					return err
+				}
+				continue
 			}
 			orderBeforeOffers := item.request.GetBindListener() != nil
 			if orderBeforeOffers {
@@ -202,10 +216,6 @@ func (s *Service) handleRequest(ctx context.Context, session clientsession.Sessi
 		return coordinator.cancelOpen(cancelOpen), nil
 	}
 
-	if closePipe := request.GetClosePipe(); closePipe != nil {
-		return coordinator.closePipe(closePipe), nil
-	}
-
 	if accept := request.GetListenerAccept(); accept != nil {
 		if err := listener.accept(accept.GetAttemptId()); err != nil {
 			return listenerDecisionRejected(accept.GetAttemptId(), err), nil
@@ -252,7 +262,7 @@ func bindingStatus(err error) error {
 	}
 }
 
-func (s *Service) open(ctx context.Context, session clientsession.Session, request *relayv1.Open) *relayv1.ConnectResponse {
+func (s *Service) open(ctx context.Context, session clientsession.Session, callerEndpoint localbinding.CallerEndpoint, request *relayv1.Open) *relayv1.ConnectResponse {
 	requestID := safeWireValue(request.GetRequestId(), controlstate.MaxIdentityBytes)
 	endpoint := safeWireValue(request.GetEndpoint(), controlstate.MaxEndpointPatternBytes)
 	targetID := safeWireValue(request.GetTargetId(), controlstate.MaxIdentityBytes)
@@ -260,7 +270,7 @@ func (s *Service) open(ctx context.Context, session clientsession.Session, reque
 		return pipeOpenFailed(requestID, endpoint, targetID, relayv1.OpenFailure_OPEN_FAILURE_INVALID_REQUEST)
 	}
 
-	result, err := s.opener.Open(ctx, session, endpoint, targetID)
+	result, err := s.opener.OpenPipe(ctx, session, callerEndpoint, endpoint, targetID)
 	if err != nil {
 		if errors.Is(err, opening.ErrUnknown) {
 			return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipeOpenUnknown{
@@ -283,6 +293,37 @@ func (s *Service) open(ctx context.Context, session clientsession.Session, reque
 			Endpoint:  endpoint,
 			TargetId:  targetID,
 		},
+	}}
+}
+
+func (s *Service) relayPayload(ctx context.Context, sender clientsession.Ref, request *relayv1.PipePayload) *relayv1.ConnectResponse {
+	pipeID := safeWireValue(request.GetPipeId(), controlstate.MaxIdentityBytes)
+	payload := request.GetPayload()
+	if pipeID == "" || len(payload) == 0 || len(payload) > localbinding.MaxPayloadBytes {
+		return pipePayloadRejected(pipeID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
+	}
+	if err := s.opener.RelayPayload(ctx, sender, pipeID, payload); err != nil {
+		return pipePayloadRejected(pipeID, payloadFailure(err))
+	}
+	return nil
+}
+
+func payloadFailure(err error) relayv1.PipePayloadFailure {
+	switch {
+	case errors.Is(err, opening.ErrPayloadInvalid):
+		return relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST
+	case errors.Is(err, opening.ErrPipeNotOwned):
+		return relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED
+	case errors.Is(err, opening.ErrPayloadBackpressure), errors.Is(err, localbinding.ErrPayloadBackpressure):
+		return relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE
+	default:
+		return relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE
+	}
+}
+
+func pipePayloadRejected(pipeID string, failure relayv1.PipePayloadFailure) *relayv1.ConnectResponse {
+	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadRejected{
+		PipePayloadRejected: &relayv1.PipePayloadRejected{PipeId: pipeID, Failure: failure},
 	}}
 }
 
@@ -345,7 +386,10 @@ func listenerDecisionRejected(attemptID string, err error) *relayv1.ConnectRespo
 	}}
 }
 
-const outboundQueueCapacity = 32
+const (
+	outboundQueueCapacity        = 32
+	outboundPayloadQueueCapacity = 32
+)
 
 type outboundMessage struct {
 	ctx      context.Context //nolint:containedctx // The outbound actor must preserve each Send caller's cancellation contract until dequeued.
@@ -353,55 +397,158 @@ type outboundMessage struct {
 	result   chan error
 }
 
-// outboundActor is the only code allowed to call the gRPC stream's Send
-// method. The bounded queue prevents async listener offers from creating an
-// unbounded per-stream backlog.
-type outboundActor struct {
-	stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]
-	ctx    context.Context //nolint:containedctx // Actor owns a stream-root context for queue shutdown.
-	cancel context.CancelFunc
-	queue  chan outboundMessage
-	failed chan error
-	done   chan struct{}
+type outboundPayloadState uint32
 
-	mu       sync.Mutex
-	failure  error
-	failOnce sync.Once
+const (
+	outboundPayloadQueued outboundPayloadState = iota
+	outboundPayloadSending
+	outboundPayloadAborting
+	outboundPayloadCompleted
+	outboundPayloadCanceled
+)
+
+type outboundPayload struct {
+	ctx      context.Context //nolint:containedctx // Pipe lifetime cancellation decides whether a queued volatile frame is still deliverable.
+	response *relayv1.ConnectResponse
+	result   chan error
+	state    atomic.Uint32
 }
 
-func newOutboundActor(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) *outboundActor {
+// outboundActor is the only code allowed to call the gRPC stream's Send
+// method. Control and payload use separate bounded lanes so terminal/control
+// messages can bypass payload pressure. Every queued or in-flight payload also
+// holds one Service-owned process-wide slot.
+type outboundActor struct {
+	stream         grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]
+	ctx            context.Context //nolint:containedctx // Actor owns a stream-root context for queue shutdown.
+	cancel         context.CancelFunc
+	queue          chan outboundMessage
+	payloadQueue   chan *outboundPayload
+	payloadSlots   chan struct{}
+	payloadTimeout time.Duration
+	failed         chan error
+	done           chan struct{}
+
+	payloadEnqueueGate chan struct{}
+	mu                 sync.Mutex
+	failure            error
+	failOnce           sync.Once
+}
+
+func newOutboundActor(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse], payloadSlots chan struct{}, payloadTimeout time.Duration) *outboundActor {
 	ctx, cancel := context.WithCancel(stream.Context())
 	a := &outboundActor{
-		stream: stream,
-		ctx:    ctx,
-		cancel: cancel,
-		queue:  make(chan outboundMessage, outboundQueueCapacity),
-		failed: make(chan error, 1),
-		done:   make(chan struct{}),
+		stream:             stream,
+		ctx:                ctx,
+		cancel:             cancel,
+		queue:              make(chan outboundMessage, outboundQueueCapacity),
+		payloadQueue:       make(chan *outboundPayload, outboundPayloadQueueCapacity),
+		payloadSlots:       payloadSlots,
+		payloadTimeout:     payloadTimeout,
+		payloadEnqueueGate: make(chan struct{}, 1),
+		failed:             make(chan error, 1),
+		done:               make(chan struct{}),
 	}
+	a.payloadEnqueueGate <- struct{}{}
 	go a.run()
 	return a
 }
 
 func (a *outboundActor) run() {
 	for {
+		// A non-blocking control read establishes control preference whenever
+		// both lanes already contain work.
 		select {
 		case <-a.ctx.Done():
 			a.fail(a.ctx.Err())
 			return
 		case message := <-a.queue:
-			if err := message.ctx.Err(); err != nil {
-				completeOutbound(message, err)
-				continue
+			if !a.sendControl(message) {
+				return
 			}
-			err := a.stream.Send(message.response)
-			completeOutbound(message, err)
-			if err != nil {
+			continue
+		default:
+		}
+
+		select {
+		case <-a.ctx.Done():
+			a.fail(a.ctx.Err())
+			return
+		case message := <-a.queue:
+			if !a.sendControl(message) {
+				return
+			}
+		case payload := <-a.payloadQueue:
+			// A payload chosen concurrently with newly-ready control work waits
+			// until the current control backlog has drained.
+			for {
+				select {
+				case <-a.ctx.Done():
+					completeOutboundPayload(payload, a.ctx.Err())
+					a.releasePayloadSlot()
+					a.fail(a.ctx.Err())
+					return
+				case message := <-a.queue:
+					if !a.sendControl(message) {
+						completeOutboundPayload(payload, a.err())
+						a.releasePayloadSlot()
+						return
+					}
+					continue
+				default:
+				}
+				break
+			}
+			if err := a.sendQueuedPayload(payload); err != nil {
 				a.fail(err)
 				return
 			}
 		}
 	}
+}
+
+func (a *outboundActor) sendControl(message outboundMessage) bool {
+	if err := message.ctx.Err(); err != nil {
+		completeOutbound(message, err)
+		return true
+	}
+	err := a.stream.Send(message.response)
+	completeOutbound(message, err)
+	if err != nil {
+		a.fail(err)
+		return false
+	}
+	return true
+}
+
+func (a *outboundActor) sendQueuedPayload(payload *outboundPayload) error {
+	defer a.releasePayloadSlot()
+	if !payload.state.CompareAndSwap(uint32(outboundPayloadQueued), uint32(outboundPayloadSending)) {
+		completeOutboundPayload(payload, payload.ctx.Err())
+		return nil
+	}
+	if err := payload.ctx.Err(); err != nil {
+		completeOutboundPayload(payload, err)
+		return nil
+	}
+	select {
+	case <-a.done:
+		err := a.err()
+		completeOutboundPayload(payload, err)
+		return err
+	default:
+	}
+	err := a.stream.Send(payload.response)
+	completeOutboundPayload(payload, err)
+	return err
+}
+
+func completeOutboundPayload(payload *outboundPayload, err error) {
+	payload.state.Store(uint32(outboundPayloadCompleted))
+	if payload.result == nil {
+		return
+	}
+	payload.result <- err
 }
 
 func completeOutbound(message outboundMessage, err error) {
@@ -434,6 +581,108 @@ func (a *outboundActor) send(ctx context.Context, response *relayv1.ConnectRespo
 	}
 }
 
+// sendPayload returns after the local gRPC write completes. That keeps the
+// opening layer's delivery context alive through queueing and actor dispatch;
+// it still does not imply peer application observation or durable delivery.
+func (a *outboundActor) sendPayload(ctx context.Context, response *relayv1.ConnectResponse) error {
+	if ctx == nil || response == nil {
+		return fmt.Errorf("%w: invalid outbound payload", localbinding.ErrEndpointUnavailable)
+	}
+	payloadCtx, cancelPayload := context.WithCancel(ctx)
+	defer cancelPayload()
+	timer := time.NewTimer(a.payloadTimeout)
+	defer timer.Stop()
+
+	select {
+	case a.payloadSlots <- struct{}{}:
+	case <-timer.C:
+		return localbinding.ErrPayloadBackpressure
+	case <-payloadCtx.Done():
+		return payloadCtx.Err()
+	case <-a.ctx.Done():
+		return fmt.Errorf("%w: %w", localbinding.ErrEndpointUnavailable, a.ctx.Err())
+	case <-a.done:
+		return fmt.Errorf("%w: %w", localbinding.ErrEndpointUnavailable, a.err())
+	}
+
+	select {
+	case <-a.payloadEnqueueGate:
+	case <-timer.C:
+		a.releasePayloadSlot()
+		return localbinding.ErrPayloadBackpressure
+	case <-payloadCtx.Done():
+		a.releasePayloadSlot()
+		return payloadCtx.Err()
+	case <-a.ctx.Done():
+		a.releasePayloadSlot()
+		return fmt.Errorf("%w: %w", localbinding.ErrEndpointUnavailable, a.ctx.Err())
+	}
+	releaseGate := func() { a.payloadEnqueueGate <- struct{}{} }
+
+	result := make(chan error, 1)
+	payload := &outboundPayload{ctx: payloadCtx, response: response, result: result}
+	select {
+	case <-a.done:
+		releaseGate()
+		a.releasePayloadSlot()
+		return fmt.Errorf("%w: %w", localbinding.ErrEndpointUnavailable, a.err())
+	default:
+	}
+	select {
+	case a.payloadQueue <- payload:
+		releaseGate()
+	case <-timer.C:
+		releaseGate()
+		a.releasePayloadSlot()
+		return localbinding.ErrPayloadBackpressure
+	case <-payloadCtx.Done():
+		releaseGate()
+		a.releasePayloadSlot()
+		return payloadCtx.Err()
+	case <-a.ctx.Done():
+		releaseGate()
+		a.releasePayloadSlot()
+		return fmt.Errorf("%w: %w", localbinding.ErrEndpointUnavailable, a.ctx.Err())
+	}
+
+	select {
+	case err := <-result:
+		return err
+	case <-timer.C:
+		cancelPayload()
+		return a.abortPayload(payload, localbinding.ErrPayloadBackpressure)
+	case <-payloadCtx.Done():
+		return a.abortPayload(payload, payloadCtx.Err())
+	case <-a.done:
+		cancelPayload()
+		return a.abortPayload(payload, fmt.Errorf("%w: %w", localbinding.ErrEndpointUnavailable, a.err()))
+	}
+}
+
+// abortPayload makes timeout/cancellation race atomically with local Send
+// ownership. A queued frame is canceled without delivery. Once Send owns the
+// frame, the stream is failed and its exact Send result is joined before this
+// call returns, so a reported failure cannot be followed by a late local write.
+func (a *outboundActor) abortPayload(payload *outboundPayload, cause error) error {
+	for {
+		switch outboundPayloadState(payload.state.Load()) {
+		case outboundPayloadQueued:
+			if payload.state.CompareAndSwap(uint32(outboundPayloadQueued), uint32(outboundPayloadCanceled)) {
+				return cause
+			}
+		case outboundPayloadSending:
+			if payload.state.CompareAndSwap(uint32(outboundPayloadSending), uint32(outboundPayloadAborting)) {
+				a.fail(cause)
+				return <-payload.result
+			}
+		case outboundPayloadAborting, outboundPayloadCompleted:
+			return <-payload.result
+		case outboundPayloadCanceled:
+			return cause
+		}
+	}
+}
+
 func (a *outboundActor) failures() <-chan error {
 	return a.failed
 }
@@ -442,13 +691,25 @@ func (a *outboundActor) fail(err error) {
 	if err == nil {
 		err = context.Canceled
 	}
+	a.cancel()
+	<-a.payloadEnqueueGate
 	a.failOnce.Do(func() {
 		a.mu.Lock()
 		a.failure = err
 		a.mu.Unlock()
 		a.failed <- err
 		close(a.done)
+		for {
+			select {
+			case payload := <-a.payloadQueue:
+				completeOutboundPayload(payload, err)
+				a.releasePayloadSlot()
+			default:
+				return
+			}
+		}
 	})
+	a.payloadEnqueueGate <- struct{}{}
 }
 
 func (a *outboundActor) err() error {
@@ -461,7 +722,50 @@ func (a *outboundActor) err() error {
 }
 
 func (a *outboundActor) close() {
-	a.cancel()
+	a.fail(context.Canceled)
+}
+
+func (a *outboundActor) releasePayloadSlot() {
+	<-a.payloadSlots
+}
+
+// streamPipeEndpoint is the one generic caller endpoint owned by an
+// authenticated Connect stream. Listener endpoints on the same stream reuse
+// its payload delivery path while retaining their listener-specific terminal
+// message.
+type streamPipeEndpoint struct {
+	outbound            *outboundActor
+	terminalSendTimeout time.Duration
+}
+
+func newStreamPipeEndpoint(outbound *outboundActor, terminalSendTimeout time.Duration) *streamPipeEndpoint {
+	return &streamPipeEndpoint{outbound: outbound, terminalSendTimeout: terminalSendTimeout}
+}
+
+func (e *streamPipeEndpoint) DeliverPayload(ctx context.Context, payload localbinding.PipePayload) error {
+	if ctx == nil || payload.PipeID == "" || len(payload.PipeID) > controlstate.MaxIdentityBytes ||
+		len(payload.Data) == 0 || len(payload.Data) > localbinding.MaxPayloadBytes {
+		return fmt.Errorf("%w: invalid Pipe payload", localbinding.ErrEndpointUnavailable)
+	}
+	data := append([]byte(nil), payload.Data...)
+	return e.outbound.sendPayload(ctx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayload{
+		PipePayload: &relayv1.PipePayload{PipeId: payload.PipeID, Payload: data},
+	}})
+}
+
+func (e *streamPipeEndpoint) TerminatePipe(parent context.Context, pipeID string) error {
+	if parent == nil || pipeID == "" || len(pipeID) > controlstate.MaxIdentityBytes {
+		return fmt.Errorf("%w: invalid Pipe terminal", localbinding.ErrEndpointUnavailable)
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), e.terminalSendTimeout)
+	err := e.outbound.send(ctx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipeTerminated{
+		PipeTerminated: &relayv1.PipeTerminated{PipeId: pipeID},
+	}})
+	cancel()
+	if err != nil {
+		e.outbound.fail(err)
+	}
+	return err
 }
 
 type listenerAttemptPhase uint8
@@ -486,6 +790,7 @@ type listenerAttempt struct {
 type streamListenerEndpoint struct {
 	ctx                 context.Context //nolint:containedctx // Endpoint owns the stream-root context for listener attempt retirement.
 	outbound            *outboundActor
+	pipeEndpoint        *streamPipeEndpoint
 	terminalSendTimeout time.Duration
 
 	requestOrder sync.RWMutex
@@ -494,13 +799,18 @@ type streamListenerEndpoint struct {
 	closed       bool
 }
 
-func newStreamListenerEndpoint(ctx context.Context, outbound *outboundActor, terminalSendTimeout time.Duration) *streamListenerEndpoint {
+func newStreamListenerEndpoint(ctx context.Context, outbound *outboundActor, pipeEndpoint *streamPipeEndpoint, terminalSendTimeout time.Duration) *streamListenerEndpoint {
 	return &streamListenerEndpoint{
 		ctx:                 ctx,
 		outbound:            outbound,
+		pipeEndpoint:        pipeEndpoint,
 		terminalSendTimeout: terminalSendTimeout,
 		attempts:            make(map[string]*listenerAttempt),
 	}
+}
+
+func (e *streamListenerEndpoint) DeliverPayload(ctx context.Context, payload localbinding.PipePayload) error {
+	return e.pipeEndpoint.DeliverPayload(ctx, payload)
 }
 
 func (e *streamListenerEndpoint) Offer(ctx context.Context, offer localbinding.Offer) error {

@@ -162,9 +162,10 @@ func TestReserveRejectsSameCallerAndListenerWithoutConsuming(t *testing.T) {
 
 type recordingEndpoint struct{}
 
-func (*recordingEndpoint) Offer(context.Context, Offer) error           { return nil }
-func (*recordingEndpoint) Confirm(context.Context, Confirmation) error  { return nil }
-func (*recordingEndpoint) Terminate(context.Context, Termination) error { return nil }
+func (*recordingEndpoint) DeliverPayload(context.Context, PipePayload) error { return nil }
+func (*recordingEndpoint) Offer(context.Context, Offer) error                { return nil }
+func (*recordingEndpoint) Confirm(context.Context, Confirmation) error       { return nil }
+func (*recordingEndpoint) Terminate(context.Context, Termination) error      { return nil }
 
 func mustOpenContext(t *testing.T, attemptID string, caller clientsession.Ref, slot controlstate.BindingSlot) authority.OpenContext {
 	t.Helper()

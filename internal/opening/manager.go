@@ -26,6 +26,9 @@ var (
 	ErrDeadline               = errors.New("open deadline exceeded")
 	ErrUnknown                = errors.New("open outcome unknown")
 	ErrSessionEnded           = errors.New("open session ended")
+	ErrPayloadInvalid         = errors.New("invalid payload")
+	ErrPipeNotOwned           = errors.New("pipe not owned")
+	ErrPayloadBackpressure    = errors.New("payload backpressure exhausted")
 )
 
 type Config struct {
@@ -71,8 +74,9 @@ type Snapshot struct {
 }
 
 type entry struct {
-	caller     clientsession.Ref
-	callerDone <-chan struct{}
+	caller         clientsession.Ref
+	callerDone     <-chan struct{}
+	callerEndpoint localbinding.CallerEndpoint
 
 	attemptID    string
 	pipeID       string
@@ -90,12 +94,20 @@ type entry struct {
 	provisional     bool
 	offerStarted    bool
 	terminationHeld bool
+
+	activation         chan struct{}
+	activated          bool
+	pipeCtx            context.Context //nolint:containedctx // Entry owns this accepted-Pipe lifetime context.
+	cancelPipe         context.CancelCauseFunc
+	callerToListenerMu sync.Mutex
+	listenerToCallerMu sync.Mutex
 }
 
 type termination struct {
-	endpoint localbinding.ListenerEndpoint
-	message  localbinding.Termination
-	entry    *entry
+	listenerEndpoint localbinding.ListenerEndpoint
+	callerEndpoint   localbinding.CallerEndpoint
+	message          localbinding.Termination
+	entry            *entry
 }
 
 type Manager struct {
@@ -162,6 +174,21 @@ func New(config Config, admitter Admitter, bindings ReservationStore) (*Manager,
 // return means the owner AcceptedO transition and listener confirmation ACK
 // have both occurred; it does not model ingress apply or caller ACK.
 func (m *Manager) Open(ctx context.Context, caller clientsession.Session, endpoint, targetID string) (Result, error) {
+	return m.open(ctx, caller, nil, endpoint, targetID)
+}
+
+// OpenPipe opens an owner-local exact target with both payload directions and
+// accepted-Pipe terminal propagation wired before the Open linearization
+// point. Payload remains gated until ActivatePipe records that the
+// caller-facing PipeOpened message was written successfully.
+func (m *Manager) OpenPipe(ctx context.Context, caller clientsession.Session, callerEndpoint localbinding.CallerEndpoint, endpoint, targetID string) (Result, error) {
+	if callerEndpoint == nil {
+		return Result{}, fmt.Errorf("%w: caller endpoint is required", ErrInvalid)
+	}
+	return m.open(ctx, caller, callerEndpoint, endpoint, targetID)
+}
+
+func (m *Manager) open(ctx context.Context, caller clientsession.Session, callerEndpoint localbinding.CallerEndpoint, endpoint, targetID string) (Result, error) {
 	if err := validateOpenInput(ctx, caller, endpoint, targetID); err != nil {
 		return Result{}, err
 	}
@@ -174,14 +201,20 @@ func (m *Manager) Open(ctx context.Context, caller clientsession.Session, endpoi
 	default:
 	}
 
+	pipeCtx, cancelPipe := context.WithCancelCause(context.Background())
 	e := &entry{
-		caller:      caller.Ref,
-		callerDone:  caller.Done,
-		state:       StateOpening,
-		done:        make(chan struct{}),
-		attemptDone: make(chan struct{}),
+		caller:         caller.Ref,
+		callerDone:     caller.Done,
+		callerEndpoint: callerEndpoint,
+		state:          StateOpening,
+		done:           make(chan struct{}),
+		attemptDone:    make(chan struct{}),
+		activation:     make(chan struct{}),
+		pipeCtx:        pipeCtx,
+		cancelPipe:     cancelPipe,
 	}
 	if err := m.insert(ctx, e); err != nil {
+		cancelPipe(err)
 		return Result{}, err
 	}
 	defer m.opens.Done()
@@ -506,6 +539,10 @@ func (m *Manager) terminalizeLocked(e *entry, cause error) (*termination, error)
 	}
 	e.state = StateTerminal
 	e.terminalErr = cause
+	if e.cancelPipe != nil {
+		e.cancelPipe(cause)
+		e.cancelPipe = nil
+	}
 	if e.cancelPhase != nil {
 		e.cancelPhase(cause)
 		e.cancelPhase = nil
@@ -535,11 +572,16 @@ func (m *Manager) terminationLocked(e *entry) *termination {
 	if !e.terminationHeld || e.endpoint == nil {
 		return nil
 	}
+	var callerEndpoint localbinding.CallerEndpoint
+	if e.pipeID != "" && e.activated {
+		callerEndpoint = e.callerEndpoint
+	}
 	m.terminationSenders.Add(1)
 	return &termination{
-		endpoint: e.endpoint,
-		message:  localbinding.Termination{AttemptID: e.attemptID, PipeID: e.pipeID},
-		entry:    e,
+		listenerEndpoint: e.endpoint,
+		callerEndpoint:   callerEndpoint,
+		message:          localbinding.Termination{AttemptID: e.attemptID, PipeID: e.pipeID},
+		entry:            e,
 	}
 }
 
@@ -571,7 +613,7 @@ func (m *Manager) trimTerminalLocked() {
 }
 
 func (m *Manager) launchTermination(work *termination) {
-	if work == nil || work.endpoint == nil {
+	if work == nil || (work.listenerEndpoint == nil && work.callerEndpoint == nil) {
 		return
 	}
 	defer m.terminationSenders.Done()
@@ -592,7 +634,22 @@ func (m *Manager) runTerminations() {
 	defer m.terminationWorker.Done()
 	for work := range m.terminations {
 		ctx, cancel := context.WithTimeout(m.ctx, m.config.OpenTimeout)
-		_ = work.endpoint.Terminate(ctx, work.message)
+		var sends sync.WaitGroup
+		if work.listenerEndpoint != nil {
+			sends.Add(1)
+			go func() {
+				defer sends.Done()
+				_ = work.listenerEndpoint.Terminate(ctx, work.message)
+			}()
+		}
+		if work.callerEndpoint != nil {
+			sends.Add(1)
+			go func() {
+				defer sends.Done()
+				_ = work.callerEndpoint.TerminatePipe(ctx, work.message.PipeID)
+			}()
+		}
+		sends.Wait()
 		cancel()
 		m.completeTermination(work)
 	}
@@ -661,6 +718,139 @@ func (m *Manager) Retire(change clientauth.ChangeSet) int {
 
 func (m *Manager) RetireAll() int {
 	return m.retireMatching(func(*entry) bool { return true }, ErrUnavailable)
+}
+
+// ActivatePipe opens the payload gate after the caller-facing PipeOpened
+// message was written successfully. Only the exact caller of a currently
+// accepted Pipe may activate it. Repeated activation is an idempotent success
+// while that Pipe remains live. A false result after the write tells the
+// caller-facing control lane to emit PipeTerminated directly.
+func (m *Manager) ActivatePipe(caller clientsession.Ref, pipeID string) bool {
+	if caller.ClientSessionID == "" || pipeID == "" || len(pipeID) > controlstate.MaxIdentityBytes {
+		return false
+	}
+
+	m.mu.Lock()
+	e := m.byPipe[pipeID]
+	if e == nil || e.caller != caller {
+		m.mu.Unlock()
+		return false
+	}
+	if e.state != StateAccepted {
+		m.mu.Unlock()
+		return false
+	}
+	if !e.activated {
+		e.activated = true
+		close(e.activation)
+	}
+	m.mu.Unlock()
+	return true
+}
+
+// RelayPayload delivers one opaque payload to the opposite exact participant.
+// Calls in each direction are serialized independently and remain gated until
+// the caller-facing PipeOpened message has been written successfully.
+func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pipeID string, data []byte) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: context is required", ErrPayloadInvalid)
+	}
+	if len(data) == 0 || len(data) > localbinding.MaxPayloadBytes {
+		return fmt.Errorf("%w: payload must be 1..%d bytes", ErrPayloadInvalid, localbinding.MaxPayloadBytes)
+	}
+	if pipeID == "" || len(pipeID) > controlstate.MaxIdentityBytes {
+		return fmt.Errorf("%w: PipeID must be 1..%d bytes", ErrPayloadInvalid, controlstate.MaxIdentityBytes)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	e := m.byPipe[pipeID]
+	if e == nil || e.state != StateAccepted {
+		m.mu.Unlock()
+		return ErrPipeNotOwned
+	}
+	var direction *sync.Mutex
+	var destination localbinding.PayloadEndpoint
+	switch sender {
+	case e.caller:
+		direction = &e.callerToListenerMu
+		destination = e.endpoint
+	case e.listener:
+		direction = &e.listenerToCallerMu
+		destination = e.callerEndpoint
+	default:
+		m.mu.Unlock()
+		return ErrPipeNotOwned
+	}
+	activated := e.activated
+	pipeCtx := e.pipeCtx
+	m.mu.Unlock()
+
+	direction.Lock()
+	defer direction.Unlock()
+
+	if !activated {
+		activationTimer := time.NewTimer(m.config.OpenTimeout)
+		defer activationTimer.Stop()
+		select {
+		case <-e.activation:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-pipeCtx.Done():
+			return ErrPipeNotOwned
+		case <-activationTimer.C:
+			select {
+			case <-e.activation:
+				// Activation won before the bounded wait was observed.
+			default:
+				m.failPayload(e, ErrUnavailable)
+				return ErrUnavailable
+			}
+		}
+	}
+
+	m.mu.Lock()
+	if m.byPipe[pipeID] != e || e.state != StateAccepted {
+		m.mu.Unlock()
+		return ErrPipeNotOwned
+	}
+	payload := append([]byte(nil), data...)
+	m.mu.Unlock()
+
+	if destination == nil {
+		if context.Cause(pipeCtx) != nil {
+			return ErrPipeNotOwned
+		}
+		m.failPayload(e, ErrUnavailable)
+		return ErrUnavailable
+	}
+
+	deliveryCtx, cancelDelivery := context.WithCancelCause(ctx)
+	stopPipeCancellation := context.AfterFunc(pipeCtx, func() {
+		cancelDelivery(context.Cause(pipeCtx))
+	})
+	err := destination.DeliverPayload(deliveryCtx, localbinding.PipePayload{PipeID: pipeID, Data: payload})
+	stopPipeCancellation()
+	cancelDelivery(nil)
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if context.Cause(pipeCtx) != nil {
+		return ErrPipeNotOwned
+	}
+	stable := classifyPayloadError(err)
+	m.failPayload(e, stable)
+	return stable
+}
+
+func (m *Manager) failPayload(e *entry, cause error) {
+	work, _ := m.terminalize(e, cause)
+	m.launchTermination(work)
 }
 
 // ClosePipe applies the caller session's exact local terminal transition. A
@@ -842,6 +1032,13 @@ func classifyConfirmationError(ctx context.Context, err error) error {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	return err
+}
+
+func classifyPayloadError(err error) error {
+	if errors.Is(err, localbinding.ErrPayloadBackpressure) {
+		return ErrPayloadBackpressure
+	}
+	return ErrUnavailable
 }
 
 func mapContextError(err error) error {

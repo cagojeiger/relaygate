@@ -459,7 +459,7 @@ func TestConnectCloseSendCancelsAndJoinsOpenWorkers(t *testing.T) {
 
 func TestStreamCoordinatorCloseInterruptsBlockedOpenResponse(t *testing.T) {
 	stream := newBlockingRelayStream()
-	actor := newOutboundActor(stream)
+	actor := newOutboundActor(stream, make(chan struct{}, maxGlobalPayloadSlots), time.Second)
 	closedPipe := make(chan string, 1)
 	opener := &testOpener{
 		open: func(context.Context, clientsession.Session, string, string) (opening.Result, error) {
@@ -477,7 +477,8 @@ func TestStreamCoordinatorCloseInterruptsBlockedOpenResponse(t *testing.T) {
 		AuthRevision:    "revision-1",
 	}, Done: make(chan struct{})}
 	service := &Service{opener: opener}
-	coordinator := newStreamCoordinator(context.Background(), session, opener, actor, make(chan struct{}, 1))
+	pipeEndpoint := newStreamPipeEndpoint(actor, time.Second)
+	coordinator := newStreamCoordinator(context.Background(), session, opener, pipeEndpoint, actor, make(chan struct{}, 1))
 	if response := coordinator.startOpen(context.Background(), service, &relayv1.Open{RequestId: "request-1", Endpoint: "one", TargetId: "worker"}); response != nil {
 		t.Fatalf("startOpen() = %#v", response)
 	}
@@ -522,7 +523,7 @@ func TestListenerTerminalQueuePressureFailsStreamInsteadOfDropping(t *testing.T)
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stream := newBlockingRelayStream()
-			actor := newOutboundActor(stream)
+			actor := newOutboundActor(stream, make(chan struct{}, maxGlobalPayloadSlots), time.Second)
 			response := &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerUnbound{
 				ListenerUnbound: &relayv1.ListenerUnbound{ListenerBindingId: "fill"},
 			}}
@@ -532,7 +533,8 @@ func TestListenerTerminalQueuePressureFailsStreamInsteadOfDropping(t *testing.T)
 				actor.queue <- outboundMessage{ctx: context.Background(), response: response}
 			}
 
-			endpoint := newStreamListenerEndpoint(context.Background(), actor, 20*time.Millisecond)
+			pipeEndpoint := newStreamPipeEndpoint(actor, 20*time.Millisecond)
+			endpoint := newStreamListenerEndpoint(context.Background(), actor, pipeEndpoint, 20*time.Millisecond)
 			attempt := &listenerAttempt{terminal: make(chan struct{})}
 			endpoint.attempts["attempt-1"] = attempt
 			test.send(endpoint, attempt)

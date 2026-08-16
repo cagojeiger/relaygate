@@ -89,7 +89,7 @@ Protocol은 wire message를 이 event에 매핑할 수 있지만 집합 밖의 �
 | AuthSnapshot | `StartupBlocked`, `ActiveAuth`, `Validating` | `StartupValid`, `StartupInvalid`, `ReloadStarted`, `ReloadValid`, `ReloadInvalid` |
 | ClientSession | `Authenticating`, `Active`, `RetiringS`, `TerminalS` | `AuthSucceeded`, `AuthFailed`, `AuthenticationTimedOut`, `Close`, `CredentialRevoked`, `TransportEnded`, `GatewayEnded`, `RetirementDone`, `EpochEnded` |
 | LocalBinding | `AbsentB`, `RegisteringB`, `LiveB`, `RetiringB`, `RetiredB` | `BindStarted`, `InstallApplied`, `InstallRejected`, `Cancel`, `Unbind`, `SessionEnded`, `GatewayEnded`, `RetirementDone`, `EpochEnded` |
-| FlowControl | `Flowing`, `Backpressured`, `Exhausted`, `TerminalRequested`, `TerminalF` | `QueueHigh`, `DownstreamDrained`, `BoundExceeded`, `RequestTerminal`, `PipeTerminal`, `LocalTerminalConfirmed` |
+| FlowControl | `Flowing`, `Backpressured`, `Exhausted`, `TerminalRequested`, `TerminalF` | `PayloadIngress`, `PayloadWriteCompleted`, `PayloadWriteFailed`, `QueueHigh`, `DownstreamDrained`, `BoundExceeded`, `RequestTerminal`, `PipeTerminal`, `LocalTerminalConfirmed` |
 | OwnerPipe | `OpeningO`, `AdmittedO`, `AcceptedO`, `TerminalO` | `ReservationSucceeded`, `ReservationRejected`, `ListenerAccepted`, `ListenerRejected`, `AttemptDeadline`, `Cancel`, `SessionOrHopEnded`, `TerminalReceived`, `EpochEnded` |
 | IngressPipe | `OpeningI`, `OpenI`, `TerminalI` | `OwnerAccepted`, `OwnerRejected`, `Cancel`, `Deadline`, `CallerSessionEnded`, `OwnerHopEnded`, `TerminalReceived`, `EpochEnded` |
 | ListenerPipe | `OfferedL`, `ProvisionalL`, `OpenL`, `TerminalL` | `AcceptProposed`, `Reject`, `OwnerConfirmed`, `AttemptDeadline`, `Cancel`, `SessionOrHopEnded`, `TerminalReceived`, `EpochEnded` |
@@ -107,7 +107,12 @@ Public Relay wire mapping은 다음으로 닫힌다.
 | Duplicate in-flight `request_id` | 새 machine/effect 없음 + `OpenRequestRejected(DuplicateInFlight)`. 원래 Open만 Pipe outcome을 낸다. |
 | `CancelOpen(request_id)` | Live in-flight worker면 exact `Cancel` 전달 + `was_pending=true`, 아니면 no-op + `was_pending=false`. ACK는 최종 outcome이나 remote never-accept 증명이 아니다. |
 | `ClosePipe(pipe_id)` | Exact caller session이 소유한 accepted Pipe면 `Cancel`을 적용한다. Unknown/foreign이면 state 불변 + `owned=false`; bounded terminal record replay면 no-op + `owned=true`. |
-| Relay stream/session 종료 | In-flight worker 전부 cancel/join, 그 session의 child Pipe에 `SessionOrHopEnded/TransportEnded` 적용. |
+| `PipePayload(pipe_id, payload)` | Exact participant session, activated accepted Pipe와 1..60 KiB data면 해당 방향 `PayloadIngress`; sender가 정한 ClientId/direction은 받지 않는다. |
+| Exact participant의 pre-activation `PipePayload` | Bounded activation gate에서 기다린다. Caller의 `PipeOpened`가 wire에 기록되면 `PayloadIngress`, 먼저 terminal되면 stable `PipePayloadRejected`, deadline이면 `BoundExceeded → RequestTerminal`이다. |
+| Invalid, unknown, foreign 또는 terminal Pipe payload | Pipe/Flow state 불변 + stable `PipePayloadRejected`; unknown과 foreign ownership은 구분하지 않는다. |
+| Payload queue/process bound가 bounded wait 안에 확보되지 않음 | `QueueHigh → BoundExceeded → RequestTerminal`; queued frame은 취소한다. Local write가 이미 시작됐으면 destination stream을 실패시키고 write 결과를 join해 rejection 뒤 late write를 막는다. |
+| Accepted Pipe가 caller activation 전에 terminal | `PipeOpened` write 전에는 caller terminal을 보류한다. Write 성공 뒤 exact `PipeTerminated`; write 실패면 stream/session retirement가 terminal effect다. |
+| Relay stream/session 종료 | In-flight Open worker는 cancel/join하고 그 session의 child Pipe에 `SessionOrHopEnded/TransportEnded`를 적용한다. Pipe worker는 cancel하되 handler 반환 전 remote write join으로 transport cancellation을 막지 않는다. |
 
 Cancel ACK와 그 Open의 `Failed/Unknown` response는 single-Send actor 안에서 각각 원자적으로 전송되지만 둘 사이
 도착 순서는 정의하지 않는다. SDK는 `request_id`와 message kind로 둘을 독립 처리한다. 완료된 `request_id`는
@@ -204,12 +209,17 @@ generation/ref mismatch와 capacity를 넘는 새 `GatewayId`는 stable rejectio
 | From | Event | Guard | To | Effect |
 | --- | --- | --- | --- | --- |
 | `Flowing` | `QueueHigh` | Bounded queue high watermark | `Backpressured` | Upstream payload read 중지/감속 |
+| `Flowing` | `PayloadIngress` | Exact open participant, activated Pipe, valid frame와 queue/process capacity | `Flowing` | 해당 방향 FIFO payload lane에 enqueue |
 | `Flowing` | `PipeTerminal` | Local terminal 관찰 | `TerminalF` | Payload 전달 중단 |
+| `Flowing/Backpressured` | `PayloadWriteFailed` | Destination stream/hop이 frame을 기록하지 못함 | `TerminalRequested` | Frame replay 없이 Pipe terminal 요청 |
+| `Backpressured` | `PayloadIngress` | Capacity를 기다리는 bounded interval | `Backpressured` | 해당 upstream stream의 payload 처리를 중지 |
+| `Backpressured` | `PayloadWriteCompleted` | Queue와 process slot 확보 뒤 local stream write 완료 | `Flowing` | Upstream 처리 재개; peer application ACK 의미는 없음 |
 | `Backpressured` | `DownstreamDrained` | Low watermark 이하 | `Flowing` | Payload flow 재개 |
 | `Backpressured` | `BoundExceeded` | Bound 안에서 진행 불가 | `Exhausted` | Silent drop 없이 terminal 요청 |
 | `Backpressured/Exhausted` | `PipeTerminal` | Local terminal 관찰 | `TerminalF` | Payload 전달 중단 |
 | `Exhausted` | `RequestTerminal` | 아직 local Pipe가 terminal 아님 | `TerminalRequested` | Terminal/control signal이 payload queue 우회 |
 | `TerminalRequested` | `PipeTerminal/LocalTerminalConfirmed` | Local Pipe terminal | `TerminalF` | Buffer 폐기; replay 없음 |
+| `TerminalF` | `PayloadIngress/PayloadWriteCompleted` | Any | `TerminalF` | Stable rejection/skip; 전달·복구·replay 없음 |
 
 ### OwnerPipe
 

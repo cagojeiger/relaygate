@@ -1,6 +1,7 @@
 package relaygrpc
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -95,6 +96,8 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 	}}); err != nil {
 		t.Fatalf("Send(ListenerConfirmed): %v", err)
 	}
+	preActivationPayload := []byte{0x00, 0x01, 0xfe, 0xff}
+	sendPipePayload(t, listener, established.GetPipeId(), preActivationPayload)
 	openedResponse, err := caller.Recv()
 	if err != nil {
 		t.Fatalf("Recv(PipeOpened): %v", err)
@@ -102,6 +105,42 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 	opened := openedResponse.GetPipeOpened()
 	if opened.GetRequestId() != "request-1" || opened.GetAttemptId() != offer.GetAttemptId() || opened.GetPipeId() != established.GetPipeId() {
 		t.Fatalf("PipeOpened = %#v", opened)
+	}
+	requirePipePayload(t, caller, established.GetPipeId(), preActivationPayload)
+
+	callerFrames := [][]byte{
+		[]byte("caller-frame-one"),
+		{0x00, 0x7f, 0x80, 0xff},
+	}
+	for _, payload := range callerFrames {
+		sendPipePayload(t, caller, established.GetPipeId(), payload)
+	}
+	for _, payload := range callerFrames {
+		requirePipePayload(t, listener, established.GetPipeId(), payload)
+	}
+
+	listenerFrames := [][]byte{
+		[]byte("listener-frame-one"),
+		{0xff, 0x80, 0x7f, 0x00},
+	}
+	for _, payload := range listenerFrames {
+		sendPipePayload(t, listener, established.GetPipeId(), payload)
+	}
+	for _, payload := range listenerFrames {
+		requirePipePayload(t, caller, established.GetPipeId(), payload)
+	}
+
+	maximumPayload := bytes.Repeat([]byte{0xa5}, localbinding.MaxPayloadBytes)
+	sendPipePayload(t, caller, established.GetPipeId(), maximumPayload)
+	requirePipePayload(t, listener, established.GetPipeId(), maximumPayload)
+	sendPipePayload(t, caller, established.GetPipeId(), append(maximumPayload, 0x5a))
+	rejectedResponse, err := caller.Recv()
+	if err != nil {
+		t.Fatalf("Recv(maximum+1 PipePayloadRejected): %v", err)
+	}
+	if rejected := rejectedResponse.GetPipePayloadRejected(); rejected.GetPipeId() != established.GetPipeId() ||
+		rejected.GetFailure() != relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST {
+		t.Fatalf("maximum+1 PipePayloadRejected = %#v", rejectedResponse)
 	}
 	if opener.ActiveCount() != 1 {
 		t.Fatalf("active pipes = %d, want 1", opener.ActiveCount())
@@ -138,6 +177,31 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 	terminated := terminatedResponse.GetListenerTerminated()
 	if terminated.GetAttemptId() != offer.GetAttemptId() || terminated.GetPipeId() != established.GetPipeId() {
 		t.Fatalf("ListenerTerminated = %#v", terminated)
+	}
+}
+
+func sendPipePayload(t *testing.T, stream interface {
+	Send(*relayv1.ConnectRequest) error
+}, pipeID string, payload []byte) {
+	t.Helper()
+	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_PipePayload{
+		PipePayload: &relayv1.PipePayload{PipeId: pipeID, Payload: payload},
+	}}); err != nil {
+		t.Fatalf("Send(PipePayload): %v", err)
+	}
+}
+
+func requirePipePayload(t *testing.T, stream interface {
+	Recv() (*relayv1.ConnectResponse, error)
+}, pipeID string, want []byte) {
+	t.Helper()
+	response, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(PipePayload): %v", err)
+	}
+	payload := response.GetPipePayload()
+	if payload.GetPipeId() != pipeID || !bytes.Equal(payload.GetPayload(), want) {
+		t.Fatalf("PipePayload = %#v, want pipe %q and %d exact bytes", payload, pipeID, len(want))
 	}
 }
 

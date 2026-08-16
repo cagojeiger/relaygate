@@ -389,9 +389,10 @@ func (f *fakeCommitter) Remove(ctx context.Context, slot controlstate.BindingSlo
 
 type acceptingEndpoint struct{}
 
-func (acceptingEndpoint) Offer(context.Context, Offer) error           { return nil }
-func (acceptingEndpoint) Confirm(context.Context, Confirmation) error  { return nil }
-func (acceptingEndpoint) Terminate(context.Context, Termination) error { return nil }
+func (acceptingEndpoint) DeliverPayload(context.Context, PipePayload) error { return nil }
+func (acceptingEndpoint) Offer(context.Context, Offer) error                { return nil }
+func (acceptingEndpoint) Confirm(context.Context, Confirmation) error       { return nil }
+func (acceptingEndpoint) Terminate(context.Context, Termination) error      { return nil }
 
 type fakeSessions struct {
 	mu      sync.Mutex

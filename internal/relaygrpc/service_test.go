@@ -608,7 +608,7 @@ func TestConnectRejectsStaleListenerDecisionWithoutEndingStream(t *testing.T) {
 
 func TestOutboundActorNeverCallsSendConcurrently(t *testing.T) {
 	stream := newTrackingRelayStream()
-	actor := newOutboundActor(stream)
+	actor := newOutboundActor(stream, make(chan struct{}, maxGlobalPayloadSlots), time.Second)
 	defer actor.close()
 
 	var wg sync.WaitGroup
@@ -739,16 +739,36 @@ func (m *testBindingManager) RetireSession(session clientsession.Ref) int {
 }
 
 type testOpener struct {
-	open      func(context.Context, clientsession.Session, string, string) (opening.Result, error)
-	closePipe func(clientsession.Ref, string) bool
-	retire    func(clientsession.Ref) int
+	open         func(context.Context, clientsession.Session, string, string) (opening.Result, error)
+	openPipe     func(context.Context, clientsession.Session, localbinding.CallerEndpoint, string, string) (opening.Result, error)
+	activatePipe func(clientsession.Ref, string) bool
+	relayPayload func(context.Context, clientsession.Ref, string, []byte) error
+	closePipe    func(clientsession.Ref, string) bool
+	retire       func(clientsession.Ref) int
 }
 
-func (o *testOpener) Open(ctx context.Context, session clientsession.Session, endpoint, targetID string) (opening.Result, error) {
+func (o *testOpener) OpenPipe(ctx context.Context, session clientsession.Session, callerEndpoint localbinding.CallerEndpoint, endpoint, targetID string) (opening.Result, error) {
+	if o.openPipe != nil {
+		return o.openPipe(ctx, session, callerEndpoint, endpoint, targetID)
+	}
 	if o.open == nil {
 		return opening.Result{}, opening.ErrUnavailable
 	}
 	return o.open(ctx, session, endpoint, targetID)
+}
+
+func (o *testOpener) ActivatePipe(session clientsession.Ref, pipeID string) bool {
+	if o.activatePipe == nil {
+		return true
+	}
+	return o.activatePipe(session, pipeID)
+}
+
+func (o *testOpener) RelayPayload(ctx context.Context, session clientsession.Ref, pipeID string, payload []byte) error {
+	if o.relayPayload == nil {
+		return opening.ErrPipeNotOwned
+	}
+	return o.relayPayload(ctx, session, pipeID, payload)
 }
 
 func (o *testOpener) ClosePipe(session clientsession.Ref, pipeID string) bool {

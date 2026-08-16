@@ -7,6 +7,7 @@ import (
 	"github.com/cagojeiger/relaygate/internal/clientsession"
 	"github.com/cagojeiger/relaygate/internal/controlstate"
 	relayv1 "github.com/cagojeiger/relaygate/internal/gen/relay/v1"
+	"github.com/cagojeiger/relaygate/internal/localbinding"
 )
 
 type openWorker struct {
@@ -15,36 +16,101 @@ type openWorker struct {
 	responseCommitted bool
 }
 
-// streamCoordinator keeps blocking Open work off the Connect receive loop.
-// Its worker table is the session-local request_id namespace; the Service-owned
-// slot channel is the process-wide goroutine bound. Successful Pipes leave this
-// table after their response and remain owned by the opening manager.
-type streamCoordinator struct {
-	ctx        context.Context //nolint:containedctx // Coordinator owns the stream-root context for worker cancellation.
-	sendCtx    context.Context //nolint:containedctx // Terminal Open responses use a coordinator-owned send context after Open cancellation.
-	cancelSend context.CancelFunc
-	session    clientsession.Session
-	opener     Opener
-	outbound   *outboundActor
-	openSlots  chan struct{}
-
-	mu      sync.Mutex
-	workers map[string]*openWorker
-	closed  bool
-	wait    sync.WaitGroup
+type streamPipeWork struct {
+	service   *Service
+	payload   *relayv1.PipePayload
+	closePipe *relayv1.ClosePipe
 }
 
-func newStreamCoordinator(ctx context.Context, session clientsession.Session, opener Opener, outbound *outboundActor, openSlots chan struct{}) *streamCoordinator {
+// streamCoordinator keeps blocking Open and ordered Pipe work off the Connect
+// receive loop. Its Open worker table is the session-local request_id namespace;
+// the Service-owned slot channel is the process-wide Open goroutine bound.
+// One unbuffered Pipe worker per authenticated stream preserves request FIFO and
+// backpressure while leaving the receive loop free to observe outbound failure.
+type streamCoordinator struct {
+	ctx          context.Context //nolint:containedctx // Coordinator owns the stream-root context for worker cancellation.
+	sendCtx      context.Context //nolint:containedctx // Terminal Open responses use a coordinator-owned send context after Open cancellation.
+	cancelSend   context.CancelFunc
+	session      clientsession.Session
+	opener       Opener
+	pipeEndpoint localbinding.CallerEndpoint
+	outbound     *outboundActor
+	openSlots    chan struct{}
+	pipeWork     chan streamPipeWork
+
+	mu       sync.Mutex
+	workers  map[string]*openWorker
+	closed   bool
+	openWait sync.WaitGroup
+	pipeDone chan struct{}
+}
+
+func newStreamCoordinator(ctx context.Context, session clientsession.Session, opener Opener, pipeEndpoint localbinding.CallerEndpoint, outbound *outboundActor, openSlots chan struct{}) *streamCoordinator {
 	sendCtx, cancelSend := context.WithCancel(ctx)
-	return &streamCoordinator{
-		ctx:        ctx,
-		sendCtx:    sendCtx,
-		cancelSend: cancelSend,
-		session:    session,
-		opener:     opener,
-		outbound:   outbound,
-		openSlots:  openSlots,
-		workers:    make(map[string]*openWorker),
+	coordinator := &streamCoordinator{
+		ctx:          ctx,
+		sendCtx:      sendCtx,
+		cancelSend:   cancelSend,
+		session:      session,
+		opener:       opener,
+		pipeEndpoint: pipeEndpoint,
+		outbound:     outbound,
+		openSlots:    openSlots,
+		workers:      make(map[string]*openWorker),
+		pipeWork:     make(chan streamPipeWork),
+		pipeDone:     make(chan struct{}),
+	}
+	go coordinator.runPipeWork()
+	return coordinator
+}
+
+func (c *streamCoordinator) enqueuePipeWork(service *Service, request *relayv1.ConnectRequest) error {
+	work := streamPipeWork{service: service}
+	switch {
+	case request.GetPipePayload() != nil:
+		payload := request.GetPipePayload()
+		work.payload = &relayv1.PipePayload{
+			PipeId:  payload.GetPipeId(),
+			Payload: append([]byte(nil), payload.GetPayload()...),
+		}
+	case request.GetClosePipe() != nil:
+		work.closePipe = &relayv1.ClosePipe{PipeId: request.GetClosePipe().GetPipeId()}
+	default:
+		return nil
+	}
+
+	select {
+	case c.pipeWork <- work:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	case <-c.sendCtx.Done():
+		return c.sendCtx.Err()
+	case <-c.outbound.done:
+		return c.outbound.err()
+	}
+}
+
+func (c *streamCoordinator) runPipeWork() {
+	defer close(c.pipeDone)
+	for {
+		select {
+		case <-c.sendCtx.Done():
+			return
+		case work := <-c.pipeWork:
+			var response *relayv1.ConnectResponse
+			switch {
+			case work.payload != nil:
+				response = work.service.relayPayload(c.sendCtx, c.session.Ref, work.payload)
+			case work.closePipe != nil:
+				response = c.closePipe(work.closePipe)
+			}
+			if response != nil {
+				if err := c.outbound.send(c.sendCtx, response); err != nil {
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -79,7 +145,7 @@ func (c *streamCoordinator) startOpen(ctx context.Context, service *Service, req
 	openContext, cancel := context.WithCancel(ctx)
 	worker := &openWorker{cancel: cancel}
 	c.workers[requestID] = worker
-	c.wait.Add(1)
+	c.openWait.Add(1)
 	c.mu.Unlock()
 
 	normalized := &relayv1.Open{RequestId: requestID, Endpoint: endpoint, TargetId: targetID}
@@ -88,10 +154,10 @@ func (c *streamCoordinator) startOpen(ctx context.Context, service *Service, req
 }
 
 func (c *streamCoordinator) runOpen(service *Service, ctx context.Context, request *relayv1.Open, worker *openWorker) {
-	defer c.wait.Done()
+	defer c.openWait.Done()
 	defer func() { <-c.openSlots }()
 
-	response := service.open(ctx, c.session, request)
+	response := service.open(ctx, c.session, c.pipeEndpoint, request)
 	opened := response.GetPipeOpened()
 	pipeID := ""
 	if opened != nil {
@@ -128,8 +194,16 @@ func (c *streamCoordinator) runOpen(service *Service, ctx context.Context, reque
 	if !closed {
 		sendErr = c.outbound.send(c.sendCtx, response) //nolint:contextcheck // Open cancellation must not suppress the terminal Open response.
 	}
-	if sendErr != nil && pipeID != "" {
-		c.opener.ClosePipe(c.session.Ref, pipeID)
+	if pipeID != "" && response.GetPipeOpened() != nil {
+		switch {
+		case sendErr != nil:
+			c.opener.ClosePipe(c.session.Ref, pipeID)
+		case !c.opener.ActivatePipe(c.session.Ref, pipeID):
+			// A pre-activation terminal may win after OpenPipe returns. The
+			// PipeOpened write has completed, so emit its exact terminal on the
+			// same control lane to preserve caller observation order.
+			_ = c.pipeEndpoint.TerminatePipe(c.sendCtx, pipeID)
+		}
 	}
 
 	c.mu.Lock()
@@ -181,7 +255,7 @@ func (c *streamCoordinator) close() {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		c.wait.Wait()
+		c.openWait.Wait()
 		return
 	}
 	c.closed = true
@@ -195,5 +269,9 @@ func (c *streamCoordinator) close() {
 	for _, cancel := range cancels {
 		cancel()
 	}
-	c.wait.Wait()
+	// Open attempts must finish before session retirement. Pipe work is only
+	// canceled here: waiting for an in-flight remote gRPC Send would prevent
+	// this handler from returning and therefore prevent transport cancellation
+	// from unblocking that Send.
+	c.openWait.Wait()
 }

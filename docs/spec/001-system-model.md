@@ -202,7 +202,8 @@ global compare-and-set이 아니다. Authority가 바뀌면 재검증된 범위�
 
 > **현재 Go 구현 범위:** required `request_id`와 `Open(endpoint, target_id)`만 받으며 `target_id`는 필수다.
 > `endpoint_pattern == endpoint`인 literal binding과 ingress/owner가 같은 Gateway process인 경우만 진행한다.
-> 다른 owner면 fail closed한다. 이 제한은 여섯 gate를 완화하지 않는다.
+> 다른 owner면 fail closed한다. 성립한 same-Gateway Pipe는 bounded opaque payload frame을 양방향 relay한다.
+> 이 제한은 여섯 gate를 완화하지 않는다.
 
 `request_id`는 한 authenticated Relay stream에서 아직 terminal response를 보내지 않은 Open을 구분하는
 correlation ID다. Retry/idempotency key가 아니며 완료된 ID를 다시 보내더라도 이전 outcome이나 `PipeId`를
@@ -238,8 +239,8 @@ flowchart LR
 - `Open(endpoint)`: eligible target 하나를 선택한다.
 - `OpenAll(endpoint)`: 각 eligible target에 독립적인 1:1 Pipe를 연다.
 
-현재 구현 evidence는 첫 번째 exact-target 형태에만 있다. Target 생략 선택, `OpenAll`, wildcard와 payload는
-위 장기 의미 모델에 남아 있지만 아직 구현되지 않았다.
+현재 구현 evidence는 첫 번째 exact-target 형태와 그 same-Gateway payload relay에만 있다. Target 생략 선택,
+`OpenAll`과 wildcard는 위 장기 의미 모델에 남아 있지만 아직 구현되지 않았다.
 
 `OpenAll`은 transaction이나 하나의 broadcast Pipe가 아니다. 각 target 결과는 caller 관점에서
 `Opened`, `Failed`, `Cancelled`, `Unknown` 중 하나이며 일부 성공을 이유로 다른 성공을 rollback하지
@@ -390,6 +391,24 @@ flowchart LR
   resume은 없다.
 - Unbind는 새 Open만 막는다. 이미 열린 Pipe는 별도 terminal event까지 유지된다.
 - v0은 half-close를 지원하지 않는다. 어느 방향의 EOF든 전체 Pipe를 terminal로 만든다.
+- Payload는 메시지 경계를 보존하는 opaque frame이며 빈 frame은 허용하지 않고 data는 최대 60 KiB다. 방향은
+  frame의 `PipeId`와 exact authenticated sender session으로 결정하며 별도 ClientId나 direction field를 받지 않는다.
+  각 방향 FIFO만 보존하고 두 방향 사이의 global order는 정의하지 않는다. 전달 성공은 bounded local gRPC stream
+  write 완료까지며 peer application 관찰, durable delivery와 ACK가 아니다.
+- Listener가 caller의 `PipeOpened`보다 먼저 payload를 보내면 activation gate에서 기다린다. `PipeOpened`가 wire에
+  성공적으로 기록된 뒤에만 payload queue admission을 열어 caller가 payload보다 Pipe handle을 먼저 관찰하게 한다.
+  이 bounded wait가 끝나면 frame을 전달하지 않고 Pipe를 terminal로 만든다.
+- Accepted Pipe가 activation 전에 terminal이 되더라도 caller terminal은 먼저 보내지 않는다. `PipeOpened` write가
+  성공하면 바로 뒤에 `PipeTerminated`를 보내고, write 자체가 실패하면 stream/session retirement로 닫는다.
+- Stream별 payload lane은 32 frame, process 전체 outbound queued/in-flight payload는 `min(relay.max_pipes, 1024)` frame으로
+  제한한다. Capacity 대기는 `relay.open_timeout`으로 bounded하며 timeout 또는 endpoint failure는 first local Pipe
+  terminal을 요청한다. Queue에 남은 frame은 취소하고, local gRPC write가 이미 시작됐다면 destination stream을
+  실패시켜 exact write 결과를 join한 뒤 반환한다. 따라서 rejection 뒤 late local write는 없다. Unknown, foreign와
+  terminal Pipe의 frame은 같은 stable rejection이며 route ownership을 노출하거나 state를 부활시키지 않는다.
+- 각 authenticated stream은 unbuffered FIFO Pipe worker 하나에서 payload와 `ClosePipe`를 순서화한다. 이 고정 worker는
+  `relay.max_client_sessions`로 bounded하며 blocking delivery와 별개로 receive loop가 outbound failure를 관찰하게 한다.
+  Stream 종료는 이 worker를 cancel하지만 handler 반환 전에 remote in-flight write를 join하지 않는다. Handler 반환으로
+  gRPC transport cancellation을 먼저 진행시켜 write를 해소하고 worker는 exact 결과 뒤 종료한다.
 - Pipe와 hop buffer는 bounded다. Flow control로 upstream을 먼저 멈추고 한계 안에서 계속할 수 없으면
   payload를 조용히 버리지 않고 Pipe를 terminal로 만든다. Terminal/control signal은 막힌 payload queue를
   우회하며 폐기된 volatile payload를 재전송하지 않는다.
@@ -399,7 +418,8 @@ flowchart LR
   `owned=false`는 unknown ID와 다른 session 소유 ID를 구분하지 않는다. `owned=true` close replay는 process의
   `relay.max_pipes` 크기 terminal history에 record가 남아 있는 동안 idempotent no-op이며 영속 tombstone은 없다.
   Session/credential retirement와 Close는 같은 owner table mutex에서 first local terminal effect 하나로 순서화한다.
-- Stream/Session 종료는 모든 in-flight Open worker를 cancel하고 join한 뒤 caller 소유 Pipe를 retire한다.
+- Stream/Session 종료는 모든 in-flight Open worker를 cancel하고 join한 뒤 caller 소유 Pipe를 retire한다. Pipe worker는
+  위 transport-cancellation 순서를 지켜 handler 반환을 막지 않는다.
   Listener terminal signal은 bounded wait로 single-Send actor에 전달하며 queue 압력으로 전달할 수 없으면
   stream을 실패시켜 session retirement로 수렴한다. Terminal을 조용히 drop하지 않는다.
 

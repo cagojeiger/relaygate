@@ -39,10 +39,11 @@ RelayGate는 Raft로 조정되는 Gateway cluster에서 일시적인 양방향 P
 - `A ∧ L ∧ Q ∧ C ∧ V` authority admission, owner-local `O` reserve와 Listener offer/accept/confirm
 - Process-wide bounded async Open, duplicate in-flight rejection, `CancelOpen`과 exact caller-owned `ClosePipe`
 - Bounded attempt/Pipe/terminal table, caller `Opened/Failed/Unknown`과 session/reload terminal 전파
+- Same-Gateway Pipe의 60 KiB 이하 opaque payload frame, 방향별 FIFO와 bounded backpressure
 - JSON structured log, quorum-confirmed read-only `/status`, local health/readiness와 Prometheus metrics
 - Snapshot 뒤 process restart에서 control state 복구
 
-Cross-Gateway owner forwarding, wildcard/priority, target 생략 선택, `OpenAll`, payload relay, 동적 multi-node
+Cross-Gateway owner forwarding, wildcard/priority, target 생략 선택, `OpenAll`, 동적 multi-node
 join과 public Go/Rust SDK는 아직 구현하지 않았다.
 
 현재 Raft transport와 internal control gRPC는 TLS나 peer authentication 없이 **신뢰된 local/dev
@@ -77,12 +78,23 @@ clients만 atomic하게 교체하고, 제거된 credential의 local session을 �
 동시 stream 상한에도 사용하지만 전역 상한의 source of truth는 session manager다.
 `relay.max_listener_bindings`는 process 전체의 Registering/Live/cleanup 대기 listener 정의 수를 원자적으로
 제한하며 범위는 1–512다. 이는 connection 수가 아니다. 초과 시 기존 binding을 evict하지 않고 새 Bind만 거부한다.
-`relay.open_timeout`은 admission·offer, Listener confirmation과 terminal control delivery의 각 bounded wait를 제한한다.
+`relay.open_timeout`은 admission·offer, Listener confirmation, payload queue backpressure와 terminal control delivery의
+각 bounded wait를 제한한다.
 `relay.max_pipes`는 process 전체의 Opening/Accepted Pipe와 listener termination cleanup 대기까지 묶은
 admission 상한이며 범위는 1–100,000이다. Open worker semaphore와 terminal history도 같은 크기로 제한한다.
-Stream 수를 곱해 worker가 늘어나지 않으며 초과 시 기존 Pipe를 evict하지 않고 새 Open만 거부한다. `request_id`는
+Open worker는 stream 수와 곱해 상한을 넘지 않으며 초과 시 기존 Pipe를 evict하지 않고 새 Open만 거부한다. `request_id`는
 live stream의 in-flight correlation에만 쓰고 replay/resume하지 않는다. `CancelOpen` ACK는 signal 전달 여부, `ClosePipe` ACK는 exact
 session ownership 여부만 나타낸다.
+Payload는 메시지 경계를 보존하며 frame당 최대 60 KiB다. 방향별 순서만 보존하고 전달 성공은 local gRPC stream
+write 완료까지만 뜻하며 peer application 관찰이나 ACK가 아니다. Stream별 payload queue는 32 frame, process 전체
+outbound queued/in-flight payload는 `min(relay.max_pipes, 1024)` frame으로 제한한다. 한계가 `relay.open_timeout`
+안에 해소되지 않으면 frame을 조용히 버리지 않고 해당 Pipe를 terminal로 만든다. Local gRPC write가 이미
+시작됐다면 destination stream을 실패시키고
+그 write 결과를 join한 뒤 반환해 실패 뒤 late write를 막는다. Control/terminal message는 별도 우선 lane을 사용한다.
+각 authenticated stream은 unbuffered FIFO Pipe worker 하나로 payload와 `ClosePipe`를 순서화해 receive loop가
+outbound failure를 계속 관찰한다. 이 worker 수는 `relay.max_client_sessions`로 제한된다. Stream 종료는 Open
+worker를 cancel/join하지만 Pipe worker는 cancel만 하고 handler 반환을 막지 않아 gRPC transport cancellation이
+in-flight write를 풀 수 있게 한다.
 한 정의의 `endpoint_pattern`은 최대 1024 bytes, `target_id`는 최대 128 bytes로 제한해 최대 snapshot도 internal
 gRPC 1 MiB envelope 안에 유지한다.
 

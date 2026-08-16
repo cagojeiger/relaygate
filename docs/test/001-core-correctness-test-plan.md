@@ -142,9 +142,13 @@ flowchart LR
 | `P02` | Permanent partition | Terminal signal 전파 중 hop 영구 partition | 각 participant local truth만 보장하며 global cause/order/convergence를 주장하지 않는다. |
 | `P03` | Duplicate terminal | 서로 다른 terminal cause와 duplicate signal을 reorder | 각 participant에서 first local terminal만 effect가 있고 이후 event는 no-op다. |
 | `P04` | Half-close/EOF | 각 방향 EOF | v0에서는 전체 local logical Pipe terminal이며 half-open state가 남지 않는다. |
-| `P05` | Bounded backpressure | Downstream 정지로 queue high→bound exceeded | Upstream flow를 막고 silent payload drop 대신 terminal을 요청한다. |
+| `P05` | Bounded backpressure | Downstream 정지로 queue high→bound exceeded; queued와 local write 시작 뒤 timeout을 각각 주입 | Upstream flow를 막고 silent payload drop 대신 terminal을 요청한다. Queued frame은 취소되고 in-flight write는 destination stream failure와 join 뒤 반환해 rejection 후 late write가 없다. |
 | `P06` | Terminal bypass | Payload queue가 가득 찬 상태에서 close/cancel/failure | Terminal/control signal이 payload queue를 우회한다. |
 | `P07` | Payload non-replay | Hop/process failure 뒤 새 Pipe 생성 | Old volatile payload와 delivery position을 재전송/복구하지 않는다. |
+| `P08` | Bidirectional FIFO payload | 같은 Pipe에서 caller→listener와 listener→caller frame을 교차 전송하고 한 방향 delivery를 block한 채 같은 stream의 후속 Close를 보냄 | Exact bytes와 PipeId를 보존하고 각 방향 FIFO이며 Close는 앞선 frame 뒤에 적용된다. 두 방향 global order는 요구하지 않는다. Blocking worker와 별개로 receive loop는 outbound failure를 관찰한다. |
+| `P09` | Payload identity and activation | Foreign session, unknown/terminal Pipe, Listener-confirm 직후 activation 전 exact frame과 pre-activation terminal | Foreign/unknown/terminal frame은 전달이나 state 변경 없이 거부한다. Pre-activation exact frame은 bounded하게 기다리고 caller가 `PipeOpened`를 관찰한 뒤에만 전달된다. Deadline이면 Pipe가 terminal이며 caller terminal은 `PipeOpened`보다 먼저 보이지 않는다. |
+| `P10` | Payload frame boundary | Empty, 60 KiB와 60 KiB + 1 frame | Empty/초과는 stable rejection이고 최대 legal frame만 exact하게 전달된다. |
+| `P11` | Pipe worker shutdown cycle | Pipe worker가 remote local write 결과를 기다릴 때 source stream 종료 | Open worker는 join하지만 Pipe worker cancel은 handler 반환을 막지 않는다. Transport cancellation 뒤 exact write 결과가 끝나면 고정 worker가 종료된다. |
 
 ## X — Required cross-failure coverage
 
@@ -193,7 +197,7 @@ point와 경쟁하면 두 event order가 각각 독립 test다.
 | Open observation and SDK compatibility | `O06–O13` |
 | Authority, quorum, control order and epoch safety | `C01–C16`, `X01`, `X04` |
 | Config revocation and presence | `K01–K12`, `X02` |
-| Bounded flow and volatile payload | `M08`, `P04–P07`, `X05` |
+| Bounded flow and volatile payload | `M08`, `P04–P11`, `X05` |
 | Partial/unknown outcomes | `O07–O11`, `X03`, `X06`, `R06–R07` |
 | Recovery boundary | `R01–R08` |
 
@@ -219,15 +223,15 @@ v0 correctness 완료를 주장하려면 다음을 모두 만족해야 한다.
 | Control stream | Hello/snapshot 순서, current-instance reconcile view, 최대 legal snapshot의 1 MiB envelope, 직렬 mutation, exact GatewaySlot fence, cross-owner mutation 거부, instance replacement와 quorum-loss fence, exact `AdmitOpen` gRPC test | Auth, payload relay와 arbitrary packet loss |
 | Gateway control client | Process별 새 GatewayInstanceId, follower endpoint 순회, 같은 instance reconnect의 exact binding snapshot/ACK-loss reconcile, prior same-Gateway 1회 CAS retry, foreign conflict, silent transport blackhole 뒤 bounded readiness 철회, live HTTP/2 client를 재사용하는 non-replayed Open admission | Auth revision, gateway-only deployment와 arbitrary packet loss |
 | Client auth/session | Strict verifier parse, deterministic revision, exact ClientId/ApiKeyId 인증, rotation/removal, immutable key rejection, first-message deadline, global session cap과 removal terminal race/unit gRPC test | TLS network deployment와 SDK interoperability |
-| Local listener binding | Authenticated ClientId namespace, Registering/Live/retirement, exact late cleanup, reload insertion barrier, session ownership, 512 count/1 MiB wire bound, cleanup-pending capacity와 exact Open reservation/unbind ordering unit test | Wildcard matching과 payload relay |
-| Open admission / same-Gateway | 64개 `A/L/Q/C/V/O` 조합, exact literal route, single-use reserve, offer/reject/accept-confirm, LP 뒤 Unknown, late deadline no-op, exact caller-owned ClosePipe, session/reload terminal, bounded capacity/history unit test와 real `localbinding → opening → relaygrpc` integration | Cross-Gateway forwarding, wildcard/priority, target 생략 선택, OpenAll, payload, SDK, arbitrary packet loss와 전체 crash-cut matrix |
-| Public Relay stream | Authenticate 뒤 ordered Bind/Unbind, process-wide bounded async Open, same-stream/cross-opening no-HOL, duplicate in-flight rejection, CancelOpen ACK/outcome race, exact ClosePipe, stream-close worker join, terminal queue pressure와 single-Send actor gRPC test | Public Go/Rust SDK와 payload Pipe |
+| Local listener binding | Authenticated ClientId namespace, Registering/Live/retirement, exact late cleanup, reload insertion barrier, session ownership, 512 count/1 MiB wire bound, cleanup-pending capacity와 exact Open reservation/unbind ordering unit test | Wildcard matching |
+| Open admission / same-Gateway | 64개 `A/L/Q/C/V/O` 조합, exact literal route, single-use reserve, offer/reject/accept-confirm, LP 뒤 Unknown, exact caller-owned ClosePipe, activation ordering, bidirectional FIFO payload, session/reload terminal, bounded capacity/history unit test와 real `localbinding → opening → relaygrpc` integration | Cross-Gateway forwarding, wildcard/priority, target 생략 선택, OpenAll, SDK, arbitrary packet loss와 전체 crash-cut matrix |
+| Public Relay stream | Authenticate 뒤 ordered Bind/Unbind, process-wide bounded async Open, same-stream/cross-opening no-HOL, duplicate in-flight rejection, CancelOpen ACK/outcome race, exact ClosePipe, 60 KiB payload 경계, control-priority bounded queue와 global slot 회수, stream-close Open-worker join, Pipe-worker transport-cycle 회귀와 single-Send actor gRPC test | Public Go/Rust SDK와 cross-Gateway payload Pipe |
 | Read-only observation | `/status`의 quorum-confirmed AuthorityId와 local auth revision publication, quorum-loss 직후 `503 + NoAuthority` K12와 caller cancellation non-fencing C16 unit test | Config convergence와 REST administrator/client authorization |
 | 3 voter | 정적 bootstrap/복제/leader replacement/rejoin, old control stream fence와 new authority full-snapshot 후 mutation integration test | Dynamic membership, full pairwise failure matrix |
-| Container wiring | CI에서 새 3-node Compose cluster의 세 Gateway 자동 등록, leader stop 뒤 surviving Gateway 재검증, 실제 control mutation과 `A/L/Q/C/V` admission, network-namespace 내부 public Relay의 exact Bind→Open→`O` accept/confirm→Close→ListenerTerminated smoke | 장기 soak, resource pressure와 arbitrary container partition |
+| Container wiring | CI에서 새 3-node Compose cluster의 세 Gateway 자동 등록, leader stop 뒤 surviving Gateway 재검증, 실제 control mutation과 `A/L/Q/C/V` admission, network-namespace 내부 public Relay의 exact Bind→Open→`O` accept/confirm→양방향 payload→Close→caller/listener terminal smoke | 장기 soak, resource pressure와 arbitrary container partition |
 
 이는 `M03`, `M05`, `M08`, `B01–B05`, `B07–B08`, `B10–B15`, `O01–O04`, `O06`, `O13–O20`,
-`C01–C06`, `C08`, `C13–C16`, `K01–K05`, `K13`, `K15`의 일부 전제에 대한
+`C01–C06`, `C08`, `C13–C16`, `K01–K05`, `K13`, `K15`, `P05–P11`의 일부 전제에 대한
 구현 증거일 뿐, 각 항목의 모든 crash-cut과 route oracle을 충족하지 않는다. 따라서 test ID 전체를 아직
 `passed`로 판정하지 않는다. 부분 unit/integration test는 전체 runtime correctness 증명이 아니다.
 

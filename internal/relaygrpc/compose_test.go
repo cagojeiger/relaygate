@@ -1,6 +1,7 @@
 package relaygrpc
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -104,16 +105,45 @@ func TestComposePublicRelaySmoke(t *testing.T) {
 		t.Fatalf("PipeOpened = %#v", opened)
 	}
 
+	callerPayload := []byte{0x00, 0x01, 0xfe, 0xff}
+	sendPipePayload(t, caller, opened.GetPipeId(), callerPayload)
+	listenerPayloadResponse, err := listener.Recv()
+	if err != nil {
+		t.Fatalf("Recv(caller-to-listener PipePayload): %v", err)
+	}
+	if payload := listenerPayloadResponse.GetPipePayload(); payload.GetPipeId() != opened.GetPipeId() || !bytes.Equal(payload.GetPayload(), callerPayload) {
+		t.Fatalf("caller-to-listener PipePayload = %#v", payload)
+	}
+
+	listenerPayload := []byte("listener-to-caller")
+	sendPipePayload(t, listener, opened.GetPipeId(), listenerPayload)
+	callerPayloadResponse, err := caller.Recv()
+	if err != nil {
+		t.Fatalf("Recv(listener-to-caller PipePayload): %v", err)
+	}
+	if payload := callerPayloadResponse.GetPipePayload(); payload.GetPipeId() != opened.GetPipeId() || !bytes.Equal(payload.GetPayload(), listenerPayload) {
+		t.Fatalf("listener-to-caller PipePayload = %#v", payload)
+	}
+
 	if err := caller.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ClosePipe{
 		ClosePipe: &relayv1.ClosePipe{PipeId: opened.GetPipeId()},
 	}}); err != nil {
 		t.Fatalf("Send(ClosePipe): %v", err)
 	}
-	closedResponse, err := caller.Recv()
-	if err != nil {
-		t.Fatalf("Recv(PipeCloseAcknowledged): %v", err)
+	var closed *relayv1.PipeCloseAcknowledged
+	callerTerminated := false
+	for closed == nil || !callerTerminated {
+		response, receiveErr := caller.Recv()
+		if receiveErr != nil {
+			t.Fatalf("Recv(caller Pipe close outcome): %v", receiveErr)
+		}
+		if acknowledgement := response.GetPipeCloseAcknowledged(); acknowledgement != nil {
+			closed = acknowledgement
+		}
+		if terminated := response.GetPipeTerminated(); terminated != nil {
+			callerTerminated = terminated.GetPipeId() == opened.GetPipeId()
+		}
 	}
-	closed := closedResponse.GetPipeCloseAcknowledged()
 	if closed.GetPipeId() != opened.GetPipeId() || !closed.GetOwned() {
 		t.Fatalf("PipeCloseAcknowledged = %#v", closed)
 	}
