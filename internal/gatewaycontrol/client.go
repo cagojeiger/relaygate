@@ -95,13 +95,17 @@ type Client struct {
 	instanceID string
 	keepalive  keepalive.ClientParameters
 
-	mu      sync.Mutex
-	status  Status
-	owned   map[controlstate.BindingKey]controlstate.BindingSlot
-	queue   []*pendingMutation
-	active  *pendingMutation
-	wake    chan struct{}
-	stopped bool
+	mu     sync.Mutex
+	status Status
+	// admissionClient and admissionSession are published atomically with a
+	// Revalidated status and cleared on every other control state.
+	admissionClient  controlv1.GatewayControlClient
+	admissionSession *controlv1.SessionRef
+	owned            map[controlstate.BindingKey]controlstate.BindingSlot
+	queue            []*pendingMutation
+	active           *pendingMutation
+	wake             chan struct{}
+	stopped          bool
 }
 
 func New(config Config, logger *slog.Logger) (*Client, error) {
@@ -116,8 +120,8 @@ func newClient(config Config, logger *slog.Logger, instanceID string) (*Client, 
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
-	if instanceID == "" {
-		return nil, fmt.Errorf("gateway instance ID is required")
+	if instanceID == "" || len(instanceID) > controlstate.MaxIdentityBytes {
+		return nil, fmt.Errorf("gateway instance ID must be 1..%d bytes", controlstate.MaxIdentityBytes)
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -295,6 +299,7 @@ func (c *Client) runEndpoint(ctx context.Context, endpoint string) (bool, error)
 		"passthrough:///"+endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithKeepaliveParams(c.keepalive),
+		grpc.WithDisableRetry(),
 	)
 	if err != nil {
 		return false, fmt.Errorf("create control connection: %w", err)
@@ -306,7 +311,8 @@ func (c *Client) runEndpoint(ctx context.Context, endpoint string) (bool, error)
 
 	streamContext, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-	stream, err := controlv1.NewGatewayControlClient(connection).Connect(streamContext)
+	controlClient := controlv1.NewGatewayControlClient(connection)
+	stream, err := controlClient.Connect(streamContext)
 	if err != nil {
 		return false, fmt.Errorf("open control stream: %w", err)
 	}
@@ -348,7 +354,7 @@ func (c *Client) runEndpoint(ctx context.Context, endpoint string) (bool, error)
 	if accepted == nil || accepted.GetPresence() == controlv1.PresenceState_PRESENCE_STATE_UNSPECIFIED {
 		return false, fmt.Errorf("control endpoint returned an invalid snapshot response")
 	}
-	c.setRevalidated(endpoint, session, opened.GetGatewayGeneration())
+	c.setRevalidated(endpoint, session, opened.GetGatewayGeneration(), controlClient)
 	if reconciled != nil {
 		c.finishMutation(reconciled.mutation, reconciled.outcome)
 	}
@@ -710,7 +716,9 @@ func (c *Client) validateSession(opened *controlv1.SessionOpened) error {
 		session.GetGatewayId() != c.config.GatewayID ||
 		session.GetGatewayInstanceId() != c.instanceID ||
 		session.GetAuthorityId() == "" ||
+		len(session.GetAuthorityId()) > controlstate.MaxIdentityBytes ||
 		session.GetControlSessionId() == "" ||
+		len(session.GetControlSessionId()) > controlstate.MaxIdentityBytes ||
 		opened.GetGatewayGeneration() == 0 {
 		return fmt.Errorf("control endpoint returned a mismatched session")
 	}
@@ -888,11 +896,22 @@ func (c *Client) setSyncing(endpoint string, session *controlv1.SessionRef, gene
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status = c.sessionStatus(StateSyncing, endpoint, session, generation)
+	c.admissionClient = nil
+	c.admissionSession = nil
 	c.owned = owned
 }
 
-func (c *Client) setRevalidated(endpoint string, session *controlv1.SessionRef, generation uint64) {
-	c.replaceStatus(c.sessionStatus(StateRevalidated, endpoint, session, generation))
+func (c *Client) setRevalidated(
+	endpoint string,
+	session *controlv1.SessionRef,
+	generation uint64,
+	controlClient controlv1.GatewayControlClient,
+) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status = c.sessionStatus(StateRevalidated, endpoint, session, generation)
+	c.admissionClient = controlClient
+	c.admissionSession = cloneSessionRef(session)
 }
 
 func (c *Client) sessionStatus(state State, endpoint string, session *controlv1.SessionRef, generation uint64) Status {
@@ -919,6 +938,8 @@ func (c *Client) replaceStatus(status Status) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status = status
+	c.admissionClient = nil
+	c.admissionSession = nil
 }
 
 func (c *Client) signalLocked() {
@@ -936,6 +957,8 @@ func (c *Client) stop(cause error) {
 	}
 	c.mu.Lock()
 	c.status = Status{GatewayID: c.config.GatewayID, GatewayInstanceID: c.instanceID, State: StateDisconnected}
+	c.admissionClient = nil
+	c.admissionSession = nil
 	c.stopped = true
 	pending := c.queue
 	c.queue = nil
@@ -946,6 +969,19 @@ func (c *Client) stop(cause error) {
 	c.mu.Unlock()
 	for _, mutation := range pending {
 		mutation.done <- mutationOutcome{err: cause}
+	}
+}
+
+func cloneSessionRef(session *controlv1.SessionRef) *controlv1.SessionRef {
+	if session == nil {
+		return nil
+	}
+	return &controlv1.SessionRef{
+		ClusterEpoch:      session.GetClusterEpoch(),
+		AuthorityId:       session.GetAuthorityId(),
+		ControlSessionId:  session.GetControlSessionId(),
+		GatewayId:         session.GetGatewayId(),
+		GatewayInstanceId: session.GetGatewayInstanceId(),
 	}
 }
 

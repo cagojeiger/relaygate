@@ -37,7 +37,7 @@ func TestBindLifecycleNamespaceAndNonDisclosingUnbind(t *testing.T) {
 	manager := mustManager(t, 2, committer, sessions)
 	defer manager.Close()
 
-	firstSlot, err := manager.Bind(context.Background(), first, "/events/*", "worker")
+	firstSlot, err := manager.Bind(context.Background(), first, "/events/*", "worker", acceptingEndpoint{})
 	if err != nil {
 		t.Fatalf("first Bind(): %v", err)
 	}
@@ -51,11 +51,11 @@ func TestBindLifecycleNamespaceAndNonDisclosingUnbind(t *testing.T) {
 	if !manager.Eligible(firstID) {
 		t.Fatal("committed binding is not eligible")
 	}
-	if _, err := manager.Bind(context.Background(), first, "/events/*", "worker"); !errors.Is(err, ErrConflict) {
+	if _, err := manager.Bind(context.Background(), first, "/events/*", "worker", acceptingEndpoint{}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate Bind() error = %v, want ErrConflict", err)
 	}
 
-	secondSlot, err := manager.Bind(context.Background(), second, "/events/*", "worker")
+	secondSlot, err := manager.Bind(context.Background(), second, "/events/*", "worker", acceptingEndpoint{})
 	if err != nil {
 		t.Fatalf("cross-client Bind(): %v", err)
 	}
@@ -88,7 +88,7 @@ func TestBindLifecycleNamespaceAndNonDisclosingUnbind(t *testing.T) {
 	if manager.ActiveCount() != 2 {
 		t.Fatalf("occupied count during cleanup = %d, want 2", manager.ActiveCount())
 	}
-	if _, err := manager.Bind(context.Background(), third, "/new", "worker"); !errors.Is(err, ErrCapacity) {
+	if _, err := manager.Bind(context.Background(), third, "/new", "worker", acceptingEndpoint{}); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("Bind() while cleanup is blocked = %v, want ErrCapacity", err)
 	}
 	if err := manager.Unbind(first.Ref, firstID); err != nil {
@@ -96,7 +96,7 @@ func TestBindLifecycleNamespaceAndNonDisclosingUnbind(t *testing.T) {
 	}
 	close(allowRemove)
 	waitState(t, manager, firstID, StateRetired)
-	if _, err := manager.Bind(context.Background(), third, "/new", "worker"); err != nil {
+	if _, err := manager.Bind(context.Background(), third, "/new", "worker", acceptingEndpoint{}); err != nil {
 		t.Fatalf("Bind() after cleanup completed: %v", err)
 	}
 }
@@ -121,7 +121,7 @@ func TestCapacityAdmissionIsAtomicUnderConcurrency(t *testing.T) {
 	for index := range contenders {
 		go func() {
 			<-start
-			_, err := manager.Bind(context.Background(), session, fmt.Sprintf("/endpoint/%d", index), "target")
+			_, err := manager.Bind(context.Background(), session, fmt.Sprintf("/endpoint/%d", index), "target", acceptingEndpoint{})
 			results <- err
 		}()
 	}
@@ -153,7 +153,7 @@ func TestCleanupPendingBindingRetainsCapacity(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	bindResult := make(chan error, 1)
 	go func() {
-		_, err := manager.Bind(ctx, session, "/events", "worker")
+		_, err := manager.Bind(ctx, session, "/events", "worker", acceptingEndpoint{})
 		bindResult <- err
 	}()
 	<-committer.firstInstall
@@ -164,19 +164,19 @@ func TestCleanupPendingBindingRetainsCapacity(t *testing.T) {
 	if manager.ActiveCount() != 1 {
 		t.Fatalf("active count while install outcome is unknown = %d, want 1", manager.ActiveCount())
 	}
-	if _, err := manager.Bind(context.Background(), session, "/replacement", "worker"); !errors.Is(err, ErrCapacity) {
+	if _, err := manager.Bind(context.Background(), session, "/replacement", "worker", acceptingEndpoint{}); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("Bind() before late install resolves = %v, want ErrCapacity", err)
 	}
 
 	close(committer.allowFirstInstall)
 	<-committer.removeEntered
-	if _, err := manager.Bind(context.Background(), session, "/replacement", "worker"); !errors.Is(err, ErrCapacity) {
+	if _, err := manager.Bind(context.Background(), session, "/replacement", "worker", acceptingEndpoint{}); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("Bind() while cleanup is pending = %v, want ErrCapacity", err)
 	}
 	close(committer.allowRemove)
 	<-committer.removeFinished
 	waitActiveCount(t, manager, 0)
-	if _, err := manager.Bind(context.Background(), session, "/replacement", "worker"); err != nil {
+	if _, err := manager.Bind(context.Background(), session, "/replacement", "worker", acceptingEndpoint{}); err != nil {
 		t.Fatalf("Bind() after exact cleanup: %v", err)
 	}
 }
@@ -192,7 +192,7 @@ func TestCallerCancellationRetiresBeforeLateInstallAndCleansExactSlot(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	bindResult := make(chan error, 1)
 	go func() {
-		_, err := manager.Bind(ctx, session, "/events", "worker")
+		_, err := manager.Bind(ctx, session, "/events", "worker", acceptingEndpoint{})
 		bindResult <- err
 	}()
 	firstRef := <-committer.firstInstall
@@ -216,7 +216,7 @@ func TestCallerCancellationRetiresBeforeLateInstallAndCleansExactSlot(t *testing
 		t.Fatalf("late cleanup ref = %#v, want %#v", oldCleanup.Ref, firstRef)
 	}
 
-	newSlot, err := manager.Bind(context.Background(), session, "/events", "worker")
+	newSlot, err := manager.Bind(context.Background(), session, "/events", "worker", acceptingEndpoint{})
 	if err != nil {
 		t.Fatalf("rebind while old cleanup is delayed: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestReloadRetirementCannotMissConcurrentInsertion(t *testing.T) {
 
 	bindDone := make(chan error, 1)
 	go func() {
-		_, err := manager.Bind(context.Background(), session, "/events", "worker")
+		_, err := manager.Bind(context.Background(), session, "/events", "worker", acceptingEndpoint{})
 		bindDone <- err
 	}()
 	<-sessions.requireEntered
@@ -323,7 +323,7 @@ func TestCommitErrorPreservesCauseAndLeavesNoLiveBinding(t *testing.T) {
 	}}, sessions)
 	defer manager.Close()
 
-	_, err := manager.Bind(context.Background(), session, "/events", "worker")
+	_, err := manager.Bind(context.Background(), session, "/events", "worker", acceptingEndpoint{})
 	if !errors.Is(err, ErrUnavailable) || !errors.Is(err, upstream) {
 		t.Fatalf("Bind() error = %v, want ErrUnavailable wrapping upstream", err)
 	}
@@ -341,7 +341,7 @@ func TestCASMismatchIsAStableBindingConflict(t *testing.T) {
 	}}, sessions)
 	defer manager.Close()
 
-	_, err := manager.Bind(context.Background(), session, "/events", "worker")
+	_, err := manager.Bind(context.Background(), session, "/events", "worker", acceptingEndpoint{})
 	if !errors.Is(err, ErrConflict) || !errors.Is(err, controlstate.ErrCASMismatch) {
 		t.Fatalf("Bind() error = %v, want ErrConflict wrapping ErrCASMismatch", err)
 	}
@@ -360,10 +360,10 @@ func TestBindingLimitsAreStableErrors(t *testing.T) {
 	manager := mustManager(t, 1, committer, sessions)
 	defer manager.Close()
 
-	if _, err := manager.Bind(context.Background(), session, "/events", "worker"); !errors.Is(err, ErrCapacity) || !errors.Is(err, controlstate.ErrBindingCapacity) {
+	if _, err := manager.Bind(context.Background(), session, "/events", "worker", acceptingEndpoint{}); !errors.Is(err, ErrCapacity) || !errors.Is(err, controlstate.ErrBindingCapacity) {
 		t.Fatalf("Bind() capacity error = %v", err)
 	}
-	if _, err := manager.Bind(context.Background(), session, strings.Repeat("e", controlstate.MaxEndpointPatternBytes+1), "worker"); !errors.Is(err, ErrInvalid) {
+	if _, err := manager.Bind(context.Background(), session, strings.Repeat("e", controlstate.MaxEndpointPatternBytes+1), "worker", acceptingEndpoint{}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Bind() oversized endpoint error = %v, want ErrInvalid", err)
 	}
 	if _, err := New("gateway-1", "instance-1", controlstate.MaxListenerBindingsPerGateway+1, committer, sessions); !errors.Is(err, ErrInvalid) {
@@ -386,6 +386,12 @@ func (f *fakeCommitter) Remove(ctx context.Context, slot controlstate.BindingSlo
 	}
 	return f.remove(ctx, slot)
 }
+
+type acceptingEndpoint struct{}
+
+func (acceptingEndpoint) Offer(context.Context, Offer) error           { return nil }
+func (acceptingEndpoint) Confirm(context.Context, Confirmation) error  { return nil }
+func (acceptingEndpoint) Terminate(context.Context, Termination) error { return nil }
 
 type fakeSessions struct {
 	mu      sync.Mutex
@@ -542,7 +548,7 @@ func mustManager(t *testing.T, max uint32, committer Committer, sessions Session
 
 func mustBind(t *testing.T, manager *Manager, session clientsession.Session, endpoint string) controlstate.BindingSlot {
 	t.Helper()
-	slot, err := manager.Bind(context.Background(), session, endpoint, "worker")
+	slot, err := manager.Bind(context.Background(), session, endpoint, "worker", acceptingEndpoint{})
 	if err != nil {
 		t.Fatalf("Bind(%q): %v", endpoint, err)
 	}

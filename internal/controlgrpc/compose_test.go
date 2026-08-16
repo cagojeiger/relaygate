@@ -1,6 +1,7 @@
 package controlgrpc
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -43,5 +44,35 @@ func TestComposeControlSmoke(t *testing.T) {
 	code := response.GetMutationResult().GetCode()
 	if code != controlv1.MutationCode_MUTATION_CODE_APPLIED && code != controlv1.MutationCode_MUTATION_CODE_ALREADY_APPLIED {
 		t.Fatalf("mutation code = %v", code)
+	}
+
+	// This optional oracle proves only the authority-side A/L/Q/C/V decision.
+	// It does not reserve local O, offer a listener, or claim public Open success.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	admission, err := controlv1.NewGatewayControlClient(connection).AdmitOpen(ctx, &controlv1.AdmitOpenRequest{
+		Session: session,
+		Auth: &controlv1.AuthContext{
+			ClientSessionId: runID + "-client-session",
+			ClientId:        runID,
+			ApiKeyId:        "compose-key",
+			AuthRevision:    "compose-revision",
+		},
+		Endpoint: "/health",
+		TargetId: "self",
+	})
+	if err != nil {
+		t.Fatalf("AdmitOpen(A/L/Q/C/V): %v", err)
+	}
+	openContext := admission.GetContext()
+	if openContext.GetClusterEpoch() != epoch || openContext.GetAuthorityId() != session.GetAuthorityId() ||
+		openContext.GetAttemptId() == "" || openContext.GetBinding().GetGeneration() == 0 ||
+		openContext.GetBinding().GetKey().GetClientId() != runID ||
+		openContext.GetBinding().GetKey().GetEndpointPattern() != "/health" ||
+		openContext.GetBinding().GetKey().GetTargetId() != "self" ||
+		openContext.GetBinding().GetRef().GetGatewayId() != runID ||
+		openContext.GetBinding().GetRef().GetGatewayInstanceId() != instanceID ||
+		openContext.GetBinding().GetRef().GetListenerBindingId() != runID+"-listener" {
+		t.Fatalf("authority-only Open context = %#v", openContext)
 	}
 }

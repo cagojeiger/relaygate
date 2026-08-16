@@ -6,6 +6,7 @@ option go_package = "github.com/cagojeiger/relaygate/internal/gen/control/v1;con
 
 service GatewayControl {
   rpc Connect(stream ControlRequest) returns (stream ControlResponse);
+  rpc AdmitOpen(AdmitOpenRequest) returns (AdmitOpenResponse);
 }
 
 message ControlRequest {
@@ -76,6 +77,10 @@ message BindingKey {
 message ListenerBindingRef {
   string gateway_instance_id = 1;
   string listener_binding_id = 2;
+  // Set when the ref is returned outside its owning control session, such as
+  // in OpenContext. Session-bound snapshots and mutations derive GatewayID
+  // from SessionRef and omit this field.
+  string gateway_id = 3;
 }
 
 message BindingSlot {
@@ -110,4 +115,30 @@ message MutationResult {
   BindingSlot slot = 2;
   string error = 3;
   bool same_gateway_owner = 4;
+}
+
+message AuthContext {
+  string client_session_id = 1;
+  string client_id = 2;
+  string api_key_id = 3;
+  string auth_revision = 4;
+}
+
+message AdmitOpenRequest {
+  SessionRef session = 1;
+  AuthContext auth = 2;
+  string endpoint = 3;
+  string target_id = 4;
+}
+
+message OpenContext {
+  string cluster_epoch = 1;
+  string authority_id = 2;
+  string attempt_id = 3;
+  AuthContext auth = 4;
+  BindingSlot binding = 5;
+}
+
+message AdmitOpenResponse {
+  OpenContext context = 1;
 }

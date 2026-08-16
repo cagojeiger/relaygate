@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	GatewayControl_Connect_FullMethodName = "/relaygate.control.v1.GatewayControl/Connect"
+	GatewayControl_Connect_FullMethodName   = "/relaygate.control.v1.GatewayControl/Connect"
+	GatewayControl_AdmitOpen_FullMethodName = "/relaygate.control.v1.GatewayControl/AdmitOpen"
 )
 
 // GatewayControlClient is the client API for GatewayControl service.
@@ -27,6 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type GatewayControlClient interface {
 	Connect(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ControlRequest, ControlResponse], error)
+	AdmitOpen(ctx context.Context, in *AdmitOpenRequest, opts ...grpc.CallOption) (*AdmitOpenResponse, error)
 }
 
 type gatewayControlClient struct {
@@ -50,11 +52,22 @@ func (c *gatewayControlClient) Connect(ctx context.Context, opts ...grpc.CallOpt
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type GatewayControl_ConnectClient = grpc.BidiStreamingClient[ControlRequest, ControlResponse]
 
+func (c *gatewayControlClient) AdmitOpen(ctx context.Context, in *AdmitOpenRequest, opts ...grpc.CallOption) (*AdmitOpenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdmitOpenResponse)
+	err := c.cc.Invoke(ctx, GatewayControl_AdmitOpen_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GatewayControlServer is the server API for GatewayControl service.
 // All implementations must embed UnimplementedGatewayControlServer
 // for forward compatibility.
 type GatewayControlServer interface {
 	Connect(grpc.BidiStreamingServer[ControlRequest, ControlResponse]) error
+	AdmitOpen(context.Context, *AdmitOpenRequest) (*AdmitOpenResponse, error)
 	mustEmbedUnimplementedGatewayControlServer()
 }
 
@@ -67,6 +80,9 @@ type UnimplementedGatewayControlServer struct{}
 
 func (UnimplementedGatewayControlServer) Connect(grpc.BidiStreamingServer[ControlRequest, ControlResponse]) error {
 	return status.Error(codes.Unimplemented, "method Connect not implemented")
+}
+func (UnimplementedGatewayControlServer) AdmitOpen(context.Context, *AdmitOpenRequest) (*AdmitOpenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdmitOpen not implemented")
 }
 func (UnimplementedGatewayControlServer) mustEmbedUnimplementedGatewayControlServer() {}
 func (UnimplementedGatewayControlServer) testEmbeddedByValue()                        {}
@@ -96,13 +112,36 @@ func _GatewayControl_Connect_Handler(srv interface{}, stream grpc.ServerStream) 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type GatewayControl_ConnectServer = grpc.BidiStreamingServer[ControlRequest, ControlResponse]
 
+func _GatewayControl_AdmitOpen_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdmitOpenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServer).AdmitOpen(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControl_AdmitOpen_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServer).AdmitOpen(ctx, req.(*AdmitOpenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // GatewayControl_ServiceDesc is the grpc.ServiceDesc for GatewayControl service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var GatewayControl_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "relaygate.control.v1.GatewayControl",
 	HandlerType: (*GatewayControlServer)(nil),
-	Methods:     []grpc.MethodDesc{},
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "AdmitOpen",
+			Handler:    _GatewayControl_AdmitOpen_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Connect",

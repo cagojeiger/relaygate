@@ -130,6 +130,54 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[controlv1.ControlReque
 	}
 }
 
+// AdmitOpen issues a context for one exact target. It is deliberately separate
+// from the ordered mutation stream: the RPC does not mutate control state,
+// reserve an owner attempt, forward to another Gateway, or replay on response
+// loss.
+func (s *Service) AdmitOpen(ctx context.Context, request *controlv1.AdmitOpenRequest) (*controlv1.AdmitOpenResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "Open admission request is required")
+	}
+	wireSession := request.GetSession()
+	if err := validateAdmissionSession(wireSession); err != nil {
+		return nil, err
+	}
+	auth, err := authContextFromProto(request.GetAuth())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid auth context: %v", err)
+	}
+	if _, err := authority.ExactBindingKey(auth, request.GetEndpoint(), request.GetTargetId()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	current, err := s.authority.Confirm(ctx)
+	if err != nil {
+		return nil, unavailable("confirm Open authority", err)
+	}
+	if wireSession.GetClusterEpoch() != current.ClusterEpoch || wireSession.GetAuthorityId() != current.AuthorityID {
+		return nil, status.Error(codes.Unavailable, "Open ingress session belongs to a stale authority")
+	}
+	gatewaySlot := s.node.LookupGateway(wireSession.GetGatewayId())
+	if gatewaySlot.Generation == 0 || gatewaySlot.Ref == nil || gatewaySlot.Ref.GatewayInstanceID != wireSession.GetGatewayInstanceId() {
+		return nil, status.Error(codes.Unavailable, "Open ingress gateway registration is stale")
+	}
+	ingress := authority.SessionRef{
+		ClusterEpoch:      wireSession.GetClusterEpoch(),
+		AuthorityID:       wireSession.GetAuthorityId(),
+		ControlSessionID:  wireSession.GetControlSessionId(),
+		GatewayID:         wireSession.GetGatewayId(),
+		GatewayInstanceID: wireSession.GetGatewayInstanceId(),
+		GatewayGeneration: gatewaySlot.Generation,
+	}
+	openContext, err := s.authority.ResolveOpen(ingress, auth, request.GetEndpoint(), request.GetTargetId())
+	if err != nil {
+		return nil, mapOpenAdmissionError(err)
+	}
+	return &controlv1.AdmitOpenResponse{Context: openContextToProto(openContext)}, nil
+}
+
 func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello) (controlstate.GatewaySlot, authority.Session, []controlstate.BindingSlot, error) {
 	s.controlMu.Lock()
 	defer s.controlMu.Unlock()
@@ -444,6 +492,82 @@ func bindingRefFromProto(wire *controlv1.ListenerBindingRef, gatewayID string) (
 		return controlstate.ListenerBindingRef{}, err
 	}
 	return ref, nil
+}
+
+func validateAdmissionSession(wire *controlv1.SessionRef) error {
+	if wire == nil {
+		return status.Error(codes.InvalidArgument, "session is required")
+	}
+	for _, identity := range []struct {
+		field string
+		value string
+	}{
+		{field: "cluster_epoch", value: wire.GetClusterEpoch()},
+		{field: "authority_id", value: wire.GetAuthorityId()},
+		{field: "control_session_id", value: wire.GetControlSessionId()},
+		{field: "gateway_id", value: wire.GetGatewayId()},
+		{field: "gateway_instance_id", value: wire.GetGatewayInstanceId()},
+	} {
+		if identity.value == "" || len(identity.value) > controlstate.MaxIdentityBytes {
+			return status.Errorf(codes.InvalidArgument, "%s must be 1..%d bytes", identity.field, controlstate.MaxIdentityBytes)
+		}
+	}
+	return nil
+}
+
+func authContextFromProto(wire *controlv1.AuthContext) (authority.AuthContext, error) {
+	if wire == nil {
+		return authority.AuthContext{}, fmt.Errorf("auth context is required")
+	}
+	auth := authority.AuthContext{
+		ClientSessionID: wire.GetClientSessionId(),
+		ClientID:        wire.GetClientId(),
+		APIKeyID:        wire.GetApiKeyId(),
+		AuthRevision:    wire.GetAuthRevision(),
+	}
+	if err := auth.Validate(); err != nil {
+		return authority.AuthContext{}, err
+	}
+	return auth, nil
+}
+
+func authContextToProto(auth authority.AuthContext) *controlv1.AuthContext {
+	return &controlv1.AuthContext{
+		ClientSessionId: auth.ClientSessionID,
+		ClientId:        auth.ClientID,
+		ApiKeyId:        auth.APIKeyID,
+		AuthRevision:    auth.AuthRevision,
+	}
+}
+
+func openContextToProto(openContext authority.OpenContext) *controlv1.OpenContext {
+	binding := bindingSlotToProto(openContext.Binding)
+	if binding.Ref != nil && openContext.Binding.Ref != nil {
+		binding.Ref.GatewayId = openContext.Binding.Ref.GatewayID
+	}
+	return &controlv1.OpenContext{
+		ClusterEpoch: openContext.ClusterEpoch,
+		AuthorityId:  openContext.AuthorityID,
+		AttemptId:    openContext.AttemptID,
+		Auth:         authContextToProto(openContext.Auth),
+		Binding:      binding,
+	}
+}
+
+func mapOpenAdmissionError(err error) error {
+	switch {
+	case errors.Is(err, authority.ErrInvalidOpen):
+		return status.Errorf(codes.InvalidArgument, "%v", err)
+	case errors.Is(err, authority.ErrRouteNotFound):
+		return status.Errorf(codes.NotFound, "%v", err)
+	case errors.Is(err, authority.ErrOpenUnavailable),
+		errors.Is(err, authority.ErrNoAuthority),
+		errors.Is(err, authority.ErrStaleSession),
+		errors.Is(err, authority.ErrSnapshotFirst):
+		return status.Errorf(codes.Unavailable, "%v", err)
+	default:
+		return status.Errorf(codes.Internal, "issue Open context: %v", err)
+	}
 }
 
 func optionalBindingRefFromProto(wire *controlv1.ListenerBindingRef, gatewayID string) (*controlstate.ListenerBindingRef, error) {

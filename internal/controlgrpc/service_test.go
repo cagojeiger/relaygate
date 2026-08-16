@@ -99,6 +99,115 @@ func TestConnectRequiresSnapshotThenAppliesIdempotentMutations(t *testing.T) {
 	}
 }
 
+func TestAdmitOpenReturnsExactContextWithoutDisruptingMutationStream(t *testing.T) {
+	harness := newHarness(t)
+	stream, session := harness.openAndSync(t, "gateway-a", "instance-a")
+	key := &controlv1.BindingKey{ClientId: "client-a", EndpointPattern: "/jobs/one", TargetId: "worker"}
+	ref := &controlv1.ListenerBindingRef{GatewayInstanceId: "instance-a", ListenerBindingId: "listener-a"}
+	committed := installBinding(t, stream, session, key, ref)
+	auth := &controlv1.AuthContext{
+		ClientSessionId: "client-session-a",
+		ClientId:        "client-a",
+		ApiKeyId:        "key-a",
+		AuthRevision:    "revision-a",
+	}
+
+	response, err := harness.client.AdmitOpen(harness.ctx, &controlv1.AdmitOpenRequest{
+		Session:  session,
+		Auth:     auth,
+		Endpoint: "/jobs/one",
+		TargetId: "worker",
+	})
+	if err != nil {
+		t.Fatalf("AdmitOpen(): %v", err)
+	}
+	openContext := response.GetContext()
+	if openContext.GetClusterEpoch() != testEpoch || openContext.GetAuthorityId() != session.GetAuthorityId() ||
+		openContext.GetAttemptId() == "" || !proto.Equal(openContext.GetAuth(), auth) ||
+		openContext.GetBinding().GetGeneration() != committed.GetGeneration() ||
+		openContext.GetBinding().GetKey().GetClientId() != "client-a" ||
+		openContext.GetBinding().GetKey().GetEndpointPattern() != "/jobs/one" ||
+		openContext.GetBinding().GetKey().GetTargetId() != "worker" ||
+		openContext.GetBinding().GetRef().GetGatewayId() != "gateway-a" ||
+		openContext.GetBinding().GetRef().GetGatewayInstanceId() != "instance-a" ||
+		openContext.GetBinding().GetRef().GetListenerBindingId() != "listener-a" {
+		t.Fatalf("Open context = %#v", openContext)
+	}
+
+	// The unary response stays off the ordered stream; the next stream response
+	// still belongs to this exact mutation.
+	next := installRequest(
+		session,
+		&controlv1.BindingKey{ClientId: "client-a", EndpointPattern: "/jobs/two", TargetId: "worker"},
+		0,
+		nil,
+		&controlv1.ListenerBindingRef{GatewayInstanceId: "instance-a", ListenerBindingId: "listener-b"},
+	)
+	if err := stream.Send(next); err != nil {
+		t.Fatalf("Send(next mutation): %v", err)
+	}
+	streamResponse, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(next mutation): %v", err)
+	}
+	if result := streamResponse.GetMutationResult(); result.GetCode() != controlv1.MutationCode_MUTATION_CODE_APPLIED ||
+		result.GetSlot().GetKey().GetEndpointPattern() != "/jobs/two" {
+		t.Fatalf("next mutation result = %#v", result)
+	}
+}
+
+func TestAdmitOpenRejectsStaleIngressSession(t *testing.T) {
+	harness := newHarness(t)
+	_, staleSession := harness.openAndSync(t, "gateway-a", "instance-a")
+	newStream, _ := harness.openAndSync(t, "gateway-a", "instance-a")
+	t.Cleanup(func() { _ = newStream.CloseSend() })
+
+	_, err := harness.client.AdmitOpen(harness.ctx, admissionRequest(staleSession, "client-a", "/jobs/one", "worker"))
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("AdmitOpen(stale ingress) error = %v, want Unavailable", err)
+	}
+}
+
+func TestAdmitOpenFailsClosedWithoutAuthorityOrQuorum(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		fence func(*fakeNode)
+	}{
+		{name: "quorum unavailable", fence: func(node *fakeNode) { node.setVerifyError(errors.New("quorum unavailable")) }},
+		{name: "follower", fence: func(node *fakeNode) { node.setRole("Follower") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newHarness(t)
+			_, session := harness.openAndSync(t, "gateway-a", "instance-a")
+			test.fence(harness.node)
+			_, err := harness.client.AdmitOpen(harness.ctx, admissionRequest(session, "client-a", "/jobs/one", "worker"))
+			if status.Code(err) != codes.Unavailable {
+				t.Fatalf("AdmitOpen() error = %v, want Unavailable", err)
+			}
+		})
+	}
+}
+
+func TestAdmitOpenMapsInvalidAndMissingExactRoute(t *testing.T) {
+	harness := newHarness(t)
+	_, session := harness.openAndSync(t, "gateway-a", "instance-a")
+	for _, test := range []struct {
+		name    string
+		request *controlv1.AdmitOpenRequest
+		code    codes.Code
+	}{
+		{name: "target omitted", request: admissionRequest(session, "client-a", "/jobs/one", ""), code: codes.InvalidArgument},
+		{name: "exact route absent", request: admissionRequest(session, "client-a", "/jobs/one", "worker"), code: codes.NotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := harness.client.AdmitOpen(harness.ctx, test.request)
+			if status.Code(err) != test.code {
+				t.Fatalf("AdmitOpen() error = %v, want %v", err, test.code)
+			}
+		})
+	}
+}
+
 func TestNewGatewayInstanceFencesOldSession(t *testing.T) {
 	harness := newHarness(t)
 	oldStream, oldSession := harness.openAndSync(t, "gateway-a", "instance-a")
@@ -591,6 +700,20 @@ func installRequest(session *controlv1.SessionRef, key *controlv1.BindingKey, ge
 	}}
 }
 
+func admissionRequest(session *controlv1.SessionRef, clientID, endpoint, targetID string) *controlv1.AdmitOpenRequest {
+	return &controlv1.AdmitOpenRequest{
+		Session: session,
+		Auth: &controlv1.AuthContext{
+			ClientSessionId: "client-session-a",
+			ClientId:        clientID,
+			ApiKeyId:        "key-a",
+			AuthRevision:    "revision-a",
+		},
+		Endpoint: endpoint,
+		TargetId: targetID,
+	}
+}
+
 func installBinding(
 	t *testing.T,
 	stream grpc.BidiStreamingClient[controlv1.ControlRequest, controlv1.ControlResponse],
@@ -617,6 +740,7 @@ type fakeNode struct {
 	fsm *controlstate.FSM
 
 	mu        sync.RWMutex
+	role      string
 	verifyErr error
 }
 
@@ -635,11 +759,13 @@ func newFakeNode(t *testing.T) *fakeNode {
 	if !result.Applied() {
 		t.Fatalf("initialize result = %#v", result)
 	}
-	return &fakeNode{fsm: fsm}
+	return &fakeNode{fsm: fsm, role: "Leader"}
 }
 
 func (n *fakeNode) Status() raftnode.Status {
-	return raftnode.Status{Role: "Leader", ClusterEpoch: testEpoch}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return raftnode.Status{Role: n.role, ClusterEpoch: testEpoch}
 }
 
 func (n *fakeNode) State() controlstate.State {
@@ -667,5 +793,11 @@ func (n *fakeNode) LookupGateway(gatewayID string) controlstate.GatewaySlot {
 func (n *fakeNode) setVerifyError(err error) {
 	n.mu.Lock()
 	n.verifyErr = err
+	n.mu.Unlock()
+}
+
+func (n *fakeNode) setRole(role string) {
+	n.mu.Lock()
+	n.role = role
 	n.mu.Unlock()
 }

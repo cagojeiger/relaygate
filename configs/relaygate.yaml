@@ -24,9 +24,11 @@ gateway:
 relay:
   bind_address: 127.0.0.1:7200
   authentication_timeout: 5s
+  open_timeout: 10s
   shutdown_timeout: 5s
   max_client_sessions: 10000
   max_listener_bindings: 512
+  max_pipes: 10000
 
 control:
   cluster_epoch: relaygate-v1

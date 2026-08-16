@@ -209,17 +209,18 @@ v0 correctness 완료를 주장하려면 다음을 모두 만족해야 한다.
 | Slice | 현재 증거 | 아직 증명하지 않는 것 |
 | --- | --- | --- |
 | Raft FSM | Binding/Gateway CAS replay, rejection, ABA, distinct-key/per-instance cap과 deterministic snapshot unit test | Process crash-cut 전체와 route eligibility |
-| Control stream | Hello/snapshot 순서, current-instance reconcile view, 최대 legal snapshot의 1 MiB envelope, 직렬 mutation, exact GatewaySlot fence, cross-owner mutation 거부, instance replacement와 quorum-loss fence gRPC test | Auth, payload relay와 arbitrary packet loss |
-| Gateway control client | Process별 새 GatewayInstanceId, follower endpoint 순회, 같은 instance reconnect의 exact binding snapshot/ACK-loss reconcile, prior same-Gateway 1회 CAS retry, foreign conflict, silent transport blackhole 뒤 bounded readiness 철회 | Auth revision, gateway-only deployment와 arbitrary packet loss |
+| Control stream | Hello/snapshot 순서, current-instance reconcile view, 최대 legal snapshot의 1 MiB envelope, 직렬 mutation, exact GatewaySlot fence, cross-owner mutation 거부, instance replacement와 quorum-loss fence, exact `AdmitOpen` gRPC test | Auth, payload relay와 arbitrary packet loss |
+| Gateway control client | Process별 새 GatewayInstanceId, follower endpoint 순회, 같은 instance reconnect의 exact binding snapshot/ACK-loss reconcile, prior same-Gateway 1회 CAS retry, foreign conflict, silent transport blackhole 뒤 bounded readiness 철회, live HTTP/2 client를 재사용하는 non-replayed Open admission | Auth revision, gateway-only deployment와 arbitrary packet loss |
 | Client auth/session | Strict verifier parse, deterministic revision, exact ClientId/ApiKeyId 인증, rotation/removal, immutable key rejection, first-message deadline, global session cap과 removal terminal race/unit gRPC test | TLS network deployment와 SDK interoperability |
-| Local listener binding | Authenticated ClientId namespace, Registering/Live/retirement, exact late cleanup, reload insertion barrier, session ownership, 512 count/1 MiB wire bound와 cleanup-pending capacity unit test | Open reservation, pattern matching과 payload relay |
-| Public Relay stream | Authenticate 뒤 ordered Bind/Unbind, session-derived namespace, non-disclosing Unbind와 redacted stable gRPC status test | Public Go/Rust SDK와 end-to-end Open/Pipe |
+| Local listener binding | Authenticated ClientId namespace, Registering/Live/retirement, exact late cleanup, reload insertion barrier, session ownership, 512 count/1 MiB wire bound, cleanup-pending capacity와 exact Open reservation/unbind ordering unit test | Wildcard matching과 payload relay |
+| Open admission / same-Gateway | 64개 `A/L/Q/C/V/O` 조합, exact literal route, single-use reserve, offer/reject/accept-confirm, LP 뒤 Unknown, late deadline no-op, session/reload terminal, bounded capacity/history unit test와 real `localbinding → opening → relaygrpc` integration | Cross-Gateway forwarding, wildcard/priority, target 생략 선택, OpenAll, payload, SDK, arbitrary packet loss와 전체 crash-cut matrix |
+| Public Relay stream | Authenticate 뒤 ordered Bind/Unbind, required request ID의 exact Open, async Listener decision/confirmation, redacted `Opened/Failed/Unknown`, stale decision과 single-Send actor gRPC test | Public Go/Rust SDK와 payload Pipe |
 | Read-only observation | `/status`의 quorum-confirmed AuthorityId와 local auth revision publication, quorum-loss 직후 `503 + NoAuthority` K12와 caller cancellation non-fencing C16 unit test | Config convergence와 REST administrator/client authorization |
 | 3 voter | 정적 bootstrap/복제/leader replacement/rejoin, old control stream fence와 new authority full-snapshot 후 mutation integration test | Dynamic membership, full pairwise failure matrix |
-| Container wiring | CI에서 새 3-node Compose cluster의 세 Gateway 자동 등록, leader stop 뒤 surviving Gateway 재검증과 실제 control smoke | 장기 soak, resource pressure와 arbitrary container partition |
+| Container wiring | CI에서 새 3-node Compose cluster의 세 Gateway 자동 등록, leader stop 뒤 surviving Gateway 재검증, 실제 control mutation과 `A/L/Q/C/V` Open admission smoke | Public same-Gateway `O`/Relay Open, 장기 soak, resource pressure와 arbitrary container partition |
 
-이는 `M03`, `M08`, `B01–B03`, `B07–B08`, `B10–B15`, `C01`, `C04–C06`, `C08`, `C13–C16`,
-`K01–K05`, `K13`, `K15`의 일부 전제에 대한
+이는 `M03`, `M05`, `M08`, `B01–B05`, `B07–B08`, `B10–B15`, `O01–O04`, `O06`, `O13`,
+`C01–C06`, `C08`, `C13–C16`, `K01–K05`, `K13`, `K15`의 일부 전제에 대한
 구현 증거일 뿐, 각 항목의 모든 crash-cut과 route oracle을 충족하지 않는다. 따라서 test ID 전체를 아직
 `passed`로 판정하지 않는다. 부분 unit/integration test는 전체 runtime correctness 증명이 아니다.
 

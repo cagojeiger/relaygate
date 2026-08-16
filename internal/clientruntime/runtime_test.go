@@ -115,6 +115,34 @@ func TestApplyRetiresBindingsBeforeReturning(t *testing.T) {
 	}
 }
 
+func TestApplyRetiresPipesBeforeReturning(t *testing.T) {
+	current, candidate := rotationConfigs()
+	runtime, err := New(current)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	pipes := &fakePipeRetirer{retired: 3}
+	if err := runtime.AttachPipes(pipes); err != nil {
+		t.Fatalf("AttachPipes(): %v", err)
+	}
+
+	result, err := runtime.Apply(candidate)
+	if err != nil {
+		t.Fatalf("Apply(): %v", err)
+	}
+	if result.RetiredPipes != 3 || pipes.retireCalls != 1 {
+		t.Fatalf("pipe retirement result=%#v calls=%d", result, pipes.retireCalls)
+	}
+	if !pipes.change.Removes("client-a", "rotating") {
+		t.Fatalf("pipe retirement change = %#v", pipes.change)
+	}
+
+	runtime.Close()
+	if pipes.retireAllCalls != 1 {
+		t.Fatalf("RetireAll calls = %d, want 1", pipes.retireAllCalls)
+	}
+}
+
 func TestAttachBindingsRejectsMissingOrDuplicateRetirer(t *testing.T) {
 	current, _ := rotationConfigs()
 	runtime, err := New(current)
@@ -130,6 +158,24 @@ func TestAttachBindingsRejectsMissingOrDuplicateRetirer(t *testing.T) {
 	}
 	if err := runtime.AttachBindings(&fakeBindingRetirer{}); err == nil {
 		t.Fatal("duplicate AttachBindings() succeeded")
+	}
+}
+
+func TestAttachPipesRejectsMissingOrDuplicateRetirer(t *testing.T) {
+	current, _ := rotationConfigs()
+	runtime, err := New(current)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	defer runtime.Close()
+	if err := runtime.AttachPipes(nil); err == nil {
+		t.Fatal("AttachPipes(nil) succeeded")
+	}
+	if err := runtime.AttachPipes(&fakePipeRetirer{}); err != nil {
+		t.Fatalf("AttachPipes(): %v", err)
+	}
+	if err := runtime.AttachPipes(&fakePipeRetirer{}); err == nil {
+		t.Fatal("duplicate AttachPipes() succeeded")
 	}
 }
 
@@ -306,6 +352,13 @@ type fakeBindingRetirer struct {
 	change         clientauth.ChangeSet
 }
 
+type fakePipeRetirer struct {
+	retired        int
+	retireCalls    int
+	retireAllCalls int
+	change         clientauth.ChangeSet
+}
+
 func (f *fakeBindingRetirer) Retire(change clientauth.ChangeSet) int {
 	f.retireCalls++
 	f.change = change
@@ -313,6 +366,17 @@ func (f *fakeBindingRetirer) Retire(change clientauth.ChangeSet) int {
 }
 
 func (f *fakeBindingRetirer) RetireAll() int {
+	f.retireAllCalls++
+	return 0
+}
+
+func (f *fakePipeRetirer) Retire(change clientauth.ChangeSet) int {
+	f.retireCalls++
+	f.change = change
+	return f.retired
+}
+
+func (f *fakePipeRetirer) RetireAll() int {
 	f.retireAllCalls++
 	return 0
 }

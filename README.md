@@ -23,7 +23,7 @@ RelayGate는 Raft로 조정되는 Gateway cluster에서 일시적인 양방향 P
 
 ## 현재 구현
 
-현재 Gateway/Listener control slice는 다음 경계까지 구현한다.
+현재 Go runtime은 다음 경계까지 구현한다.
 
 - HashiCorp Raft의 단일 voter 또는 정적 3-voter bootstrap
 - BoltDB log/stable store와 file snapshot
@@ -35,10 +35,14 @@ RelayGate는 Raft로 조정되는 Gateway cluster에서 일시적인 양방향 P
 - Public `Relay.Connect`의 first-message 인증 deadline, bounded client session과 authenticated `BindListener/UnbindListener`
 - 별도 local binding runtime의 `Registering/Live/Retiring/Retired`, session ownership과 process-wide capacity
 - Install 응답 유실 뒤 authoritative reconcile + exact CAS replay, unbind/session/key 제거의 즉시 local ineligibility
+- Required `request_id`, exact literal `endpoint`와 required `target_id`를 쓰는 same-Gateway `Open`
+- `A ∧ L ∧ Q ∧ C ∧ V` authority admission, owner-local `O` reserve와 Listener offer/accept/confirm
+- Bounded attempt/Pipe table, caller `Opened/Failed/Unknown`과 session/reload terminal 전파
 - JSON structured log, quorum-confirmed read-only `/status`, local health/readiness와 Prometheus metrics
 - Snapshot 뒤 process restart에서 control state 복구
 
-Open/route selection, payload relay, 동적 multi-node join과 public Go/Rust SDK는 아직 구현하지 않았다.
+Cross-Gateway owner forwarding, wildcard/priority, target 생략 선택, `OpenAll`, payload relay, 동적 multi-node
+join과 public Go/Rust SDK는 아직 구현하지 않았다.
 
 현재 Raft transport와 internal control gRPC는 TLS나 peer authentication 없이 **신뢰된 local/dev
 network만을 전제**한다. 기준 config는 모든 listener를 loopback에 bind한다. Compose만 container network
@@ -72,6 +76,9 @@ clients만 atomic하게 교체하고, 제거된 credential의 local session을 �
 동시 stream 상한에도 사용하지만 전역 상한의 source of truth는 session manager다.
 `relay.max_listener_bindings`는 process 전체의 Registering/Live/cleanup 대기 listener 정의 수를 원자적으로
 제한하며 범위는 1–512다. 이는 connection 수가 아니다. 초과 시 기존 binding을 evict하지 않고 새 Bind만 거부한다.
+`relay.open_timeout`은 admission·offer와 Listener confirmation의 각 bounded wait를 제한한다.
+`relay.max_pipes`는 process 전체의 Opening/Accepted Pipe와 listener termination cleanup 대기까지 묶은
+admission 상한이며 terminal history도 같은 크기로 제한한다. 초과 시 기존 Pipe를 evict하지 않고 새 Open만 거부한다.
 한 정의의 `endpoint_pattern`은 최대 1024 bytes, `target_id`는 최대 128 bytes로 제한해 최대 snapshot도 internal
 gRPC 1 MiB envelope 안에 유지한다.
 

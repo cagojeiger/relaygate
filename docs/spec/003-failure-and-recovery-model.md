@@ -239,6 +239,10 @@ sequenceDiagram
     I-->>C: ACK
 ```
 
+현재 Go Open slice는 ingress와 owner가 같은 Gateway process인 경우만 구현한다. 따라서 `I → O`는 process
+내부 call이며 remote owner forwarding, 그 hop의 loss와 serialized capability replay는 아직 구현 evidence가
+없다. 조건이 맞지 않으면 stable failure이고 canonical admission/linearization 의미는 바뀌지 않는다.
+
 위 `OpenContext`는 `ClusterEpoch`, 발급 provenance인 `AuthorityId`, exact `AttemptId`, caller `AuthContext`와
 `BindingGeneration/ListenerBindingRef`에 묶인 single-use 결정이다. Authority는 해당 attempt의 quorum
 confirmation이 끝난 뒤에만 이를 발급한다. Fully asynchronous network에서 owner는 침묵만으로 remote

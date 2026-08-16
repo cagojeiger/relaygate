@@ -78,9 +78,11 @@ type GatewayConfig struct {
 type RelayConfig struct {
 	BindAddress           string   `yaml:"bind_address"`
 	AuthenticationTimeout Duration `yaml:"authentication_timeout"`
+	OpenTimeout           Duration `yaml:"open_timeout"`
 	ShutdownTimeout       Duration `yaml:"shutdown_timeout"`
 	MaxClientSessions     uint32   `yaml:"max_client_sessions"`
 	MaxListenerBindings   uint32   `yaml:"max_listener_bindings"`
+	MaxPipes              uint32   `yaml:"max_pipes"`
 }
 
 type ControlConfig struct {
@@ -129,9 +131,11 @@ func Defaults() Config {
 		Relay: RelayConfig{
 			BindAddress:           "127.0.0.1:7200",
 			AuthenticationTimeout: Duration(5 * time.Second),
+			OpenTimeout:           Duration(10 * time.Second),
 			ShutdownTimeout:       Duration(5 * time.Second),
 			MaxClientSessions:     10_000,
 			MaxListenerBindings:   controlstate.MaxListenerBindingsPerGateway,
+			MaxPipes:              10_000,
 		},
 		Control: ControlConfig{
 			BindAddress:                    "127.0.0.1:7100",
@@ -345,7 +349,7 @@ func (c Config) Validate() error {
 	if err := validateLoopbackListenAddress("relay.bind_address", c.Relay.BindAddress); err != nil {
 		return err
 	}
-	if c.Relay.AuthenticationTimeout.Value() <= 0 || c.Relay.ShutdownTimeout.Value() <= 0 {
+	if c.Relay.AuthenticationTimeout.Value() <= 0 || c.Relay.OpenTimeout.Value() <= 0 || c.Relay.ShutdownTimeout.Value() <= 0 {
 		return fmt.Errorf("relay timeouts must be positive")
 	}
 	if c.Relay.MaxClientSessions == 0 {
@@ -353,6 +357,9 @@ func (c Config) Validate() error {
 	}
 	if c.Relay.MaxListenerBindings == 0 || c.Relay.MaxListenerBindings > controlstate.MaxListenerBindingsPerGateway {
 		return fmt.Errorf("relay.max_listener_bindings must be between 1 and %d", controlstate.MaxListenerBindingsPerGateway)
+	}
+	if c.Relay.MaxPipes == 0 {
+		return fmt.Errorf("relay.max_pipes must be positive")
 	}
 	if c.Control.ClusterEpoch == "" || len(c.Control.ClusterEpoch) > controlstate.MaxIdentityBytes {
 		return fmt.Errorf("control.cluster_epoch must be 1..%d bytes", controlstate.MaxIdentityBytes)

@@ -22,6 +22,7 @@ import (
 	"github.com/cagojeiger/relaygate/internal/controlgrpc"
 	"github.com/cagojeiger/relaygate/internal/gatewaycontrol"
 	"github.com/cagojeiger/relaygate/internal/localbinding"
+	"github.com/cagojeiger/relaygate/internal/opening"
 	"github.com/cagojeiger/relaygate/internal/raftnode"
 	"github.com/cagojeiger/relaygate/internal/relaygrpc"
 )
@@ -169,6 +170,26 @@ func run() error {
 		_ = controlServer.Shutdown(shutdownContext)
 		return fmt.Errorf("attach listener binding runtime: %w", err)
 	}
+	openingManager, err := opening.New(opening.Config{
+		ClusterEpoch: appConfig.Control.ClusterEpoch,
+		MaxPipes:     appConfig.Relay.MaxPipes,
+		OpenTimeout:  appConfig.Relay.OpenTimeout.Value(),
+	}, gatewayClient, bindingManager)
+	if err != nil {
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("configure Open runtime: %w", err)
+	}
+	defer openingManager.Close()
+	if err := clientRuntime.AttachPipes(openingManager); err != nil {
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("attach Open runtime: %w", err)
+	}
 	gatewayContext, cancelGateway := context.WithCancel(context.Background())
 	gatewayDone := make(chan struct{})
 	go func() {
@@ -183,7 +204,7 @@ func run() error {
 		})
 	}
 	defer stopGateway()
-	relayService, err := relaygrpc.NewService(clientRuntime.Sessions(), bindingManager, appConfig.Relay.AuthenticationTimeout.Value())
+	relayService, err := relaygrpc.NewService(clientRuntime.Sessions(), bindingManager, openingManager, appConfig.Relay.AuthenticationTimeout.Value())
 	if err != nil {
 		stopGateway()
 		authorityManager.Close()
@@ -260,6 +281,7 @@ func run() error {
 				"auth_revision", result.Revision,
 				"removed_credentials", result.Removed,
 				"retired_sessions", result.RetiredSessions,
+				"retired_pipes", result.RetiredPipes,
 				"retired_bindings", result.RetiredBindings,
 			)
 		case err := <-adminServer.Errors():

@@ -200,6 +200,10 @@ global compare-and-set이 아니다. Authority가 바뀌면 재검증된 범위�
 끝날 때까지 `incomplete`다. 자세한 completeness 계약은
 [SPEC 002](002-client-configuration-and-presence.md)에 있다.
 
+> **현재 Go 구현 범위:** required `request_id`와 `Open(endpoint, target_id)`만 받으며 `target_id`는 필수다.
+> `endpoint_pattern == endpoint`인 literal binding과 ingress/owner가 같은 Gateway process인 경우만 진행한다.
+> 다른 owner면 fail closed한다. 이 제한은 여섯 gate를 완화하지 않는다.
+
 ## One, exact target, All
 
 ```mermaid
@@ -227,6 +231,9 @@ flowchart LR
 - `Open(endpoint, target_id)`: 정확한 target으로 1개 Pipe를 연다.
 - `Open(endpoint)`: eligible target 하나를 선택한다.
 - `OpenAll(endpoint)`: 각 eligible target에 독립적인 1:1 Pipe를 연다.
+
+현재 구현 evidence는 첫 번째 exact-target 형태에만 있다. Target 생략 선택, `OpenAll`, wildcard와 payload는
+위 장기 의미 모델에 남아 있지만 아직 구현되지 않았다.
 
 `OpenAll`은 transaction이나 하나의 broadcast Pipe가 아니다. 각 target 결과는 caller 관점에서
 `Opened`, `Failed`, `Cancelled`, `Unknown` 중 하나이며 일부 성공을 이유로 다른 성공을 rollback하지
@@ -270,8 +277,8 @@ sequenceDiagram
 ```
 
 - `BindListener`에는 `ClientId`가 없다. `BindingKey.ClientId`는 인증된 stream의 session에서만 파생한다.
-- `endpoint_pattern`은 1–1024 bytes, `target_id`는 1–128 bytes만 허용한다. Pattern 문법·우선순위와 route
-  matching은 Open 구현 범위다.
+- `endpoint_pattern`은 1–1024 bytes, `target_id`는 1–128 bytes만 허용한다. 현재 구현은 literal equality만
+  지원하며 wildcard 문법·우선순위는 아직 정하지 않는다.
 - `ListenerBound`는 install CAS가 `Applied` 또는 exact replay `AlreadyApplied`가 된 뒤에만 반환한다. Local
   `RegisteringB`만으로 성공하지 않는다.
 - 같은 process의 local `BindingKey` 중복과 listener capacity 초과는 새 Bind만 거부하며 기존 binding을 바꾸지 않는다.
@@ -331,6 +338,11 @@ ACK 관찰 여부를 추측하지 않으며 stream/session 종료나 hop failure
 Listener의 accept 응답은 provisional이다. Owner가 `Accepted`를 기록한 뒤 established confirmation을 보내기
 전에는 Listener SDK가 Pipe handle을 application에 노출하지 않는다. Confirmation 전 owner crash/hop failure는
 provisional attempt를 terminal로 만든다.
+
+현재 same-process slice는 authority 응답을 decode할 때 process-local atomic single-use capability를 만들고,
+모든 value copy가 같은 consume state를 공유한다. Manager에 영구 replay tombstone을 쌓지 않으므로 memory는
+bounded하다. 이 capability를 remote owner로 serialize/forward하지 않으며, cross-Gateway replay 계약은 아직
+구현 evidence가 없다.
 
 ## Pipe ownership과 종료
 

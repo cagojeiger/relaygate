@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/cagojeiger/relaygate/internal/authority"
 	"github.com/cagojeiger/relaygate/internal/clientauth"
 	"github.com/cagojeiger/relaygate/internal/clientsession"
 	"github.com/cagojeiger/relaygate/internal/controlstate"
@@ -17,6 +18,8 @@ var (
 	ErrInvalid      = errors.New("invalid listener binding")
 	ErrCapacity     = errors.New("listener binding capacity reached")
 	ErrConflict     = errors.New("listener binding already exists")
+	ErrNotFound     = errors.New("listener binding not found")
+	ErrAttemptUsed  = errors.New("open attempt was already reserved")
 	ErrUnavailable  = errors.New("listener binding control unavailable")
 	ErrSessionEnded = errors.New("client session ended")
 )
@@ -52,14 +55,28 @@ type Snapshot struct {
 	State   State
 }
 
+// Reservation is an immutable exact owner reservation. It intentionally does
+// not expose the binding retirement signal: explicit unbind after Reserve must
+// not cancel an already admitted attempt. Session lifetime remains observable
+// through ListenerDone.
+type Reservation struct {
+	Context      authority.OpenContext
+	Caller       clientsession.Ref
+	Binding      controlstate.BindingSlot
+	Listener     clientsession.Ref
+	Endpoint     ListenerEndpoint
+	ListenerDone <-chan struct{}
+}
+
 type entry struct {
-	key     controlstate.BindingKey
-	ref     controlstate.ListenerBindingRef
-	session clientsession.Ref
-	done    <-chan struct{}
-	slot    controlstate.BindingSlot
-	state   State
-	aborted chan struct{}
+	key      controlstate.BindingKey
+	ref      controlstate.ListenerBindingRef
+	session  clientsession.Ref
+	done     <-chan struct{}
+	endpoint ListenerEndpoint
+	slot     controlstate.BindingSlot
+	state    State
+	aborted  chan struct{}
 
 	abortedClosed    bool
 	terminalRecorded bool
@@ -125,7 +142,7 @@ func New(gatewayID, gatewayInstanceID string, max uint32, committer Committer, s
 
 // Bind reserves local capacity before submitting an install and returns only
 // after the exact slot is committed. ClientID is always derived from session.
-func (m *Manager) Bind(ctx context.Context, session clientsession.Session, endpointPattern, targetID string) (controlstate.BindingSlot, error) {
+func (m *Manager) Bind(ctx context.Context, session clientsession.Session, endpointPattern, targetID string, endpoint ListenerEndpoint) (controlstate.BindingSlot, error) {
 	if ctx == nil {
 		return controlstate.BindingSlot{}, fmt.Errorf("%w: context is required", ErrInvalid)
 	}
@@ -137,6 +154,9 @@ func (m *Manager) Bind(ctx context.Context, session clientsession.Session, endpo
 	}
 	if session.Ref.ClientSessionID == "" || session.Ref.ClientID == "" || session.Done == nil {
 		return controlstate.BindingSlot{}, fmt.Errorf("%w: authenticated session is required", ErrInvalid)
+	}
+	if endpoint == nil {
+		return controlstate.BindingSlot{}, fmt.Errorf("%w: listener endpoint is required", ErrInvalid)
 	}
 	if err := ctx.Err(); err != nil {
 		return controlstate.BindingSlot{}, err
@@ -190,6 +210,7 @@ func (m *Manager) Bind(ctx context.Context, session clientsession.Session, endpo
 		},
 		session:      session.Ref,
 		done:         session.Done,
+		endpoint:     endpoint,
 		state:        StateRegistering,
 		aborted:      make(chan struct{}),
 		capacityHeld: true,
@@ -243,6 +264,79 @@ func (m *Manager) Bind(ctx context.Context, session clientsession.Session, endpo
 		m.retireAttempt(e)
 		return controlstate.BindingSlot{}, ErrUnavailable
 	}
+}
+
+// GatewayID returns the stable local owner identity used by route dispatch to
+// reject the remote-owner case before attempting a local reservation.
+func (m *Manager) GatewayID() string {
+	return m.gatewayID
+}
+
+// Reserve atomically consumes one exact authority-issued attempt against the
+// current LiveB entry. The comparison and both session validations are ordered
+// with unbind and credential retirement by m.mu.
+func (m *Manager) Reserve(open authority.OpenContext, caller clientsession.Ref) (Reservation, error) {
+	if open.ClusterEpoch == "" || len(open.ClusterEpoch) > controlstate.MaxIdentityBytes ||
+		open.AuthorityID == "" || len(open.AuthorityID) > controlstate.MaxIdentityBytes ||
+		open.AttemptID == "" || len(open.AttemptID) > controlstate.MaxIdentityBytes ||
+		open.Binding.Generation == 0 || open.Binding.Ref == nil {
+		return Reservation{}, fmt.Errorf("%w: incomplete open context", ErrInvalid)
+	}
+	if err := open.Auth.Validate(); err != nil {
+		return Reservation{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	if err := open.Binding.Ref.Validate(); err != nil {
+		return Reservation{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	if open.Auth.ClientSessionID != caller.ClientSessionID ||
+		open.Auth.ClientID != caller.ClientID ||
+		open.Auth.APIKeyID != caller.APIKeyID ||
+		open.Auth.AuthRevision != caller.AuthRevision {
+		return Reservation{}, fmt.Errorf("%w: caller does not match open context", ErrInvalid)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return Reservation{}, ErrUnavailable
+	}
+	ref := *open.Binding.Ref
+	if ref.GatewayID != m.gatewayID || ref.GatewayInstanceID != m.gatewayInstanceID {
+		return Reservation{}, ErrNotFound
+	}
+	e := m.entries[ref.ListenerBindingID]
+	if e == nil || e.state != StateLive || !sameExactSlot(open.Binding, e.slot) || e.endpoint == nil {
+		return Reservation{}, ErrNotFound
+	}
+	if err := m.sessions.Require(caller); err != nil {
+		return Reservation{}, fmt.Errorf("%w: caller: %w", ErrSessionEnded, err)
+	}
+	if err := m.sessions.Require(e.session); err != nil {
+		m.retireLocked(e, true)
+		return Reservation{}, fmt.Errorf("%w: listener: %w", ErrSessionEnded, err)
+	}
+	select {
+	case <-e.done:
+		m.retireLocked(e, true)
+		return Reservation{}, ErrSessionEnded
+	default:
+	}
+	if e.session == caller {
+		return Reservation{}, fmt.Errorf("%w: caller and listener sessions must differ", ErrInvalid)
+	}
+	if !open.TryConsume() {
+		return Reservation{}, ErrAttemptUsed
+	}
+
+	exact := cloneOpenContext(open)
+	return Reservation{
+		Context:      exact,
+		Caller:       caller,
+		Binding:      cloneSlot(exact.Binding),
+		Listener:     e.session,
+		Endpoint:     e.endpoint,
+		ListenerDone: e.done,
+	}, nil
 }
 
 // Unbind is deliberately non-disclosing: an unknown binding ID, a duplicate
@@ -542,6 +636,13 @@ func exactInstalledSlot(slot controlstate.BindingSlot, key controlstate.BindingK
 	return slot.Key == key && slot.Generation > 0 && slot.Ref != nil && *slot.Ref == ref
 }
 
+func sameExactSlot(left, right controlstate.BindingSlot) bool {
+	if left.Key != right.Key || left.Generation != right.Generation || left.Ref == nil || right.Ref == nil {
+		return false
+	}
+	return *left.Ref == *right.Ref
+}
+
 func cloneSlot(slot controlstate.BindingSlot) controlstate.BindingSlot {
 	copy := slot
 	if slot.Ref != nil {
@@ -549,6 +650,10 @@ func cloneSlot(slot controlstate.BindingSlot) controlstate.BindingSlot {
 		copy.Ref = &ref
 	}
 	return copy
+}
+
+func cloneOpenContext(open authority.OpenContext) authority.OpenContext {
+	return open.Clone()
 }
 
 func newID() (string, error) {

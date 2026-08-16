@@ -305,6 +305,68 @@ func (m *Manager) RequireRevalidated(ref SessionRef) error {
 	return nil
 }
 
+// ResolveOpen issues one side-effect-free context for an exact literal
+// BindingKey. The caller must quorum-confirm the current authority immediately
+// before this method while holding the service control lane. This method then
+// rechecks the exact ingress session, committed slot, and owner snapshot under
+// the authority lock.
+func (m *Manager) ResolveOpen(ingress SessionRef, auth AuthContext, endpoint, targetID string) (OpenContext, error) {
+	key, err := ExactBindingKey(auth, endpoint, targetID)
+	if err != nil {
+		return OpenContext{}, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ingressEntry, err := m.sessionLocked(ingress)
+	if err != nil {
+		return OpenContext{}, fmt.Errorf("%w: ingress control session: %w", ErrOpenUnavailable, err)
+	}
+	if ingressEntry.state != SessionRevalidated {
+		return OpenContext{}, fmt.Errorf("%w: ingress control session: %w", ErrOpenUnavailable, ErrSnapshotFirst)
+	}
+
+	state := m.node.State()
+	if m.current == nil || state.ClusterEpoch != m.current.ClusterEpoch {
+		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, ErrNoAuthority)
+	}
+	var committed controlstate.BindingSlot
+	found := false
+	for _, slot := range state.Bindings {
+		if slot.Key == key && !slot.IsTombstone() {
+			committed = slot
+			found = true
+			break
+		}
+	}
+	if !found || committed.Generation == 0 || committed.Ref == nil {
+		return OpenContext{}, ErrRouteNotFound
+	}
+
+	owner := m.sessions[committed.Ref.GatewayID]
+	if owner == nil || owner.closed || owner.state != SessionRevalidated ||
+		owner.ref.ClusterEpoch != m.current.ClusterEpoch ||
+		owner.ref.AuthorityID != m.current.AuthorityID ||
+		owner.ref.GatewayInstanceID != committed.Ref.GatewayInstanceID ||
+		!m.gatewaySlotCurrentLocked(owner.ref.GatewayID, owner.ref.GatewayGeneration, owner.ref.GatewayInstanceID) {
+		return OpenContext{}, ErrRouteNotFound
+	}
+	revalidated, ok := owner.bindings[key]
+	if !ok || !bindingSlotsEqual(revalidated, committed) {
+		return OpenContext{}, ErrRouteNotFound
+	}
+
+	attemptID, err := newID()
+	if err != nil {
+		return OpenContext{}, fmt.Errorf("%w: %v", ErrOpenUnavailable, err)
+	}
+	result, err := NewOpenContext(m.current.ClusterEpoch, m.current.AuthorityID, attemptID, auth, committed)
+	if err != nil {
+		return OpenContext{}, fmt.Errorf("%w: construct Open context: %v", ErrOpenUnavailable, err)
+	}
+	return result, nil
+}
+
 func (m *Manager) UpdateBinding(ref SessionRef, slot controlstate.BindingSlot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -475,6 +537,16 @@ func (m *Manager) gatewaySlotCurrentLocked(gatewayID string, generation uint64, 
 		return slot.Generation == generation && slot.Ref != nil && slot.Ref.GatewayInstanceID == gatewayInstanceID
 	}
 	return false
+}
+
+func bindingSlotsEqual(left, right controlstate.BindingSlot) bool {
+	if left.Key != right.Key || left.Generation != right.Generation {
+		return false
+	}
+	if left.Ref == nil || right.Ref == nil {
+		return left.Ref == nil && right.Ref == nil
+	}
+	return *left.Ref == *right.Ref
 }
 
 func (m *Manager) revalidationExpiredLocked(ref SessionRef) bool {

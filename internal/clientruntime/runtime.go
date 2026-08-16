@@ -13,10 +13,16 @@ type ReloadResult struct {
 	Revision        string
 	Removed         int
 	RetiredSessions int
+	RetiredPipes    int
 	RetiredBindings int
 }
 
 type BindingRetirer interface {
+	Retire(clientauth.ChangeSet) int
+	RetireAll() int
+}
+
+type PipeRetirer interface {
 	Retire(clientauth.ChangeSet) int
 	RetireAll() int
 }
@@ -26,6 +32,7 @@ type Runtime struct {
 	current  config.Config
 	auth     *clientauth.Store
 	sessions *clientsession.Manager
+	pipes    PipeRetirer
 	bindings BindingRetirer
 }
 
@@ -62,6 +69,19 @@ func (r *Runtime) AttachBindings(bindings BindingRetirer) error {
 	return nil
 }
 
+func (r *Runtime) AttachPipes(pipes PipeRetirer) error {
+	if pipes == nil {
+		return fmt.Errorf("pipe retirer is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pipes != nil {
+		return fmt.Errorf("pipe retirer is already attached")
+	}
+	r.pipes = pipes
+	return nil
+}
+
 func (r *Runtime) Apply(candidate config.Config) (ReloadResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -73,6 +93,13 @@ func (r *Runtime) Apply(candidate config.Config) (ReloadResult, error) {
 		return ReloadResult{}, err
 	}
 	retired := r.sessions.Retire(change)
+	retiredPipes := 0
+	if r.pipes != nil {
+		// Session retirement closes admission first. The explicit sweep is the
+		// reload barrier: Apply does not return while a removed credential still
+		// owns an opening or accepted Pipe.
+		retiredPipes = r.pipes.Retire(change)
+	}
 	retiredBindings := 0
 	if r.bindings != nil {
 		// Session retirement happens first. Bind holds the local binding lock
@@ -85,6 +112,7 @@ func (r *Runtime) Apply(candidate config.Config) (ReloadResult, error) {
 		Revision:        change.Revision,
 		Removed:         len(change.Removed),
 		RetiredSessions: retired,
+		RetiredPipes:    retiredPipes,
 		RetiredBindings: retiredBindings,
 	}, nil
 }
@@ -93,6 +121,9 @@ func (r *Runtime) Close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessions.Close()
+	if r.pipes != nil {
+		r.pipes.RetireAll()
+	}
 	if r.bindings != nil {
 		r.bindings.RetireAll()
 	}
