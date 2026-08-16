@@ -23,20 +23,22 @@ RelayGate는 Raft로 조정되는 Gateway cluster에서 일시적인 양방향 P
 
 ## 현재 구현
 
-현재 control-plane slice는 다음 경계까지 구현한다.
+현재 Gateway/Listener control slice는 다음 경계까지 구현한다.
 
 - HashiCorp Raft의 단일 voter 또는 정적 3-voter bootstrap
 - BoltDB log/stable store와 file snapshot
 - `GatewaySlot`과 `BindingSlot` generation/ref CAS, tombstone과 distinct-key 상한
 - Current leader의 term/quorum 확인으로 생성하는 `AuthorityId`, exact Gateway generation fencing과 timeout classification
-- 내부 gRPC control stream: `Hello → exact FullSnapshot → owner-checked serial BindingMutation`
+- 내부 gRPC control stream: `Hello → authoritative current-instance bindings → exact FullSnapshot → serial BindingMutation`
 - 각 process의 독립적인 `GatewayId`/`GatewayInstanceId`, endpoint 순회와 leader 변경 뒤 자동 full-snapshot 재검증
 - External client config의 SHA-256 verifier, `SIGHUP` atomic reload와 메모리 `ClientSession`
-- Public `Relay.Connect`의 first-message 인증 deadline과 process-wide bounded client session
+- Public `Relay.Connect`의 first-message 인증 deadline, bounded client session과 authenticated `BindListener/UnbindListener`
+- 별도 local binding runtime의 `Registering/Live/Retiring/Retired`, session ownership과 process-wide capacity
+- Install 응답 유실 뒤 authoritative reconcile + exact CAS replay, unbind/session/key 제거의 즉시 local ineligibility
 - JSON structured log, quorum-confirmed read-only `/status`, local health/readiness와 Prometheus metrics
 - Snapshot 뒤 process restart에서 control state 복구
 
-Listen/Open, payload relay, 동적 multi-node join과 public Go/Rust SDK는 아직 구현하지 않았다.
+Open/route selection, payload relay, 동적 multi-node join과 public Go/Rust SDK는 아직 구현하지 않았다.
 
 현재 Raft transport와 internal control gRPC는 TLS나 peer authentication 없이 **신뢰된 local/dev
 network만을 전제**한다. 기준 config는 모든 listener를 loopback에 bind한다. Compose만 container network
@@ -68,6 +70,10 @@ clients만 atomic하게 교체하고, 제거된 credential의 local session을 �
 `relay.authentication_timeout`은 인증을 보내지 않는 stream을 종료하고,
 `relay.max_client_sessions`는 process 전체의 active session 수를 제한한다. 같은 값은 connection별 gRPC
 동시 stream 상한에도 사용하지만 전역 상한의 source of truth는 session manager다.
+`relay.max_listener_bindings`는 process 전체의 Registering/Live/cleanup 대기 listener 정의 수를 원자적으로
+제한하며 범위는 1–512다. 이는 connection 수가 아니다. 초과 시 기존 binding을 evict하지 않고 새 Bind만 거부한다.
+한 정의의 `endpoint_pattern`은 최대 1024 bytes, `target_id`는 최대 128 bytes로 제한해 최대 snapshot도 internal
+gRPC 1 MiB envelope 안에 유지한다.
 
 Docker Compose는 고정된 3-voter smoke cluster를 실행한다. Raft transport는 Compose network 안에만 있고,
 각 노드의 internal control gRPC는 `7101`–`7103`, read-only Admin HTTP는 `9091`–`9093`에 노출된다.

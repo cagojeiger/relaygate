@@ -26,6 +26,8 @@ type ConnectRequest struct {
 	// Types that are valid to be assigned to Message:
 	//
 	//	*ConnectRequest_Authenticate
+	//	*ConnectRequest_BindListener
+	//	*ConnectRequest_UnbindListener
 	Message       isConnectRequest_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -77,6 +79,24 @@ func (x *ConnectRequest) GetAuthenticate() *Authenticate {
 	return nil
 }
 
+func (x *ConnectRequest) GetBindListener() *BindListener {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectRequest_BindListener); ok {
+			return x.BindListener
+		}
+	}
+	return nil
+}
+
+func (x *ConnectRequest) GetUnbindListener() *UnbindListener {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectRequest_UnbindListener); ok {
+			return x.UnbindListener
+		}
+	}
+	return nil
+}
+
 type isConnectRequest_Message interface {
 	isConnectRequest_Message()
 }
@@ -85,13 +105,27 @@ type ConnectRequest_Authenticate struct {
 	Authenticate *Authenticate `protobuf:"bytes,1,opt,name=authenticate,proto3,oneof"`
 }
 
+type ConnectRequest_BindListener struct {
+	BindListener *BindListener `protobuf:"bytes,2,opt,name=bind_listener,json=bindListener,proto3,oneof"`
+}
+
+type ConnectRequest_UnbindListener struct {
+	UnbindListener *UnbindListener `protobuf:"bytes,3,opt,name=unbind_listener,json=unbindListener,proto3,oneof"`
+}
+
 func (*ConnectRequest_Authenticate) isConnectRequest_Message() {}
+
+func (*ConnectRequest_BindListener) isConnectRequest_Message() {}
+
+func (*ConnectRequest_UnbindListener) isConnectRequest_Message() {}
 
 type ConnectResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Message:
 	//
 	//	*ConnectResponse_ClientSessionOpened
+	//	*ConnectResponse_ListenerBound
+	//	*ConnectResponse_ListenerUnbound
 	Message       isConnectResponse_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -143,6 +177,24 @@ func (x *ConnectResponse) GetClientSessionOpened() *ClientSessionOpened {
 	return nil
 }
 
+func (x *ConnectResponse) GetListenerBound() *ListenerBound {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectResponse_ListenerBound); ok {
+			return x.ListenerBound
+		}
+	}
+	return nil
+}
+
+func (x *ConnectResponse) GetListenerUnbound() *ListenerUnbound {
+	if x != nil {
+		if x, ok := x.Message.(*ConnectResponse_ListenerUnbound); ok {
+			return x.ListenerUnbound
+		}
+	}
+	return nil
+}
+
 type isConnectResponse_Message interface {
 	isConnectResponse_Message()
 }
@@ -151,7 +203,19 @@ type ConnectResponse_ClientSessionOpened struct {
 	ClientSessionOpened *ClientSessionOpened `protobuf:"bytes,1,opt,name=client_session_opened,json=clientSessionOpened,proto3,oneof"`
 }
 
+type ConnectResponse_ListenerBound struct {
+	ListenerBound *ListenerBound `protobuf:"bytes,2,opt,name=listener_bound,json=listenerBound,proto3,oneof"`
+}
+
+type ConnectResponse_ListenerUnbound struct {
+	ListenerUnbound *ListenerUnbound `protobuf:"bytes,3,opt,name=listener_unbound,json=listenerUnbound,proto3,oneof"`
+}
+
 func (*ConnectResponse_ClientSessionOpened) isConnectResponse_Message() {}
+
+func (*ConnectResponse_ListenerBound) isConnectResponse_Message() {}
+
+func (*ConnectResponse_ListenerUnbound) isConnectResponse_Message() {}
 
 type Authenticate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -325,16 +389,264 @@ func (x *ClientSessionOpened) GetSession() *ClientSessionRef {
 	return nil
 }
 
+type BindListener struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	EndpointPattern string                 `protobuf:"bytes,1,opt,name=endpoint_pattern,json=endpointPattern,proto3" json:"endpoint_pattern,omitempty"`
+	TargetId        string                 `protobuf:"bytes,2,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *BindListener) Reset() {
+	*x = BindListener{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BindListener) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BindListener) ProtoMessage() {}
+
+func (x *BindListener) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BindListener.ProtoReflect.Descriptor instead.
+func (*BindListener) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *BindListener) GetEndpointPattern() string {
+	if x != nil {
+		return x.EndpointPattern
+	}
+	return ""
+}
+
+func (x *BindListener) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+type UnbindListener struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ListenerBindingId string                 `protobuf:"bytes,1,opt,name=listener_binding_id,json=listenerBindingId,proto3" json:"listener_binding_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *UnbindListener) Reset() {
+	*x = UnbindListener{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnbindListener) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnbindListener) ProtoMessage() {}
+
+func (x *UnbindListener) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnbindListener.ProtoReflect.Descriptor instead.
+func (*UnbindListener) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *UnbindListener) GetListenerBindingId() string {
+	if x != nil {
+		return x.ListenerBindingId
+	}
+	return ""
+}
+
+type ListenerBinding struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ListenerBindingId string                 `protobuf:"bytes,1,opt,name=listener_binding_id,json=listenerBindingId,proto3" json:"listener_binding_id,omitempty"`
+	EndpointPattern   string                 `protobuf:"bytes,2,opt,name=endpoint_pattern,json=endpointPattern,proto3" json:"endpoint_pattern,omitempty"`
+	TargetId          string                 `protobuf:"bytes,3,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ListenerBinding) Reset() {
+	*x = ListenerBinding{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListenerBinding) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListenerBinding) ProtoMessage() {}
+
+func (x *ListenerBinding) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListenerBinding.ProtoReflect.Descriptor instead.
+func (*ListenerBinding) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ListenerBinding) GetListenerBindingId() string {
+	if x != nil {
+		return x.ListenerBindingId
+	}
+	return ""
+}
+
+func (x *ListenerBinding) GetEndpointPattern() string {
+	if x != nil {
+		return x.EndpointPattern
+	}
+	return ""
+}
+
+func (x *ListenerBinding) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+type ListenerBound struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Binding       *ListenerBinding       `protobuf:"bytes,1,opt,name=binding,proto3" json:"binding,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListenerBound) Reset() {
+	*x = ListenerBound{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListenerBound) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListenerBound) ProtoMessage() {}
+
+func (x *ListenerBound) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListenerBound.ProtoReflect.Descriptor instead.
+func (*ListenerBound) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListenerBound) GetBinding() *ListenerBinding {
+	if x != nil {
+		return x.Binding
+	}
+	return nil
+}
+
+type ListenerUnbound struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ListenerBindingId string                 `protobuf:"bytes,1,opt,name=listener_binding_id,json=listenerBindingId,proto3" json:"listener_binding_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ListenerUnbound) Reset() {
+	*x = ListenerUnbound{}
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListenerUnbound) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListenerUnbound) ProtoMessage() {}
+
+func (x *ListenerUnbound) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_relay_v1_relay_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListenerUnbound.ProtoReflect.Descriptor instead.
+func (*ListenerUnbound) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ListenerUnbound) GetListenerBindingId() string {
+	if x != nil {
+		return x.ListenerBindingId
+	}
+	return ""
+}
+
 var File_proto_relaygate_relay_v1_relay_proto protoreflect.FileDescriptor
 
 const file_proto_relaygate_relay_v1_relay_proto_rawDesc = "" +
 	"\n" +
-	"$proto/relaygate/relay/v1/relay.proto\x12\x12relaygate.relay.v1\"c\n" +
+	"$proto/relaygate/relay/v1/relay.proto\x12\x12relaygate.relay.v1\"\xfb\x01\n" +
 	"\x0eConnectRequest\x12F\n" +
-	"\fauthenticate\x18\x01 \x01(\v2 .relaygate.relay.v1.AuthenticateH\x00R\fauthenticateB\t\n" +
-	"\amessage\"{\n" +
+	"\fauthenticate\x18\x01 \x01(\v2 .relaygate.relay.v1.AuthenticateH\x00R\fauthenticate\x12G\n" +
+	"\rbind_listener\x18\x02 \x01(\v2 .relaygate.relay.v1.BindListenerH\x00R\fbindListener\x12M\n" +
+	"\x0funbind_listener\x18\x03 \x01(\v2\".relaygate.relay.v1.UnbindListenerH\x00R\x0eunbindListenerB\t\n" +
+	"\amessage\"\x99\x02\n" +
 	"\x0fConnectResponse\x12]\n" +
-	"\x15client_session_opened\x18\x01 \x01(\v2'.relaygate.relay.v1.ClientSessionOpenedH\x00R\x13clientSessionOpenedB\t\n" +
+	"\x15client_session_opened\x18\x01 \x01(\v2'.relaygate.relay.v1.ClientSessionOpenedH\x00R\x13clientSessionOpened\x12J\n" +
+	"\x0elistener_bound\x18\x02 \x01(\v2!.relaygate.relay.v1.ListenerBoundH\x00R\rlistenerBound\x12P\n" +
+	"\x10listener_unbound\x18\x03 \x01(\v2#.relaygate.relay.v1.ListenerUnboundH\x00R\x0flistenerUnboundB\t\n" +
 	"\amessage\"b\n" +
 	"\fAuthenticate\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x1c\n" +
@@ -348,7 +660,20 @@ const file_proto_relaygate_relay_v1_relay_proto_rawDesc = "" +
 	"api_key_id\x18\x03 \x01(\tR\bapiKeyId\x12#\n" +
 	"\rauth_revision\x18\x04 \x01(\tR\fauthRevision\"U\n" +
 	"\x13ClientSessionOpened\x12>\n" +
-	"\asession\x18\x01 \x01(\v2$.relaygate.relay.v1.ClientSessionRefR\asession2_\n" +
+	"\asession\x18\x01 \x01(\v2$.relaygate.relay.v1.ClientSessionRefR\asession\"V\n" +
+	"\fBindListener\x12)\n" +
+	"\x10endpoint_pattern\x18\x01 \x01(\tR\x0fendpointPattern\x12\x1b\n" +
+	"\ttarget_id\x18\x02 \x01(\tR\btargetId\"@\n" +
+	"\x0eUnbindListener\x12.\n" +
+	"\x13listener_binding_id\x18\x01 \x01(\tR\x11listenerBindingId\"\x89\x01\n" +
+	"\x0fListenerBinding\x12.\n" +
+	"\x13listener_binding_id\x18\x01 \x01(\tR\x11listenerBindingId\x12)\n" +
+	"\x10endpoint_pattern\x18\x02 \x01(\tR\x0fendpointPattern\x12\x1b\n" +
+	"\ttarget_id\x18\x03 \x01(\tR\btargetId\"N\n" +
+	"\rListenerBound\x12=\n" +
+	"\abinding\x18\x01 \x01(\v2#.relaygate.relay.v1.ListenerBindingR\abinding\"A\n" +
+	"\x0fListenerUnbound\x12.\n" +
+	"\x13listener_binding_id\x18\x01 \x01(\tR\x11listenerBindingId2_\n" +
 	"\x05Relay\x12V\n" +
 	"\aConnect\x12\".relaygate.relay.v1.ConnectRequest\x1a#.relaygate.relay.v1.ConnectResponse(\x010\x01B?Z=github.com/cagojeiger/relaygate/internal/gen/relay/v1;relayv1b\x06proto3"
 
@@ -364,25 +689,35 @@ func file_proto_relaygate_relay_v1_relay_proto_rawDescGZIP() []byte {
 	return file_proto_relaygate_relay_v1_relay_proto_rawDescData
 }
 
-var file_proto_relaygate_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_proto_relaygate_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_proto_relaygate_relay_v1_relay_proto_goTypes = []any{
 	(*ConnectRequest)(nil),      // 0: relaygate.relay.v1.ConnectRequest
 	(*ConnectResponse)(nil),     // 1: relaygate.relay.v1.ConnectResponse
 	(*Authenticate)(nil),        // 2: relaygate.relay.v1.Authenticate
 	(*ClientSessionRef)(nil),    // 3: relaygate.relay.v1.ClientSessionRef
 	(*ClientSessionOpened)(nil), // 4: relaygate.relay.v1.ClientSessionOpened
+	(*BindListener)(nil),        // 5: relaygate.relay.v1.BindListener
+	(*UnbindListener)(nil),      // 6: relaygate.relay.v1.UnbindListener
+	(*ListenerBinding)(nil),     // 7: relaygate.relay.v1.ListenerBinding
+	(*ListenerBound)(nil),       // 8: relaygate.relay.v1.ListenerBound
+	(*ListenerUnbound)(nil),     // 9: relaygate.relay.v1.ListenerUnbound
 }
 var file_proto_relaygate_relay_v1_relay_proto_depIdxs = []int32{
 	2, // 0: relaygate.relay.v1.ConnectRequest.authenticate:type_name -> relaygate.relay.v1.Authenticate
-	4, // 1: relaygate.relay.v1.ConnectResponse.client_session_opened:type_name -> relaygate.relay.v1.ClientSessionOpened
-	3, // 2: relaygate.relay.v1.ClientSessionOpened.session:type_name -> relaygate.relay.v1.ClientSessionRef
-	0, // 3: relaygate.relay.v1.Relay.Connect:input_type -> relaygate.relay.v1.ConnectRequest
-	1, // 4: relaygate.relay.v1.Relay.Connect:output_type -> relaygate.relay.v1.ConnectResponse
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	5, // 1: relaygate.relay.v1.ConnectRequest.bind_listener:type_name -> relaygate.relay.v1.BindListener
+	6, // 2: relaygate.relay.v1.ConnectRequest.unbind_listener:type_name -> relaygate.relay.v1.UnbindListener
+	4, // 3: relaygate.relay.v1.ConnectResponse.client_session_opened:type_name -> relaygate.relay.v1.ClientSessionOpened
+	8, // 4: relaygate.relay.v1.ConnectResponse.listener_bound:type_name -> relaygate.relay.v1.ListenerBound
+	9, // 5: relaygate.relay.v1.ConnectResponse.listener_unbound:type_name -> relaygate.relay.v1.ListenerUnbound
+	3, // 6: relaygate.relay.v1.ClientSessionOpened.session:type_name -> relaygate.relay.v1.ClientSessionRef
+	7, // 7: relaygate.relay.v1.ListenerBound.binding:type_name -> relaygate.relay.v1.ListenerBinding
+	0, // 8: relaygate.relay.v1.Relay.Connect:input_type -> relaygate.relay.v1.ConnectRequest
+	1, // 9: relaygate.relay.v1.Relay.Connect:output_type -> relaygate.relay.v1.ConnectResponse
+	9, // [9:10] is the sub-list for method output_type
+	8, // [8:9] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_proto_relaygate_relay_v1_relay_proto_init() }
@@ -392,9 +727,13 @@ func file_proto_relaygate_relay_v1_relay_proto_init() {
 	}
 	file_proto_relaygate_relay_v1_relay_proto_msgTypes[0].OneofWrappers = []any{
 		(*ConnectRequest_Authenticate)(nil),
+		(*ConnectRequest_BindListener)(nil),
+		(*ConnectRequest_UnbindListener)(nil),
 	}
 	file_proto_relaygate_relay_v1_relay_proto_msgTypes[1].OneofWrappers = []any{
 		(*ConnectResponse_ClientSessionOpened)(nil),
+		(*ConnectResponse_ListenerBound)(nil),
+		(*ConnectResponse_ListenerUnbound)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -402,7 +741,7 @@ func file_proto_relaygate_relay_v1_relay_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_relaygate_relay_v1_relay_proto_rawDesc), len(file_proto_relaygate_relay_v1_relay_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

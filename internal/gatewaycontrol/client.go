@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/cagojeiger/relaygate/internal/controlstate"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
@@ -19,6 +22,14 @@ import (
 const (
 	controlKeepaliveTime    = 10 * time.Second
 	controlKeepaliveTimeout = 5 * time.Second
+)
+
+var (
+	ErrControlUnavailable = errors.New("gateway control is not revalidated")
+	ErrBindingConflict    = fmt.Errorf("binding compare-and-set conflict: %w", controlstate.ErrCASMismatch)
+	ErrBindingCapacity    = fmt.Errorf("gateway listener binding capacity reached: %w", controlstate.ErrBindingCapacity)
+	ErrClientClosed       = errors.New("gateway control client is closed")
+	ErrInvalidMutation    = errors.New("invalid binding mutation")
 )
 
 type Config struct {
@@ -52,14 +63,45 @@ func (s Status) Ready() bool {
 	return s.State == StateRevalidated
 }
 
+type mutationKind uint8
+
+const (
+	mutationInstall mutationKind = iota + 1
+	mutationRemove
+)
+
+type pendingMutation struct {
+	kind mutationKind
+	ctx  context.Context
+	done chan mutationOutcome
+
+	key      controlstate.BindingKey
+	newRef   controlstate.ListenerBindingRef
+	remove   controlstate.BindingSlot
+	expected controlstate.BindingSlot
+	prepared bool
+	retried  bool
+	sent     bool
+}
+
+type mutationOutcome struct {
+	slot controlstate.BindingSlot
+	err  error
+}
+
 type Client struct {
 	config     Config
 	logger     *slog.Logger
 	instanceID string
 	keepalive  keepalive.ClientParameters
 
-	statusMu sync.RWMutex
-	status   Status
+	mu      sync.Mutex
+	status  Status
+	owned   map[controlstate.BindingKey]controlstate.BindingSlot
+	queue   []*pendingMutation
+	active  *pendingMutation
+	wake    chan struct{}
+	stopped bool
 }
 
 func New(config Config, logger *slog.Logger) (*Client, error) {
@@ -93,16 +135,18 @@ func newClient(config Config, logger *slog.Logger, instanceID string) (*Client, 
 			GatewayInstanceID: instanceID,
 			State:             StateDisconnected,
 		},
+		owned: make(map[controlstate.BindingKey]controlstate.BindingSlot),
+		wake:  make(chan struct{}, 1),
 	}
 	return client, nil
 }
 
 func (c Config) validate() error {
-	if c.ClusterEpoch == "" {
-		return fmt.Errorf("cluster epoch is required")
+	if c.ClusterEpoch == "" || len(c.ClusterEpoch) > controlstate.MaxIdentityBytes {
+		return fmt.Errorf("cluster epoch must be 1..%d bytes", controlstate.MaxIdentityBytes)
 	}
-	if c.GatewayID == "" {
-		return fmt.Errorf("gateway ID is required")
+	if c.GatewayID == "" || len(c.GatewayID) > controlstate.MaxIdentityBytes {
+		return fmt.Errorf("gateway ID must be 1..%d bytes", controlstate.MaxIdentityBytes)
 	}
 	if len(c.ControlEndpoints) == 0 {
 		return fmt.Errorf("at least one control endpoint is required")
@@ -119,13 +163,112 @@ func (c Config) validate() error {
 }
 
 func (c *Client) Status() Status {
-	c.statusMu.RLock()
-	defer c.statusMu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.status
 }
 
+// Install commits a binding for this process instance. Admission is fail-fast:
+// once accepted while Revalidated, the exact CAS remains queued across control
+// reconnects until the authority gives a definitive result.
+func (c *Client) Install(ctx context.Context, key controlstate.BindingKey, ref controlstate.ListenerBindingRef) (controlstate.BindingSlot, error) {
+	if ctx == nil {
+		return controlstate.BindingSlot{}, fmt.Errorf("%w: context is required", ErrInvalidMutation)
+	}
+	if err := key.Validate(); err != nil {
+		return controlstate.BindingSlot{}, fmt.Errorf("%w: %v", ErrInvalidMutation, err)
+	}
+	if err := ref.Validate(); err != nil {
+		return controlstate.BindingSlot{}, fmt.Errorf("%w: %v", ErrInvalidMutation, err)
+	}
+	if ref.GatewayID != c.config.GatewayID || ref.GatewayInstanceID != c.instanceID {
+		return controlstate.BindingSlot{}, fmt.Errorf("%w: install ref does not belong to this gateway instance", ErrInvalidMutation)
+	}
+	if err := ctx.Err(); err != nil {
+		return controlstate.BindingSlot{}, err
+	}
+
+	mutation := &pendingMutation{
+		kind:   mutationInstall,
+		ctx:    ctx,
+		done:   make(chan mutationOutcome, 1),
+		key:    key,
+		newRef: ref,
+	}
+	if err := c.enqueueMutation(mutation, true); err != nil {
+		return controlstate.BindingSlot{}, err
+	}
+
+	result := waitMutation(ctx, mutation.done)
+	return result.slot, result.err
+}
+
+// Remove conditionally removes an exact committed slot. Cleanup is accepted
+// while disconnected and waits for the next revalidated control stream.
+func (c *Client) Remove(ctx context.Context, slot controlstate.BindingSlot) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: context is required", ErrInvalidMutation)
+	}
+	if err := slot.Key.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidMutation, err)
+	}
+	if slot.Generation == 0 || slot.Generation == ^uint64(0) || slot.Ref == nil {
+		return fmt.Errorf("%w: remove requires a committed live slot", ErrInvalidMutation)
+	}
+	if err := slot.Ref.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidMutation, err)
+	}
+	if slot.Ref.GatewayID != c.config.GatewayID {
+		return fmt.Errorf("%w: remove ref belongs to another gateway", ErrInvalidMutation)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	mutation := &pendingMutation{
+		kind:   mutationRemove,
+		ctx:    ctx,
+		done:   make(chan mutationOutcome, 1),
+		key:    slot.Key,
+		remove: cloneBindingSlot(slot),
+	}
+	if err := c.enqueueMutation(mutation, false); err != nil {
+		return err
+	}
+
+	return waitMutation(ctx, mutation.done).err
+}
+
+func (c *Client) enqueueMutation(mutation *pendingMutation, requireRevalidated bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopped {
+		return ErrClientClosed
+	}
+	if requireRevalidated && c.status.State != StateRevalidated {
+		return ErrControlUnavailable
+	}
+	c.queue = append(c.queue, mutation)
+	c.signalLocked()
+	return nil
+}
+
+func waitMutation(ctx context.Context, completed <-chan mutationOutcome) mutationOutcome {
+	select {
+	case result := <-completed:
+		return result
+	case <-ctx.Done():
+		select {
+		case result := <-completed:
+			return result
+		default:
+			return mutationOutcome{err: ctx.Err()}
+		}
+	}
+}
+
 func (c *Client) Run(ctx context.Context) {
-	defer c.setDisconnected()
+	defer func() { c.stop(ctx.Err()) }()
 	endpointIndex := 0
 	for ctx.Err() == nil {
 		endpoint := c.config.ControlEndpoints[endpointIndex]
@@ -184,11 +327,16 @@ func (c *Client) runEndpoint(ctx context.Context, endpoint string) (bool, error)
 	if err := c.validateSession(opened); err != nil {
 		return false, err
 	}
+	owned, snapshot, err := c.canonicalOwnedBindings(opened.GetOwnedBindings())
+	if err != nil {
+		return false, fmt.Errorf("validate authoritative bindings: %w", err)
+	}
 	session := opened.GetSession()
-	c.setSyncing(endpoint, session, opened.GetGatewayGeneration())
+	c.setSyncing(endpoint, session, opened.GetGatewayGeneration(), owned)
+	reconciled := c.reconcileActive(owned)
 
 	if err := stream.Send(&controlv1.ControlRequest{Message: &controlv1.ControlRequest_FullSnapshot{
-		FullSnapshot: &controlv1.FullSnapshot{Session: session},
+		FullSnapshot: &controlv1.FullSnapshot{Session: session, Bindings: snapshot},
 	}}); err != nil {
 		return false, fmt.Errorf("send gateway snapshot: %w", err)
 	}
@@ -201,6 +349,9 @@ func (c *Client) runEndpoint(ctx context.Context, endpoint string) (bool, error)
 		return false, fmt.Errorf("control endpoint returned an invalid snapshot response")
 	}
 	c.setRevalidated(endpoint, session, opened.GetGatewayGeneration())
+	if reconciled != nil {
+		c.finishMutation(reconciled.mutation, reconciled.outcome)
+	}
 	c.logger.Info("gateway control session revalidated",
 		"endpoint", endpoint,
 		"authority_id", session.GetAuthorityId(),
@@ -209,11 +360,345 @@ func (c *Client) runEndpoint(ctx context.Context, endpoint string) (bool, error)
 		"presence", accepted.GetPresence().String(),
 	)
 
-	response, err = stream.Recv()
-	if err != nil {
-		return true, err
+	return true, c.serveMutations(streamContext, stream, session)
+}
+
+type reconciledMutation struct {
+	mutation *pendingMutation
+	outcome  mutationOutcome
+}
+
+func (c *Client) reconcileActive(owned map[controlstate.BindingKey]controlstate.BindingSlot) *reconciledMutation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	mutation := c.active
+	if mutation == nil || !mutation.prepared {
+		return nil
 	}
-	return true, fmt.Errorf("unexpected control response after snapshot acceptance: %T", response.GetMessage())
+	current, exists := owned[mutation.key]
+	switch mutation.kind {
+	case mutationInstall:
+		target := mutation.installTarget()
+		if exists && bindingSlotsEqual(current, target) {
+			return &reconciledMutation{mutation: mutation, outcome: mutationOutcome{slot: cloneBindingSlot(current)}}
+		}
+	case mutationRemove:
+		if !exists || !bindingSlotsEqual(current, mutation.remove) {
+			return &reconciledMutation{mutation: mutation}
+		}
+	}
+	return nil
+}
+
+type receivedResponse struct {
+	response *controlv1.ControlResponse
+	err      error
+}
+
+func receiveResponses(ctx context.Context, stream controlv1.GatewayControl_ConnectClient) <-chan receivedResponse {
+	received := make(chan receivedResponse, 1)
+	go func() {
+		defer close(received)
+		for {
+			response, err := stream.Recv()
+			select {
+			case received <- receivedResponse{response: response, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return received
+}
+
+func nextControlResponse(received receivedResponse, ok bool) (*controlv1.ControlResponse, error) {
+	if !ok {
+		return nil, fmt.Errorf("control response stream ended")
+	}
+	if received.err != nil {
+		return nil, received.err
+	}
+	return received.response, nil
+}
+
+func (c *Client) serveMutations(ctx context.Context, stream controlv1.GatewayControl_ConnectClient, session *controlv1.SessionRef) error {
+	responses := receiveResponses(ctx, stream)
+	for {
+		mutation := c.nextMutation()
+		if mutation == nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-c.wake:
+				continue
+			case received, ok := <-responses:
+				response, err := nextControlResponse(received, ok)
+				if err != nil {
+					return err
+				}
+				return fmt.Errorf("unexpected control response while idle: %T", response.GetMessage())
+			}
+		}
+
+		if err := mutation.ctx.Err(); err != nil && !mutation.sent {
+			c.finishMutation(mutation, mutationOutcome{err: err})
+			continue
+		}
+		request, err := c.mutationRequest(session, mutation)
+		if err != nil {
+			c.finishMutation(mutation, mutationOutcome{err: err})
+			continue
+		}
+		c.markSent(mutation)
+		if err := stream.Send(request); err != nil {
+			return fmt.Errorf("send binding mutation: %w", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case received, ok := <-responses:
+			response, err := nextControlResponse(received, ok)
+			if err != nil {
+				return err
+			}
+			result := response.GetMutationResult()
+			if result == nil {
+				return fmt.Errorf("unexpected control response to mutation: %T", response.GetMessage())
+			}
+			retry, outcome, err := c.handleMutationResult(mutation, result)
+			if err != nil {
+				return err
+			}
+			if retry {
+				continue
+			}
+			c.finishMutation(mutation, outcome)
+		}
+	}
+}
+
+func (c *Client) nextMutation() *pendingMutation {
+	for {
+		c.mu.Lock()
+		if c.active != nil {
+			mutation := c.active
+			c.mu.Unlock()
+			return mutation
+		}
+		if len(c.queue) == 0 {
+			c.mu.Unlock()
+			return nil
+		}
+		mutation := c.queue[0]
+		c.queue = c.queue[1:]
+		if mutation.kind == mutationInstall {
+			expected, exists := c.owned[mutation.key]
+			if !exists {
+				expected = controlstate.BindingSlot{Key: mutation.key}
+			}
+			if expected.Generation == ^uint64(0) {
+				c.mu.Unlock()
+				mutation.done <- mutationOutcome{err: fmt.Errorf("%w: binding generation overflow", ErrInvalidMutation)}
+				continue
+			}
+			mutation.expected = cloneBindingSlot(expected)
+			mutation.prepared = true
+		}
+		c.active = mutation
+		c.mu.Unlock()
+		return mutation
+	}
+}
+
+func (c *Client) mutationRequest(session *controlv1.SessionRef, mutation *pendingMutation) (*controlv1.ControlRequest, error) {
+	wire := &controlv1.BindingMutation{Session: session}
+	switch mutation.kind {
+	case mutationInstall:
+		if !mutation.prepared {
+			return nil, fmt.Errorf("%w: install was not prepared", ErrInvalidMutation)
+		}
+		wire.Mutation = &controlv1.BindingMutation_Install{Install: &controlv1.InstallBinding{
+			Key:                bindingKeyToProto(mutation.key),
+			ExpectedGeneration: mutation.expected.Generation,
+			ExpectedRef:        bindingRefToProto(mutation.expected.Ref),
+			NewRef:             bindingRefToProto(&mutation.newRef),
+		}}
+	case mutationRemove:
+		wire.Mutation = &controlv1.BindingMutation_Remove{Remove: &controlv1.RemoveBinding{
+			Key:                bindingKeyToProto(mutation.remove.Key),
+			ExpectedGeneration: mutation.remove.Generation,
+			ExpectedRef:        bindingRefToProto(mutation.remove.Ref),
+		}}
+	default:
+		return nil, fmt.Errorf("%w: unknown mutation kind", ErrInvalidMutation)
+	}
+	return &controlv1.ControlRequest{Message: &controlv1.ControlRequest_BindingMutation{BindingMutation: wire}}, nil
+}
+
+func (c *Client) markSent(mutation *pendingMutation) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active == mutation {
+		mutation.sent = true
+	}
+}
+
+func (c *Client) handleMutationResult(mutation *pendingMutation, result *controlv1.MutationResult) (bool, mutationOutcome, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active != mutation {
+		return false, mutationOutcome{}, fmt.Errorf("mutation result does not match the active request")
+	}
+
+	switch result.GetCode() {
+	case controlv1.MutationCode_MUTATION_CODE_APPLIED, controlv1.MutationCode_MUTATION_CODE_ALREADY_APPLIED:
+		if mutation.kind == mutationInstall {
+			slot, err := bindingSlotFromProto(result.GetSlot(), c.config.GatewayID, true)
+			if err != nil || !bindingSlotsEqual(slot, mutation.installTarget()) {
+				return false, mutationOutcome{}, fmt.Errorf("control returned an invalid install result: %v", err)
+			}
+			c.owned[slot.Key] = cloneBindingSlot(slot)
+			return false, mutationOutcome{slot: cloneBindingSlot(slot)}, nil
+		}
+		slot, err := bindingSlotFromProto(result.GetSlot(), c.config.GatewayID, false)
+		if err != nil || slot.Key != mutation.remove.Key || slot.Ref != nil || slot.Generation != mutation.remove.Generation+1 {
+			return false, mutationOutcome{}, fmt.Errorf("control returned an invalid remove result: %v", err)
+		}
+		c.owned[slot.Key] = cloneBindingSlot(slot)
+		return false, mutationOutcome{}, nil
+
+	case controlv1.MutationCode_MUTATION_CODE_CAPACITY_REACHED:
+		return false, mutationOutcome{err: ErrBindingCapacity}, nil
+
+	case controlv1.MutationCode_MUTATION_CODE_REJECTED:
+		if mutation.kind == mutationRemove {
+			c.recordRejectedRemoveLocked(mutation, result.GetSlot(), result.GetSameGatewayOwner())
+			return false, mutationOutcome{}, nil
+		}
+		current, knownOwn, err := c.rejectedInstallSlotLocked(mutation, result.GetSlot(), result.GetSameGatewayOwner())
+		if err != nil {
+			return false, mutationOutcome{}, err
+		}
+		if result.GetSlot().GetRef() != nil && !knownOwn {
+			return false, mutationOutcome{err: bindingConflict(result.GetError())}, nil
+		}
+		if mutation.retried || bindingSlotsEqual(current, mutation.expected) || current.Generation == ^uint64(0) {
+			return false, mutationOutcome{err: bindingConflict(result.GetError())}, nil
+		}
+		c.owned[current.Key] = cloneBindingSlot(current)
+		mutation.expected = cloneBindingSlot(current)
+		mutation.retried = true
+		return true, mutationOutcome{}, nil
+
+	default:
+		return false, mutationOutcome{}, fmt.Errorf("control returned an unspecified mutation result")
+	}
+}
+
+func (c *Client) rejectedInstallSlotLocked(mutation *pendingMutation, wire *controlv1.BindingSlot, sameGatewayOwner bool) (controlstate.BindingSlot, bool, error) {
+	if wire == nil {
+		return controlstate.BindingSlot{}, false, fmt.Errorf("control rejected install without a current slot")
+	}
+	key, err := bindingKeyFromProto(wire.GetKey())
+	if err != nil || key != mutation.key {
+		return controlstate.BindingSlot{}, false, fmt.Errorf("control rejected install with an invalid current key: %v", err)
+	}
+	current := controlstate.BindingSlot{Key: key, Generation: wire.GetGeneration()}
+	if wire.GetRef() == nil {
+		return current, true, nil
+	}
+	if !sameGatewayOwner {
+		return current, false, nil
+	}
+	ref := controlstate.ListenerBindingRef{
+		GatewayID:         c.config.GatewayID,
+		GatewayInstanceID: wire.GetRef().GetGatewayInstanceId(),
+		ListenerBindingID: wire.GetRef().GetListenerBindingId(),
+	}
+	if err := ref.Validate(); err != nil {
+		return controlstate.BindingSlot{}, false, fmt.Errorf("control rejected install with an invalid current ref: %w", err)
+	}
+	current.Ref = &ref
+	return current, true, nil
+}
+
+func (c *Client) knownOwnRefLocked(key controlstate.BindingKey, wire *controlv1.ListenerBindingRef, mutation *pendingMutation) *controlstate.ListenerBindingRef {
+	if slot, exists := c.owned[key]; exists {
+		if ref := c.matchKnownRef(slot.Ref, wire); ref != nil {
+			return ref
+		}
+	}
+	for _, candidate := range []*controlstate.ListenerBindingRef{mutation.expected.Ref, mutation.remove.Ref, &mutation.newRef} {
+		if ref := c.matchKnownRef(candidate, wire); ref != nil {
+			return ref
+		}
+	}
+	return nil
+}
+
+func (c *Client) matchKnownRef(candidate *controlstate.ListenerBindingRef, wire *controlv1.ListenerBindingRef) *controlstate.ListenerBindingRef {
+	if candidate == nil ||
+		candidate.GatewayID != c.config.GatewayID ||
+		candidate.GatewayInstanceID != wire.GetGatewayInstanceId() ||
+		candidate.ListenerBindingID != wire.GetListenerBindingId() {
+		return nil
+	}
+	copy := *candidate
+	return &copy
+}
+
+func (c *Client) recordRejectedRemoveLocked(mutation *pendingMutation, wire *controlv1.BindingSlot, sameGatewayOwner bool) {
+	if wire == nil {
+		delete(c.owned, mutation.key)
+		return
+	}
+	key, err := bindingKeyFromProto(wire.GetKey())
+	if err != nil || key != mutation.key {
+		delete(c.owned, mutation.key)
+		return
+	}
+	slot := controlstate.BindingSlot{Key: key, Generation: wire.GetGeneration()}
+	if wire.GetRef() != nil {
+		if !sameGatewayOwner {
+			delete(c.owned, key)
+			return
+		}
+		known := c.knownOwnRefLocked(key, wire.GetRef(), mutation)
+		if known == nil {
+			delete(c.owned, key)
+			return
+		}
+		slot.Ref = known
+	}
+	c.owned[key] = slot
+}
+
+func bindingConflict(detail string) error {
+	if detail == "" {
+		return ErrBindingConflict
+	}
+	return fmt.Errorf("%w: %s", ErrBindingConflict, detail)
+}
+
+func (m *pendingMutation) installTarget() controlstate.BindingSlot {
+	ref := m.newRef
+	return controlstate.BindingSlot{Key: m.key, Generation: m.expected.Generation + 1, Ref: &ref}
+}
+
+func (c *Client) finishMutation(mutation *pendingMutation, outcome mutationOutcome) {
+	c.mu.Lock()
+	if c.active != mutation {
+		c.mu.Unlock()
+		return
+	}
+	c.active = nil
+	c.signalLocked()
+	c.mu.Unlock()
+	mutation.done <- outcome
 }
 
 func (c *Client) validateSession(opened *controlv1.SessionOpened) error {
@@ -230,6 +715,117 @@ func (c *Client) validateSession(opened *controlv1.SessionOpened) error {
 		return fmt.Errorf("control endpoint returned a mismatched session")
 	}
 	return nil
+}
+
+func (c *Client) canonicalOwnedBindings(wire []*controlv1.BindingSlot) (map[controlstate.BindingKey]controlstate.BindingSlot, []*controlv1.BindingSlot, error) {
+	owned := make(map[controlstate.BindingKey]controlstate.BindingSlot, len(wire))
+	currentInstance := make([]controlstate.BindingSlot, 0, len(wire))
+	for index, item := range wire {
+		slot, err := bindingSlotFromProto(item, c.config.GatewayID, true)
+		if err != nil {
+			return nil, nil, fmt.Errorf("owned binding %d: %w", index, err)
+		}
+		if _, duplicate := owned[slot.Key]; duplicate {
+			return nil, nil, fmt.Errorf("owned binding %d duplicates a key", index)
+		}
+		owned[slot.Key] = cloneBindingSlot(slot)
+		if slot.Ref.GatewayInstanceID != c.instanceID {
+			return nil, nil, fmt.Errorf("owned binding %d belongs to another gateway instance", index)
+		}
+		currentInstance = append(currentInstance, cloneBindingSlot(slot))
+	}
+	sort.Slice(currentInstance, func(left, right int) bool {
+		return bindingKeyLess(currentInstance[left].Key, currentInstance[right].Key)
+	})
+	snapshot := make([]*controlv1.BindingSlot, 0, len(currentInstance))
+	for _, slot := range currentInstance {
+		snapshot = append(snapshot, bindingSlotToProto(slot))
+	}
+	return owned, snapshot, nil
+}
+
+func bindingKeyLess(left, right controlstate.BindingKey) bool {
+	if left.ClientID != right.ClientID {
+		return left.ClientID < right.ClientID
+	}
+	if left.EndpointPattern != right.EndpointPattern {
+		return left.EndpointPattern < right.EndpointPattern
+	}
+	return left.TargetID < right.TargetID
+}
+
+func bindingKeyToProto(key controlstate.BindingKey) *controlv1.BindingKey {
+	return &controlv1.BindingKey{ClientId: key.ClientID, EndpointPattern: key.EndpointPattern, TargetId: key.TargetID}
+}
+
+func bindingRefToProto(ref *controlstate.ListenerBindingRef) *controlv1.ListenerBindingRef {
+	if ref == nil {
+		return nil
+	}
+	return &controlv1.ListenerBindingRef{GatewayInstanceId: ref.GatewayInstanceID, ListenerBindingId: ref.ListenerBindingID}
+}
+
+func bindingSlotToProto(slot controlstate.BindingSlot) *controlv1.BindingSlot {
+	return &controlv1.BindingSlot{Key: bindingKeyToProto(slot.Key), Generation: slot.Generation, Ref: bindingRefToProto(slot.Ref)}
+}
+
+func bindingKeyFromProto(wire *controlv1.BindingKey) (controlstate.BindingKey, error) {
+	if wire == nil {
+		return controlstate.BindingKey{}, fmt.Errorf("binding key is required")
+	}
+	key := controlstate.BindingKey{ClientID: wire.GetClientId(), EndpointPattern: wire.GetEndpointPattern(), TargetID: wire.GetTargetId()}
+	if err := key.Validate(); err != nil {
+		return controlstate.BindingKey{}, err
+	}
+	return key, nil
+}
+
+func bindingSlotFromProto(wire *controlv1.BindingSlot, gatewayID string, requireLive bool) (controlstate.BindingSlot, error) {
+	if wire == nil {
+		return controlstate.BindingSlot{}, fmt.Errorf("binding slot is required")
+	}
+	key, err := bindingKeyFromProto(wire.GetKey())
+	if err != nil {
+		return controlstate.BindingSlot{}, err
+	}
+	if requireLive && (wire.GetGeneration() == 0 || wire.GetRef() == nil) {
+		return controlstate.BindingSlot{}, fmt.Errorf("owned binding must be a committed live slot")
+	}
+	slot := controlstate.BindingSlot{Key: key, Generation: wire.GetGeneration()}
+	if wire.GetRef() != nil {
+		ref := controlstate.ListenerBindingRef{
+			GatewayID:         gatewayID,
+			GatewayInstanceID: wire.GetRef().GetGatewayInstanceId(),
+			ListenerBindingID: wire.GetRef().GetListenerBindingId(),
+		}
+		if err := ref.Validate(); err != nil {
+			return controlstate.BindingSlot{}, err
+		}
+		if slot.Generation == 0 {
+			return controlstate.BindingSlot{}, fmt.Errorf("live binding generation must be positive")
+		}
+		slot.Ref = &ref
+	}
+	return slot, nil
+}
+
+func bindingSlotsEqual(left, right controlstate.BindingSlot) bool {
+	if left.Key != right.Key || left.Generation != right.Generation {
+		return false
+	}
+	if left.Ref == nil || right.Ref == nil {
+		return left.Ref == nil && right.Ref == nil
+	}
+	return *left.Ref == *right.Ref
+}
+
+func cloneBindingSlot(slot controlstate.BindingSlot) controlstate.BindingSlot {
+	copy := slot
+	if slot.Ref != nil {
+		ref := *slot.Ref
+		copy.Ref = &ref
+	}
+	return copy
 }
 
 func waitForReady(ctx context.Context, connection *grpc.ClientConn, timeout time.Duration) error {
@@ -288,8 +884,11 @@ func (c *Client) setConnecting(endpoint string) {
 	})
 }
 
-func (c *Client) setSyncing(endpoint string, session *controlv1.SessionRef, generation uint64) {
-	c.replaceStatus(c.sessionStatus(StateSyncing, endpoint, session, generation))
+func (c *Client) setSyncing(endpoint string, session *controlv1.SessionRef, generation uint64, owned map[controlstate.BindingKey]controlstate.BindingSlot) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status = c.sessionStatus(StateSyncing, endpoint, session, generation)
+	c.owned = owned
 }
 
 func (c *Client) setRevalidated(endpoint string, session *controlv1.SessionRef, generation uint64) {
@@ -317,9 +916,37 @@ func (c *Client) setDisconnected() {
 }
 
 func (c *Client) replaceStatus(status Status) {
-	c.statusMu.Lock()
-	defer c.statusMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.status = status
+}
+
+func (c *Client) signalLocked() {
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (c *Client) stop(cause error) {
+	if cause == nil {
+		cause = ErrClientClosed
+	} else {
+		cause = fmt.Errorf("%w: %v", ErrClientClosed, cause)
+	}
+	c.mu.Lock()
+	c.status = Status{GatewayID: c.config.GatewayID, GatewayInstanceID: c.instanceID, State: StateDisconnected}
+	c.stopped = true
+	pending := c.queue
+	c.queue = nil
+	if c.active != nil {
+		pending = append([]*pendingMutation{c.active}, pending...)
+		c.active = nil
+	}
+	c.mu.Unlock()
+	for _, mutation := range pending {
+		mutation.done <- mutationOutcome{err: cause}
+	}
 }
 
 func newInstanceID() (string, error) {

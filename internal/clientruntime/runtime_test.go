@@ -87,6 +87,52 @@ func TestApplyRejectsStaticConfigChangeWithoutChangingAuth(t *testing.T) {
 	}
 }
 
+func TestApplyRetiresBindingsBeforeReturning(t *testing.T) {
+	current, candidate := rotationConfigs()
+	runtime, err := New(current)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	bindings := &fakeBindingRetirer{retired: 2}
+	if err := runtime.AttachBindings(bindings); err != nil {
+		t.Fatalf("AttachBindings(): %v", err)
+	}
+
+	result, err := runtime.Apply(candidate)
+	if err != nil {
+		t.Fatalf("Apply(): %v", err)
+	}
+	if result.RetiredBindings != 2 || bindings.retireCalls != 1 {
+		t.Fatalf("binding retirement result=%#v calls=%d", result, bindings.retireCalls)
+	}
+	if !bindings.change.Removes("client-a", "rotating") {
+		t.Fatalf("binding retirement change = %#v", bindings.change)
+	}
+
+	runtime.Close()
+	if bindings.retireAllCalls != 1 {
+		t.Fatalf("RetireAll calls = %d, want 1", bindings.retireAllCalls)
+	}
+}
+
+func TestAttachBindingsRejectsMissingOrDuplicateRetirer(t *testing.T) {
+	current, _ := rotationConfigs()
+	runtime, err := New(current)
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	defer runtime.Close()
+	if err := runtime.AttachBindings(nil); err == nil {
+		t.Fatal("AttachBindings(nil) succeeded")
+	}
+	if err := runtime.AttachBindings(&fakeBindingRetirer{}); err != nil {
+		t.Fatalf("AttachBindings(): %v", err)
+	}
+	if err := runtime.AttachBindings(&fakeBindingRetirer{}); err == nil {
+		t.Fatal("duplicate AttachBindings() succeeded")
+	}
+}
+
 func TestApplyConcurrentWithAuthenticationEndsAtFinalSnapshot(t *testing.T) {
 	enabled := testConfig(map[string]clientauth.ClientConfig{
 		"client-a": {APIKeys: map[string]string{
@@ -251,6 +297,24 @@ type gatedAuthenticator struct {
 	observeBeforeRelease bool
 	reached              chan bool
 	release              chan struct{}
+}
+
+type fakeBindingRetirer struct {
+	retired        int
+	retireCalls    int
+	retireAllCalls int
+	change         clientauth.ChangeSet
+}
+
+func (f *fakeBindingRetirer) Retire(change clientauth.ChangeSet) int {
+	f.retireCalls++
+	f.change = change
+	return f.retired
+}
+
+func (f *fakeBindingRetirer) RetireAll() int {
+	f.retireAllCalls++
+	return 0
 }
 
 func (g *gatedAuthenticator) Authenticate(clientID, apiKeyID, presentedKey string) (clientauth.Context, error) {

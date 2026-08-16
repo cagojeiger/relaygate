@@ -4,13 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/clientauth"
 	"github.com/cagojeiger/relaygate/internal/clientsession"
+	"github.com/cagojeiger/relaygate/internal/controlstate"
 	relayv1 "github.com/cagojeiger/relaygate/internal/gen/relay/v1"
+	"github.com/cagojeiger/relaygate/internal/localbinding"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -51,6 +55,139 @@ func TestConnectAuthenticatesAndBindsClientSessionToStream(t *testing.T) {
 		t.Fatalf("Recv(after close) = %v, want EOF", err)
 	}
 	waitForSessionCount(t, sessions, 0)
+}
+
+func TestConnectBindsAndUnbindsWithinAuthenticatedClientNamespace(t *testing.T) {
+	bound := make(chan bindingCall, 1)
+	unbound := make(chan unbindingCall, 1)
+	retired := make(chan clientsession.Ref, 1)
+	bindings := &testBindingManager{
+		bind: func(_ context.Context, session clientsession.Session, endpointPattern, targetID string) (controlstate.BindingSlot, error) {
+			bound <- bindingCall{session: session.Ref, endpointPattern: endpointPattern, targetID: targetID}
+			ref := controlstate.ListenerBindingRef{
+				GatewayID:         "gateway-a",
+				GatewayInstanceID: "instance-a",
+				ListenerBindingID: "listener-a",
+			}
+			return controlstate.BindingSlot{
+				Key:        controlstate.BindingKey{ClientID: session.Ref.ClientID, EndpointPattern: endpointPattern, TargetID: targetID},
+				Generation: 1,
+				Ref:        &ref,
+			}, nil
+		},
+		unbind: func(session clientsession.Ref, bindingID string) error {
+			unbound <- unbindingCall{session: session, bindingID: bindingID}
+			return nil
+		},
+		retire: func(session clientsession.Ref) int {
+			retired <- session
+			return 1
+		},
+	}
+	_, sessions, server := startTestServerWithOptionsAndBindings(t, map[string]clientauth.ClientConfig{
+		"client-a": {APIKeys: map[string]string{"key-a": verifier("secret-a")}},
+	}, 10, time.Second, bindings)
+	connection := dialTestServer(t, server.Address())
+	stream, err := relayv1.NewRelayClient(connection).Connect(context.Background())
+	if err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := stream.Send(authenticateRequest("client-a", "key-a", "secret-a")); err != nil {
+		t.Fatalf("Send(authenticate): %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("Recv(session): %v", err)
+	}
+
+	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_BindListener{
+		BindListener: &relayv1.BindListener{EndpointPattern: "/jobs/*", TargetId: "worker"},
+	}}); err != nil {
+		t.Fatalf("Send(bind): %v", err)
+	}
+	response, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(bind): %v", err)
+	}
+	listener := response.GetListenerBound().GetBinding()
+	if listener.GetListenerBindingId() != "listener-a" || listener.GetEndpointPattern() != "/jobs/*" || listener.GetTargetId() != "worker" {
+		t.Fatalf("listener = %#v", listener)
+	}
+	call := receiveWithin(t, bound, "Bind")
+	if call.session.ClientID != "client-a" || call.endpointPattern != "/jobs/*" || call.targetID != "worker" {
+		t.Fatalf("binding call = %#v", call)
+	}
+
+	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_UnbindListener{
+		UnbindListener: &relayv1.UnbindListener{ListenerBindingId: "listener-a"},
+	}}); err != nil {
+		t.Fatalf("Send(unbind): %v", err)
+	}
+	response, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(unbind): %v", err)
+	}
+	if got := response.GetListenerUnbound().GetListenerBindingId(); got != "listener-a" {
+		t.Fatalf("unbound binding ID = %q", got)
+	}
+	unbindCall := receiveWithin(t, unbound, "Unbind")
+	if unbindCall.session.ClientSessionID != call.session.ClientSessionID || unbindCall.bindingID != "listener-a" {
+		t.Fatalf("unbinding call = %#v", unbindCall)
+	}
+
+	if err := stream.CloseSend(); err != nil {
+		t.Fatalf("CloseSend(): %v", err)
+	}
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("Recv(after close) = %v, want EOF", err)
+	}
+	retiredSession := receiveWithin(t, retired, "RetireSession")
+	if retiredSession.ClientSessionID != call.session.ClientSessionID {
+		t.Fatalf("retired session = %#v", retiredSession)
+	}
+	waitForSessionCount(t, sessions, 0)
+}
+
+func TestConnectMapsBindingFailuresWithoutLeakingDetails(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		code codes.Code
+	}{
+		{name: "invalid", err: localbinding.ErrInvalid, code: codes.InvalidArgument},
+		{name: "capacity", err: localbinding.ErrCapacity, code: codes.ResourceExhausted},
+		{name: "conflict", err: localbinding.ErrConflict, code: codes.AlreadyExists},
+		{name: "control unavailable", err: localbinding.ErrUnavailable, code: codes.Unavailable},
+		{name: "session ended", err: localbinding.ErrSessionEnded, code: codes.Unauthenticated},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bindings := &testBindingManager{bind: func(context.Context, clientsession.Session, string, string) (controlstate.BindingSlot, error) {
+				return controlstate.BindingSlot{}, fmt.Errorf("sensitive detail: %w", test.err)
+			}}
+			_, _, server := startTestServerWithOptionsAndBindings(t, map[string]clientauth.ClientConfig{
+				"client-a": {APIKeys: map[string]string{"key-a": verifier("secret-a")}},
+			}, 10, time.Second, bindings)
+			connection := dialTestServer(t, server.Address())
+			stream, err := relayv1.NewRelayClient(connection).Connect(context.Background())
+			if err != nil {
+				t.Fatalf("Connect(): %v", err)
+			}
+			if err := stream.Send(authenticateRequest("client-a", "key-a", "secret-a")); err != nil {
+				t.Fatalf("Send(authenticate): %v", err)
+			}
+			if _, err := stream.Recv(); err != nil {
+				t.Fatalf("Recv(session): %v", err)
+			}
+			if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_BindListener{
+				BindListener: &relayv1.BindListener{EndpointPattern: "/jobs", TargetId: "worker"},
+			}}); err != nil {
+				t.Fatalf("Send(bind): %v", err)
+			}
+			_, err = stream.Recv()
+			if status.Code(err) != test.code || strings.Contains(status.Convert(err).Message(), "sensitive") {
+				t.Fatalf("Recv(bind) error = %v, want redacted %v", err, test.code)
+			}
+		})
+	}
 }
 
 func TestConnectRejectsInvalidCredentialWithoutCreatingSession(t *testing.T) {
@@ -167,6 +304,11 @@ func startTestServerWithLimit(t *testing.T, config map[string]clientauth.ClientC
 
 func startTestServerWithOptions(t *testing.T, config map[string]clientauth.ClientConfig, maxSessions uint32, authenticationTimeout time.Duration) (*clientauth.Store, *clientsession.Manager, *Server) {
 	t.Helper()
+	return startTestServerWithOptionsAndBindings(t, config, maxSessions, authenticationTimeout, &testBindingManager{})
+}
+
+func startTestServerWithOptionsAndBindings(t *testing.T, config map[string]clientauth.ClientConfig, maxSessions uint32, authenticationTimeout time.Duration, bindings BindingManager) (*clientauth.Store, *clientsession.Manager, *Server) {
+	t.Helper()
 	store, err := clientauth.NewStore(config)
 	if err != nil {
 		t.Fatalf("NewStore(): %v", err)
@@ -175,7 +317,7 @@ func startTestServerWithOptions(t *testing.T, config map[string]clientauth.Clien
 	if err != nil {
 		t.Fatalf("NewManager(): %v", err)
 	}
-	service, err := NewService(sessions, authenticationTimeout)
+	service, err := NewService(sessions, bindings, authenticationTimeout)
 	if err != nil {
 		t.Fatalf("NewService(): %v", err)
 	}
@@ -195,6 +337,44 @@ func startTestServerWithOptions(t *testing.T, config map[string]clientauth.Clien
 		}
 	})
 	return store, sessions, server
+}
+
+type bindingCall struct {
+	session         clientsession.Ref
+	endpointPattern string
+	targetID        string
+}
+
+type unbindingCall struct {
+	session   clientsession.Ref
+	bindingID string
+}
+
+type testBindingManager struct {
+	bind   func(context.Context, clientsession.Session, string, string) (controlstate.BindingSlot, error)
+	unbind func(clientsession.Ref, string) error
+	retire func(clientsession.Ref) int
+}
+
+func (m *testBindingManager) Bind(ctx context.Context, session clientsession.Session, endpointPattern, targetID string) (controlstate.BindingSlot, error) {
+	if m.bind == nil {
+		return controlstate.BindingSlot{}, localbinding.ErrUnavailable
+	}
+	return m.bind(ctx, session, endpointPattern, targetID)
+}
+
+func (m *testBindingManager) Unbind(session clientsession.Ref, bindingID string) error {
+	if m.unbind == nil {
+		return nil
+	}
+	return m.unbind(session, bindingID)
+}
+
+func (m *testBindingManager) RetireSession(session clientsession.Ref) int {
+	if m.retire == nil {
+		return 0
+	}
+	return m.retire(session)
 }
 
 func dialTestServer(t *testing.T, address string) *grpc.ClientConn {
@@ -232,6 +412,18 @@ func waitForSessionCount(t *testing.T, sessions *clientsession.Manager, want int
 			t.Fatalf("active sessions = %d, want %d", sessions.ActiveCount(), want)
 		case <-ticker.C:
 		}
+	}
+}
+
+func receiveWithin[T any](t *testing.T, values <-chan T, operation string) T {
+	t.Helper()
+	select {
+	case value := <-values:
+		return value
+	case <-time.After(time.Second):
+		var zero T
+		t.Fatalf("%s did not complete", operation)
+		return zero
 	}
 }
 

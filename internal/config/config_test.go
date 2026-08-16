@@ -30,6 +30,7 @@ func TestLoadCanonicalConfig(t *testing.T) {
 		config.Admin.BindAddress != "127.0.0.1:9090" ||
 		config.Relay.AuthenticationTimeout.Value() <= 0 ||
 		config.Relay.MaxClientSessions <= 0 ||
+		config.Relay.MaxListenerBindings <= 0 ||
 		config.Control.AuthorityProbeInterval.Value() <= 0 ||
 		config.Control.GatewayRevalidationTimeout.Value() <= 0 {
 		t.Fatalf("unexpected canonical bind config: raft=%#v control=%#v relay=%#v admin=%#v", config.Raft, config.Control, config.Relay, config.Admin)
@@ -174,6 +175,22 @@ func TestValidateRejectsInvalidRelayBounds(t *testing.T) {
 		config.Relay.MaxClientSessions = 0
 		if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "max_client_sessions") {
 			t.Fatalf("Validate() error = %v, want max_client_sessions error", err)
+		}
+	})
+
+	t.Run("listener capacity", func(t *testing.T) {
+		config := valid
+		config.Relay.MaxListenerBindings = 0
+		if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "max_listener_bindings") {
+			t.Fatalf("Validate() error = %v, want max_listener_bindings error", err)
+		}
+	})
+
+	t.Run("listener capacity protocol maximum", func(t *testing.T) {
+		config := valid
+		config.Relay.MaxListenerBindings++
+		if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "max_listener_bindings") {
+			t.Fatalf("Validate() error = %v, want max_listener_bindings maximum error", err)
 		}
 	})
 }

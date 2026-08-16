@@ -100,7 +100,8 @@ sequenceDiagram
 
     G->>A: Hello(epoch, GatewayId, GatewayInstanceId)
     A->>R: GatewaySlot CAS
-    A-->>G: SessionOpened(ControlSessionRef, generation)
+    A-->>G: SessionOpened(ControlSessionRef, generation, owned bindings)
+    G->>G: Reconcile unknown mutation outcomes
     G->>A: FullSnapshot(exact committed live bindings)
     A-->>G: SnapshotAccepted(Rebuilding or Complete)
     loop ordered, one mutation at a time
@@ -127,6 +128,17 @@ stable Gateway의 새 instance는 이전 instance ref를 expected value로 사�
 한 번도 등록하지 않은 `GatewayId`는 generation `0`의 implicit tombstone이다. v0은 current-epoch slot을
 GC하지 않고 `MaxDistinctGatewayIDsPerEpoch`로 수를 제한한다. 한계에 도달하면 기존 ID의 reconnect·replace는
 허용하지만 새 ID 등록은 fail closed한다. 공간 회수는 safe offline epoch reset에서만 한다.
+
+`SessionOpened.owned_bindings`는 현재 `GatewayInstanceId`가 소유한 committed live slot의 authoritative reconcile
+view다. 이전 instance, tombstone과 다른 Gateway 소유 slot은 포함하지 않는다. 이 목록 자체는 local listener가
+살아 있다는 증거나 route eligibility가 아니다. Gateway는 commit 전후에 응답을 잃은 mutation을 이 view와 동일
+CAS replay로 수렴시킨다. 이전 instance의 same-`GatewayId` ref는 rejected mutation의
+`same_gateway_owner=true`로만 구분해 한 번 재시도하고, 다른 Gateway ref는 덮지 않는다. 따라서 commit·owner를
+문자열 오류나 timeout으로 추측하지 않는다.
+
+단일 handshake message를 유지하기 위해 한 Gateway instance의 listener 정의는 최대 512개다. `ClientId`,
+`TargetId`와 binding/ref identity는 각 128 bytes, `EndpointPattern`은 1024 bytes 이하이며, 이 최대값의
+`SessionOpened`와 `FullSnapshot`도 internal gRPC 1 MiB envelope 안에 들어가야 한다.
 
 한 control stream의 순서는 `Hello → SessionOpened → FullSnapshot → BindingMutation*`뿐이다. `FullSnapshot`은
 해당 current Gateway instance가 소유한 committed live binding의 정확한 전체 집합이어야 한다. Snapshot 전
@@ -231,6 +243,42 @@ SDK와 Gateway는 target fan-out과 동시에 진행하는 attempt 수를 bounde
 target만 안정적으로 실패시키며 기존 child나 Pipe를 묵시적으로 evict하지 않는다.
 
 Pattern match 결과는 일시적 candidate다. Wildcard 문법과 우선순위는 이 spec에서 정하지 않는다.
+
+## Listener Bind와 Unbind
+
+한 public Relay stream은 첫 `Authenticate` 성공 뒤 그 `ClientSession`에 속한 listener를 직렬로 등록·해제한다.
+
+```mermaid
+sequenceDiagram
+    participant L as Listener client
+    participant G as Gateway
+    participant C as Gateway control lane
+    participant R as Raft state
+
+    L->>G: Authenticate(ClientId, ApiKeyId, key)
+    G-->>L: ClientSessionOpened
+    L->>G: BindListener(endpoint_pattern, target_id)
+    G->>C: Install exact BindingKey/ref CAS
+    C->>R: Apply
+    R-->>C: Applied or AlreadyApplied
+    C-->>G: Exact committed BindingSlot
+    G-->>L: ListenerBound(listener_binding_id)
+    L->>G: UnbindListener(listener_binding_id)
+    G->>G: Live/ Registering → ineligible
+    G-->>L: ListenerUnbound
+    G-->>C: Conditional remove, asynchronous
+```
+
+- `BindListener`에는 `ClientId`가 없다. `BindingKey.ClientId`는 인증된 stream의 session에서만 파생한다.
+- `endpoint_pattern`은 1–1024 bytes, `target_id`는 1–128 bytes만 허용한다. Pattern 문법·우선순위와 route
+  matching은 Open 구현 범위다.
+- `ListenerBound`는 install CAS가 `Applied` 또는 exact replay `AlreadyApplied`가 된 뒤에만 반환한다. Local
+  `RegisteringB`만으로 성공하지 않는다.
+- 같은 process의 local `BindingKey` 중복과 listener capacity 초과는 새 Bind만 거부하며 기존 binding을 바꾸지 않는다.
+- Control이 `Disconnected/Syncing`이면 새 Bind는 `UNAVAILABLE`로 fail closed한다. 이미 제출해 결과가 불명확한
+  mutation은 같은 process 안에서 새 control session과 exact CAS replay로 끝까지 판정한다.
+- `UnbindListener`, session/credential/Gateway 종료는 Raft 응답보다 먼저 local binding을 ineligible로 만든다.
+  Conditional cleanup은 지연될 수 있고 duplicate Unbind는 idempotent다.
 
 ## Binding install과 retirement
 

@@ -26,6 +26,7 @@ relay:
   authentication_timeout: 5s
   shutdown_timeout: 5s
   max_client_sessions: 10000
+  max_listener_bindings: 512
 
 control:
   cluster_epoch: relaygate-v1

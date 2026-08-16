@@ -132,7 +132,7 @@ generation/ref mismatch와 capacity를 넘는 새 `GatewayId`는 stable rejectio
 
 | Machine | From | Event | Guard | To | Effect |
 | --- | --- | --- | --- | --- | --- |
-| ControlSession | `AbsentC` | `SyncStarted` | Current authority + exact live `GatewaySlot` generation/ref | `Syncing` | 새 `ControlSessionId`; server-side generation 고정, full snapshot 요구 |
+| ControlSession | `AbsentC` | `SyncStarted` | Current authority + exact live `GatewaySlot` generation/ref | `Syncing` | 새 `ControlSessionId`; server-side generation과 current-instance authoritative binding view 고정, full snapshot 요구 |
 | ControlSession | `Syncing` | `SnapshotValidated` | Exact current ref + complete valid snapshot | `Revalidated` | `V` 후보와 presence classification 설치 |
 | ControlSession | `Syncing/Revalidated` | `Close/Timeout` | Exact current ref | `EndedC` | 해당 snapshot ineligible |
 | ControlSession | `Syncing/Revalidated` | `AuthorityEnded/GatewayEnded` | 해당 identity 종료 | `EndedC` | Session과 snapshot 폐기 |
@@ -265,7 +265,7 @@ generation/ref mismatch와 capacity를 넘는 새 `GatewayId`는 stable rejectio
 ## 구현과 protocol의 의무
 
 - Wire message/status는 이 문서의 semantic event에 매핑해야 하며 새 전이 의미를 만들지 않는다.
-- Control stream은 `Hello → SessionOpened → FullSnapshot → BindingMutation*` 순서를 지키며 mutation은 stream별로 직렬화한다.
+- Control stream은 `Hello → SessionOpened(authoritative current-instance bindings) → FullSnapshot → BindingMutation*` 순서를 지키며 mutation은 stream별로 직렬화한다.
 - State mutation은 identity, generation과 expected current value를 함께 검증한다.
 - 모든 table과 buffer는 bounded하며 capacity 부족은 새 state 생성을 fail closed한다.
 - 구현 최적화가 lease를 사용하면 필요한 clock bound를 별도 protocol 문서에 명시한다.

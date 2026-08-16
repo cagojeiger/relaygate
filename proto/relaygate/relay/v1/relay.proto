@@ -11,12 +11,16 @@ service Relay {
 message ConnectRequest {
   oneof message {
     Authenticate authenticate = 1;
+    BindListener bind_listener = 2;
+    UnbindListener unbind_listener = 3;
   }
 }
 
 message ConnectResponse {
   oneof message {
     ClientSessionOpened client_session_opened = 1;
+    ListenerBound listener_bound = 2;
+    ListenerUnbound listener_unbound = 3;
   }
 }
 
@@ -35,4 +39,27 @@ message ClientSessionRef {
 
 message ClientSessionOpened {
   ClientSessionRef session = 1;
+}
+
+message BindListener {
+  string endpoint_pattern = 1;
+  string target_id = 2;
+}
+
+message UnbindListener {
+  string listener_binding_id = 1;
+}
+
+message ListenerBinding {
+  string listener_binding_id = 1;
+  string endpoint_pattern = 2;
+  string target_id = 3;
+}
+
+message ListenerBound {
+  ListenerBinding binding = 1;
+}
+
+message ListenerUnbound {
+  string listener_binding_id = 1;
 }

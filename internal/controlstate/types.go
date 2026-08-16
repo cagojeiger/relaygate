@@ -8,12 +8,19 @@ import (
 
 const commandVersion = 1
 
+const (
+	MaxIdentityBytes              = 128
+	MaxEndpointPatternBytes       = 1024
+	MaxListenerBindingsPerGateway = 512
+)
+
 var (
-	ErrInvalidCommand = errors.New("invalid control command")
-	ErrEpochMismatch  = errors.New("cluster epoch mismatch")
-	ErrCASMismatch    = errors.New("control compare-and-set mismatch")
-	ErrKeyLimit       = errors.New("binding key limit reached")
-	ErrGatewayLimit   = errors.New("gateway ID limit reached")
+	ErrInvalidCommand  = errors.New("invalid control command")
+	ErrEpochMismatch   = errors.New("cluster epoch mismatch")
+	ErrCASMismatch     = errors.New("control compare-and-set mismatch")
+	ErrKeyLimit        = errors.New("binding key limit reached")
+	ErrBindingCapacity = errors.New("gateway listener binding capacity reached")
+	ErrGatewayLimit    = errors.New("gateway ID limit reached")
 )
 
 const DefaultMaxDistinctGatewayIDsPerEpoch uint64 = 1024
@@ -25,14 +32,14 @@ type BindingKey struct {
 }
 
 func (k BindingKey) Validate() error {
-	if k.ClientID == "" {
-		return fmt.Errorf("%w: client_id is required", ErrInvalidCommand)
+	if err := validateIdentity("client_id", k.ClientID); err != nil {
+		return err
 	}
-	if k.EndpointPattern == "" {
-		return fmt.Errorf("%w: endpoint_pattern is required", ErrInvalidCommand)
+	if k.EndpointPattern == "" || len(k.EndpointPattern) > MaxEndpointPatternBytes {
+		return fmt.Errorf("%w: endpoint_pattern must be 1..%d bytes", ErrInvalidCommand, MaxEndpointPatternBytes)
 	}
-	if k.TargetID == "" {
-		return fmt.Errorf("%w: target_id is required", ErrInvalidCommand)
+	if err := validateIdentity("target_id", k.TargetID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -44,14 +51,14 @@ type ListenerBindingRef struct {
 }
 
 func (r ListenerBindingRef) Validate() error {
-	if r.GatewayID == "" {
-		return fmt.Errorf("%w: gateway_id is required", ErrInvalidCommand)
+	if err := validateIdentity("gateway_id", r.GatewayID); err != nil {
+		return err
 	}
-	if r.GatewayInstanceID == "" {
-		return fmt.Errorf("%w: gateway_instance_id is required", ErrInvalidCommand)
+	if err := validateIdentity("gateway_instance_id", r.GatewayInstanceID); err != nil {
+		return err
 	}
-	if r.ListenerBindingID == "" {
-		return fmt.Errorf("%w: listener_binding_id is required", ErrInvalidCommand)
+	if err := validateIdentity("listener_binding_id", r.ListenerBindingID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -67,8 +74,12 @@ type GatewayRegistrationRef struct {
 }
 
 func (r GatewayRegistrationRef) Validate() error {
-	if r.GatewayInstanceID == "" {
-		return fmt.Errorf("%w: gateway_instance_id is required", ErrInvalidCommand)
+	return validateIdentity("gateway_instance_id", r.GatewayInstanceID)
+}
+
+func validateIdentity(field, value string) error {
+	if value == "" || len(value) > MaxIdentityBytes {
+		return fmt.Errorf("%w: %s must be 1..%d bytes", ErrInvalidCommand, field, MaxIdentityBytes)
 	}
 	return nil
 }
@@ -98,9 +109,10 @@ type State struct {
 type ResultCode string
 
 const (
-	ResultApplied        ResultCode = "applied"
-	ResultAlreadyApplied ResultCode = "already_applied"
-	ResultRejected       ResultCode = "rejected"
+	ResultApplied         ResultCode = "applied"
+	ResultAlreadyApplied  ResultCode = "already_applied"
+	ResultCapacityReached ResultCode = "capacity_reached"
+	ResultRejected        ResultCode = "rejected"
 )
 
 type ApplyResult struct {

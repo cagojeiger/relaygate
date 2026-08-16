@@ -21,6 +21,7 @@ import (
 	"github.com/cagojeiger/relaygate/internal/config"
 	"github.com/cagojeiger/relaygate/internal/controlgrpc"
 	"github.com/cagojeiger/relaygate/internal/gatewaycontrol"
+	"github.com/cagojeiger/relaygate/internal/localbinding"
 	"github.com/cagojeiger/relaygate/internal/raftnode"
 	"github.com/cagojeiger/relaygate/internal/relaygrpc"
 )
@@ -146,6 +147,28 @@ func run() error {
 		_ = controlServer.Shutdown(shutdownContext)
 		return fmt.Errorf("configure gateway control client: %w", err)
 	}
+	bindingManager, err := localbinding.New(
+		appConfig.Gateway.ID,
+		gatewayClient.Status().GatewayInstanceID,
+		appConfig.Relay.MaxListenerBindings,
+		gatewayClient,
+		clientRuntime.Sessions(),
+	)
+	if err != nil {
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("configure listener binding runtime: %w", err)
+	}
+	defer bindingManager.Close()
+	if err := clientRuntime.AttachBindings(bindingManager); err != nil {
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("attach listener binding runtime: %w", err)
+	}
 	gatewayContext, cancelGateway := context.WithCancel(context.Background())
 	gatewayDone := make(chan struct{})
 	go func() {
@@ -160,7 +183,7 @@ func run() error {
 		})
 	}
 	defer stopGateway()
-	relayService, err := relaygrpc.NewService(clientRuntime.Sessions(), appConfig.Relay.AuthenticationTimeout.Value())
+	relayService, err := relaygrpc.NewService(clientRuntime.Sessions(), bindingManager, appConfig.Relay.AuthenticationTimeout.Value())
 	if err != nil {
 		stopGateway()
 		authorityManager.Close()
@@ -237,6 +260,7 @@ func run() error {
 				"auth_revision", result.Revision,
 				"removed_credentials", result.Removed,
 				"retired_sessions", result.RetiredSessions,
+				"retired_bindings", result.RetiredBindings,
 			)
 		case err := <-adminServer.Errors():
 			if err != nil {

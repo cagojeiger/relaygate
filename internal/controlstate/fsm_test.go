@@ -2,6 +2,7 @@ package controlstate
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -51,6 +52,71 @@ func TestBindingCASReplayAndABAProtection(t *testing.T) {
 	if slot.Ref == nil || *slot.Ref != secondRef {
 		t.Fatalf("ref = %#v, want %#v", slot.Ref, secondRef)
 	}
+}
+
+func TestControlIdentityAndBindingKeyLengthsAreBounded(t *testing.T) {
+	valid := BindingKey{
+		ClientID:        strings.Repeat("c", MaxIdentityBytes),
+		EndpointPattern: strings.Repeat("e", MaxEndpointPatternBytes),
+		TargetID:        strings.Repeat("t", MaxIdentityBytes),
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("max-size BindingKey.Validate(): %v", err)
+	}
+	for name, key := range map[string]BindingKey{
+		"client":   {ClientID: strings.Repeat("c", MaxIdentityBytes+1), EndpointPattern: "/", TargetID: "target"},
+		"endpoint": {ClientID: "client", EndpointPattern: strings.Repeat("e", MaxEndpointPatternBytes+1), TargetID: "target"},
+		"target":   {ClientID: "client", EndpointPattern: "/", TargetID: strings.Repeat("t", MaxIdentityBytes+1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := key.Validate(); err == nil {
+				t.Fatal("oversized BindingKey.Validate() succeeded")
+			}
+		})
+	}
+	ref := ListenerBindingRef{
+		GatewayID: strings.Repeat("g", MaxIdentityBytes+1), GatewayInstanceID: "instance", ListenerBindingID: "listener",
+	}
+	if err := ref.Validate(); err == nil {
+		t.Fatal("oversized ListenerBindingRef.Validate() succeeded")
+	}
+}
+
+func TestPerGatewayInstanceBindingCapacity(t *testing.T) {
+	fsm := NewFSM()
+	initializeFSM(t, fsm, "epoch-1", MaxListenerBindingsPerGateway+10)
+	var firstKey BindingKey
+	var firstRef ListenerBindingRef
+	for index := 0; index < MaxListenerBindingsPerGateway; index++ {
+		key := BindingKey{ClientID: "client-a", EndpointPattern: fmt.Sprintf("/%d", index), TargetID: "worker"}
+		ref := ListenerBindingRef{GatewayID: "gateway-a", GatewayInstanceID: "instance-a", ListenerBindingID: fmt.Sprintf("listener-%d", index)}
+		if index == 0 {
+			firstKey, firstRef = key, ref
+		}
+		result := applyCommand(t, fsm, mustEncodeInstall(t, InstallBinding{ClusterEpoch: "epoch-1", Key: key, NewRef: ref}))
+		assertResultCode(t, result, ResultApplied)
+	}
+
+	overflowKey := BindingKey{ClientID: "client-a", EndpointPattern: "/overflow", TargetID: "worker"}
+	overflowRef := ListenerBindingRef{GatewayID: "gateway-a", GatewayInstanceID: "instance-a", ListenerBindingID: "listener-overflow"}
+	overflow := applyCommand(t, fsm, mustEncodeInstall(t, InstallBinding{ClusterEpoch: "epoch-1", Key: overflowKey, NewRef: overflowRef}))
+	assertResultCode(t, overflow, ResultCapacityReached)
+	if overflow.Error != ErrBindingCapacity.Error() {
+		t.Fatalf("capacity error = %q", overflow.Error)
+	}
+
+	replacement := firstRef
+	replacement.ListenerBindingID = "listener-replacement"
+	replaced := applyCommand(t, fsm, mustEncodeInstall(t, InstallBinding{
+		ClusterEpoch: "epoch-1", Key: firstKey, ExpectedGeneration: 1, ExpectedRef: &firstRef, NewRef: replacement,
+	}))
+	assertResultCode(t, replaced, ResultApplied)
+
+	otherInstance := overflowRef
+	otherInstance.GatewayInstanceID = "instance-b"
+	otherInstance.ListenerBindingID = "listener-other-instance"
+	other := applyCommand(t, fsm, mustEncodeInstall(t, InstallBinding{ClusterEpoch: "epoch-1", Key: overflowKey, NewRef: otherInstance}))
+	assertResultCode(t, other, ResultApplied)
 }
 
 func TestGatewayRegistrationCASReplayAndABAProtection(t *testing.T) {

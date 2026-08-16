@@ -41,6 +41,7 @@ message SessionRef {
 message SessionOpened {
   SessionRef session = 1;
   uint64 gateway_generation = 2;
+  repeated BindingSlot owned_bindings = 3;
 }
 
 message FullSnapshot {
@@ -101,10 +102,12 @@ enum MutationCode {
   MUTATION_CODE_APPLIED = 1;
   MUTATION_CODE_ALREADY_APPLIED = 2;
   MUTATION_CODE_REJECTED = 3;
+  MUTATION_CODE_CAPACITY_REACHED = 4;
 }
 
 message MutationResult {
   MutationCode code = 1;
   BindingSlot slot = 2;
   string error = 3;
+  bool same_gateway_owner = 4;
 }

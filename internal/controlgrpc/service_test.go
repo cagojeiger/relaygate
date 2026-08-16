@@ -3,6 +3,8 @@ package controlgrpc
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/cagojeiger/relaygate/internal/authority"
 	"github.com/cagojeiger/relaygate/internal/controlstate"
@@ -202,6 +205,120 @@ func TestFullSnapshotRejectsOmittedCommittedBinding(t *testing.T) {
 	}
 }
 
+func TestSessionOpenedIncludesOwnedBindingOnSameInstanceReconnect(t *testing.T) {
+	harness := newHarness(t)
+	stream, session := harness.openAndSync(t, "gateway-a", "instance-a")
+	key := &controlv1.BindingKey{ClientId: "client-a", EndpointPattern: "/jobs/*", TargetId: "worker"}
+	ref := &controlv1.ListenerBindingRef{GatewayInstanceId: "instance-a", ListenerBindingId: "listener-a"}
+	committed := installBinding(t, stream, session, key, ref)
+
+	_, opened := harness.openSession(t, "gateway-a", "instance-a")
+	if bindings := opened.GetOwnedBindings(); len(bindings) != 1 || !proto.Equal(bindings[0], committed) {
+		t.Fatalf("owned bindings = %#v, want committed slot %#v", bindings, committed)
+	}
+}
+
+func TestSessionOpenedExcludesPriorInstanceBinding(t *testing.T) {
+	harness := newHarness(t)
+	stream, session := harness.openAndSync(t, "gateway-a", "instance-a")
+	key := &controlv1.BindingKey{ClientId: "client-a", EndpointPattern: "/jobs/*", TargetId: "worker"}
+	oldRef := &controlv1.ListenerBindingRef{GatewayInstanceId: "instance-a", ListenerBindingId: "listener-a"}
+	installBinding(t, stream, session, key, oldRef)
+
+	_, opened := harness.openSession(t, "gateway-a", "instance-b")
+	if opened.GetSession().GetGatewayInstanceId() != "instance-b" {
+		t.Fatalf("new session = %#v", opened.GetSession())
+	}
+	if bindings := opened.GetOwnedBindings(); len(bindings) != 0 {
+		t.Fatalf("owned bindings = %#v, want current-instance slots only", bindings)
+	}
+}
+
+func TestReconnectMessagesFitControlEnvelopeAtProtocolLimits(t *testing.T) {
+	identity := strings.Repeat("i", controlstate.MaxIdentityBytes)
+	slots := make([]*controlv1.BindingSlot, 0, controlstate.MaxListenerBindingsPerGateway)
+	for index := 0; index < controlstate.MaxListenerBindingsPerGateway; index++ {
+		suffix := fmt.Sprintf("%04d", index)
+		endpoint := strings.Repeat("e", controlstate.MaxEndpointPatternBytes-len(suffix)) + suffix
+		slots = append(slots, &controlv1.BindingSlot{
+			Key:        &controlv1.BindingKey{ClientId: identity, EndpointPattern: endpoint, TargetId: identity},
+			Generation: uint64(index + 1),
+			Ref:        &controlv1.ListenerBindingRef{GatewayInstanceId: identity, ListenerBindingId: identity},
+		})
+	}
+	session := &controlv1.SessionRef{
+		ClusterEpoch: identity, AuthorityId: identity, ControlSessionId: identity,
+		GatewayId: identity, GatewayInstanceId: identity,
+	}
+	opened := &controlv1.SessionOpened{Session: session, GatewayGeneration: 1, OwnedBindings: slots}
+	snapshot := &controlv1.FullSnapshot{Session: session, Bindings: slots}
+	if size := proto.Size(opened); size >= maxMessageBytes {
+		t.Fatalf("SessionOpened size = %d, must fit below %d", size, maxMessageBytes)
+	}
+	if size := proto.Size(snapshot); size >= maxMessageBytes {
+		t.Fatalf("FullSnapshot size = %d, must fit below %d", size, maxMessageBytes)
+	}
+}
+
+func TestSessionOpenedOwnedBindingsExcludeForeignAndTombstonesAndAreSorted(t *testing.T) {
+	harness := newHarness(t)
+	ownerStream, ownerSession := harness.openAndSync(t, "gateway-a", "instance-a")
+	ownerRef := func(bindingID string) *controlv1.ListenerBindingRef {
+		return &controlv1.ListenerBindingRef{GatewayInstanceId: "instance-a", ListenerBindingId: bindingID}
+	}
+	for _, binding := range []struct {
+		key *controlv1.BindingKey
+		ref *controlv1.ListenerBindingRef
+	}{
+		{
+			key: &controlv1.BindingKey{ClientId: "client-a", EndpointPattern: "/z", TargetId: "worker"},
+			ref: ownerRef("listener-z"),
+		},
+		{
+			key: &controlv1.BindingKey{ClientId: "client-a", EndpointPattern: "/a", TargetId: "worker"},
+			ref: ownerRef("listener-a"),
+		},
+	} {
+		installBinding(t, ownerStream, ownerSession, binding.key, binding.ref)
+	}
+
+	tombstoneKey := &controlv1.BindingKey{ClientId: "client-a", EndpointPattern: "/removed", TargetId: "worker"}
+	tombstoneRef := ownerRef("listener-removed")
+	tombstone := installBinding(t, ownerStream, ownerSession, tombstoneKey, tombstoneRef)
+	if err := ownerStream.Send(&controlv1.ControlRequest{Message: &controlv1.ControlRequest_BindingMutation{
+		BindingMutation: &controlv1.BindingMutation{
+			Session: ownerSession,
+			Mutation: &controlv1.BindingMutation_Remove{Remove: &controlv1.RemoveBinding{
+				Key: tombstoneKey, ExpectedGeneration: tombstone.GetGeneration(), ExpectedRef: tombstoneRef,
+			}},
+		},
+	}}); err != nil {
+		t.Fatalf("Send(remove tombstone): %v", err)
+	}
+	response, err := ownerStream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(remove tombstone): %v", err)
+	}
+	if result := response.GetMutationResult(); result.GetCode() != controlv1.MutationCode_MUTATION_CODE_APPLIED || result.GetSlot().GetRef() != nil {
+		t.Fatalf("remove result = %#v", result)
+	}
+
+	foreignStream, foreignSession := harness.openAndSync(t, "gateway-b", "instance-b")
+	installBinding(t, foreignStream, foreignSession,
+		&controlv1.BindingKey{ClientId: "client-a", EndpointPattern: "/foreign", TargetId: "worker"},
+		&controlv1.ListenerBindingRef{GatewayInstanceId: "instance-b", ListenerBindingId: "listener-foreign"},
+	)
+
+	_, opened := harness.openSession(t, "gateway-a", "instance-a")
+	bindings := opened.GetOwnedBindings()
+	if len(bindings) != 2 {
+		t.Fatalf("owned bindings = %#v, want two live owner slots", bindings)
+	}
+	if first, second := bindings[0].GetKey().GetEndpointPattern(), bindings[1].GetKey().GetEndpointPattern(); first != "/a" || second != "/z" {
+		t.Fatalf("owned binding order = [%q, %q], want [/a, /z]", first, second)
+	}
+}
+
 func TestBindingMutationsCannotCrossGatewayOwnership(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -265,10 +382,21 @@ func TestNewInstanceCanRebindSameStableGatewayBinding(t *testing.T) {
 
 	newStream, newSession := harness.openAndSync(t, "gateway-a", "instance-b")
 	newRef := &controlv1.ListenerBindingRef{GatewayInstanceId: "instance-b", ListenerBindingId: "listener-b"}
+	if err := newStream.Send(installRequest(newSession, key, 0, nil, newRef)); err != nil {
+		t.Fatalf("Send(initial rebind): %v", err)
+	}
+	response, err := newStream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(initial rebind): %v", err)
+	}
+	if result := response.GetMutationResult(); result.GetCode() != controlv1.MutationCode_MUTATION_CODE_REJECTED ||
+		!result.GetSameGatewayOwner() || result.GetSlot().GetRef().GetGatewayInstanceId() != "instance-a" {
+		t.Fatalf("initial rebind result = %#v, want same-Gateway prior owner", result)
+	}
 	if err := newStream.Send(installRequest(newSession, key, 1, oldRef, newRef)); err != nil {
 		t.Fatalf("Send(rebind): %v", err)
 	}
-	response, err := newStream.Recv()
+	response, err = newStream.Recv()
 	if err != nil {
 		t.Fatalf("Recv(rebind): %v", err)
 	}
@@ -426,6 +554,12 @@ func (h *harness) openAndSync(t *testing.T, gatewayID, instanceID string) (grpc.
 
 func (h *harness) open(t *testing.T, gatewayID, instanceID string) (grpc.BidiStreamingClient[controlv1.ControlRequest, controlv1.ControlResponse], *controlv1.SessionRef) {
 	t.Helper()
+	stream, opened := h.openSession(t, gatewayID, instanceID)
+	return stream, opened.GetSession()
+}
+
+func (h *harness) openSession(t *testing.T, gatewayID, instanceID string) (grpc.BidiStreamingClient[controlv1.ControlRequest, controlv1.ControlResponse], *controlv1.SessionOpened) {
+	t.Helper()
 	stream, err := h.client.Connect(h.ctx)
 	if err != nil {
 		t.Fatalf("Connect(): %v", err)
@@ -443,7 +577,7 @@ func (h *harness) open(t *testing.T, gatewayID, instanceID string) (grpc.BidiStr
 	if opened == nil || opened.GetSession() == nil {
 		t.Fatalf("session response = %#v", response)
 	}
-	return stream, opened.GetSession()
+	return stream, opened
 }
 
 func installRequest(session *controlv1.SessionRef, key *controlv1.BindingKey, generation uint64, expected, next *controlv1.ListenerBindingRef) *controlv1.ControlRequest {

@@ -73,10 +73,11 @@ func (PresenceState) EnumDescriptor() ([]byte, []int) {
 type MutationCode int32
 
 const (
-	MutationCode_MUTATION_CODE_UNSPECIFIED     MutationCode = 0
-	MutationCode_MUTATION_CODE_APPLIED         MutationCode = 1
-	MutationCode_MUTATION_CODE_ALREADY_APPLIED MutationCode = 2
-	MutationCode_MUTATION_CODE_REJECTED        MutationCode = 3
+	MutationCode_MUTATION_CODE_UNSPECIFIED      MutationCode = 0
+	MutationCode_MUTATION_CODE_APPLIED          MutationCode = 1
+	MutationCode_MUTATION_CODE_ALREADY_APPLIED  MutationCode = 2
+	MutationCode_MUTATION_CODE_REJECTED         MutationCode = 3
+	MutationCode_MUTATION_CODE_CAPACITY_REACHED MutationCode = 4
 )
 
 // Enum value maps for MutationCode.
@@ -86,12 +87,14 @@ var (
 		1: "MUTATION_CODE_APPLIED",
 		2: "MUTATION_CODE_ALREADY_APPLIED",
 		3: "MUTATION_CODE_REJECTED",
+		4: "MUTATION_CODE_CAPACITY_REACHED",
 	}
 	MutationCode_value = map[string]int32{
-		"MUTATION_CODE_UNSPECIFIED":     0,
-		"MUTATION_CODE_APPLIED":         1,
-		"MUTATION_CODE_ALREADY_APPLIED": 2,
-		"MUTATION_CODE_REJECTED":        3,
+		"MUTATION_CODE_UNSPECIFIED":      0,
+		"MUTATION_CODE_APPLIED":          1,
+		"MUTATION_CODE_ALREADY_APPLIED":  2,
+		"MUTATION_CODE_REJECTED":         3,
+		"MUTATION_CODE_CAPACITY_REACHED": 4,
 	}
 )
 
@@ -458,6 +461,7 @@ type SessionOpened struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Session           *SessionRef            `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
 	GatewayGeneration uint64                 `protobuf:"varint,2,opt,name=gateway_generation,json=gatewayGeneration,proto3" json:"gateway_generation,omitempty"`
+	OwnedBindings     []*BindingSlot         `protobuf:"bytes,3,rep,name=owned_bindings,json=ownedBindings,proto3" json:"owned_bindings,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -504,6 +508,13 @@ func (x *SessionOpened) GetGatewayGeneration() uint64 {
 		return x.GatewayGeneration
 	}
 	return 0
+}
+
+func (x *SessionOpened) GetOwnedBindings() []*BindingSlot {
+	if x != nil {
+		return x.OwnedBindings
+	}
+	return nil
 }
 
 type FullSnapshot struct {
@@ -993,12 +1004,13 @@ func (x *RemoveBinding) GetExpectedRef() *ListenerBindingRef {
 }
 
 type MutationResult struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Code          MutationCode           `protobuf:"varint,1,opt,name=code,proto3,enum=relaygate.control.v1.MutationCode" json:"code,omitempty"`
-	Slot          *BindingSlot           `protobuf:"bytes,2,opt,name=slot,proto3" json:"slot,omitempty"`
-	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Code             MutationCode           `protobuf:"varint,1,opt,name=code,proto3,enum=relaygate.control.v1.MutationCode" json:"code,omitempty"`
+	Slot             *BindingSlot           `protobuf:"bytes,2,opt,name=slot,proto3" json:"slot,omitempty"`
+	Error            string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	SameGatewayOwner bool                   `protobuf:"varint,4,opt,name=same_gateway_owner,json=sameGatewayOwner,proto3" json:"same_gateway_owner,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *MutationResult) Reset() {
@@ -1052,6 +1064,13 @@ func (x *MutationResult) GetError() string {
 	return ""
 }
 
+func (x *MutationResult) GetSameGatewayOwner() bool {
+	if x != nil {
+		return x.SameGatewayOwner
+	}
+	return false
+}
+
 var File_proto_relaygate_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_proto_relaygate_control_v1_control_proto_rawDesc = "" +
@@ -1079,10 +1098,11 @@ const file_proto_relaygate_control_v1_control_proto_rawDesc = "" +
 	"\x12control_session_id\x18\x03 \x01(\tR\x10controlSessionId\x12\x1d\n" +
 	"\n" +
 	"gateway_id\x18\x04 \x01(\tR\tgatewayId\x12.\n" +
-	"\x13gateway_instance_id\x18\x05 \x01(\tR\x11gatewayInstanceId\"z\n" +
+	"\x13gateway_instance_id\x18\x05 \x01(\tR\x11gatewayInstanceId\"\xc4\x01\n" +
 	"\rSessionOpened\x12:\n" +
 	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\x12-\n" +
-	"\x12gateway_generation\x18\x02 \x01(\x04R\x11gatewayGeneration\"\x89\x01\n" +
+	"\x12gateway_generation\x18\x02 \x01(\x04R\x11gatewayGeneration\x12H\n" +
+	"\x0eowned_bindings\x18\x03 \x03(\v2!.relaygate.control.v1.BindingSlotR\rownedBindings\"\x89\x01\n" +
 	"\fFullSnapshot\x12:\n" +
 	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\x12=\n" +
 	"\bbindings\x18\x02 \x03(\v2!.relaygate.control.v1.BindingSlotR\bbindings\"S\n" +
@@ -1116,20 +1136,22 @@ const file_proto_relaygate_control_v1_control_proto_rawDesc = "" +
 	"\rRemoveBinding\x122\n" +
 	"\x03key\x18\x01 \x01(\v2 .relaygate.control.v1.BindingKeyR\x03key\x12/\n" +
 	"\x13expected_generation\x18\x02 \x01(\x04R\x12expectedGeneration\x12K\n" +
-	"\fexpected_ref\x18\x03 \x01(\v2(.relaygate.control.v1.ListenerBindingRefR\vexpectedRef\"\x95\x01\n" +
+	"\fexpected_ref\x18\x03 \x01(\v2(.relaygate.control.v1.ListenerBindingRefR\vexpectedRef\"\xc3\x01\n" +
 	"\x0eMutationResult\x126\n" +
 	"\x04code\x18\x01 \x01(\x0e2\".relaygate.control.v1.MutationCodeR\x04code\x125\n" +
 	"\x04slot\x18\x02 \x01(\v2!.relaygate.control.v1.BindingSlotR\x04slot\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error*k\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12,\n" +
+	"\x12same_gateway_owner\x18\x04 \x01(\bR\x10sameGatewayOwner*k\n" +
 	"\rPresenceState\x12\x1e\n" +
 	"\x1aPRESENCE_STATE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19PRESENCE_STATE_REBUILDING\x10\x01\x12\x1b\n" +
-	"\x17PRESENCE_STATE_COMPLETE\x10\x02*\x87\x01\n" +
+	"\x17PRESENCE_STATE_COMPLETE\x10\x02*\xab\x01\n" +
 	"\fMutationCode\x12\x1d\n" +
 	"\x19MUTATION_CODE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15MUTATION_CODE_APPLIED\x10\x01\x12!\n" +
 	"\x1dMUTATION_CODE_ALREADY_APPLIED\x10\x02\x12\x1a\n" +
-	"\x16MUTATION_CODE_REJECTED\x10\x032l\n" +
+	"\x16MUTATION_CODE_REJECTED\x10\x03\x12\"\n" +
+	"\x1eMUTATION_CODE_CAPACITY_REACHED\x10\x042l\n" +
 	"\x0eGatewayControl\x12Z\n" +
 	"\aConnect\x12$.relaygate.control.v1.ControlRequest\x1a%.relaygate.control.v1.ControlResponse(\x010\x01BCZAgithub.com/cagojeiger/relaygate/internal/gen/control/v1;controlv1b\x06proto3"
 
@@ -1173,28 +1195,29 @@ var file_proto_relaygate_control_v1_control_proto_depIdxs = []int32{
 	8,  // 4: relaygate.control.v1.ControlResponse.snapshot_accepted:type_name -> relaygate.control.v1.SnapshotAccepted
 	15, // 5: relaygate.control.v1.ControlResponse.mutation_result:type_name -> relaygate.control.v1.MutationResult
 	5,  // 6: relaygate.control.v1.SessionOpened.session:type_name -> relaygate.control.v1.SessionRef
-	5,  // 7: relaygate.control.v1.FullSnapshot.session:type_name -> relaygate.control.v1.SessionRef
-	12, // 8: relaygate.control.v1.FullSnapshot.bindings:type_name -> relaygate.control.v1.BindingSlot
-	0,  // 9: relaygate.control.v1.SnapshotAccepted.presence:type_name -> relaygate.control.v1.PresenceState
-	5,  // 10: relaygate.control.v1.BindingMutation.session:type_name -> relaygate.control.v1.SessionRef
-	13, // 11: relaygate.control.v1.BindingMutation.install:type_name -> relaygate.control.v1.InstallBinding
-	14, // 12: relaygate.control.v1.BindingMutation.remove:type_name -> relaygate.control.v1.RemoveBinding
-	10, // 13: relaygate.control.v1.BindingSlot.key:type_name -> relaygate.control.v1.BindingKey
-	11, // 14: relaygate.control.v1.BindingSlot.ref:type_name -> relaygate.control.v1.ListenerBindingRef
-	10, // 15: relaygate.control.v1.InstallBinding.key:type_name -> relaygate.control.v1.BindingKey
-	11, // 16: relaygate.control.v1.InstallBinding.expected_ref:type_name -> relaygate.control.v1.ListenerBindingRef
-	11, // 17: relaygate.control.v1.InstallBinding.new_ref:type_name -> relaygate.control.v1.ListenerBindingRef
-	10, // 18: relaygate.control.v1.RemoveBinding.key:type_name -> relaygate.control.v1.BindingKey
-	11, // 19: relaygate.control.v1.RemoveBinding.expected_ref:type_name -> relaygate.control.v1.ListenerBindingRef
-	1,  // 20: relaygate.control.v1.MutationResult.code:type_name -> relaygate.control.v1.MutationCode
-	12, // 21: relaygate.control.v1.MutationResult.slot:type_name -> relaygate.control.v1.BindingSlot
-	2,  // 22: relaygate.control.v1.GatewayControl.Connect:input_type -> relaygate.control.v1.ControlRequest
-	3,  // 23: relaygate.control.v1.GatewayControl.Connect:output_type -> relaygate.control.v1.ControlResponse
-	23, // [23:24] is the sub-list for method output_type
-	22, // [22:23] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	12, // 7: relaygate.control.v1.SessionOpened.owned_bindings:type_name -> relaygate.control.v1.BindingSlot
+	5,  // 8: relaygate.control.v1.FullSnapshot.session:type_name -> relaygate.control.v1.SessionRef
+	12, // 9: relaygate.control.v1.FullSnapshot.bindings:type_name -> relaygate.control.v1.BindingSlot
+	0,  // 10: relaygate.control.v1.SnapshotAccepted.presence:type_name -> relaygate.control.v1.PresenceState
+	5,  // 11: relaygate.control.v1.BindingMutation.session:type_name -> relaygate.control.v1.SessionRef
+	13, // 12: relaygate.control.v1.BindingMutation.install:type_name -> relaygate.control.v1.InstallBinding
+	14, // 13: relaygate.control.v1.BindingMutation.remove:type_name -> relaygate.control.v1.RemoveBinding
+	10, // 14: relaygate.control.v1.BindingSlot.key:type_name -> relaygate.control.v1.BindingKey
+	11, // 15: relaygate.control.v1.BindingSlot.ref:type_name -> relaygate.control.v1.ListenerBindingRef
+	10, // 16: relaygate.control.v1.InstallBinding.key:type_name -> relaygate.control.v1.BindingKey
+	11, // 17: relaygate.control.v1.InstallBinding.expected_ref:type_name -> relaygate.control.v1.ListenerBindingRef
+	11, // 18: relaygate.control.v1.InstallBinding.new_ref:type_name -> relaygate.control.v1.ListenerBindingRef
+	10, // 19: relaygate.control.v1.RemoveBinding.key:type_name -> relaygate.control.v1.BindingKey
+	11, // 20: relaygate.control.v1.RemoveBinding.expected_ref:type_name -> relaygate.control.v1.ListenerBindingRef
+	1,  // 21: relaygate.control.v1.MutationResult.code:type_name -> relaygate.control.v1.MutationCode
+	12, // 22: relaygate.control.v1.MutationResult.slot:type_name -> relaygate.control.v1.BindingSlot
+	2,  // 23: relaygate.control.v1.GatewayControl.Connect:input_type -> relaygate.control.v1.ControlRequest
+	3,  // 24: relaygate.control.v1.GatewayControl.Connect:output_type -> relaygate.control.v1.ControlResponse
+	24, // [24:25] is the sub-list for method output_type
+	23, // [23:24] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_proto_relaygate_control_v1_control_proto_init() }

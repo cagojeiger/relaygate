@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 
 	"github.com/cagojeiger/relaygate/internal/authority"
@@ -60,7 +61,7 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[controlv1.ControlReque
 	if err := s.validateHello(hello); err != nil {
 		return err
 	}
-	gatewaySlot, session, err := s.openControlSession(stream.Context(), hello)
+	gatewaySlot, session, ownedBindings, err := s.openControlSession(stream.Context(), hello)
 	if err != nil {
 		return err
 	}
@@ -70,6 +71,7 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[controlv1.ControlReque
 		SessionOpened: &controlv1.SessionOpened{
 			Session:           sessionRefToProto(session.Ref),
 			GatewayGeneration: gatewaySlot.Generation,
+			OwnedBindings:     bindingSlotsToProto(ownedBindings),
 		},
 	}}); err != nil {
 		return err
@@ -128,33 +130,38 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[controlv1.ControlReque
 	}
 }
 
-func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello) (controlstate.GatewaySlot, authority.Session, error) {
+func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello) (controlstate.GatewaySlot, authority.Session, []controlstate.BindingSlot, error) {
 	s.controlMu.Lock()
 	defer s.controlMu.Unlock()
 
 	if _, err := s.authority.Confirm(ctx); err != nil {
-		return controlstate.GatewaySlot{}, authority.Session{}, unavailable("confirm authority", err)
+		return controlstate.GatewaySlot{}, authority.Session{}, nil, unavailable("confirm authority", err)
 	}
 	gatewaySlot, err := s.registerGateway(ctx, hello.GetGatewayId(), hello.GetGatewayInstanceId())
 	if err != nil {
-		return controlstate.GatewaySlot{}, authority.Session{}, err
+		return controlstate.GatewaySlot{}, authority.Session{}, nil, err
 	}
 	if _, err := s.authority.Confirm(ctx); err != nil {
-		return controlstate.GatewaySlot{}, authority.Session{}, unavailable("confirm authority after gateway registration", err)
+		return controlstate.GatewaySlot{}, authority.Session{}, nil, unavailable("confirm authority after gateway registration", err)
 	}
+	ownedBindings := ownedBindingSlots(s.node.State(), hello.GetGatewayId(), hello.GetGatewayInstanceId())
 	session, err := s.authority.OpenSession(gatewaySlot)
 	if err != nil {
-		return controlstate.GatewaySlot{}, authority.Session{}, unavailable("open control session", err)
+		return controlstate.GatewaySlot{}, authority.Session{}, nil, unavailable("open control session", err)
 	}
-	return gatewaySlot, session, nil
+	return gatewaySlot, session, ownedBindings, nil
 }
 
 func (s *Service) validateHello(hello *controlv1.Hello) error {
-	if hello.GetClusterEpoch() != s.clusterEpoch {
-		return status.Errorf(codes.FailedPrecondition, "cluster epoch %q is not current", hello.GetClusterEpoch())
+	if hello.GetClusterEpoch() == "" || len(hello.GetClusterEpoch()) > controlstate.MaxIdentityBytes {
+		return status.Errorf(codes.InvalidArgument, "cluster_epoch must be 1..%d bytes", controlstate.MaxIdentityBytes)
 	}
-	if hello.GetGatewayId() == "" || hello.GetGatewayInstanceId() == "" {
-		return status.Error(codes.InvalidArgument, "gateway_id and gateway_instance_id are required")
+	if hello.GetClusterEpoch() != s.clusterEpoch {
+		return status.Error(codes.FailedPrecondition, "cluster epoch is not current")
+	}
+	if hello.GetGatewayId() == "" || len(hello.GetGatewayId()) > controlstate.MaxIdentityBytes ||
+		hello.GetGatewayInstanceId() == "" || len(hello.GetGatewayInstanceId()) > controlstate.MaxIdentityBytes {
+		return status.Errorf(codes.InvalidArgument, "gateway_id and gateway_instance_id must be 1..%d bytes", controlstate.MaxIdentityBytes)
 	}
 	return nil
 }
@@ -267,8 +274,9 @@ func (s *Service) applyMutation(ctx context.Context, session authority.SessionRe
 		return nil, unavailable("commit binding mutation", err)
 	}
 	result := &controlv1.MutationResult{
-		Code:  mutationCodeToProto(applyResult.Code),
-		Error: applyResult.Error,
+		Code:             mutationCodeToProto(applyResult.Code),
+		Error:            applyResult.Error,
+		SameGatewayOwner: applyResult.Slot != nil && applyResult.Slot.Ref != nil && applyResult.Slot.Ref.GatewayID == session.GatewayID,
 	}
 	if applyResult.Slot != nil {
 		result.Slot = bindingSlotToProto(*applyResult.Slot)
@@ -477,6 +485,35 @@ func bindingSlotToProto(slot controlstate.BindingSlot) *controlv1.BindingSlot {
 	return wire
 }
 
+func bindingSlotsToProto(slots []controlstate.BindingSlot) []*controlv1.BindingSlot {
+	wire := make([]*controlv1.BindingSlot, 0, len(slots))
+	for _, slot := range slots {
+		wire = append(wire, bindingSlotToProto(slot))
+	}
+	return wire
+}
+
+func ownedBindingSlots(state controlstate.State, gatewayID, gatewayInstanceID string) []controlstate.BindingSlot {
+	owned := make([]controlstate.BindingSlot, 0)
+	for _, slot := range state.Bindings {
+		if slot.Ref != nil && slot.Ref.GatewayID == gatewayID && slot.Ref.GatewayInstanceID == gatewayInstanceID {
+			owned = append(owned, slot)
+		}
+	}
+	sort.Slice(owned, func(i, j int) bool {
+		left := owned[i].Key
+		right := owned[j].Key
+		if left.ClientID != right.ClientID {
+			return left.ClientID < right.ClientID
+		}
+		if left.EndpointPattern != right.EndpointPattern {
+			return left.EndpointPattern < right.EndpointPattern
+		}
+		return left.TargetID < right.TargetID
+	})
+	return owned
+}
+
 func bindingSlotsEqual(left, right controlstate.BindingSlot) bool {
 	if left.Key != right.Key || left.Generation != right.Generation {
 		return false
@@ -504,6 +541,8 @@ func mutationCodeToProto(code controlstate.ResultCode) controlv1.MutationCode {
 		return controlv1.MutationCode_MUTATION_CODE_APPLIED
 	case controlstate.ResultAlreadyApplied:
 		return controlv1.MutationCode_MUTATION_CODE_ALREADY_APPLIED
+	case controlstate.ResultCapacityReached:
+		return controlv1.MutationCode_MUTATION_CODE_CAPACITY_REACHED
 	default:
 		return controlv1.MutationCode_MUTATION_CODE_REJECTED
 	}

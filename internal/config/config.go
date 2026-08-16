@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/clientauth"
+	"github.com/cagojeiger/relaygate/internal/controlstate"
 	"gopkg.in/yaml.v3"
 )
 
@@ -79,6 +80,7 @@ type RelayConfig struct {
 	AuthenticationTimeout Duration `yaml:"authentication_timeout"`
 	ShutdownTimeout       Duration `yaml:"shutdown_timeout"`
 	MaxClientSessions     uint32   `yaml:"max_client_sessions"`
+	MaxListenerBindings   uint32   `yaml:"max_listener_bindings"`
 }
 
 type ControlConfig struct {
@@ -129,6 +131,7 @@ func Defaults() Config {
 			AuthenticationTimeout: Duration(5 * time.Second),
 			ShutdownTimeout:       Duration(5 * time.Second),
 			MaxClientSessions:     10_000,
+			MaxListenerBindings:   controlstate.MaxListenerBindingsPerGateway,
 		},
 		Control: ControlConfig{
 			BindAddress:                    "127.0.0.1:7100",
@@ -320,8 +323,8 @@ func (c Config) Validate() error {
 	if c.Raft.MaxCommandBytes < 1 {
 		return fmt.Errorf("raft.max_command_bytes must be positive")
 	}
-	if c.Gateway.ID == "" {
-		return fmt.Errorf("gateway.id is required")
+	if c.Gateway.ID == "" || len(c.Gateway.ID) > controlstate.MaxIdentityBytes {
+		return fmt.Errorf("gateway.id must be 1..%d bytes", controlstate.MaxIdentityBytes)
 	}
 	if len(c.Gateway.ControlEndpoints) == 0 {
 		return fmt.Errorf("gateway.control_endpoints must not be empty")
@@ -348,8 +351,11 @@ func (c Config) Validate() error {
 	if c.Relay.MaxClientSessions == 0 {
 		return fmt.Errorf("relay.max_client_sessions must be positive")
 	}
-	if c.Control.ClusterEpoch == "" {
-		return fmt.Errorf("control.cluster_epoch is required")
+	if c.Relay.MaxListenerBindings == 0 || c.Relay.MaxListenerBindings > controlstate.MaxListenerBindingsPerGateway {
+		return fmt.Errorf("relay.max_listener_bindings must be between 1 and %d", controlstate.MaxListenerBindingsPerGateway)
+	}
+	if c.Control.ClusterEpoch == "" || len(c.Control.ClusterEpoch) > controlstate.MaxIdentityBytes {
+		return fmt.Errorf("control.cluster_epoch must be 1..%d bytes", controlstate.MaxIdentityBytes)
 	}
 	if err := validateListenAddress("control.bind_address", c.Control.BindAddress); err != nil {
 		return err

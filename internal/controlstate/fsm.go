@@ -190,6 +190,9 @@ func (f *FSM) applyInstall(command InstallBinding) ApplyResult {
 	if !exists && uint64(len(f.bindings)) >= f.maxDistinctBindingKeysPerEpoch {
 		return rejected(ErrKeyLimit)
 	}
+	if !sameBindingOwner(current.Ref, &command.NewRef) && f.liveBindingCount(command.NewRef.GatewayID, command.NewRef.GatewayInstanceID) >= MaxListenerBindingsPerGateway {
+		return capacityBindingSlot(current)
+	}
 
 	ref := command.NewRef
 	updated := BindingSlot{
@@ -200,6 +203,16 @@ func (f *FSM) applyInstall(command InstallBinding) ApplyResult {
 	f.bindings[command.Key] = updated
 	copy := cloneSlot(updated)
 	return ApplyResult{Code: ResultApplied, Slot: &copy}
+}
+
+func (f *FSM) liveBindingCount(gatewayID, gatewayInstanceID string) int {
+	count := 0
+	for _, slot := range f.bindings {
+		if slot.Ref != nil && slot.Ref.GatewayID == gatewayID && slot.Ref.GatewayInstanceID == gatewayInstanceID {
+			count++
+		}
+	}
+	return count
 }
 
 func (f *FSM) applyRemove(command RemoveBinding) ApplyResult {
@@ -402,8 +415,8 @@ func validateRegisterGateway(command RegisterGateway) error {
 	if command.ClusterEpoch == "" {
 		return fmt.Errorf("%w: cluster_epoch is required", ErrInvalidCommand)
 	}
-	if command.GatewayID == "" {
-		return fmt.Errorf("%w: gateway_id is required", ErrInvalidCommand)
+	if err := validateIdentity("gateway_id", command.GatewayID); err != nil {
+		return err
 	}
 	if command.ExpectedRef != nil {
 		if err := command.ExpectedRef.Validate(); err != nil {
@@ -423,8 +436,8 @@ func validateRemoveGateway(command RemoveGateway) error {
 	if command.ClusterEpoch == "" {
 		return fmt.Errorf("%w: cluster_epoch is required", ErrInvalidCommand)
 	}
-	if command.GatewayID == "" {
-		return fmt.Errorf("%w: gateway_id is required", ErrInvalidCommand)
+	if err := validateIdentity("gateway_id", command.GatewayID); err != nil {
+		return err
 	}
 	if err := command.ExpectedRef.Validate(); err != nil {
 		return err
@@ -452,6 +465,7 @@ func validateState(state State) error {
 		return fmt.Errorf("binding count exceeds key limit")
 	}
 	seen := make(map[BindingKey]struct{}, len(state.Bindings))
+	ownerCounts := make(map[[2]string]int)
 	for _, slot := range state.Bindings {
 		if err := slot.Key.Validate(); err != nil {
 			return err
@@ -462,6 +476,11 @@ func validateState(state State) error {
 		if slot.Ref != nil {
 			if err := slot.Ref.Validate(); err != nil {
 				return err
+			}
+			owner := [2]string{slot.Ref.GatewayID, slot.Ref.GatewayInstanceID}
+			ownerCounts[owner]++
+			if ownerCounts[owner] > MaxListenerBindingsPerGateway {
+				return fmt.Errorf("gateway instance binding count exceeds protocol limit")
 			}
 		}
 		if _, ok := seen[slot.Key]; ok {
@@ -474,8 +493,8 @@ func validateState(state State) error {
 	}
 	seenGateways := make(map[string]struct{}, len(state.Gateways))
 	for _, slot := range state.Gateways {
-		if slot.GatewayID == "" {
-			return fmt.Errorf("persisted gateway has empty gateway ID")
+		if err := validateIdentity("gateway_id", slot.GatewayID); err != nil {
+			return err
 		}
 		if slot.Generation == 0 {
 			return fmt.Errorf("persisted gateway has implicit generation zero")
@@ -520,6 +539,10 @@ func refsEqual(left, right *ListenerBindingRef) bool {
 	return *left == *right
 }
 
+func sameBindingOwner(left, right *ListenerBindingRef) bool {
+	return left != nil && right != nil && left.GatewayID == right.GatewayID && left.GatewayInstanceID == right.GatewayInstanceID
+}
+
 func cloneSlot(slot BindingSlot) BindingSlot {
 	copy := slot
 	if slot.Ref != nil {
@@ -552,6 +575,11 @@ func rejected(err error) ApplyResult {
 func rejectedBindingSlot(err error, slot BindingSlot) ApplyResult {
 	copy := cloneSlot(slot)
 	return ApplyResult{Code: ResultRejected, Slot: &copy, Error: err.Error()}
+}
+
+func capacityBindingSlot(slot BindingSlot) ApplyResult {
+	copy := cloneSlot(slot)
+	return ApplyResult{Code: ResultCapacityReached, Slot: &copy, Error: ErrBindingCapacity.Error()}
 }
 
 func rejectedGatewaySlot(err error, slot GatewaySlot) ApplyResult {
