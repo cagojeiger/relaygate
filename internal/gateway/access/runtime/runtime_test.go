@@ -60,6 +60,42 @@ func TestApplySwapsAuthBeforeRetiringRemovedSessions(t *testing.T) {
 	}
 }
 
+func TestX03CredentialRemovalDuringGatewayConfigSkewRemainsProcessLocal(t *testing.T) {
+	shared := testConfig(map[string]clientauth.ClientConfig{
+		"client-a": {APIKeys: map[string]string{
+			"stable":   verifier("stable-secret"),
+			"rotating": verifier("rotating-secret"),
+		}},
+	})
+	partitioned, err := New(shared)
+	if err != nil {
+		t.Fatalf("New(partitioned): %v", err)
+	}
+	t.Cleanup(partitioned.Close)
+	reloaded, err := New(shared)
+	if err != nil {
+		t.Fatalf("New(reloaded): %v", err)
+	}
+	t.Cleanup(reloaded.Close)
+
+	removed := shared
+	removed.Clients = map[string]clientauth.ClientConfig{
+		"client-a": {APIKeys: map[string]string{"stable": verifier("stable-secret")}},
+	}
+	if _, err := reloaded.Apply(removed); err != nil {
+		t.Fatalf("Apply(removed): %v", err)
+	}
+	if _, err := reloaded.Sessions().Authenticate("client-a", "rotating", "rotating-secret"); !errors.Is(err, clientsession.ErrAuthenticationFailed) {
+		t.Fatalf("reloaded Authenticate(removed) = %v, want authentication failure", err)
+	}
+	if _, err := partitioned.Sessions().Authenticate("client-a", "rotating", "rotating-secret"); err != nil {
+		t.Fatalf("partitioned Gateway unexpectedly inherited another process reload: %v", err)
+	}
+	if partitioned.Revision() == reloaded.Revision() {
+		t.Fatal("independent Gateway snapshots did not retain observable revision skew")
+	}
+}
+
 func TestApplyRejectsStaticConfigChangeWithoutChangingAuth(t *testing.T) {
 	current := testConfig(map[string]clientauth.ClientConfig{
 		"client-a": {APIKeys: map[string]string{"key-a": verifier("secret-a")}},

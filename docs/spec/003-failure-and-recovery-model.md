@@ -166,8 +166,10 @@ auth/binding, expired/duplicate/full-cache attempt는 fail closed한다.
 | `F8 Remote hop` | exact-unexpired / duplicate-expired-full / interrupted before-after LP |
 | `F9 Voter storage` | intact / one local lost / same-epoch quorum state unavailable |
 
-모든 axis pair의 equivalence-class pair를 observed하거나 state invariant로 unreachable임을 증명한다. LP와
-경쟁하면 두 event order를 모두 시험한다. 다음 3-way scenario는 별도 필수다.
+모든 equivalence class를 최소 한 번 observed하거나 state invariant로 unreachable임을 증명한다. 두 axis가
+같은 admission gate, identity fence, LP, cleanup owner 또는 recovery decision을 공유할 때 pairwise test가
+필수다. 서로 상태를 읽거나 쓰지 않는 component의 raw Cartesian product는 복제하지 않고 그 독립 경계를
+증명한다. LP와 경쟁하면 두 event order를 모두 시험한다. 다음 3-way scenario는 별도 필수다.
 
 1. Authority change × stale session redeclare × partial live Gateway set: stale entry는 없고 fresh exact entry만
    즉시 route된다. Total/expected replica gate는 없다.
@@ -240,8 +242,9 @@ flowchart TD
 ## Verification contract
 
 [TEST 001](../test/001-core-correctness-test-plan.md)은 state-product, 64 admission vector, route churn/session
-delete/failover redeclare, race/crash-cut, fault combination과 R0–R3 oracle을 소유한다. Test ID가 있다는 사실은
-runtime evidence가 아니다.
+delete/failover redeclare와 R0–R3 oracle을 소유한다. [TEST 002](../test/002-failure-evidence-matrix.md)는
+failure class, shared-boundary pairwise interaction과 crash-cut을 실행 증거에 연결한다. Test ID가 있다는
+사실은 runtime evidence가 아니다.
 
 ## 관련 문서와 결정
 
@@ -249,6 +252,7 @@ runtime evidence가 아니다.
 - [SPEC 002: Client Configuration and Presence](002-client-configuration-and-presence.md)
 - [SPEC 004: State Transition Model](004-state-transition-model.md)
 - [TEST 001: Core Correctness Test Plan](../test/001-core-correctness-test-plan.md)
+- [TEST 002: Failure Evidence Matrix](../test/002-failure-evidence-matrix.md)
 - [ADR 001: RelayGate 역할 경계](../adr/001-relaygate-role-and-responsibility-boundary.md)
 - [ADR 004: Raft safety state 영속화](../adr/004-raft-safety-state-durability.md)
 - [ADR 008: Cross-Gateway hop과 replay fence](../adr/008-cross-gateway-hop-and-replay.md)

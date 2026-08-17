@@ -102,7 +102,15 @@ func TestTrustedLocalHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read /status redaction: %v", err)
 	}
-	for _, forbidden := range []string{"api_key", "payload", "buffer", "mutation"} {
+	for _, forbidden := range []string{
+		"api_key",
+		"payload",
+		"buffer",
+		"mutation",
+		"complete",
+		"config_converged",
+		"expected_replicas",
+	} {
 		if strings.Contains(string(statusBody), forbidden) {
 			t.Fatalf("/status exposed forbidden field %q: %s", forbidden, statusBody)
 		}

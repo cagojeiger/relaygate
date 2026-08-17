@@ -385,7 +385,7 @@ func TestOutboundActorSharesGlobalPayloadBudget(t *testing.T) {
 	waitForCondition(t, func() bool { return len(slots) == 0 }, "global payload slot release")
 }
 
-func TestOutboundActorCloseReleasesQueuedAndGateWaitingPayloadSlots(t *testing.T) {
+func TestX07BackpressureCancelAndParticipantCrashReleaseAllPayloadSlots(t *testing.T) {
 	stream := newGateRecordingRelayStream(true)
 	slots := make(chan struct{}, 128)
 	actor := newOutboundActor(stream, slots, time.Second)

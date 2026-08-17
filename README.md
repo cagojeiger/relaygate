@@ -41,7 +41,8 @@ SDK는 public import/crate 경계를 유지하기 위해 `internal/` 밖에 둔�
 설계 원칙은 `docs/adr/`, 상태·동작 계약은 `docs/spec/`, 필수 검증 계획은 `docs/test/`에 있다.
 장애와 복구 경계는 [SPEC 003](docs/spec/003-failure-and-recovery-model.md), 닫힌 상태 전이표는
 [SPEC 004](docs/spec/004-state-transition-model.md), v0 필수 테스트는
-[TEST 001](docs/test/001-core-correctness-test-plan.md)에서 정의한다. Cross-Gateway owner hop의 장기 결정은
+[TEST 001](docs/test/001-core-correctness-test-plan.md), 실행 증거와 외부 blocker는
+[TEST 002](docs/test/002-failure-evidence-matrix.md)에서 정의한다. Cross-Gateway owner hop의 장기 결정은
 [ADR 008](docs/adr/008-cross-gateway-hop-and-replay.md), current-state-only route 경계는
 [ADR 009](docs/adr/009-ephemeral-current-state-authority-directory.md)가 소유한다.
 
@@ -71,9 +72,10 @@ SDK는 public import/crate 경계를 유지하기 위해 `internal/` 밖에 둔�
 - Process restart에서 Raft safety/epoch만 복구하고 route는 Gateway reconnect/redeclare로 재구축
 
 Cross-Gateway owner forwarding은 아래 승인 계약과 [TEST 001의 H01–H12](docs/test/001-core-correctness-test-plan.md)를
-따른다. 현재 evidence는 Public Go/Rust 네 조합과 isolated 3-node smoke, leader 교체 뒤 live binding
-재선언까지다. 이를 넘어선 전체 correctness는 주장하지 않는다. Arbitrary fault matrix, peer auth/mTLS,
-wildcard/priority, target 생략 선택, `OpenAll`과 dynamic membership도 별도 evidence가 필요하다.
+따른다. 현재 evidence는 Public Go/Rust 네 조합, isolated 3-node smoke, leader 교체 뒤 live binding 재선언과
+[TEST 002의 local fault matrix](docs/test/002-failure-evidence-matrix.md)까지다. Dynamic membership voter
+replacement, external old-path fence와 deployment clock-skew bound는 아직 blocker다. Peer auth/mTLS,
+wildcard/priority, target 생략 선택과 `OpenAll`도 별도 범위다.
 
 ## Public SDK
 

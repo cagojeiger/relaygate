@@ -205,7 +205,9 @@ session/binding identity로 대체한다.
 
 ## X — Cross-failure coverage
 
-All `F1–F9` axis class pairs in SPEC 003 must be observed or proved unreachable. LP races run in both orders.
+All `F1–F9` classes and shared-boundary interactions in SPEC 003 must be observed or proved unreachable. LP races run
+in both orders. Exact runtime evidence and external blockers are maintained in
+[TEST 002](002-failure-evidence-matrix.md).
 
 | ID | Scenario | Pass oracle |
 | --- | --- | --- |
@@ -249,7 +251,7 @@ v0 correctness를 주장하려면 다음을 모두 만족해야 한다.
 
 - `M/D/O/C/K/P/H/X/R` mandatory tests와 harness/operator artifact가 자동화되어 pass한다.
 - 64 admission vectors 모두가 executed 또는 invariant-proved다.
-- SPEC 003의 crash-cut 직전/직후와 F1–F9 pairwise manifest가 complete다.
+- SPEC 003의 crash-cut 직전/직후와 F1–F9 shared-boundary matrix가 complete다.
 - RelayGate application command/FSM snapshot에 ClusterEpoch 외 Gateway/binding/route domain data가 없음을
   검사한다. Raft core membership/safety record는 별도다.
 - Long churn 뒤 memory/directory cardinality가 current live declarations에만 비례함을 검사한다.
@@ -269,9 +271,11 @@ contract를 통과한 증거가 아니다. Refactor 뒤 test run과 artifact로 
 - `C10/C12` real 3-voter stores: single intact voter는 authority/epoch 전환 불가; all-old-process fence 뒤
   fresh identity/address/store quorum만 새 epoch bootstrap
 - `C11` local half: old durable epoch marker가 다른 configured epoch를 fail closed
+- `X01–X04`, `X06–X07` direct compound-failure tests와 [TEST 002](002-failure-evidence-matrix.md)의
+  axis/crash-cut traceability
 
-이는 focused implementation/Compose evidence다. 위 planned release gate, 모든 crash-cut/F1–F9 pairwise와
-production trust를 완료했다는 뜻은 아니다.
+이는 focused implementation/Compose evidence다. 위 planned release gate의 unsupported/external prerequisite와
+production trust까지 완료했다는 뜻은 아니다.
 
 현재 자동화 증거에서 명시적으로 남은 항목은 다음과 같다.
 
@@ -280,7 +284,6 @@ production trust를 완료했다는 뜻은 아니다.
 | `C09` voter store-loss replacement | Dynamic membership은 현재 범위 밖 | 새 NodeId를 surviving quorum에 교체 합류시키는 operator/runtime policy와 harness |
 | `C11` external old-path fence | Durable old store mismatch는 자동화됨; 배포 전체 fence proof는 외부 계약 | Kubernetes/배포 계층에서 old process/network path가 모두 차단됐다는 재현 가능한 증거 |
 | `H05` clock skew readiness | strict expiry unit contract | 배포 clock-skew bound를 검사하는 runtime/운영 증거 |
-| SPEC 003 crash cuts, `F1–F9` pairwise | 대표 unit/race/Compose 사례만 존재 | mandatory matrix manifest의 각 행이 test 또는 invariant proof에 연결됨 |
 
 따라서 상태표는 total하지만 v0 release evidence는 위 항목이 닫힐 때까지 partial이다.
 

@@ -147,7 +147,7 @@ func TestSnapshotCapacityDoesNotPartiallyPublish(t *testing.T) {
 	}
 }
 
-func TestAuthorityTermFenceEmptiesDirectoryBeforeRedeclaration(t *testing.T) {
+func TestX01AuthorityChangeRejectsStaleSessionAndRoutesPartialRedeclaration(t *testing.T) {
 	manager, raft := newManager(t)
 	if _, err := manager.Confirm(context.Background()); err != nil {
 		t.Fatalf("Confirm(): %v", err)
@@ -182,6 +182,46 @@ func TestAuthorityTermFenceEmptiesDirectoryBeforeRedeclaration(t *testing.T) {
 	openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{testBinding("owner", "owner-1", "listener-1")})
 	if _, err := manager.ResolveOpen(newIngress, testAuth(), "/events", "worker"); err != nil {
 		t.Fatalf("ResolveOpen() after fresh snapshot: %v", err)
+	}
+}
+
+func TestX02SessionEndAfterUnknownDeclareRedeclaresCurrentSnapshotOnly(t *testing.T) {
+	manager, _ := newManager(t)
+	if _, err := manager.Confirm(context.Background()); err != nil {
+		t.Fatalf("Confirm(): %v", err)
+	}
+	ingress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
+	oldBinding := testBinding("owner", "owner-1", "listener-unknown-ack")
+	old := openAndRevalidate(t, manager, "owner", "owner-1", nil)
+	if already, err := manager.Declare(old, oldBinding); err != nil || already {
+		t.Fatalf("Declare(before simulated ACK loss) = already=%v err=%v", already, err)
+	}
+
+	// The Gateway cannot distinguish an applied Declare from a lost ACK. Ending
+	// the exact control session is the recovery boundary: the authority deletes
+	// its possible effect instead of retaining an outcome for replay.
+	manager.EndSession(old)
+	if _, err := manager.ResolveOpen(ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("ResolveOpen() after unknown Declare/session end = %v, want ErrRouteNotFound", err)
+	}
+
+	newBinding := routing.LiveBinding{
+		Key: routing.BindingKey{ClientID: "client-1", EndpointPattern: "/current", TargetID: "worker"},
+		Ref: routing.ListenerBindingRef{GatewayID: "owner", GatewayInstanceID: "owner-2", ListenerBindingID: "listener-current"},
+	}
+	current := openAndRevalidate(t, manager, "owner", "owner-2", []routing.LiveBinding{newBinding})
+	if already, err := manager.Declare(old, oldBinding); !errors.Is(err, ErrStaleSession) || already {
+		t.Fatalf("late old-session Declare = already=%v err=%v, want stale rejection", already, err)
+	}
+	if presence := manager.Presence(); presence.Bindings != 1 || presence.Revalidated != 2 {
+		t.Fatalf("presence after current snapshot = %#v, want only ingress + current owner", presence)
+	}
+	open, err := manager.ResolveOpen(ingress, testAuth(), "/current", "worker")
+	if err != nil || open.Binding != newBinding || open.OwnerControlSessionID != current.ControlSessionID {
+		t.Fatalf("ResolveOpen(current snapshot) = %#v, %v", open, err)
+	}
+	if _, err := manager.ResolveOpen(ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("old binding was replayed by reconnect: %v", err)
 	}
 }
 

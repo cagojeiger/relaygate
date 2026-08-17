@@ -224,6 +224,36 @@ func TestConfirmationLossIsUnknown(t *testing.T) {
 	}
 }
 
+func TestX04ListenerAcceptThenConfirmationLossAndOwnerShutdownIsUnknown(t *testing.T) {
+	confirmEntered := make(chan struct{})
+	endpoint := &scriptedEndpoint{confirm: func(ctx context.Context, _ localbinding.Confirmation) error {
+		close(confirmEntered)
+		<-ctx.Done()
+		return context.Cause(ctx)
+	}}
+	h := newHarness(t, 1, time.Second, endpoint)
+	result := make(chan error, 1)
+	go func() {
+		_, err := h.manager.Open(context.Background(), h.caller, testEndpoint, testTarget)
+		result <- err
+	}()
+	<-confirmEntered
+
+	// Listener acceptance already crossed the Open LP. Owner shutdown cannot
+	// turn the lost confirmation into a stable failure or recover the Pipe.
+	h.manager.Close()
+	if err := <-result; !errors.Is(err, ErrUnknown) || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Open() after accept/confirmation loss/owner shutdown = %v, want Unknown wrapping Unavailable", err)
+	}
+	termination := receiveTermination(t, endpoint)
+	if termination.AttemptID != "attempt-1" || termination.PipeID == "" {
+		t.Fatalf("termination = %#v, want exact accepted attempt with unrecoverable PipeID", termination)
+	}
+	if h.manager.ActiveCount() != 0 {
+		t.Fatalf("ActiveCount() after owner shutdown = %d", h.manager.ActiveCount())
+	}
+}
+
 func TestConfirmationTimeoutIsUnknown(t *testing.T) {
 	endpoint := &scriptedEndpoint{confirm: func(ctx context.Context, _ localbinding.Confirmation) error {
 		<-ctx.Done()
@@ -1267,6 +1297,46 @@ func TestForwardedOwnerSingleUseExpiryAndFailedGuard(t *testing.T) {
 		defer cancelExpired()
 		if _, err := h.manager.OpenForwarded(expiredCtx, expired, &scriptedEndpoint{}); !errors.Is(err, ErrContextExpired) {
 			t.Fatalf("OpenForwarded(expired) = %v, want ErrContextExpired", err)
+		}
+	})
+
+	t.Run("response loss plus duplicate across expiry never replays outcome", func(t *testing.T) {
+		endpoint := &scriptedEndpoint{confirm: func(context.Context, localbinding.Confirmation) error {
+			return localbinding.ErrEndpointUnavailable
+		}}
+		h := newHarness(t, 1, time.Second, endpoint)
+		defer h.manager.Close()
+		now := fixedNow
+		h.manager.now = func() time.Time { return now }
+		open := newForwardedOpenContext(t, "forwarded-response-loss", h.caller.Ref, h.slot, fixedNow.Add(time.Minute))
+
+		firstCtx, cancelFirst := context.WithCancel(context.Background())
+		defer cancelFirst()
+		if _, err := h.manager.OpenForwarded(firstCtx, open, &scriptedEndpoint{}); !errors.Is(err, ErrUnknown) {
+			t.Fatalf("OpenForwarded(response loss) = %v, want ErrUnknown", err)
+		}
+		termination := receiveTermination(t, endpoint)
+		if termination.AttemptID != open.AttemptID || termination.PipeID == "" {
+			t.Fatalf("response-loss termination = %#v", termination)
+		}
+		waitPendingCount(t, h.manager, 0)
+		duplicateCtx, cancelDuplicate := context.WithCancel(context.Background())
+		defer cancelDuplicate()
+		if _, err := h.manager.OpenForwarded(duplicateCtx, open.Clone(), &scriptedEndpoint{}); !errors.Is(err, ErrAttemptReplay) {
+			t.Fatalf("OpenForwarded(duplicate before expiry) = %v, want ErrAttemptReplay", err)
+		}
+		if endpoint.offerCount() != 1 || endpoint.confirmCount() != 1 {
+			t.Fatalf("response-loss duplicate reached listener: offers=%d confirms=%d", endpoint.offerCount(), endpoint.confirmCount())
+		}
+
+		now = fixedNow.Add(time.Minute)
+		expiredCtx, cancelExpired := context.WithCancel(context.Background())
+		defer cancelExpired()
+		if _, err := h.manager.OpenForwarded(expiredCtx, open.Clone(), &scriptedEndpoint{}); !errors.Is(err, ErrAttemptReplay) {
+			t.Fatalf("OpenForwarded(duplicate at expiry) = %v, want retained terminal replay rejection", err)
+		}
+		if endpoint.offerCount() != 1 || endpoint.confirmCount() != 1 {
+			t.Fatalf("expired attempt replayed prior outcome: offers=%d confirms=%d", endpoint.offerCount(), endpoint.confirmCount())
 		}
 	})
 }
