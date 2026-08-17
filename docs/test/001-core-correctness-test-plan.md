@@ -265,6 +265,7 @@ contract를 통과한 증거가 아니다. Refactor 뒤 test run과 artifact로 
 - `go test -shuffle=on ./...`, `go vet ./...`, `go test -race ./...`
 - `cargo fmt --all --check`, workspace check/test와 warnings-as-errors clippy
 - Isolated `./scripts/compose-smoke.sh`, including leader failover and live-binding full redeclare
+- `C15` real TCP blackhole: healthy idle 유지, bounded session/route delete, fresh reconnect/full redeclare
 
 이는 focused implementation/Compose evidence다. 위 planned release gate, 모든 crash-cut/F1–F9 pairwise와
 production trust를 완료했다는 뜻은 아니다.
@@ -273,7 +274,6 @@ production trust를 완료했다는 뜻은 아니다.
 
 | Gap | 현재 상태 | 완료 조건 |
 | --- | --- | --- |
-| `C15` control keepalive blackhole | keepalive 상수와 enforcement margin만 unit test | 실제 blackhole에서 old session/route가 제거되고 fresh reconnect/redeclare됨 |
 | `C09–C12` operator/epoch fencing | 문서화된 fail-closed 절차 | 재현 가능한 operator harness와 old-authority 차단 증거 |
 | `H05` clock skew readiness | strict expiry unit contract | 배포 clock-skew bound를 검사하는 runtime/운영 증거 |
 | SPEC 003 crash cuts, `F1–F9` pairwise | 대표 unit/race/Compose 사례만 존재 | mandatory matrix manifest의 각 행이 test 또는 invariant proof에 연결됨 |
