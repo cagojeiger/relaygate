@@ -110,10 +110,10 @@ type Manager struct {
 
 func New(gatewayID, gatewayInstanceID string, max uint32, committer Committer, sessions SessionValidator) (*Manager, error) {
 	if err := routing.ValidateIdentity("gateway_id", gatewayID); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if err := routing.ValidateIdentity("gateway_instance_id", gatewayInstanceID); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if max == 0 || max > routing.MaxListenerBindingsPerGateway {
 		return nil, fmt.Errorf("%w: maximum listener bindings must be between 1 and %d", ErrInvalid, routing.MaxListenerBindingsPerGateway)
@@ -597,7 +597,7 @@ func validateOpenContext(open authority.OpenContext) error {
 		{"owner_control_session_id", open.OwnerControlSessionID},
 	} {
 		if err := routing.ValidateIdentity(identity.field, identity.value); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalid, err)
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 	}
 	if err := open.Auth.Validate(); err != nil {

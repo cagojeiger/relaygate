@@ -122,7 +122,7 @@ type bindingRecord struct {
 }
 
 type sendCommand struct {
-	ctx     context.Context
+	ctx     context.Context //nolint:containedctx // The queued command preserves the exact caller deadline.
 	request *relayv1.ConnectRequest
 	result  chan error
 }
@@ -184,11 +184,12 @@ func Connect(ctx context.Context, config Config) (*Client, error) {
 	}
 
 	var transport credentials.TransportCredentials
-	if config.Insecure {
+	switch {
+	case config.Insecure:
 		transport = insecure.NewCredentials()
-	} else if config.TLSConfig != nil {
+	case config.TLSConfig != nil:
 		transport = credentials.NewTLS(config.TLSConfig.Clone())
-	} else {
+	default:
 		transport = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 	}
 	conn, err := grpc.NewClient(config.Address, grpc.WithTransportCredentials(transport))
@@ -197,7 +198,7 @@ func Connect(ctx context.Context, config Config) (*Client, error) {
 	}
 
 	clientCtx, cancel := context.WithCancelCause(context.Background())
-	stream, err := relayv1.NewRelayClient(conn).Connect(clientCtx)
+	stream, err := relayv1.NewRelayClient(conn).Connect(clientCtx) //nolint:contextcheck // Client lifetime is intentionally detached from setup.
 	if err != nil {
 		cancel(err)
 		_ = conn.Close()
@@ -239,7 +240,6 @@ func Connect(ctx context.Context, config Config) (*Client, error) {
 	config.apiKey = ""
 	err = c.send(ctx, request)
 	authenticate.ApiKey = ""
-	request = nil
 	if err != nil {
 		c.stop(err)
 		<-c.done

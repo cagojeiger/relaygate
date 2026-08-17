@@ -374,12 +374,13 @@ func (c *Client) dispatchOpenRequestRejected(message *relayv1.OpenRequestRejecte
 		return protocolError("conflicting duplicate OpenRequestRejected")
 	}
 	call := c.opens[message.GetRequestId()]
-	if call != nil && !call.outcomeReceived {
+	switch {
+	case call != nil && !call.outcomeReceived:
 		c.recordOpenOutcomeLocked(call, openTombstone{endpoint: call.endpoint, target: call.target, kind: openOutcomeRejected, failure: OpenFailureInvalidRequest})
-	} else if call != nil && call.outcome.kind == openOutcomeRejected {
+	case call != nil && call.outcome.kind == openOutcomeRejected:
 		c.mu.Unlock()
 		return nil
-	} else {
+	default:
 		call = nil
 	}
 	c.mu.Unlock()

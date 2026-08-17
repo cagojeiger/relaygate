@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/cagojeiger/relaygate/internal/raft/node"
 )
 
-func TestHealthStatusAndMetricsAreReadOnly(t *testing.T) {
+func TestTrustedLocalHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 	provider := staticStatusProvider{status: raftnode.Status{
 		NodeID:        "node-1",
 		Role:          "Leader",
@@ -90,6 +91,21 @@ func TestHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 	}
 	if !runtimeStatus.GatewayControl.Ready() || runtimeStatus.Presence.State != authority.PresenceCurrent || runtimeStatus.AuthorityID != "authority-1" || runtimeStatus.AuthRevision != "sha256:revision-1" {
 		t.Fatalf("runtime status = %#v", runtimeStatus)
+	}
+
+	response, err = http.Get(baseURL + "/status")
+	if err != nil {
+		t.Fatalf("GET /status redaction: %v", err)
+	}
+	statusBody, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatalf("read /status redaction: %v", err)
+	}
+	for _, forbidden := range []string{"api_key", "payload", "buffer", "mutation"} {
+		if strings.Contains(string(statusBody), forbidden) {
+			t.Fatalf("/status exposed forbidden field %q: %s", forbidden, statusBody)
+		}
 	}
 
 	request, err := http.NewRequest(http.MethodPost, baseURL+"/status", nil)

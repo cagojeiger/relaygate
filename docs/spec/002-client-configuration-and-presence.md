@@ -123,8 +123,12 @@ traffic fence를 RelayGate 밖에서 결합한다. RelayGate status의 observed 
 | Surface | 허용 | 금지 |
 | --- | --- | --- |
 | Public protobuf gRPC | 인증, listen, exact Open, bidirectional Pipe와 close/cancel | Client/key CRUD, durable payload, cross-client lookup |
-| Read-only REST | Local runtime status와 current authority의 observed session/binding counts | Relay/mutation, secret/payload/buffer, history/completeness claim |
+| Read-only REST | Trusted local/dev runtime status와 current authority의 observed session/binding counts | Relay/mutation, secret/payload/buffer, history/completeness claim |
 | External config | `ClientId → ApiKeyId/verifier` 변경 | RelayGate API를 통한 credential 생성/저장 |
+
+v0 Admin REST는 별도 application authentication이 없는 trusted local/dev observation surface다. Canonical
+config는 loopback에 bind하고, Compose만 container network에서 `0.0.0.0`을 사용하되 host publish는 loopback으로
+제한한다. External authentication boundary 없이 shared/untrusted network에 노출하지 않는다.
 
 `GET /status`는 current observation을 publish하기 전에 quorum-confirmed authority를 확인한다. 확인 실패는
 `503 + NoAuthority`이며 old `Current` response를 재사용하지 않는다. 성공 응답의 Raft/Gateway diagnostic은

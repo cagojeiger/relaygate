@@ -163,7 +163,7 @@ after EndAuthority: sessions = 0 ∧ routes = 0
 | `K09` | Partial observation | One of multiple deployment replicas connects; counts include only it and admission uses only exact D/V |
 | `K10` | No revocation proof inference | Missing/partitioned Gateway cannot be declared retired from observed counts alone |
 | `K11` | Auth boundary | Exact credential only; no cross-client fallback |
-| `K12` | REST auth/redaction | Read-only authorized status; no secret/payload/buffer/mutation surface |
+| `K12` | Trusted-local REST/redaction | Unauthenticated read-only local/dev status; no secret/payload/buffer/mutation surface; shared/untrusted exposure prohibited |
 | `K13` | Auth resource bounds | First-message deadline and global session cap preserve existing sessions |
 
 ## P — Pipe terminal and flow control

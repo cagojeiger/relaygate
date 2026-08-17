@@ -75,7 +75,7 @@ const (
 
 type pendingMutation struct {
 	kind    mutationKind
-	ctx     context.Context // Pending mutations own the caller deadline until the current stream replies or ends.
+	ctx     context.Context //nolint:containedctx // The exact current-session mutation owns the caller deadline.
 	done    chan error
 	binding routing.LiveBinding
 }
@@ -344,7 +344,8 @@ func (c *Client) runEndpoint(ctx context.Context, endpoint string) (bool, error)
 		return false, fmt.Errorf("receive snapshot acceptance: %w", err)
 	}
 	accepted := response.GetSnapshotAccepted()
-	if accepted == nil || accepted.GetBindingCount() != uint32(len(snapshot)) {
+	bindingCount := uint32(len(snapshot)) //nolint:gosec // currentSnapshot caps this slice at 512 entries.
+	if accepted == nil || accepted.GetBindingCount() != bindingCount {
 		return false, fmt.Errorf("control endpoint returned an invalid snapshot response")
 	}
 	c.setRevalidated(endpoint, session, controlClient)

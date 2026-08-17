@@ -124,7 +124,8 @@ authentication 없이 **신뢰된 local/dev network만을 전제**한다. 기준
 통신을 위해 bind address를 명시적으로 `0.0.0.0`으로 override하고 host port는 loopback에만 publish한다.
 이 상태로 shared 또는 untrusted network에 배포하지 않으며, 운영 배포 전 transport trust boundary와
 Gateway identity 인증을 별도로 확정한다. Bearer key를 받는 public Relay listener는 TLS가 구현될 때까지
-non-loopback bind를 거부한다.
+non-loopback bind를 거부한다. Admin REST도 별도 application authentication이 없는 trusted local/dev
+관찰면이며 external authentication boundary 없이 shared/untrusted network에 노출하지 않는다.
 
 Forwarded context의 ingress/owner field는 provenance를 구조적으로 묶지만 plaintext Owner가 actual stream peer,
 current ingress control session 또는 자기 advertised address의 currentness를 검증하는 cryptographic proof는 아니다.

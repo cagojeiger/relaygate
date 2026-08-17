@@ -53,6 +53,8 @@ type RuntimeStatus struct {
 	Presence       authority.Presence    `json:"presence"`
 }
 
+// Start exposes an unauthenticated, read-only trusted-local observation
+// surface. Shared or untrusted deployment requires an external auth boundary.
 func Start(
 	ctx context.Context,
 	config Config,

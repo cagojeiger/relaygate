@@ -31,6 +31,10 @@ type settings struct {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	watchdog := time.AfterFunc(processTimeout, func() {
 		_, _ = fmt.Fprintln(os.Stderr, "conformance process timeout")
 		os.Exit(124)
@@ -50,9 +54,10 @@ func main() {
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "SDK_FAIL %s: %v\n", configuration.caseName, err)
-		os.Exit(1)
+		return 1
 	}
 	fmt.Printf("SDK_PASS %s\n", configuration.caseName)
+	return 0
 }
 
 func loadSettings() (settings, error) {

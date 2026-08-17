@@ -79,7 +79,7 @@ func NewOpenContext(
 		{field: "owner_control_session_id", value: ownerControlSessionID},
 	} {
 		if err := routing.ValidateIdentity(identity.field, identity.value); err != nil {
-			return OpenContext{}, fmt.Errorf("%w: %v", ErrInvalidOpen, err)
+			return OpenContext{}, fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 		}
 	}
 	if err := auth.Validate(); err != nil {
@@ -121,7 +121,7 @@ func NewForwardedOpenContext(
 		{field: "ingress_control_session_id", value: forwarding.IngressControlSessionID},
 	} {
 		if err := routing.ValidateIdentity(identity.field, identity.value); err != nil {
-			return OpenContext{}, fmt.Errorf("%w: %v", ErrInvalidOpen, err)
+			return OpenContext{}, fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 		}
 	}
 	if err := ValidateRelayAddress(forwarding.OwnerRelayAddress); err != nil {
@@ -177,7 +177,7 @@ func (a AuthContext) Validate() error {
 		{field: "auth_revision", value: a.AuthRevision},
 	} {
 		if err := routing.ValidateIdentity(identity.field, identity.value); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidOpen, err)
+			return fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 		}
 	}
 	return nil

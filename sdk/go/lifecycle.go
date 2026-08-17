@@ -678,7 +678,7 @@ func (c *Client) Open(ctx context.Context, endpoint, target string) (*Pipe, erro
 		call.mu.Lock()
 		call.abandoned = true
 		call.mu.Unlock()
-		return nil, c.drainCancelledOpen(call, ctx.Err())
+		return nil, c.drainCancelledOpen(call, ctx.Err()) //nolint:contextcheck // Cleanup must outlive the canceled caller and is bounded by Client lifetime.
 	case <-c.done:
 		c.removeOpen(call)
 		return nil, &OpenError{Outcome: OpenOutcomeUnknown, Endpoint: endpoint, Target: target, Cause: c.terminalError()}

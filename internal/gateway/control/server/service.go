@@ -93,8 +93,9 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[controlv1.ControlReque
 					return err
 				}
 				snapshotAccepted = true
+				bindingCount := uint32(len(bindings)) //nolint:gosec // snapshotBindings caps this slice at 512 entries.
 				if err := stream.Send(&controlv1.ControlResponse{Message: &controlv1.ControlResponse_SnapshotAccepted{
-					SnapshotAccepted: &controlv1.SnapshotAccepted{BindingCount: uint32(len(bindings))},
+					SnapshotAccepted: &controlv1.SnapshotAccepted{BindingCount: bindingCount},
 				}}); err != nil {
 					return err
 				}
