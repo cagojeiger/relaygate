@@ -22,6 +22,8 @@ const (
 	operationTimeout = 12 * time.Second
 )
 
+var errEchoPipeEnded = errors.New("echo pipe ended")
+
 type command struct {
 	name    string
 	target  string
@@ -161,7 +163,7 @@ func serve(ctx context.Context, configuration settings, target string) (result e
 		return result
 	}
 	defer func() {
-		unbindCtx, cancelUnbind := context.WithTimeout(context.Background(), operationTimeout)
+		unbindCtx, cancelUnbind := context.WithTimeout(context.WithoutCancel(ctx), operationTimeout)
 		defer cancelUnbind()
 		if unbindErr := listener.Unbind(unbindCtx); unbindErr != nil {
 			result = errors.Join(result, fmt.Errorf("unbind: %w", unbindErr))
@@ -193,6 +195,9 @@ func serve(ctx context.Context, configuration settings, target string) (result e
 			if ctx.Err() != nil {
 				return nil
 			}
+			if errors.Is(echoErr, errEchoPipeEnded) {
+				continue
+			}
 			return echoErr
 		}
 	}
@@ -202,7 +207,10 @@ func echoPipe(ctx context.Context, pipe *relaygate.Pipe) error {
 	for {
 		payload, err := pipe.Recv(ctx)
 		if err != nil {
-			return nil
+			if errors.Is(err, relaygate.ErrPipeClosed) {
+				return errEchoPipeEnded
+			}
+			return fmt.Errorf("receive payload: %w", err)
 		}
 		sendCtx, cancelSend := context.WithTimeout(ctx, operationTimeout)
 		err = pipe.Send(sendCtx, payload)
