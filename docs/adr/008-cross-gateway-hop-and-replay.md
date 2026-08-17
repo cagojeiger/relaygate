@@ -41,6 +41,11 @@ flowchart LR
 
 ### Forwarded OpenContext
 
+> **부분 대체됨:** 아래 tuple의 `BindingGeneration`과 O 이전 same-epoch context 생존 규칙은
+> [ADR 009](009-ephemeral-current-state-authority-directory.md)이 대체한다. 현재 규범은 generation 대신 exact
+> `OwnerControlSessionId`와 `ListenerBindingRef`를 사용하고, authority 또는 owner control session이 바뀐
+> O 이전 context를 거부한다. 아래 내용은 ADR 008 당시 결정의 기록이다.
+
 Forwarded context는 다음 값을 모두 exact하게 묶는다.
 
 ```text

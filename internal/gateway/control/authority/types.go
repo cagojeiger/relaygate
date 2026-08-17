@@ -60,10 +60,10 @@ type attemptToken struct {
 	consumed atomic.Bool
 }
 
-// NewOpenContext constructs a locally consumable context. The single-use token
-// is process-local and intentionally is not serialized; any trusted wire
-// decoder must call this constructor to initialize a fresh token.
-func NewOpenContext(
+// newOpenContext constructs the validated core of an Open context. Callers use
+// NewForwardedOpenContext so an expiry and both hop identities are always
+// present, including when the selected owner is the local Gateway.
+func newOpenContext(
 	clusterEpoch, authorityID, attemptID string,
 	auth AuthContext,
 	binding routing.LiveBinding,
@@ -108,7 +108,7 @@ func NewForwardedOpenContext(
 	binding routing.LiveBinding,
 	forwarding ForwardingContext,
 ) (OpenContext, error) {
-	open, err := NewOpenContext(clusterEpoch, authorityID, attemptID, auth, binding, forwarding.OwnerControlSessionID)
+	open, err := newOpenContext(clusterEpoch, authorityID, attemptID, auth, binding, forwarding.OwnerControlSessionID)
 	if err != nil {
 		return OpenContext{}, err
 	}
@@ -160,8 +160,8 @@ func ValidateRelayAddress(address string) error {
 func (c OpenContext) Clone() OpenContext { return c }
 
 // TryConsume atomically consumes this attempt once across all value copies.
-// A zero-value or wire-decoded context that bypassed NewOpenContext fails
-// closed.
+// A zero-value or wire-decoded context that bypassed
+// NewForwardedOpenContext fails closed.
 func (c OpenContext) TryConsume() bool {
 	return c.attempt != nil && c.attempt.consumed.CompareAndSwap(false, true)
 }

@@ -423,15 +423,15 @@ func TestOpenCapacityAndTerminalHistoryAreBounded(t *testing.T) {
 	}
 }
 
-func TestOpenRejectsRemoteOwnerAndSameSession(t *testing.T) {
-	t.Run("remote", func(t *testing.T) {
+func TestOpenRejectsUnavailableRemoteRelayAndSameSession(t *testing.T) {
+	t.Run("remote relay unavailable", func(t *testing.T) {
 		h := newHarness(t, 1, time.Second, &scriptedEndpoint{})
 		defer h.manager.Close()
 		remoteSlot := cloneSlot(h.slot)
 		remoteSlot.Ref.GatewayID = "gateway-2"
 		h.context = newOpenContext(t, "attempt-remote", h.caller.Ref, remoteSlot)
 		h.admitter.setContext(h.context)
-		if _, err := h.manager.Open(context.Background(), h.caller, testEndpoint, testTarget); !errors.Is(err, ErrRemoteOwnerUnsupported) {
+		if _, err := h.manager.Open(context.Background(), h.caller, testEndpoint, testTarget); !errors.Is(err, ErrRemoteRelayUnavailable) {
 			t.Fatalf("Open(remote) = %v", err)
 		}
 		if h.store.callCount() != 0 || h.endpoint.offerCount() != 0 {
@@ -454,6 +454,25 @@ func TestOpenRejectsRemoteOwnerAndSameSession(t *testing.T) {
 			t.Fatalf("self Open offered %d times", h.endpoint.offerCount())
 		}
 	})
+}
+
+func TestOpenRejectsExpiredLocalContextBeforeOffer(t *testing.T) {
+	h := newHarness(t, 1, time.Second, &scriptedEndpoint{})
+	defer h.manager.Close()
+	fixedNow := time.Unix(2_000_000_000, 0)
+	h.manager.now = func() time.Time { return fixedNow }
+	h.context = newForwardedOpenContext(t, "attempt-expired-local", h.caller.Ref, h.slot, fixedNow)
+	h.admitter.setContext(h.context)
+
+	if _, err := h.manager.Open(context.Background(), h.caller, testEndpoint, testTarget); !errors.Is(err, ErrContextExpired) {
+		t.Fatalf("Open(expired local context) = %v, want ErrContextExpired", err)
+	}
+	if h.store.callCount() != 0 || h.endpoint.offerCount() != 0 {
+		t.Fatalf("expired local context reserved/offered = %d/%d", h.store.callCount(), h.endpoint.offerCount())
+	}
+	if !h.context.TryConsume() {
+		t.Fatal("expiry rejection consumed the capability")
+	}
 }
 
 func TestSixGateAdmissionComposition(t *testing.T) {
@@ -1822,16 +1841,7 @@ func testSlot(clientID string) routing.LiveBinding {
 
 func newOpenContext(t *testing.T, attemptID string, caller clientsession.Ref, slot routing.LiveBinding) authority.OpenContext {
 	t.Helper()
-	open, err := authority.NewOpenContext("epoch-1", "authority-1", attemptID, authority.AuthContext{
-		ClientSessionID: caller.ClientSessionID,
-		ClientID:        caller.ClientID,
-		APIKeyID:        caller.APIKeyID,
-		AuthRevision:    caller.AuthRevision,
-	}, slot, "owner-control-1")
-	if err != nil {
-		t.Fatalf("NewOpenContext(): %v", err)
-	}
-	return open
+	return newForwardedOpenContext(t, attemptID, caller, slot, time.Now().Add(time.Minute))
 }
 
 func newForwardedOpenContext(

@@ -21,7 +21,7 @@ var (
 	ErrCapacity               = errors.New("open pipe capacity reached")
 	ErrNotFound               = errors.New("open target not found")
 	ErrUnavailable            = errors.New("open unavailable")
-	ErrRemoteOwnerUnsupported = errors.New("remote owner is unsupported")
+	ErrRemoteRelayUnavailable = errors.New("remote owner relay is unavailable")
 	ErrListenerRejected       = errors.New("listener rejected open")
 	ErrDeadline               = errors.New("open deadline exceeded")
 	ErrUnknown                = errors.New("open outcome unknown")
@@ -29,7 +29,7 @@ var (
 	ErrPayloadInvalid         = errors.New("invalid payload")
 	ErrPipeNotOwned           = errors.New("pipe not owned")
 	ErrPayloadBackpressure    = errors.New("payload backpressure exhausted")
-	ErrContextExpired         = errors.New("forwarded open context expired")
+	ErrContextExpired         = errors.New("open context expired")
 	ErrAttemptReplay          = errors.New("forwarded open attempt replayed")
 )
 
@@ -216,17 +216,16 @@ func New(config Config, admitter Admitter, bindings ReservationStore, remote ...
 	return m, nil
 }
 
-// Open implements the owner-local exact-target slice only. A successful
-// return means the owner AcceptedO transition and listener confirmation ACK
-// have both occurred; it does not model ingress apply or caller ACK.
+// Open executes one exact-target attempt through either the local owner or the
+// configured remote relay. A successful return means AcceptedO and listener
+// confirmation have occurred; caller-facing apply remains the transport's job.
 func (m *Manager) Open(ctx context.Context, caller clientsession.Session, endpoint, targetID string) (Result, error) {
 	return m.open(ctx, caller, nil, endpoint, targetID, nil, false)
 }
 
-// OpenPipe opens an owner-local exact target with both payload directions and
-// accepted-Pipe terminal propagation wired before the Open linearization
-// point. Payload remains gated until ActivatePipe records that the
-// caller-facing PipeOpened message was written successfully.
+// OpenPipe opens one exact target with both payload directions and terminal
+// propagation wired before the Open linearization point. Payload remains gated
+// until ActivatePipe records that caller-facing PipeOpened was written.
 func (m *Manager) OpenPipe(ctx context.Context, caller clientsession.Session, callerEndpoint localbinding.CallerEndpoint, endpoint, targetID string) (Result, error) {
 	if callerEndpoint == nil {
 		return Result{}, fmt.Errorf("%w: caller endpoint is required", ErrInvalid)
@@ -326,7 +325,7 @@ func (m *Manager) open(
 	}
 	if !forwardedOwner && !ownerLocal {
 		if m.remote == nil {
-			return Result{}, m.fail(e, ErrRemoteOwnerUnsupported)
+			return Result{}, m.fail(e, ErrRemoteRelayUnavailable)
 		}
 		if err := validateForwardingContext(openContext); err != nil {
 			return Result{}, m.fail(e, err)
@@ -531,12 +530,12 @@ func (m *Manager) reserve(e *entry, open authority.OpenContext, forwarded bool) 
 	if existing := m.byAttempt[open.AttemptID]; existing != nil && existing != e {
 		return localbinding.Reservation{}, fmt.Errorf("%w: duplicate attempt", ErrAttemptReplay)
 	}
+	now := m.now()
+	if !now.Before(open.ExpiresAt) {
+		return localbinding.Reservation{}, ErrContextExpired
+	}
 	if forwarded {
-		now := m.now()
 		m.pruneForwardedAttemptsLocked(now)
-		if !now.Before(open.ExpiresAt) {
-			return localbinding.Reservation{}, ErrContextExpired
-		}
 		if _, exists := m.forwardedAttempts[open.AttemptID]; exists {
 			return localbinding.Reservation{}, ErrAttemptReplay
 		}
@@ -567,10 +566,10 @@ func (m *Manager) reserve(e *entry, open authority.OpenContext, forwarded bool) 
 	if reservation.Listener == e.caller {
 		return localbinding.Reservation{}, fmt.Errorf("%w: caller and listener sessions must differ", ErrInvalid)
 	}
+	if !m.now().Before(open.ExpiresAt) {
+		return localbinding.Reservation{}, ErrContextExpired
+	}
 	if forwarded {
-		if !m.now().Before(open.ExpiresAt) {
-			return localbinding.Reservation{}, ErrContextExpired
-		}
 		m.forwardedAttempts[open.AttemptID] = open.ExpiresAt
 	}
 	e.attemptID = reservation.Context.AttemptID

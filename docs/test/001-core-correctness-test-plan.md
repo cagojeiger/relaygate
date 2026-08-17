@@ -262,11 +262,23 @@ contract를 통과한 증거가 아니다. Refactor 뒤 test run과 artifact로 
 
 현재 working-tree slice에서는 다음이 통과했다.
 
-- `go test ./internal/gateway/control/... ./internal/gateway/routing/binding ./internal/raft/...`
+- `go test -shuffle=on ./...`, `go vet ./...`, `go test -race ./...`
+- `cargo fmt --all --check`, workspace check/test와 warnings-as-errors clippy
 - Isolated `./scripts/compose-smoke.sh`, including leader failover and live-binding full redeclare
 
 이는 focused implementation/Compose evidence다. 위 planned release gate, 모든 crash-cut/F1–F9 pairwise와
 production trust를 완료했다는 뜻은 아니다.
+
+현재 자동화 증거에서 명시적으로 남은 항목은 다음과 같다.
+
+| Gap | 현재 상태 | 완료 조건 |
+| --- | --- | --- |
+| `C15` control keepalive blackhole | keepalive 상수와 enforcement margin만 unit test | 실제 blackhole에서 old session/route가 제거되고 fresh reconnect/redeclare됨 |
+| `C09–C12` operator/epoch fencing | 문서화된 fail-closed 절차 | 재현 가능한 operator harness와 old-authority 차단 증거 |
+| `H05` clock skew readiness | strict expiry unit contract | 배포 clock-skew bound를 검사하는 runtime/운영 증거 |
+| SPEC 003 crash cuts, `F1–F9` pairwise | 대표 unit/race/Compose 사례만 존재 | mandatory matrix manifest의 각 행이 test 또는 invariant proof에 연결됨 |
+
+따라서 상태표는 total하지만 v0 release evidence는 위 항목이 닫힐 때까지 partial이다.
 
 ## 관련 문서
 

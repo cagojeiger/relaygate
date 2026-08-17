@@ -579,7 +579,7 @@ func TestConnectOpenConfirmationLossReturnsUnknown(t *testing.T) {
 
 func TestConnectOpenFailuresAreRedactedAndDoNotEndStream(t *testing.T) {
 	opener := &testOpener{open: func(context.Context, clientsession.Session, string, string) (opening.Result, error) {
-		return opening.Result{}, fmt.Errorf("secret owner address: %w", opening.ErrRemoteOwnerUnsupported)
+		return opening.Result{}, fmt.Errorf("secret owner address: %w", opening.ErrRemoteRelayUnavailable)
 	}}
 	_, _, server := startTestServerWithDependencies(t, &testBindingManager{}, opener)
 	connection := dialTestServer(t, server.Address())

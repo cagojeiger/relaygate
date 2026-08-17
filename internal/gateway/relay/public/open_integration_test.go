@@ -261,7 +261,7 @@ func (a *openIntegrationAdmitter) AdmitOpen(_ context.Context, caller clientsess
 	if slot.Ref.ListenerBindingID == "" || slot.Key != key {
 		return authority.OpenContext{}, authority.ErrRouteNotFound
 	}
-	return authority.NewOpenContext(
+	return authority.NewForwardedOpenContext(
 		"epoch-1",
 		"authority-1",
 		fmt.Sprintf("attempt-%d", a.sequence.Add(1)),
@@ -272,7 +272,14 @@ func (a *openIntegrationAdmitter) AdmitOpen(_ context.Context, caller clientsess
 			AuthRevision:    caller.AuthRevision,
 		},
 		slot,
-		"owner-control-1",
+		authority.ForwardingContext{
+			IngressGatewayID:         "gateway-a",
+			IngressGatewayInstanceID: "instance-a",
+			IngressControlSessionID:  "ingress-control-1",
+			OwnerControlSessionID:    "owner-control-1",
+			OwnerRelayAddress:        "127.0.0.1:27430",
+			ExpiresAt:                time.Now().Add(time.Minute),
+		},
 	)
 }
 
