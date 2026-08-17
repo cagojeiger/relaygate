@@ -225,6 +225,70 @@ func TestX02SessionEndAfterUnknownDeclareRedeclaresCurrentSnapshotOnly(t *testin
 	}
 }
 
+func TestCallerVerificationCancellationDoesNotFenceCurrentAuthority(t *testing.T) {
+	manager, raft := newManager(t)
+	if _, err := manager.Confirm(context.Background()); err != nil {
+		t.Fatalf("Confirm(): %v", err)
+	}
+	ingress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
+	binding := testBinding("owner", "owner-1", "listener-1")
+	openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
+	wantAuthority, ok := manager.Current()
+	if !ok {
+		t.Fatal("Current() is absent before canceled verification")
+	}
+	wantPresence := manager.Presence()
+
+	for _, verificationErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		raft.setError(verificationErr)
+		if _, err := manager.Confirm(context.Background()); !errors.Is(err, ErrNoAuthority) {
+			t.Fatalf("Confirm(%v) = %v, want ErrNoAuthority", verificationErr, err)
+		}
+		if got, current := manager.Current(); !current || got != wantAuthority {
+			t.Fatalf("caller cancellation fenced authority: current=%v ref=%#v want=%#v", current, got, wantAuthority)
+		}
+		if got := manager.Presence(); got != wantPresence {
+			t.Fatalf("caller cancellation changed presence: got=%#v want=%#v", got, wantPresence)
+		}
+		if _, err := manager.ResolveOpen(ingress, testAuth(), "/events", "worker"); err != nil {
+			t.Fatalf("ResolveOpen() after caller cancellation: %v", err)
+		}
+	}
+
+	raft.setError(nil)
+	if got, err := manager.Confirm(context.Background()); err != nil || got != wantAuthority {
+		t.Fatalf("Confirm() after cancellation = %#v, %v, want unchanged %#v", got, err, wantAuthority)
+	}
+}
+
+func TestDefinitiveLeadershipLossFencesAuthorityAndDirectory(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*fakeRaftNode)
+	}{
+		{name: "follower", mutate: func(raft *fakeRaftNode) { raft.setRole("Follower") }},
+		{name: "verification failure", mutate: func(raft *fakeRaftNode) { raft.setError(errors.New("quorum verification failed")) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager, raft := newManager(t)
+			if _, err := manager.Confirm(context.Background()); err != nil {
+				t.Fatalf("Confirm(): %v", err)
+			}
+			openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{testBinding("owner", "owner-1", "listener-1")})
+			test.mutate(raft)
+			if _, err := manager.Confirm(context.Background()); !errors.Is(err, ErrNoAuthority) {
+				t.Fatalf("Confirm() = %v, want ErrNoAuthority", err)
+			}
+			if _, current := manager.Current(); current {
+				t.Fatal("definitive leadership loss left a current authority")
+			}
+			if got := manager.Presence(); got.State != PresenceNoAuthority || got.Sessions != 0 || got.Revalidated != 0 || got.Bindings != 0 {
+				t.Fatalf("presence after fence = %#v, want empty NoAuthority", got)
+			}
+		})
+	}
+}
+
 func newManager(t *testing.T) (*Manager, *fakeRaftNode) {
 	t.Helper()
 	raft := &fakeRaftNode{status: raftnode.Status{Role: "Leader", Term: 1}, epoch: "epoch-1"}
@@ -271,3 +335,5 @@ func (n *fakeRaftNode) VerifyLeader(context.Context) error {
 	return n.err
 }
 func (n *fakeRaftNode) setTerm(term uint64) { n.mu.Lock(); n.status.Term = term; n.mu.Unlock() }
+func (n *fakeRaftNode) setRole(role string) { n.mu.Lock(); n.status.Role = role; n.mu.Unlock() }
+func (n *fakeRaftNode) setError(err error)  { n.mu.Lock(); n.err = err; n.mu.Unlock() }

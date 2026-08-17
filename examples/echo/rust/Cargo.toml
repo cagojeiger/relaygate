@@ -1,0 +1,11 @@
+[package]
+name = "relaygate-echo-rust"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+relaygate-sdk = { path = "../../../sdk/rust/relaygate-sdk" }
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "signal", "time"] }

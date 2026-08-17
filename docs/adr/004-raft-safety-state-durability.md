@@ -1,34 +1,23 @@
-# ADR 004: Raft safety state 최소 영속화
+# ADR 004: Raft safety만 영속화
 
 ## Context
 
-RelayGate의 연결은 일시적이지만 Raft safety는 process 재시작 뒤에도 유지되어야 한다.
+Pipe와 route는 재시작 뒤 복구하지 않지만 Raft identity와 합의 안전은 재사용 시 보존되어야 한다.
 
 ## Decision
 
-Raft가 요구하는 term/vote, log, membership과 snapshot을 영속화한다. 합의된 routing control
-record는 Raft log/snapshot에만 두며 별도 database를 만들지 않는다.
+영속화하는 것은 Raft의 term/vote, log, membership, snapshot과 고정 크기 `ClusterEpoch` marker뿐이다.
+Gateway, control session, Listener, route, attempt, Pipe, payload, credential과 tombstone은 Raft command나
+snapshot에 넣지 않는다.
 
-Pipe, Listener connection, inflight, buffer, payload, control session과 client credential은
-영속화하지 않는다.
+Confirmed leader/quorum이 없으면 새 session, bind, resolve와 OpenContext 발급을 멈춘다. 이미 열린 Pipe의
+local relay와 teardown은 Raft와 독립적으로 계속한다.
 
-복구된 control record는 현재 leader의 session 재검증과 owning Gateway 확인 전에는 route가 아니다.
-
-Confirmed leader나 quorum을 사용할 수 없으면 새 binding commit, resolve와 one-attempt admission context
-발급을 멈춘다. Quorum confirmation 뒤 이미 발급된 single-use attempt는 같은 `ClusterEpoch` 안에서만 local
-reservation/accept ordering을 따를 수 있다. Local teardown과 이미 성립한 Pipe relay는 계속하며, 이 상태에서
-새 cluster epoch를 만들지 않는다.
-
-`ClusterEpoch`는 모든 old authority path를 외부적으로 fence한 명시적 reset/bootstrap에서만 바꾼다. 새
-epoch는 늦은 old-epoch message를 거부하지만 epoch 값 자체가 unreachable old cluster를 중지시키지는 않는다.
-
-Local storage를 잃은 voter는 기존 identity를 재사용하지 않고 살아 있는 quorum에 새 identity로
-합류한다.
+`ClusterEpoch` 변경은 모든 old authority path를 외부에서 fence한 offline bootstrap에서만 허용한다.
+Store를 잃은 voter는 기존 NodeId를 재사용하지 않고 surviving quorum에 새 identity로 합류해야 한다.
 
 ## Consequences
 
-- Raft safety만 재시작을 넘어 유지된다.
-- 연결, payload와 credential은 복구 대상이 아니다.
-- Quorum 상실은 자동 epoch 전환이 아니라 새 control operation의 정지다.
-- Current-epoch binding tombstone은 ABA 방지를 위해 보존한다. v0은 distinct-key 상한에서 새 key를
-  fail closed하며 routine tombstone GC를 하지 않는다.
+- 정상 재시작은 Raft safety/epoch만 복구하고 route는 reconnect/redeclare한다.
+- Local voter store loss를 자동 복구하는 dynamic membership은 별도 운영 기능이다.
+- Old path 전체 fence를 증명하지 못하면 새 epoch를 열지 않고 fail closed한다.

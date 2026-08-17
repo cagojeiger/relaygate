@@ -1,23 +1,24 @@
-# ADR 003: Machine-to-machine gRPC 인터페이스
+# ADR 003: Protocol 경계
 
 ## Context
 
-RelayGate는 CLI, daemon과 backend service를 위한 장기 양방향 연결이다. Relay와 운영 관찰은 서로
-다른 계약과 권한이 필요하다.
+SDK traffic, Gateway 내부 통신, Raft와 운영 관찰은 수명과 trust가 다르다.
 
 ## Decision
 
-Public relay interface는 **protobuf 기반 gRPC over HTTP/2**다. SDK-to-Gateway와
-Gateway-to-Gateway relay가 같은 data-plane contract를 사용하며 Go/Rust SDK는 하나의 schema를
-공유한다.
+| 경계 | Protocol | 공개 여부 |
+| --- | --- | --- |
+| SDK ↔ Gateway | `relay.proto` gRPC/HTTP2 | Public Go/Rust SDK contract |
+| Gateway ↔ authority | `control.proto` gRPC/HTTP2 | Internal |
+| Ingress ↔ owner Gateway | `gateway.proto` gRPC/HTTP2 | Internal, one stream per remote Pipe |
+| Raft voter ↔ voter | HashiCorp Raft TCP transport | Internal implementation |
+| 운영 관찰 | Read-only HTTP/JSON | Local/dev observation only |
 
-Raft transport는 구현 기술과 무관하게 public relay/SDK 호환성 범위 밖의 내부 protocol이다.
-
-REST는 **read-only observation API**로만 제공한다. Relay, payload, client/key CRUD는 허용하지
-않으며 browser relay가 필요하면 application backend가 SDK adapter가 된다.
+각 protobuf와 listener는 분리한다. Public SDK에는 control, peer, generated server와 Raft type을 노출하지
+않는다. REST는 relay나 client/key mutation을 제공하지 않는다.
 
 ## Consequences
 
-- Go/Rust SDK가 하나의 wire contract를 공유한다.
-- gRPC가 streaming, deadline과 cancellation을 담당한다.
-- REST와 Raft transport는 public relay contract를 확장하지 않는다.
+- Go/Rust SDK는 하나의 public wire contract만 공유한다.
+- Internal protocol은 public compatibility 약속 없이 바꿀 수 있다.
+- TLS와 peer authentication은 각 trust boundary에서 별도로 결정한다.

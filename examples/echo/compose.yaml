@@ -1,0 +1,58 @@
+x-echo-environment: &echo-environment
+  RELAYGATE_ECHO_ADDRESS: 127.0.0.1:27420
+  RELAYGATE_ECHO_CLIENT_ID: local-development
+  RELAYGATE_ECHO_API_KEY_ID: primary
+  RELAYGATE_ECHO_API_KEY: relaygate-local-development-key
+  RELAYGATE_ECHO_ENDPOINT: /examples/echo
+
+x-echo: &echo
+  depends_on:
+    - relaygate
+  network_mode: service:relaygate
+  restart: on-failure:10
+
+services:
+  relaygate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        VERSION: echo-dev
+    command: ["-config", "/etc/relaygate/relaygate.yaml"]
+    environment:
+      RELAYGATE_RAFT_NODE_ID: echo-node
+      RELAYGATE_RAFT_BIND_ADDRESS: 127.0.0.1:27400
+      RELAYGATE_RAFT_ADVERTISE_ADDRESS: 127.0.0.1:27400
+      RELAYGATE_RAFT_BOOTSTRAP: "true"
+      RELAYGATE_RAFT_BOOTSTRAP_VOTERS: >-
+        [{"node_id":"echo-node","address":"127.0.0.1:27400"}]
+      RELAYGATE_CONTROL_CLUSTER_EPOCH: local-echo-1
+      RELAYGATE_CONTROL_BIND_ADDRESS: 127.0.0.1:27410
+      RELAYGATE_GATEWAY_ID: echo-gateway
+      RELAYGATE_GATEWAY_CONTROL_ENDPOINTS: '["127.0.0.1:27410"]'
+      RELAYGATE_INTERNAL_RELAY_BIND_ADDRESS: 127.0.0.1:27430
+      RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS: 127.0.0.1:27430
+      RELAYGATE_ADMIN_BIND_ADDRESS: 127.0.0.1:27490
+    stop_grace_period: 15s
+    tmpfs:
+      - /var/lib/relaygate:uid=65532,gid=65532,mode=0700
+
+  echo-go:
+    <<: *echo
+    build:
+      context: ../..
+      dockerfile: examples/echo/Dockerfile
+      target: go-runtime
+    environment:
+      <<: *echo-environment
+    command: ["serve", "go"]
+
+  echo-rust:
+    <<: *echo
+    build:
+      context: ../..
+      dockerfile: examples/echo/Dockerfile
+      target: rust-runtime
+    environment:
+      <<: *echo-environment
+    command: ["serve", "rust"]

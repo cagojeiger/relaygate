@@ -1,139 +1,78 @@
 # RelayGate
 
-RelayGate는 Raft로 조정되는 Gateway cluster에서 현재 연결 가능한 Listener를 찾아 일시적인 양방향 Pipe를
-연결하고 중계한다. 연결, route history와 payload는 복구하지 않는다.
+RelayGate는 작은 Raft-coordinated Gateway cluster에서 **현재 연결 가능한 Listener**를 찾아 일시적 양방향
+Pipe를 연결한다. Route history, Pipe와 payload는 복구하지 않는다.
 
-## 구성
-
-| 구성 | 책임 |
-| --- | --- |
-| Go Gateway runtime | Process lifecycle, config, gRPC/REST, Gateway relay, Raft integration |
-| Go SDK / Rust SDK | 각 언어에 자연스러운 public API |
-| protobuf | 두 SDK가 공유하는 wire contract |
-
-- Relay data path는 protobuf gRPC를 사용한다.
-- Raft transport는 server 내부 protocol이다.
-- REST는 read-only 운영 관찰용이며 relay나 client/key CRUD를 제공하지 않는다.
-- 인증된 연결은 하나의 `ClientId`에 격리되고, client와 API key는 external client config가 관리한다.
-
-## 코드 구조
-
-`internal/`은 소유권이 드러나는 component tree로 구성하고, 각 leaf Go package 안의 파일은 평평하게 유지한다.
+## Architecture
 
 ```text
-cmd/relaygate/                         process composition root
-internal/
-├── app/{config,admin}                 process config와 read-only observation
-├── raft/{state,node}                  Raft safety/ClusterEpoch와 Raft runtime
-├── gateway/
-│   ├── access/{auth,session,runtime}  client 인증, session, reload retirement
-│   ├── control/{authority,client,server,transport}
-│   ├── routing/{binding,opening}      Listener binding과 Pipe lifecycle
-│   └── relay/{public,peer}             SDK ingress와 Gateway 간 hop
-└── gen/{control,gateway,relay}/v1     generated protobuf; 직접 수정하지 않음
-proto/relaygate/                       canonical wire contract
-sdk/{go,rust/relaygate-sdk}            public SDK; server/Raft type 비노출
+Go/Rust SDK -- public Relay gRPC --> Gateway
+                                      |
+                    +-----------------+-----------------+
+                    |                                   |
+             control gRPC                         peer relay gRPC
+                    |                                   |
+            current Authority                    remote Owner Gateway
+                    |
+              Raft TCP quorum
 ```
 
-Public Relay, Gateway 간 peer relay, control gRPC와 Raft transport는 서로 다른 protocol/trust boundary다.
-SDK는 public import/crate 경계를 유지하기 위해 `internal/` 밖에 둔다.
+- Raft는 term/vote/log/membership/snapshot과 `ClusterEpoch`만 저장한다.
+- Current authority는 control session과 live route directory를 memory에만 둔다.
+- Gateway는 자기 Listener, Pipe segment, bounded buffer와 payload를 소유한다.
+- Public Relay, internal control, internal peer relay, Raft TCP와 read-only REST는 분리된 protocol 경계다.
+- `ClientId`는 인증으로 정해지는 strict namespace이며 client/API key는 external YAML이 관리한다.
+- Retry, response replay, Pipe resume/attach, payload replay와 durable delivery는 지원하지 않는다.
 
-설계 원칙은 `docs/adr/`, 상태·동작 계약은 `docs/spec/`, 필수 검증 계획은 `docs/test/`에 있다.
-장애와 복구 경계는 [SPEC 003](docs/spec/003-failure-and-recovery-model.md), 닫힌 상태 전이표는
-[SPEC 004](docs/spec/004-state-transition-model.md), v0 필수 테스트는
-[TEST 001](docs/test/001-core-correctness-test-plan.md), 실행 증거와 외부 blocker는
-[TEST 002](docs/test/002-failure-evidence-matrix.md)에서 정의한다. Cross-Gateway owner hop의 장기 결정은
-[ADR 008](docs/adr/008-cross-gateway-hop-and-replay.md), current-state-only route 경계는
-[ADR 009](docs/adr/009-ephemeral-current-state-authority-directory.md)가 소유한다.
+## Repository
 
-## 현재 구현
+```text
+cmd/relaygate/                         process entrypoint
+internal/
+├── app/{relaygate,config,admin}       composition, config, observation
+├── raft/{state,node}                  Raft safety/epoch and runtime
+├── gateway/
+│   ├── access/{auth,session,runtime}  authentication and reload retirement
+│   ├── control/{authority,client,server,transport}
+│   ├── routing/{binding,opening}      Listener and Pipe lifecycle
+│   └── relay/{public,peer}            SDK ingress and Gateway hop
+└── gen/{control,gateway,relay}/v1     generated protobuf
+proto/relaygate/                       canonical wire schemas
+sdk/{go,rust/relaygate-sdk}            public SDKs
+examples/echo/                         isolated one-node echo example
+docs/{adr,spec,test}/                  decisions, contracts, evidence
+```
 
-현재 Go runtime은 다음 경계까지 구현한다.
+각 leaf Go package 안은 flat file layout을 유지하고 `internal/` tree가 component ownership을 나타낸다.
 
-- HashiCorp Raft의 단일 voter 또는 정적 3-voter bootstrap
-- BoltDB log/stable store와 file snapshot
-- Raft safety state와 constant-size `ClusterEpoch` marker만 저장하는 FSM; Gateway/binding/route domain state는 저장하지 않음
-- Current leader의 term/quorum 확인으로 생성하는 `AuthorityId`와 memory-only control session/route directory
-- 내부 gRPC control stream: `Hello → SessionOpened → exact current FullSnapshot → serial Declare/Withdraw`
-- Exact session declaration, true withdraw, session 종료 bulk delete와 authority 변경 시 전체 directory clear
-- 각 process의 독립적인 `GatewayId`/`GatewayInstanceId`, endpoint 순회와 leader 변경 뒤 current Live binding full redeclare
-- External client config의 SHA-256 verifier, `SIGHUP` atomic reload와 메모리 `ClientSession`
-- Public `Relay.Connect`의 first-message 인증 deadline, bounded client session과 authenticated `BindListener/UnbindListener`
-- 별도 local binding runtime의 `Registering/Live/Retiring/Retired`, session ownership과 process-wide capacity
-- Declare/Withdraw 응답 유실 시 session cleanup과 current Live snapshot으로 수렴하며 과거 mutation은 replay하지 않음
-- In-flight correlation 전용 `request_id`, exact literal `endpoint`와 required `target_id`를 쓰는 same/cross-Gateway `Open`
-- `A ∧ L ∧ Q ∧ D ∧ V ∧ O` attempt admission, owner O reservation, Listener accept Open LP와 exact confirmation-apply ACK
-- `Hello`의 internal relay address를 current authority session memory에만 둔 remote-owner discovery
-- 별도 internal gRPC bind/advertise listener, exact serialized context/absolute expiry와 bounded replay fence
-- Process-wide bounded async Open, duplicate in-flight rejection, `CancelOpen`과 exact caller/listener participant `ClosePipe`
-- Bounded attempt/Pipe/terminal-history table, caller `Opened/Failed/Unknown`과 session/reload terminal 전파
-- Same/cross-Gateway Pipe의 60 KiB 이하 opaque payload frame, activation, 방향별 FIFO와 bounded backpressure
-- JSON structured log, quorum-confirmed read-only `/status` current counts, local health/readiness와 Prometheus metrics
-- Process restart에서 Raft safety/epoch만 복구하고 route는 Gateway reconnect/redeclare로 재구축
+## Implemented v0
 
-Cross-Gateway owner forwarding은 아래 승인 계약과 [TEST 001의 H01–H12](docs/test/001-core-correctness-test-plan.md)를
-따른다. 현재 evidence는 Public Go/Rust 네 조합, isolated 3-node smoke, leader 교체 뒤 live binding 재선언과
-[TEST 002의 local fault matrix](docs/test/002-failure-evidence-matrix.md)까지다. Dynamic membership voter
-replacement, external old-path fence와 deployment clock-skew bound는 아직 blocker다. Peer auth/mTLS,
-wildcard/priority, target 생략 선택과 `OpenAll`도 별도 범위다.
+- HashiCorp Raft single/정적 3-voter bootstrap과 safety-only persistence
+- Leader/quorum-confirmed authority, memory-only session/directory, failover clear + full redeclare
+- SHA-256 API-key verifier, first-message auth deadline, `SIGHUP` atomic client reload
+- Exact literal endpoint + required target Bind/Open, same/cross-Gateway owner routing
+- `A ∧ L ∧ Q ∧ D ∧ V ∧ O` admission and bounded single-use forwarded attempt fence
+- Listener confirmation ACK, caller `Opened/Failed/Unknown`, participant-owned close
+- 1..60 KiB opaque payload, per-direction FIFO, bounded backpressure and terminal priority
+- Public Go/Rust SDK and four-language-combination Compose conformance
+- Quorum-confirmed read-only status, health/readiness and Prometheus metrics
 
-## Public SDK
+Wildcard/priority, target selection, `OpenAll`, dynamic membership, automatic retry/resume은 범위 밖이다.
 
-| SDK | 위치 | 공개 경계 |
+## SDK contract
+
+| SDK | Location | Public handles |
 | --- | --- | --- |
-| Go | `github.com/cagojeiger/relaygate/sdk/go` | `Client`, `Listener`, `Offer`, `Pipe` |
+| Go | `sdk/go` | `Client`, `Listener`, `Offer`, `Pipe` |
 | Rust | `sdk/rust/relaygate-sdk` | `Client`, `Listener`, `Offer`, `Pipe` |
 
-두 SDK는 같은 `relay.proto`만 사용하고 generated gRPC, Gateway, control과 Raft type을 공개 API에 노출하지 않는다.
-TLS가 기본이며 plaintext는 명시적으로 선택한 loopback local development 연결에서만 허용한다. 현재 SDK 범위는
-literal endpoint + exact target의 Bind/Open, confirmation ACK 뒤 Listener Pipe 노출, 양방향 framed payload와
-participant Close다. 자동 reconnect/retry, Pipe resume/replay, wildcard와 `OpenAll`은 제공하지 않는다. `Send`
-성공은 bounded local queue/stream write의 성공이지 peer application ACK가 아니다. Rust crate는 아직 repository
-workspace 전용(`publish = false`)이다.
+두 SDK는 `relay.proto`만 공유하고 server/control/Raft type을 노출하지 않는다. TLS가 기본이며 plaintext는
+명시적인 loopback local-development opt-in만 허용한다. `Send` 성공은 bounded local queue/stream write
+성공이지 peer application ACK가 아니다.
 
-SDK의 pending/live/terminal history와 runtime의 participant-owned Close history는 process-local bound 안에서만
-유지한다. 이는 duplicate close를 안정적으로 처리하기 위한 transient state이며 Raft route tombstone이나
-Pipe/payload 복구 기록이 아니다. Bound에서 빠진 old/foreign identity는 동일하게 unknown으로 처리한다.
+직접 실행하는 Go/Rust echo 예제는 [examples/echo](examples/echo/README.md)에 있다.
 
-SDK 상호운용은 아래 3-node smoke에 포함된다. 이미 실행 중인 Compose cluster에서 네 언어 조합만
-다시 확인할 때는 `RELAYGATE_COMPOSE_PROJECT=<project> ./scripts/compose-sdk-conformance.sh`를 사용한다.
-
-## 승인된 Cross-Gateway 계약
-
-```text
-Caller ─ public Relay ─ Ingress ═ dedicated internal bidi stream ═ Owner ─ public Relay ─ Listener
-                              one volatile hop / logical remote Pipe
-```
-
-- Owner Gateway는 `Hello`에 internal relay advertise address를 싣는다. Current authority는 이를 exact current
-  control-session memory route entry에만 묶고 Raft, snapshot, database나 durable directory에 저장하지 않는다.
-- Internal relay는 public Relay, control gRPC와 Raft transport에서 분리된 bind/advertise listener다. Remote
-  attempt는 dedicated bidi stream 하나를 쓰고 Accepted 뒤 같은 stream이 그 Pipe의 유일한 Gateway hop이다.
-- Forwarded context는 epoch/authority provenance, ingress Gateway/instance/control session, exact auth/binding,
-  owner control session/address와 absolute `expires_at`을 묶는다. Binding generation은 사용하지 않는다.
-  `ClockSkewBound < relay.open_timeout`을 증명할 수 있어야 한다.
-- Owner는 exact `O`에서 local attempt reservation과 successful `AttemptId` cache insert를 원자화한 뒤에만
-  Listener에게 offer한다. Entry는 Listener reject 뒤에도 expiry까지 남는다. Listener accept를 `AcceptedO`로
-  기록할 때 `PipeId`를 만들고 Open이 선형화된다. 이 retention은 Owner process lifetime 안의 volatile guarantee다.
-- Context 발급 뒤 same epoch라도 authority/owner control session이 바뀌면 O 이전 attempt는 stale이다. O가
-  먼저 끝난 attempt만 이후 control change로 소급 취소하지 않고 volatile lifecycle을 계속한다.
-- O reservation 뒤 hop retry/reconnect, Pipe resume/attach와 payload replay는 없다. O guard failure는 consume하지
-  않아 expiry 전 재평가할 수 있다. Open LP 미통과가 증명될 때만 stable failure이고 통과 가능 또는 이후
-  response/hop loss는 `Unknown`이다. Ingress/Owner segment는 각각 volatile하다.
-
-현재 Raft transport와 internal control gRPC, 그리고 internal owner relay를 활성화하는 초기 slice는 TLS나 peer
-authentication 없이 **신뢰된 local/dev network만을 전제**한다. 기준 config는 모든 listener를 loopback에 bind한다. Compose만 container network
-통신을 위해 bind address를 명시적으로 `0.0.0.0`으로 override하고 host port는 loopback에만 publish한다.
-이 상태로 shared 또는 untrusted network에 배포하지 않으며, 운영 배포 전 transport trust boundary와
-Gateway identity 인증을 별도로 확정한다. Bearer key를 받는 public Relay listener는 TLS가 구현될 때까지
-non-loopback bind를 거부한다. Admin REST도 별도 application authentication이 없는 trusted local/dev
-관찰면이며 external authentication boundary 없이 shared/untrusted network에 노출하지 않는다.
-
-Forwarded context의 ingress/owner field는 provenance를 구조적으로 묶지만 plaintext Owner가 actual stream peer,
-current ingress control session 또는 자기 advertised address의 currentness를 검증하는 cryptographic proof는 아니다.
-Ingress만 authority response의 ingress tuple과 자기 live session 일치를 send 전에 확인한다.
-
-## 실행과 설정
+## Local configuration
 
 ```bash
 go run ./cmd/relaygate -config ./configs/relaygate.yaml
@@ -141,67 +80,33 @@ curl http://127.0.0.1:27490/healthz/ready
 curl http://127.0.0.1:27490/status
 ```
 
-설정은 `configs/relaygate.yaml` 하나가 기준이다. 공통 정책은 YAML에 두고, 배포마다 달라지는
-`RELAYGATE_RAFT_NODE_ID`, `RELAYGATE_RAFT_BIND_ADDRESS`,
-`RELAYGATE_RAFT_ADVERTISE_ADDRESS`, `RELAYGATE_RAFT_DATA_DIR`,
-`RELAYGATE_RAFT_BOOTSTRAP`, `RELAYGATE_RAFT_BOOTSTRAP_VOTERS`,
-`RELAYGATE_CONTROL_CLUSTER_EPOCH`, `RELAYGATE_CONTROL_BIND_ADDRESS`,
-`RELAYGATE_INTERNAL_RELAY_BIND_ADDRESS`, `RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS`,
-`RELAYGATE_GATEWAY_ID`, `RELAYGATE_GATEWAY_CONTROL_ENDPOINTS`,
-`RELAYGATE_ADMIN_BIND_ADDRESS`를 환경변수로 덮어쓴다.
-기본 local port block은 Raft `27400`, control `27410`, public Relay `27420`, internal Relay `27430`,
-Admin `27490`이다. 포트와 advertise address는 restart-only이며, 기존 Raft data에 저장된 peer address를
-바꿀 때는 fresh local volume 또는 명시적인 membership migration이 필요하다.
-Bootstrap voter와 control endpoint 목록은 JSON 배열이며 `Raft NodeId`와 `GatewayId`는 같은 값으로
-간주하지 않는다.
+기준 설정은 `configs/relaygate.yaml` 하나다. 배포별 node/address/bootstrap 값은 `RELAYGATE_*` 환경변수로
+덮어쓴다. Local port block은 다음과 같다.
 
-같은 canonical YAML의 `clients`가 external credential source다. Raw key는 저장하지 않고
-`sha256:<digest>`만 둔다. 기본 local-development verifier의 test key는
-`relaygate-local-development-key`이며 production에서 반드시 교체한다. `SIGHUP`은 전체 config를 검증한 뒤
-clients만 atomic하게 교체하고, 제거된 credential의 local session을 종료한다.
-`relay.authentication_timeout`은 인증을 보내지 않는 stream을 종료하고,
-`relay.max_client_sessions`는 process 전체의 active session 수를 제한한다. 같은 값은 connection별 gRPC
-동시 stream 상한에도 사용하지만 전역 상한의 source of truth는 session manager다.
-`relay.max_listener_bindings`는 process 전체의 Registering/Live/cleanup 대기 listener 정의 수를 원자적으로
-제한하며 범위는 1–512다. 이는 connection 수가 아니다. 초과 시 기존 binding을 evict하지 않고 새 Bind만 거부한다.
-`relay.open_timeout`은 admission·offer, Listener confirmation, payload queue backpressure와 terminal control
-delivery의 각 bounded wait를 제한하고 Forwarded OpenContext의 validity를 정한다. Cross-Gateway 배포는 authority와
-Gateway wall clock의 알려진 skew가 이 값보다 작아야 한다.
-`relay.max_pipes`는 process 전체의 Opening/Accepted Pipe와 listener termination cleanup 대기까지 묶은
-admission 상한이며 범위는 1–100,000이다. Open worker semaphore, successful O reservation replay cache와 terminal
-history도 같은 크기로 제한한다.
-Open worker는 stream 수와 곱해 상한을 넘지 않으며 초과 시 기존 Pipe를 evict하지 않고 새 Open만 거부한다. `request_id`는
-live stream의 in-flight correlation에만 쓰고 replay/resume하지 않는다. `ListenerConfirmationAcknowledged`는 exact
-`ListenerConfirmed(attempt_id, pipe_id)`가 server-side apply된 뒤 같은 identity를 echo하며 Listener SDK의 Pipe handle 노출
-barrier가 된다. `CancelOpen` ACK는 signal 전달 여부, `ClosePipe` ACK는 exact caller/listener participant ownership 여부만 나타낸다.
-Participant-owned duplicate Close는 bounded terminal history에 남아 있는 동안 idempotent `owned=true`이고,
-eviction 뒤에는 unknown/foreign과 같은 `owned=false`다. 이 history는 route tombstone이나 durable replay log가 아니다.
-Payload는 메시지 경계를 보존하며 frame당 최대 60 KiB다. 방향별 순서만 보존하고 전달 성공은 local gRPC stream
-write 완료까지만 뜻하며 peer application 관찰이나 ACK가 아니다. Stream별 payload queue는 32 frame, process 전체
-outbound queued/in-flight payload는 `min(relay.max_pipes, 1024)` frame으로 제한한다. 한계가 `relay.open_timeout`
-안에 해소되지 않으면 frame을 조용히 버리지 않고 해당 Pipe를 terminal로 만든다. Local gRPC write가 이미
-시작됐다면 destination stream을 실패시키고
-그 write 결과를 join한 뒤 반환해 실패 뒤 late write를 막는다. Control/terminal message는 별도 우선 lane을 사용한다.
-각 authenticated stream은 unbuffered FIFO Pipe worker 하나로 payload와 `ClosePipe`를 순서화해 receive loop가
-outbound failure를 계속 관찰한다. 이 worker 수는 `relay.max_client_sessions`로 제한된다. Stream 종료는 Open
-worker를 cancel/join하지만 Pipe worker는 cancel만 하고 handler 반환을 막지 않아 gRPC transport cancellation이
-in-flight write를 풀 수 있게 한다.
-한 정의의 `endpoint_pattern`은 최대 1024 bytes, `target_id`는 최대 128 bytes로 제한해 최대 snapshot도 internal
-gRPC 1 MiB envelope 안에 유지한다.
+| Port | Purpose |
+| --- | --- |
+| `27400` | Raft TCP |
+| `27410` | Internal control gRPC |
+| `27420` | Public Relay gRPC |
+| `27430` | Internal owner relay gRPC |
+| `27490` | Read-only Admin HTTP |
 
-## 로컬 3-node 검증
+Port와 Raft peer address는 restart-only다. Existing durable peer address를 바꾸면 fresh local volume 또는
+명시적 membership migration이 필요하다. 기본 local-development key는
+`relaygate-local-development-key`이며 production에서는 반드시 교체한다.
 
-Docker Compose는 고정된 3-voter smoke cluster를 실행한다. Raft transport는 Compose network 안에만 있고,
-각 노드의 internal control gRPC는 `27411`–`27413`, read-only Admin HTTP는 `27491`–`27493`에 노출된다. Internal
-owner relay `27430`은 Compose private network에만 두고 host에 publish하지 않는다. Cross-Gateway 증거는 caller와
-listener가 다른 Gateway public Relay를 사용해 [H12](docs/test/001-core-correctness-test-plan.md)를 통과한 artifact로만
-판정한다.
+## Local 3-node verification
 
 ```bash
-# 권장: 격리된 3-node cluster를 만들고 전체 smoke 뒤 container, volume, test image를 정리한다.
 ./scripts/compose-smoke.sh
+```
 
-# 상태를 직접 관찰할 때만 수동으로 띄운다.
+이 명령은 격리된 3-node cluster에서 same/cross-Gateway relay, 양방향 payload, Go/Rust 네 조합, leader
+failover, empty directory와 fresh redeclare를 검증하고 생성한 resource를 정리한다.
+
+상태를 직접 관찰할 때만 수동으로 실행한다.
+
+```bash
 docker compose up -d --build
 curl http://127.0.0.1:27491/status
 curl http://127.0.0.1:27492/status
@@ -209,14 +114,21 @@ curl http://127.0.0.1:27493/status
 docker compose down -v
 ```
 
-전체 smoke는 3-node readiness, same/cross-Gateway relay와 양방향 payload, Go/Rust SDK 네 조합,
-leader 중단 뒤 2-node quorum 복구, empty directory와 fresh full redeclare를 같은 순서로 검증한다. CI도 이
-명령을 실행한다.
+Compose는 internal owner relay를 host에 publish하지 않는다. Public bearer listener는 loopback만 허용하고,
+Compose는 private container network를 위해 명시적으로 bind override한다.
 
-`/status`는 현재 quorum을 확인한 leader에서만 `200`과 `authority_id`를 반환한다. Follower 또는 quorum을
-확인할 수 없는 노드는 `503`과 `presence.state=NoAuthority`를 반환한다. `authority_id`와 `presence`가
-quorum-confirmed observation이며 Raft/Gateway diagnostic field는 응답 시점의 best-effort local status다.
-Presence의 `sessions/revalidated/bindings`는 current authority가 지금 관찰한 수치이며 전체 replica 수,
-`complete` 또는 config convergence를 뜻하지 않고 admission gate로도 쓰지 않는다.
-HTTP 또는 control RPC 호출 취소는 해당 호출만 끝내며 current authority나 다른 control session을 fence하지
-않는다.
+## Security and production boundary
+
+현재 internal control/peer/Raft transport와 Admin REST는 trusted local/dev network 전제다. Shared/untrusted
+network에 그대로 노출하지 않는다. Production 전에는 다음이 필요하다.
+
+- Internal peer/control identity authentication 또는 mTLS
+- Raft transport mTLS 정책
+- `ClockSkewBound < relay.open_timeout` evidence
+- Lost voter replacement와 safe old-path fencing operator flow
+
+상세 계약은 [SPEC 001](docs/spec/001-system-model.md), 장애/복구는
+[SPEC 003](docs/spec/003-failure-and-recovery-model.md), canonical transition은
+[SPEC 004](docs/spec/004-state-transition-model.md), 검증 목록과 현재 evidence는
+[TEST 001](docs/test/001-core-correctness-test-plan.md),
+[TEST 002](docs/test/002-failure-evidence-matrix.md)를 따른다.

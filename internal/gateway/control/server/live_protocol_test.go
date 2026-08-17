@@ -2,6 +2,8 @@ package controlgrpc
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,9 @@ import (
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	raftnode "github.com/cagojeiger/relaygate/internal/raft/node"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 type testRaftNode struct{}
@@ -98,5 +103,46 @@ func TestSessionEndBulkDeletesRoutes(t *testing.T) {
 	manager.EndSession(session.Ref)
 	if got := manager.Presence().Bindings; got != 0 {
 		t.Fatalf("bindings after end = %d, want 0", got)
+	}
+}
+
+func TestSnapshotEnvelopeAcceptsMaximumLegalSetAndRejectsExcess(t *testing.T) {
+	identity := strings.Repeat("i", routing.MaxIdentityBytes)
+	ref := authority.SessionRef{
+		ClusterEpoch:      identity,
+		AuthorityID:       identity,
+		ControlSessionID:  identity,
+		GatewayID:         identity,
+		GatewayInstanceID: identity,
+	}
+	snapshot := &controlv1.FullSnapshot{Session: sessionRefToProto(ref)}
+	for index := 0; index < routing.MaxListenerBindingsPerGateway; index++ {
+		prefix := fmt.Sprintf("/%03d/", index)
+		binding := routing.LiveBinding{
+			Key: routing.BindingKey{
+				ClientID:        identity,
+				EndpointPattern: prefix + strings.Repeat("e", routing.MaxEndpointPatternBytes-len(prefix)),
+				TargetID:        identity,
+			},
+			Ref: routing.ListenerBindingRef{
+				GatewayID:         ref.GatewayID,
+				GatewayInstanceID: ref.GatewayInstanceID,
+				ListenerBindingID: fmt.Sprintf("%04d-%s", index, strings.Repeat("l", routing.MaxIdentityBytes-5)),
+			},
+		}
+		snapshot.Bindings = append(snapshot.Bindings, liveBindingToProto(binding, false))
+	}
+	request := &controlv1.ControlRequest{Message: &controlv1.ControlRequest_FullSnapshot{FullSnapshot: snapshot}}
+	if size := proto.Size(request); size > maxMessageBytes {
+		t.Fatalf("maximum legal snapshot wire size = %d, exceeds server limit %d", size, maxMessageBytes)
+	}
+	if bindings, err := snapshotBindings(snapshot, ref); err != nil || len(bindings) != routing.MaxListenerBindingsPerGateway {
+		t.Fatalf("snapshotBindings(max) = %d, %v", len(bindings), err)
+	}
+
+	excess := proto.Clone(snapshot).(*controlv1.FullSnapshot)
+	excess.Bindings = append(excess.Bindings, &controlv1.LiveBinding{})
+	if _, err := snapshotBindings(excess, ref); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("snapshotBindings(max+1) = %v, want ResourceExhausted", err)
 	}
 }

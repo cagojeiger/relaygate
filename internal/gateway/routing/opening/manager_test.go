@@ -760,6 +760,36 @@ func TestOpenPipeRequiresCallerEndpointBeforeAdmission(t *testing.T) {
 	}
 }
 
+func TestAcceptedPipeContinuesWhenFutureAdmissionIsUnavailable(t *testing.T) {
+	listenerEndpoint := &scriptedEndpoint{}
+	callerEndpoint := &scriptedEndpoint{}
+	h := newHarness(t, 2, time.Second, listenerEndpoint)
+	defer h.manager.Close()
+
+	result, err := h.manager.OpenPipe(context.Background(), h.caller, callerEndpoint, testEndpoint, testTarget)
+	if err != nil {
+		t.Fatalf("OpenPipe(first): %v", err)
+	}
+	if !h.manager.ActivatePipe(h.caller.Ref, result.PipeID) {
+		t.Fatal("ActivatePipe(first) rejected exact caller")
+	}
+
+	h.admitter.setError(authority.ErrOpenUnavailable)
+	if second, err := h.manager.OpenPipe(context.Background(), h.caller, callerEndpoint, testEndpoint, testTarget); !errors.Is(err, ErrUnavailable) || second.PipeID != "" {
+		t.Fatalf("OpenPipe(after authority loss) = %#v, %v, want unavailable without Pipe", second, err)
+	}
+	if h.manager.ActiveCount() != 1 {
+		t.Fatalf("failed future admission changed accepted Pipe count to %d", h.manager.ActiveCount())
+	}
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("still-live")); err != nil {
+		t.Fatalf("RelayPayload(existing Pipe): %v", err)
+	}
+	payload := receivePayload(t, listenerEndpoint)
+	if payload.PipeID != result.PipeID || string(payload.Data) != "still-live" {
+		t.Fatalf("existing Pipe payload = %#v", payload)
+	}
+}
+
 func TestRelayPayloadRoutesBothDirectionsWithPerDirectionFIFO(t *testing.T) {
 	firstEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -1540,6 +1570,12 @@ func (f *fakeAdmitter) setContext(open authority.OpenContext) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.context = open
+}
+
+func (f *fakeAdmitter) setError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
 }
 
 func (f *fakeAdmitter) callCount() int {

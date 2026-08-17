@@ -6,12 +6,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/relaygate-sdk-conformance ./sdk/go/cmd/conformance
+RUN CGO_ENABLED=0 go build -trimpath -o /out/relaygate-echo ./examples/echo/go
 
 FROM gcr.io/distroless/static-debian12:nonroot AS go-runtime
-COPY --from=go-builder /out/relaygate-sdk-conformance /relaygate-sdk-conformance
+COPY --from=go-builder /out/relaygate-echo /relaygate-echo
 USER nonroot:nonroot
-ENTRYPOINT ["/relaygate-sdk-conformance"]
+ENTRYPOINT ["/relaygate-echo"]
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS rust-builder
 WORKDIR /src
@@ -19,9 +19,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY proto ./proto
 COPY sdk/rust ./sdk/rust
 COPY examples/echo/rust ./examples/echo/rust
-RUN cargo build --locked --release --package relaygate-sdk --example conformance
+RUN cargo build --locked --release --package relaygate-echo-rust
 
 FROM gcr.io/distroless/cc-debian12:nonroot AS rust-runtime
-COPY --from=rust-builder /src/target/release/examples/conformance /relaygate-sdk-conformance
+COPY --from=rust-builder /src/target/release/relaygate-echo-rust /relaygate-echo
 USER nonroot:nonroot
-ENTRYPOINT ["/relaygate-sdk-conformance"]
+ENTRYPOINT ["/relaygate-echo"]

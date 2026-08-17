@@ -1,29 +1,25 @@
-# ADR 002: Raft control state와 Gateway의 상태 경계
-
-> 영속성은 [ADR 004](004-raft-safety-state-durability.md), client 격리는
-> [ADR 006](006-client-isolation-and-external-credentials.md)을 따른다.
+# ADR 002: Raft와 Gateway topology
 
 ## Context
 
-Cluster는 Endpoint 위치에 합의해야 하지만 실제 연결의 생존 여부는 owning Gateway만 안다.
+RelayGate는 작은 cluster에서 한 authority만 새 route와 Pipe를 승인해야 한다. 연결의 실제 생존 여부는
+Raft가 아니라 owning Gateway가 안다.
 
 ## Decision
 
-하나의 Raft group은 **현재 cluster epoch의 작은 routing control record**만 합의한다. Raft library,
-storage와 node transport는 Go runtime 내부 구현이다.
+- 하나의 Raft group은 leader/quorum과 `ClusterEpoch`만 소유한다.
+- Current leader는 memory에서 control session과 현재 Listener directory를 소유한다.
+- Gateway는 자기 Listener, Pipe segment, buffer와 payload를 소유한다.
+- Authority나 control session이 끝나면 해당 memory state를 삭제하고 Gateway가 다시 선언한다.
+- Raft voter는 최대 7개다. Relay 용량은 voter가 아니라 Gateway replica를 늘려 확장한다.
 
-Raft는 Gateway registration과 `(ClientId, EndpointPattern, TargetId) → ListenerBindingRef` control
-record를 소유한다. Route는 committed record, 현재 leader가 재검증한 session, owning Gateway의 live
-binding 확인이 모두 있을 때만 유효하다.
-
-Gateway는 자신의 Listener와 Pipe segment를 소유한다. Pipe, inflight, buffer와 payload는 Raft에
-넣지 않으며 Gateway 간 relay는 public data-plane gRPC를 사용한다.
-
-Cluster는 하나의 Raft group과 최대 7개의 voter로 제한한다. 연결 용량은 quorum을 키우지 않고
-Gateway-only node를 추가해 확장한다.
+```text
+Raft quorum -> current Authority -> current session directory -> owning Gateway
+     safety          decision             location                live truth
+```
 
 ## Consequences
 
-- Raft는 범용 key-value database가 아니다.
-- 재시작한 Gateway는 새 instance로 등록하며 연결과 Pipe를 복구하지 않는다.
-- Gateway 용량과 Raft 합의 규모는 독립적으로 확장된다.
+- Raft는 key-value route store가 아니다.
+- Failover 직후 directory는 비어 있고 reconnect한 Gateway의 현재 Listener부터 다시 사용할 수 있다.
+- 저장량은 과거 churn이 아니라 현재 session/Listener 수에 비례한다.
