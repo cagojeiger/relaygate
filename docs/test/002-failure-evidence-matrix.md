@@ -21,7 +21,7 @@
 | Remote hop | exact, provenance mismatch, replay, expiry, loss | `executed` | Admission decoder, peer relay, forwarded-attempt tests |
 | Payload | both directions, bound, pressure, close/crash | `executed` | Opening/public/peer/SDK payload tests |
 | Auth config | current, invalid candidate, removal, process skew | `executed` | Auth/runtime/admin tests |
-| Raft storage | intact restart, quorum loss, epoch mismatch | `executed` | Raft node/state tests and 3-node Compose |
+| Raft storage | intact restart, corrupt snapshot, quorum loss, epoch mismatch | `executed` | Raft node/state tests including corrupt epoch/version/trailing-data rejection, and 3-node Compose |
 | Voter store loss replacement | new NodeId membership replacement | `external-blocked` | Dynamic membership flow 없음 |
 | Fresh epoch external fence | partition된 모든 old path 차단 | `external-blocked` | Deployment evidence 필요 |
 | Remote clock bound | real node clock skew | `external-blocked` | Operational evidence 필요 |

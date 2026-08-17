@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/raft"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -180,6 +182,56 @@ func TestSingleNodeSnapshotAndDurableEpochRestart(t *testing.T) {
 	ensureEpoch(t, restarted)
 	if status := restarted.Status(); !status.Ready || status.ClusterEpoch != "epoch-1" || status.PeerCount != 0 {
 		t.Fatalf("restarted status = %#v", status)
+	}
+}
+
+func TestNodeOpenFailsClosedOnSemanticallyInvalidSafetySnapshot(t *testing.T) {
+	address := reserveAddress(t)
+	config := testConfig(t, address)
+
+	node := openTestNode(t, config)
+	waitForLeader(t, node)
+	ensureEpoch(t, node)
+	if err := node.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+
+	snapshots, err := raft.NewFileSnapshotStoreWithLogger(config.DataDir, config.SnapshotRetain, hclog.NewNullLogger())
+	if err != nil {
+		t.Fatalf("NewFileSnapshotStoreWithLogger(): %v", err)
+	}
+	_, transport := raft.NewInmemTransport(raft.NewInmemAddr())
+	t.Cleanup(func() { _ = transport.Close() })
+	sink, err := snapshots.Create(
+		raft.SnapshotVersionMax,
+		10_000,
+		1,
+		raft.Configuration{Servers: []raft.Server{{
+			Suffrage: raft.Voter,
+			ID:       raft.ServerID(config.NodeID),
+			Address:  raft.ServerAddress(config.AdvertiseAddress),
+		}}},
+		1,
+		transport,
+	)
+	if err != nil {
+		t.Fatalf("Create(corrupt snapshot): %v", err)
+	}
+	if _, err := sink.Write([]byte(`{"version":1,"state":{"cluster_epoch":""}}`)); err != nil {
+		_ = sink.Cancel()
+		t.Fatalf("Write(corrupt snapshot): %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close(corrupt snapshot): %v", err)
+	}
+
+	restarted, err := Open(config, hclog.NewNullLogger(), prometheus.NewRegistry())
+	if err == nil {
+		_ = restarted.Close()
+		t.Fatal("Open() restored a semantically invalid safety snapshot")
+	}
+	if !strings.Contains(err.Error(), "failed to load any existing snapshots") {
+		t.Fatalf("Open() error = %v, want snapshot restore failure", err)
 	}
 }
 

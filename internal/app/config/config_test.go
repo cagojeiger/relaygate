@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/auth"
+	raftstate "github.com/cagojeiger/relaygate/internal/raft/state"
 )
 
 func TestLoadCanonicalConfig(t *testing.T) {
@@ -183,6 +184,25 @@ func TestValidateRejectsNonLoopbackRelayAddress(t *testing.T) {
 	config.Relay.BindAddress = "0.0.0.0:27420"
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "loopback") {
 		t.Fatalf("Validate() error = %v, want loopback error", err)
+	}
+}
+
+func TestValidateRejectsInvalidControlEpochBounds(t *testing.T) {
+	valid := Defaults()
+	valid.Raft.NodeID = "node-1"
+	valid.Gateway.ID = "gateway-1"
+
+	for name, epoch := range map[string]string{
+		"empty":     "",
+		"oversized": strings.Repeat("x", raftstate.MaxClusterEpochBytes+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := valid
+			config.Control.ClusterEpoch = epoch
+			if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "control.cluster_epoch") {
+				t.Fatalf("Validate() error = %v, want cluster epoch bounds error", err)
+			}
+		})
 	}
 }
 

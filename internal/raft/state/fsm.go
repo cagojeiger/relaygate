@@ -38,8 +38,8 @@ func (f *FSM) Apply(log *raft.Log) any {
 	if err := decodeStrict(envelope.Payload, &command); err != nil {
 		return rejected(fmt.Errorf("%w: decode initialize_epoch: %w", ErrInvalidCommand, err))
 	}
-	if command.ClusterEpoch == "" {
-		return rejected(fmt.Errorf("%w: cluster_epoch is required", ErrInvalidCommand))
+	if err := validateClusterEpoch(command.ClusterEpoch); err != nil {
+		return rejected(fmt.Errorf("%w: %w", ErrInvalidCommand, err))
 	}
 	return f.applyInitializeEpoch(command)
 }
@@ -123,7 +123,7 @@ func (s *snapshot) Persist(sink raft.SnapshotSink) error {
 func (s *snapshot) Release() {}
 
 func validateState(state State) error {
-	return nil
+	return validateClusterEpoch(state.ClusterEpoch)
 }
 
 func decodeStrict(data []byte, target any) error {

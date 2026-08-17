@@ -17,6 +17,7 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/auth"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
+	raftstate "github.com/cagojeiger/relaygate/internal/raft/state"
 	"gopkg.in/yaml.v3"
 )
 
@@ -392,8 +393,8 @@ func (c Config) Validate() error {
 	if c.InternalRelay.ConnectTimeout.Value() <= 0 || c.InternalRelay.ShutdownTimeout.Value() <= 0 {
 		return fmt.Errorf("internal_relay timeouts must be positive")
 	}
-	if c.Control.ClusterEpoch == "" || len(c.Control.ClusterEpoch) > routing.MaxIdentityBytes {
-		return fmt.Errorf("control.cluster_epoch must be 1..%d bytes", routing.MaxIdentityBytes)
+	if c.Control.ClusterEpoch == "" || len(c.Control.ClusterEpoch) > raftstate.MaxClusterEpochBytes {
+		return fmt.Errorf("control.cluster_epoch must be 1..%d bytes", raftstate.MaxClusterEpochBytes)
 	}
 	if err := validateListenAddress("control.bind_address", c.Control.BindAddress); err != nil {
 		return err

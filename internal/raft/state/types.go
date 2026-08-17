@@ -6,7 +6,11 @@ import (
 	"fmt"
 )
 
-const commandVersion = 1
+const (
+	commandVersion = 1
+	// MaxClusterEpochBytes bounds the only RelayGate application value stored in Raft.
+	MaxClusterEpochBytes = 128
+)
 
 var (
 	ErrInvalidCommand = errors.New("invalid raft safety command")
@@ -51,10 +55,17 @@ type InitializeEpoch struct {
 }
 
 func EncodeInitializeEpoch(command InitializeEpoch) ([]byte, error) {
-	if command.ClusterEpoch == "" {
-		return nil, fmt.Errorf("%w: cluster_epoch is required", ErrInvalidCommand)
+	if err := validateClusterEpoch(command.ClusterEpoch); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidCommand, err)
 	}
 	return encodeCommand(commandInitializeEpoch, command)
+}
+
+func validateClusterEpoch(clusterEpoch string) error {
+	if clusterEpoch == "" || len(clusterEpoch) > MaxClusterEpochBytes {
+		return fmt.Errorf("cluster_epoch must be 1..%d bytes", MaxClusterEpochBytes)
+	}
+	return nil
 }
 
 func encodeCommand(kind commandKind, payload any) ([]byte, error) {

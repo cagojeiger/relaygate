@@ -21,7 +21,7 @@ release evidence로 사용한다.
 | `D03` | Exact stale fence | Old session declare/withdraw/snapshot이 new owner를 add/delete하지 못함 | `TestEndAndStaleWithdrawCannotDeleteNewRoute`, `TestSessionReplacementBulkDeletesAndStaleSnapshotCannotRepopulate` |
 | `D04` | ACK-loss convergence | Session end가 possible effect를 삭제하고 reconnect는 current snapshot만 선언 | `TestX02SessionEndAfterUnknownDeclareRedeclaresCurrentSnapshotOnly`, client reconnect tests |
 | `D05` | Maximum snapshot wire | Maximum fields × 512는 envelope 안, 513은 pre-state reject | `TestSnapshotEnvelopeAcceptsMaximumLegalSetAndRejectsExcess` |
-| `D06` | No domain state in Raft | Restart/snapshot에 route/session/binding/tombstone 없음 | Raft FSM/node state tests, `TestSingleNodeSnapshotAndDurableEpochRestart` |
+| `D06` | No domain state in Raft | Restart/snapshot에 route/session/binding/tombstone 없음; empty/oversized/version/trailing snapshot은 state 변경 없이 거부 | Raft FSM/node state tests, `TestFSMRestoreRejectsCorruptSafetySnapshotsWithoutChangingState`, `TestNodeOpenFailsClosedOnSemanticallyInvalidSafetySnapshot`, `TestSingleNodeSnapshotAndDurableEpochRestart` |
 | `O01` | Open LP ordering | O → offer → accept/PipeId → confirmation ACK → caller ACK/activation | Opening/public relay integration tests |
 | `O02` | Accept/cancel/unbind races | First LP wins; late success no revival; pre-O failure no offer | `TestOpenAcceptVersusCancelBothOrders` and retirement tests |
 | `O03` | Unknown boundary | Post-LP response/hop loss는 no retry/resume + `Unknown` | `TestX04ListenerAcceptThenConfirmationLossAndOwnerShutdownIsUnknown`, peer loss tests |

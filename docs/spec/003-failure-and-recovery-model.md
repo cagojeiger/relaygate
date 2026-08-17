@@ -7,7 +7,7 @@
 | Process | SDK/Gateway/authority/voter crash와 restart | Old runtime identity를 복구하지 않고 새 identity/session/Pipe 사용 |
 | Network | delay, loss, duplicate, reorder, partition | Exact current identity가 아니면 state advancement 거부 |
 | Control | leader/quorum/session loss | 새 bind/resolve/context fail closed; directory clear |
-| Storage | intact restart, voter store loss/corruption | Safety/epoch만 복구; route 0 |
+| Storage | intact restart, voter store loss/corruption | Intact store는 safety/epoch만 복구하고 route 0; lost/corrupt store는 old NodeId 재사용 없이 fail closed |
 | Config | invalid/delayed/process별 reload | Validated local snapshot만 사용 |
 | Clock | authority-owner skew | `ClockSkewBound < open_timeout`일 때만 remote expiry ready |
 | Operator | reset/bootstrap | 모든 old path를 외부 fence한 뒤 fresh epoch |

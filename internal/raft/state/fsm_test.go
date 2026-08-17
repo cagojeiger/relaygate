@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/raft"
@@ -78,6 +79,81 @@ func TestFSMRejectsUnknownCommandAndSnapshotFields(t *testing.T) {
 	if err := fsm.Restore(io.NopCloser(bytes.NewBufferString(`{"version":1,"state":{"cluster_epoch":"epoch-1","bindings":[]}}`))); err == nil {
 		t.Fatal("Restore() accepted route-domain snapshot field")
 	}
+}
+
+func TestFSMRejectsInvalidEpochCommands(t *testing.T) {
+	for name, epoch := range map[string]string{
+		"empty":     "",
+		"oversized": strings.Repeat("x", MaxClusterEpochBytes+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := EncodeInitializeEpoch(InitializeEpoch{ClusterEpoch: epoch}); err == nil {
+				t.Fatal("EncodeInitializeEpoch() accepted invalid cluster_epoch")
+			}
+
+			payload, err := json.Marshal(commandEnvelope{
+				Version: commandVersion,
+				Kind:    commandInitializeEpoch,
+				Payload: json.RawMessage(`{"cluster_epoch":` + mustMarshalString(t, epoch) + `}`),
+			})
+			if err != nil {
+				t.Fatalf("marshal command envelope: %v", err)
+			}
+			if result := applyCommand(t, NewFSM(), payload); result.Code != ResultRejected {
+				t.Fatalf("Apply() result = %#v, want rejected", result)
+			}
+		})
+	}
+}
+
+func TestFSMRestoreRejectsCorruptSafetySnapshotsWithoutChangingState(t *testing.T) {
+	fsm := NewFSM()
+	command, err := EncodeInitializeEpoch(InitializeEpoch{ClusterEpoch: "epoch-current"})
+	if err != nil {
+		t.Fatalf("EncodeInitializeEpoch(): %v", err)
+	}
+	if result := applyCommand(t, fsm, command); !result.Applied() {
+		t.Fatalf("apply result = %#v", result)
+	}
+
+	oversizedEpoch := strings.Repeat("x", MaxClusterEpochBytes+1)
+	invalid := map[string]string{
+		"empty epoch":         `{"version":1,"state":{"cluster_epoch":""}}`,
+		"oversized epoch":     `{"version":1,"state":{"cluster_epoch":` + mustMarshalString(t, oversizedEpoch) + `}}`,
+		"unsupported version": `{"version":2,"state":{"cluster_epoch":"epoch-1"}}`,
+		"trailing value":      `{"version":1,"state":{"cluster_epoch":"epoch-1"}} {}`,
+	}
+	for name, encoded := range invalid {
+		t.Run(name, func(t *testing.T) {
+			if err := fsm.Restore(io.NopCloser(bytes.NewBufferString(encoded))); err == nil {
+				t.Fatal("Restore() accepted corrupt safety snapshot")
+			}
+			if got := fsm.ClusterEpoch(); got != "epoch-current" {
+				t.Fatalf("ClusterEpoch() = %q after failed restore, want epoch-current", got)
+			}
+		})
+	}
+}
+
+func TestFSMRestoreAcceptsMaximumEpochSize(t *testing.T) {
+	epoch := strings.Repeat("x", MaxClusterEpochBytes)
+	encoded := `{"version":1,"state":{"cluster_epoch":` + mustMarshalString(t, epoch) + `}}`
+	fsm := NewFSM()
+	if err := fsm.Restore(io.NopCloser(bytes.NewBufferString(encoded))); err != nil {
+		t.Fatalf("Restore(): %v", err)
+	}
+	if got := fsm.ClusterEpoch(); got != epoch {
+		t.Fatalf("ClusterEpoch() length = %d, want %d", len(got), len(epoch))
+	}
+}
+
+func mustMarshalString(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal string: %v", err)
+	}
+	return string(encoded)
 }
 
 func applyCommand(t *testing.T, fsm *FSM, command []byte) ApplyResult {
