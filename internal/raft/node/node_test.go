@@ -13,37 +13,9 @@ import (
 )
 
 func TestThreeNodeStaticBootstrapPreservesElectionMembershipAndEpoch(t *testing.T) {
-	addresses := []string{reserveAddress(t), reserveAddress(t), reserveAddress(t)}
-	voters := make([]BootstrapVoter, 0, len(addresses))
-	for index, address := range addresses {
-		voters = append(voters, BootstrapVoter{NodeID: fmt.Sprintf("node-%d", index+1), Address: address})
-	}
-
-	configs := make([]Config, len(addresses))
-	for index, address := range addresses {
-		configs[index] = testConfig(t, address)
-		configs[index].NodeID = voters[index].NodeID
-		configs[index].DataDir = t.TempDir()
-		configs[index].Bootstrap = index == 0
-		if index == 0 {
-			configs[index].BootstrapVoters = voters
-		}
-	}
-
-	nodes := make([]*Node, len(configs))
-	for _, index := range []int{1, 2, 0} {
-		nodes[index] = openTestNode(t, configs[index])
-	}
-	t.Cleanup(func() {
-		for _, node := range nodes {
-			if node != nil {
-				_ = node.Close()
-			}
-		}
-	})
-	for _, node := range nodes {
-		waitForLeader(t, node)
-	}
+	configs := threeNodeConfigs(t)
+	nodes := openThreeNodeCluster(t, configs)
+	t.Cleanup(func() { closeNodes(t, nodes) })
 
 	type epochOutcome struct {
 		resultCode string
@@ -106,6 +78,81 @@ func TestThreeNodeStaticBootstrapPreservesElectionMembershipAndEpoch(t *testing.
 	waitForCondition(t, 5*time.Second, func() bool {
 		status := nodes[leaderIndex].Status()
 		return status.ClusterEpoch == "epoch-1" && status.PeerCount == 2
+	})
+}
+
+func TestC10C12QuorumLossDoesNotChangeEpochAndFullyFencedResetStartsFreshEpoch(t *testing.T) {
+	oldConfigs := threeNodeConfigs(t)
+	oldNodes := openThreeNodeCluster(t, oldConfigs)
+	t.Cleanup(func() { closeNodes(t, oldNodes) })
+	oldLeader, oldLeaderIndex := oneLeader(t, oldNodes)
+	ensureEpoch(t, oldLeader)
+	waitForCondition(t, 5*time.Second, func() bool {
+		for _, node := range oldNodes {
+			if node.ClusterEpoch() != "epoch-1" {
+				return false
+			}
+		}
+		return true
+	})
+	snapshotContext, cancelSnapshot := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := oldLeader.Snapshot(snapshotContext); err != nil {
+		cancelSnapshot()
+		t.Fatalf("Snapshot(old leader): %v", err)
+	}
+	cancelSnapshot()
+	closeNodes(t, oldNodes)
+
+	// An intact voter restarted alone retains the three-voter membership and
+	// epoch marker. Bootstrap=true cannot collapse it into a one-node cluster,
+	// and an epoch change is rejected without consulting a new quorum.
+	stranded := openTestNode(t, oldConfigs[oldLeaderIndex])
+	t.Cleanup(func() { _ = stranded.Close() })
+	waitForCondition(t, 5*time.Second, func() bool {
+		return stranded.ClusterEpoch() == "epoch-1"
+	})
+	verifyContext, cancelVerify := context.WithTimeout(context.Background(), 2*time.Second)
+	verifyErr := stranded.VerifyLeader(verifyContext)
+	cancelVerify()
+	if verifyErr == nil || stranded.Status().Role == "Leader" || stranded.Status().Ready {
+		t.Fatalf("stranded voter admitted authority: status=%#v verify=%v", stranded.Status(), verifyErr)
+	}
+	epochContext, cancelEpoch := context.WithTimeout(context.Background(), time.Second)
+	_, epochErr := stranded.EnsureEpoch(epochContext, "epoch-2")
+	cancelEpoch()
+	if epochErr == nil {
+		t.Fatal("stranded voter changed its durable epoch")
+	}
+	if err := stranded.Close(); err != nil {
+		t.Fatalf("Close(stranded voter): %v", err)
+	}
+
+	// The test owns every old process and has closed them all. A separate set of
+	// identities, addresses, and stores can therefore bootstrap a fresh epoch;
+	// nothing from the old runtime or directory is recovered.
+	freshConfigs := threeNodeConfigs(t)
+	for index := range freshConfigs {
+		freshConfigs[index].NodeID = fmt.Sprintf("fresh-node-%d", index+1)
+		if index == 0 {
+			freshConfigs[index].BootstrapVoters = []BootstrapVoter{
+				{NodeID: "fresh-node-1", Address: freshConfigs[0].AdvertiseAddress},
+				{NodeID: "fresh-node-2", Address: freshConfigs[1].AdvertiseAddress},
+				{NodeID: "fresh-node-3", Address: freshConfigs[2].AdvertiseAddress},
+			}
+		}
+	}
+	freshNodes := openThreeNodeCluster(t, freshConfigs)
+	t.Cleanup(func() { closeNodes(t, freshNodes) })
+	freshLeader, _ := oneLeader(t, freshNodes)
+	ensureEpochValue(t, freshLeader, "epoch-2")
+	waitForCondition(t, 5*time.Second, func() bool {
+		for _, node := range freshNodes {
+			status := node.Status()
+			if status.ClusterEpoch != "epoch-2" || status.PeerCount != 2 {
+				return false
+			}
+		}
+		return true
 	})
 }
 
@@ -191,14 +238,64 @@ func waitForLeader(t *testing.T, node *Node) {
 
 func ensureEpoch(t *testing.T, node *Node) {
 	t.Helper()
+	ensureEpochValue(t, node, "epoch-1")
+}
+
+func ensureEpochValue(t *testing.T, node *Node, epoch string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := node.EnsureEpoch(ctx, "epoch-1")
+	result, err := node.EnsureEpoch(ctx, epoch)
 	if err != nil {
 		t.Fatalf("EnsureEpoch(): %v", err)
 	}
 	if !result.Applied() {
 		t.Fatalf("EnsureEpoch() = %#v", result)
+	}
+}
+
+func threeNodeConfigs(t *testing.T) []Config {
+	t.Helper()
+	addresses := []string{reserveAddress(t), reserveAddress(t), reserveAddress(t)}
+	voters := make([]BootstrapVoter, 0, len(addresses))
+	for index, address := range addresses {
+		voters = append(voters, BootstrapVoter{NodeID: fmt.Sprintf("node-%d", index+1), Address: address})
+	}
+	configs := make([]Config, len(addresses))
+	for index, address := range addresses {
+		configs[index] = testConfig(t, address)
+		configs[index].NodeID = voters[index].NodeID
+		configs[index].DataDir = t.TempDir()
+		configs[index].Bootstrap = index == 0
+		if index == 0 {
+			configs[index].BootstrapVoters = voters
+		}
+	}
+	return configs
+}
+
+func openThreeNodeCluster(t *testing.T, configs []Config) []*Node {
+	t.Helper()
+	nodes := make([]*Node, len(configs))
+	for _, index := range []int{1, 2, 0} {
+		nodes[index] = openTestNode(t, configs[index])
+	}
+	for _, node := range nodes {
+		waitForLeader(t, node)
+	}
+	return nodes
+}
+
+func closeNodes(t *testing.T, nodes []*Node) {
+	t.Helper()
+	for index, node := range nodes {
+		if node == nil {
+			continue
+		}
+		if err := node.Close(); err != nil {
+			t.Errorf("Close(node %d): %v", index, err)
+		}
+		nodes[index] = nil
 	}
 }
 

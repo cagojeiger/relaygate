@@ -266,6 +266,9 @@ contract를 통과한 증거가 아니다. Refactor 뒤 test run과 artifact로 
 - `cargo fmt --all --check`, workspace check/test와 warnings-as-errors clippy
 - Isolated `./scripts/compose-smoke.sh`, including leader failover and live-binding full redeclare
 - `C15` real TCP blackhole: healthy idle 유지, bounded session/route delete, fresh reconnect/full redeclare
+- `C10/C12` real 3-voter stores: single intact voter는 authority/epoch 전환 불가; all-old-process fence 뒤
+  fresh identity/address/store quorum만 새 epoch bootstrap
+- `C11` local half: old durable epoch marker가 다른 configured epoch를 fail closed
 
 이는 focused implementation/Compose evidence다. 위 planned release gate, 모든 crash-cut/F1–F9 pairwise와
 production trust를 완료했다는 뜻은 아니다.
@@ -274,7 +277,8 @@ production trust를 완료했다는 뜻은 아니다.
 
 | Gap | 현재 상태 | 완료 조건 |
 | --- | --- | --- |
-| `C09–C12` operator/epoch fencing | 문서화된 fail-closed 절차 | 재현 가능한 operator harness와 old-authority 차단 증거 |
+| `C09` voter store-loss replacement | Dynamic membership은 현재 범위 밖 | 새 NodeId를 surviving quorum에 교체 합류시키는 operator/runtime policy와 harness |
+| `C11` external old-path fence | Durable old store mismatch는 자동화됨; 배포 전체 fence proof는 외부 계약 | Kubernetes/배포 계층에서 old process/network path가 모두 차단됐다는 재현 가능한 증거 |
 | `H05` clock skew readiness | strict expiry unit contract | 배포 clock-skew bound를 검사하는 runtime/운영 증거 |
 | SPEC 003 crash cuts, `F1–F9` pairwise | 대표 unit/race/Compose 사례만 존재 | mandatory matrix manifest의 각 행이 test 또는 invariant proof에 연결됨 |
 
