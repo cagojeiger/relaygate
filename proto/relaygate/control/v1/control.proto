@@ -42,30 +42,22 @@ message SessionRef {
 
 message SessionOpened {
   SessionRef session = 1;
-  uint64 gateway_generation = 2;
-  repeated BindingSlot owned_bindings = 3;
 }
 
 message FullSnapshot {
   SessionRef session = 1;
-  repeated BindingSlot bindings = 2;
-}
-
-enum PresenceState {
-  PRESENCE_STATE_UNSPECIFIED = 0;
-  PRESENCE_STATE_REBUILDING = 1;
-  PRESENCE_STATE_COMPLETE = 2;
+  repeated LiveBinding bindings = 2;
 }
 
 message SnapshotAccepted {
-  PresenceState presence = 1;
+  uint32 binding_count = 1;
 }
 
 message BindingMutation {
   SessionRef session = 1;
   oneof mutation {
-    InstallBinding install = 2;
-    RemoveBinding remove = 3;
+    LiveBinding declare = 2;
+    LiveBinding withdraw = 3;
   }
 }
 
@@ -84,38 +76,23 @@ message ListenerBindingRef {
   string gateway_id = 3;
 }
 
-message BindingSlot {
+message LiveBinding {
   BindingKey key = 1;
-  uint64 generation = 2;
-  ListenerBindingRef ref = 3;
-}
-
-message InstallBinding {
-  BindingKey key = 1;
-  uint64 expected_generation = 2;
-  ListenerBindingRef expected_ref = 3;
-  ListenerBindingRef new_ref = 4;
-}
-
-message RemoveBinding {
-  BindingKey key = 1;
-  uint64 expected_generation = 2;
-  ListenerBindingRef expected_ref = 3;
+  ListenerBindingRef ref = 2;
 }
 
 enum MutationCode {
   MUTATION_CODE_UNSPECIFIED = 0;
   MUTATION_CODE_APPLIED = 1;
   MUTATION_CODE_ALREADY_APPLIED = 2;
-  MUTATION_CODE_REJECTED = 3;
+  MUTATION_CODE_CONFLICT = 3;
   MUTATION_CODE_CAPACITY_REACHED = 4;
 }
 
 message MutationResult {
   MutationCode code = 1;
-  BindingSlot slot = 2;
+  LiveBinding binding = 2;
   string error = 3;
-  bool same_gateway_owner = 4;
 }
 
 message AuthContext {
@@ -137,12 +114,13 @@ message OpenContext {
   string authority_id = 2;
   string attempt_id = 3;
   AuthContext auth = 4;
-  BindingSlot binding = 5;
+  LiveBinding binding = 5;
   string ingress_gateway_id = 6;
   string ingress_gateway_instance_id = 7;
   string ingress_control_session_id = 8;
   string owner_relay_address = 9;
   int64 expires_at_unix_millis = 10;
+  string owner_control_session_id = 11;
 }
 
 message AdmitOpenResponse {

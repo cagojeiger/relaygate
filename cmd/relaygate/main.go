@@ -15,17 +15,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
-	"github.com/cagojeiger/relaygate/internal/admin"
-	"github.com/cagojeiger/relaygate/internal/authority"
-	"github.com/cagojeiger/relaygate/internal/clientruntime"
-	"github.com/cagojeiger/relaygate/internal/config"
-	"github.com/cagojeiger/relaygate/internal/controlgrpc"
-	"github.com/cagojeiger/relaygate/internal/gatewaycontrol"
-	"github.com/cagojeiger/relaygate/internal/gatewayrelay"
-	"github.com/cagojeiger/relaygate/internal/localbinding"
-	"github.com/cagojeiger/relaygate/internal/opening"
-	"github.com/cagojeiger/relaygate/internal/raftnode"
-	"github.com/cagojeiger/relaygate/internal/relaygrpc"
+	"github.com/cagojeiger/relaygate/internal/app/admin"
+	"github.com/cagojeiger/relaygate/internal/app/config"
+	"github.com/cagojeiger/relaygate/internal/gateway/access/runtime"
+	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	"github.com/cagojeiger/relaygate/internal/gateway/control/client"
+	"github.com/cagojeiger/relaygate/internal/gateway/control/server"
+	"github.com/cagojeiger/relaygate/internal/gateway/relay/peer"
+	"github.com/cagojeiger/relaygate/internal/gateway/relay/public"
+	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
+	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
+	"github.com/cagojeiger/relaygate/internal/raft/node"
 )
 
 var version = "dev"
@@ -100,12 +100,7 @@ func run() error {
 		cancelStartup()
 		return err
 	}
-	result, err := node.EnsureEpoch(
-		startupContext,
-		appConfig.Control.ClusterEpoch,
-		appConfig.Control.MaxDistinctBindingKeysPerEpoch,
-		appConfig.Control.MaxDistinctGatewayIDsPerEpoch,
-	)
+	result, err := node.EnsureEpoch(startupContext, appConfig.Control.ClusterEpoch)
 	if err != nil {
 		cancelStartup()
 		return fmt.Errorf("initialize or verify control epoch: %w", err)
@@ -114,17 +109,16 @@ func run() error {
 	cancelStartup()
 
 	authorityManager, err := authority.New(authority.Config{
-		ClusterEpoch:        appConfig.Control.ClusterEpoch,
-		ProbeInterval:       appConfig.Control.AuthorityProbeInterval.Value(),
-		ProbeTimeout:        appConfig.Control.AuthorityProbeTimeout.Value(),
-		RevalidationTimeout: appConfig.Control.GatewayRevalidationTimeout.Value(),
-		OpenContextTTL:      appConfig.Relay.OpenTimeout.Value(),
+		ClusterEpoch:   appConfig.Control.ClusterEpoch,
+		ProbeInterval:  appConfig.Control.AuthorityProbeInterval.Value(),
+		ProbeTimeout:   appConfig.Control.AuthorityProbeTimeout.Value(),
+		OpenContextTTL: appConfig.Relay.OpenTimeout.Value(),
 	}, node)
 	if err != nil {
 		return fmt.Errorf("configure authority manager: %w", err)
 	}
 	authorityManager.Start(context.Background())
-	controlService, err := controlgrpc.NewService(appConfig.Control.ClusterEpoch, node, authorityManager)
+	controlService, err := controlgrpc.NewService(appConfig.Control.ClusterEpoch, authorityManager)
 	if err != nil {
 		authorityManager.Close()
 		return fmt.Errorf("configure control service: %w", err)
@@ -166,6 +160,13 @@ func run() error {
 		return fmt.Errorf("configure listener binding runtime: %w", err)
 	}
 	defer bindingManager.Close()
+	if err := gatewayClient.AttachSnapshotProvider(bindingManager); err != nil {
+		authorityManager.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
+		defer cancelShutdown()
+		_ = controlServer.Shutdown(shutdownContext)
+		return fmt.Errorf("attach current binding snapshot provider: %w", err)
+	}
 	if err := clientRuntime.AttachBindings(bindingManager); err != nil {
 		authorityManager.Close()
 		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())

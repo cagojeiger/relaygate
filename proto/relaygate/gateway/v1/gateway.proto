@@ -52,7 +52,7 @@ message ClosePipe {
 message ForwardAccepted {
   string attempt_id = 1;
   string pipe_id = 2;
-  relaygate.control.v1.BindingSlot binding = 3;
+  relaygate.control.v1.LiveBinding binding = 3;
 }
 
 enum ForwardFailure {

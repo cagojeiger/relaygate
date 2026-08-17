@@ -10,7 +10,7 @@ use std::{
 use relaygate_sdk::{Client, Config};
 use tokio::time::timeout;
 
-const DEFAULT_RELAY_ADDRESS: &str = "127.0.0.1:7200";
+const DEFAULT_RELAY_ADDRESS: &str = "127.0.0.1:27420";
 const STAGE_TIMEOUT: Duration = Duration::from_secs(12);
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(45);
 

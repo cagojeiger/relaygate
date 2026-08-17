@@ -524,7 +524,7 @@ type ForwardAccepted struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AttemptId     string                 `protobuf:"bytes,1,opt,name=attempt_id,json=attemptId,proto3" json:"attempt_id,omitempty"`
 	PipeId        string                 `protobuf:"bytes,2,opt,name=pipe_id,json=pipeId,proto3" json:"pipe_id,omitempty"`
-	Binding       *v1.BindingSlot        `protobuf:"bytes,3,opt,name=binding,proto3" json:"binding,omitempty"`
+	Binding       *v1.LiveBinding        `protobuf:"bytes,3,opt,name=binding,proto3" json:"binding,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -573,7 +573,7 @@ func (x *ForwardAccepted) GetPipeId() string {
 	return ""
 }
 
-func (x *ForwardAccepted) GetBinding() *v1.BindingSlot {
+func (x *ForwardAccepted) GetBinding() *v1.LiveBinding {
 	if x != nil {
 		return x.Binding
 	}
@@ -752,7 +752,7 @@ const file_proto_relaygate_gateway_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"attempt_id\x18\x01 \x01(\tR\tattemptId\x12\x17\n" +
 	"\apipe_id\x18\x02 \x01(\tR\x06pipeId\x12;\n" +
-	"\abinding\x18\x03 \x01(\v2!.relaygate.control.v1.BindingSlotR\abinding\"n\n" +
+	"\abinding\x18\x03 \x01(\v2!.relaygate.control.v1.LiveBindingR\abinding\"n\n" +
 	"\rForwardFailed\x12\x1d\n" +
 	"\n" +
 	"attempt_id\x18\x01 \x01(\tR\tattemptId\x12>\n" +
@@ -803,7 +803,7 @@ var file_proto_relaygate_gateway_v1_gateway_proto_goTypes = []any{
 	(*ForwardUnknown)(nil),  // 9: relaygate.gateway.v1.ForwardUnknown
 	(*PipeTerminal)(nil),    // 10: relaygate.gateway.v1.PipeTerminal
 	(*v1.OpenContext)(nil),  // 11: relaygate.control.v1.OpenContext
-	(*v1.BindingSlot)(nil),  // 12: relaygate.control.v1.BindingSlot
+	(*v1.LiveBinding)(nil),  // 12: relaygate.control.v1.LiveBinding
 }
 var file_proto_relaygate_gateway_v1_gateway_proto_depIdxs = []int32{
 	3,  // 0: relaygate.gateway.v1.ForwardRequest.forward_open:type_name -> relaygate.gateway.v1.ForwardOpen
@@ -816,7 +816,7 @@ var file_proto_relaygate_gateway_v1_gateway_proto_depIdxs = []int32{
 	5,  // 7: relaygate.gateway.v1.ForwardResponse.pipe_payload:type_name -> relaygate.gateway.v1.PipePayload
 	10, // 8: relaygate.gateway.v1.ForwardResponse.pipe_terminal:type_name -> relaygate.gateway.v1.PipeTerminal
 	11, // 9: relaygate.gateway.v1.ForwardOpen.context:type_name -> relaygate.control.v1.OpenContext
-	12, // 10: relaygate.gateway.v1.ForwardAccepted.binding:type_name -> relaygate.control.v1.BindingSlot
+	12, // 10: relaygate.gateway.v1.ForwardAccepted.binding:type_name -> relaygate.control.v1.LiveBinding
 	0,  // 11: relaygate.gateway.v1.ForwardFailed.failure:type_name -> relaygate.gateway.v1.ForwardFailure
 	1,  // 12: relaygate.gateway.v1.GatewayRelay.Forward:input_type -> relaygate.gateway.v1.ForwardRequest
 	2,  // 13: relaygate.gateway.v1.GatewayRelay.Forward:output_type -> relaygate.gateway.v1.ForwardResponse

@@ -22,6 +22,6 @@ COPY --from=builder --chown=65532:65532 /out/data /var/lib/relaygate
 USER nonroot:nonroot
 ENV RELAYGATE_RAFT_DATA_DIR=/var/lib/relaygate
 VOLUME ["/var/lib/relaygate"]
-EXPOSE 7000 7100 7200 7300 9090
+EXPOSE 27400 27410 27420 27430 27490
 ENTRYPOINT ["/relaygate"]
 CMD ["-config", "/etc/relaygate/relaygate.yaml"]

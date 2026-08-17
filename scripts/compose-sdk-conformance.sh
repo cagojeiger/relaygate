@@ -4,7 +4,7 @@ set -Eeuo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 compose_file="$repo_root/docker-compose.yaml"
 project_name=${RELAYGATE_COMPOSE_PROJECT:-${COMPOSE_PROJECT_NAME:-relaygate}}
-relay_address=${RELAYGATE_SDK_RELAY_ADDRESS:-127.0.0.1:7200}
+relay_address=${RELAYGATE_SDK_RELAY_ADDRESS:-127.0.0.1:27420}
 client_id=${RELAYGATE_SDK_CLIENT_ID:-local-development}
 api_key_id=${RELAYGATE_SDK_API_KEY_ID:-primary}
 api_key=${RELAYGATE_SDK_API_KEY:-relaygate-local-development-key}

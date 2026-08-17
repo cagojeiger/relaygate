@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultRelayAddress = "127.0.0.1:7200"
+	defaultRelayAddress = "127.0.0.1:27420"
 	stageTimeout        = 12 * time.Second
 	processTimeout      = 45 * time.Second
 )

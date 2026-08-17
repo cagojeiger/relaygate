@@ -107,8 +107,8 @@ cluster: {
         label: "Raft leader"
         class: raft
       }
-      presence: {
-        label: "Presence · memory only\ncomplete / incomplete while rebuilding"
+      authority: {
+        label: "Current authority · memory only\nsessions · live route directory\ntrue delete · no history"
         style.fill: "#f5f3ff"
         style.stroke: "#7c3aed"
       }
@@ -154,16 +154,8 @@ cluster: {
       }
     }
 
-    bindings: {
-      label: "Committed BindingSlot\n(ClientId, Pattern, TargetId)\n→ generation · ref / tombstone"
-      shape: stored_data
-      style.fill: "#ffffff"
-      style.stroke: "#059669"
-      style.stroke-width: 2
-    }
-
-    gateways: {
-      label: "Committed GatewaySlot\nGatewayId → generation\n· instance ref / tombstone"
+    safety: {
+      label: "Raft safety state only\nterm / vote / log / membership\nsnapshot + ClusterEpoch"
       shape: stored_data
       style.fill: "#ffffff"
       style.stroke: "#059669"
@@ -179,7 +171,7 @@ cluster: {
     style.border-radius: 8
 
     eligible: {
-      label: "New-Pipe admission iff\nA session · L authority · Q quorum\nC committed · V revalidated · O owner reserve"
+      label: "New-Pipe admission iff\nA session · L authority · Q quorum\nD directory · V revalidated · O owner reserve"
       shape: diamond
       style.fill: "#ecfdf5"
       style.stroke: "#059669"
@@ -187,11 +179,18 @@ cluster: {
     }
 
     excludes: {
-      label: "Never in Raft\nclient/key config · live state\npresence · payload"
+      label: "Never in Raft\nclient/key config · sessions\nroutes · presence · payload"
       shape: page
       style.fill: "#fef2f2"
       style.stroke: "#dc2626"
       style.stroke-dash: 5
+    }
+
+    failover: {
+      label: "Authority failover\nclear sessions + directory\npartial redeclare re-enables exact entries"
+      shape: page
+      style.fill: "#f5f3ff"
+      style.stroke: "#7c3aed"
     }
   }
 }
@@ -208,21 +207,22 @@ caller <-> cluster.runtime.capacity.gateway_d: "protobuf gRPC · Open · payload
 cluster.runtime.capacity.gateway_d <-> cluster.voters.followers.voter_b.gateway: "lazy relay · active Pipe" { class: grpc }
 cluster.voters.followers.voter_b.gateway <-> listener: "protobuf gRPC · Listen · Pipe" { class: grpc }
 
-cluster.runtime.live -> cluster.voters.leader.gateway: "all Gateways\nHello · snapshot · mutation" { class: control }
-cluster.voters.leader.gateway -> cluster.voters.leader.raft: "command / query" { class: control_solid }
-cluster.voters.leader.gateway -> cluster.voters.leader.presence: "revalidate + full snapshot" { class: control }
+cluster.runtime.live -> cluster.voters.leader.gateway: "all Gateways\nHello → full redeclare\nthen declare / withdraw" { class: control }
+cluster.voters.leader.gateway -> cluster.voters.leader.raft: "quorum / epoch fence" { class: control_solid }
+cluster.voters.leader.gateway -> cluster.voters.leader.authority: "open session\ninstall current LiveBinding*" { class: control }
 
-cluster.voters.leader.presence -> cluster.voters.leader.rest: { class: observe }
-observer -> cluster.voters.leader.rest: "GET presence\ncomplete / incomplete" { class: observe }
+cluster.voters.leader.authority -> cluster.voters.leader.rest: { class: observe }
+observer -> cluster.voters.leader.rest: "GET presence\ncurrent observed counts only" { class: observe }
 
 cluster.voters.leader.raft <-> cluster.voters.followers.voter_b.raft: "Raft replication" { class: raft_flow }
 cluster.voters.leader.raft <-> cluster.voters.followers.voter_c.raft: { class: raft_flow }
-cluster.voters.leader.raft -> cluster.voters.bindings: "apply" { class: raft_check }
-cluster.voters.leader.raft -> cluster.voters.gateways: "apply" { class: raft_check }
-cluster.voters.gateways -> cluster.voters.leader.presence: "committed set" { class: raft_check }
+cluster.voters.leader.raft -> cluster.voters.safety: "apply safety + epoch" { class: raft_check }
+cluster.voters.safety -> cluster.voters.leader.authority: "ClusterEpoch fence only" { class: raft_check }
 
-cluster.voters.bindings -> cluster.route.eligible: "C · committed exact slot" { class: raft_check }
+cluster.voters.leader.authority -> cluster.route.eligible: "D · current directory entry\nV · exact session revalidated" { class: leader_check }
 cluster.voters.leader.raft -> cluster.route.eligible: "Q · admission quorum" { class: raft_check }
-cluster.voters.leader.presence -> cluster.route.eligible: "L · current authority\nV · revalidated snapshot" { class: leader_check }
+cluster.voters.leader.authority -> cluster.route.eligible: "L · current authority" { class: leader_check }
 cluster.runtime.live -> cluster.route.eligible: "A · active client session\nO · owner can reserve" { class: live_check }
-cluster.voters.bindings -> cluster.route.excludes: "excludes" { class: exclude_flow }
+cluster.voters.safety -> cluster.route.excludes: "route data excluded" { class: exclude_flow }
+cluster.voters.leader.raft -> cluster.route.failover: "new authority" { class: raft_check }
+cluster.route.failover -> cluster.voters.leader.authority: "empty first\nthen current full snapshots" { class: control }

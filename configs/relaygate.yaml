@@ -1,7 +1,7 @@
 raft:
   node_id: node-1
-  bind_address: 127.0.0.1:7000
-  advertise_address: 127.0.0.1:7000
+  bind_address: 127.0.0.1:27400
+  advertise_address: 127.0.0.1:27400
   data_dir: ./data/relaygate
   bootstrap: true
   apply_timeout: 5s
@@ -17,12 +17,12 @@ raft:
 gateway:
   id: gateway-1
   control_endpoints:
-    - 127.0.0.1:7100
+    - 127.0.0.1:27410
   connect_timeout: 2s
   retry_interval: 250ms
 
 relay:
-  bind_address: 127.0.0.1:7200
+  bind_address: 127.0.0.1:27420
   authentication_timeout: 5s
   open_timeout: 10s
   shutdown_timeout: 5s
@@ -31,23 +31,20 @@ relay:
   max_pipes: 10000
 
 internal_relay:
-  bind_address: 127.0.0.1:7300
-  advertise_address: 127.0.0.1:7300
+  bind_address: 127.0.0.1:27430
+  advertise_address: 127.0.0.1:27430
   connect_timeout: 2s
   shutdown_timeout: 5s
 
 control:
   cluster_epoch: relaygate-v1
-  bind_address: 127.0.0.1:7100
+  bind_address: 127.0.0.1:27410
   authority_probe_interval: 250ms
   authority_probe_timeout: 2s
-  gateway_revalidation_timeout: 15s
   shutdown_timeout: 5s
-  max_distinct_binding_keys_per_epoch: 100000
-  max_distinct_gateway_ids_per_epoch: 1024
 
 admin:
-  bind_address: 127.0.0.1:9090
+  bind_address: 127.0.0.1:27490
   read_timeout: 5s
   write_timeout: 10s
   shutdown_timeout: 5s

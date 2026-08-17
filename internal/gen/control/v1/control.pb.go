@@ -21,62 +21,13 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type PresenceState int32
-
-const (
-	PresenceState_PRESENCE_STATE_UNSPECIFIED PresenceState = 0
-	PresenceState_PRESENCE_STATE_REBUILDING  PresenceState = 1
-	PresenceState_PRESENCE_STATE_COMPLETE    PresenceState = 2
-)
-
-// Enum value maps for PresenceState.
-var (
-	PresenceState_name = map[int32]string{
-		0: "PRESENCE_STATE_UNSPECIFIED",
-		1: "PRESENCE_STATE_REBUILDING",
-		2: "PRESENCE_STATE_COMPLETE",
-	}
-	PresenceState_value = map[string]int32{
-		"PRESENCE_STATE_UNSPECIFIED": 0,
-		"PRESENCE_STATE_REBUILDING":  1,
-		"PRESENCE_STATE_COMPLETE":    2,
-	}
-)
-
-func (x PresenceState) Enum() *PresenceState {
-	p := new(PresenceState)
-	*p = x
-	return p
-}
-
-func (x PresenceState) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (PresenceState) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_relaygate_control_v1_control_proto_enumTypes[0].Descriptor()
-}
-
-func (PresenceState) Type() protoreflect.EnumType {
-	return &file_proto_relaygate_control_v1_control_proto_enumTypes[0]
-}
-
-func (x PresenceState) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use PresenceState.Descriptor instead.
-func (PresenceState) EnumDescriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{0}
-}
-
 type MutationCode int32
 
 const (
 	MutationCode_MUTATION_CODE_UNSPECIFIED      MutationCode = 0
 	MutationCode_MUTATION_CODE_APPLIED          MutationCode = 1
 	MutationCode_MUTATION_CODE_ALREADY_APPLIED  MutationCode = 2
-	MutationCode_MUTATION_CODE_REJECTED         MutationCode = 3
+	MutationCode_MUTATION_CODE_CONFLICT         MutationCode = 3
 	MutationCode_MUTATION_CODE_CAPACITY_REACHED MutationCode = 4
 )
 
@@ -86,14 +37,14 @@ var (
 		0: "MUTATION_CODE_UNSPECIFIED",
 		1: "MUTATION_CODE_APPLIED",
 		2: "MUTATION_CODE_ALREADY_APPLIED",
-		3: "MUTATION_CODE_REJECTED",
+		3: "MUTATION_CODE_CONFLICT",
 		4: "MUTATION_CODE_CAPACITY_REACHED",
 	}
 	MutationCode_value = map[string]int32{
 		"MUTATION_CODE_UNSPECIFIED":      0,
 		"MUTATION_CODE_APPLIED":          1,
 		"MUTATION_CODE_ALREADY_APPLIED":  2,
-		"MUTATION_CODE_REJECTED":         3,
+		"MUTATION_CODE_CONFLICT":         3,
 		"MUTATION_CODE_CAPACITY_REACHED": 4,
 	}
 )
@@ -109,11 +60,11 @@ func (x MutationCode) String() string {
 }
 
 func (MutationCode) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_relaygate_control_v1_control_proto_enumTypes[1].Descriptor()
+	return file_proto_relaygate_control_v1_control_proto_enumTypes[0].Descriptor()
 }
 
 func (MutationCode) Type() protoreflect.EnumType {
-	return &file_proto_relaygate_control_v1_control_proto_enumTypes[1]
+	return &file_proto_relaygate_control_v1_control_proto_enumTypes[0]
 }
 
 func (x MutationCode) Number() protoreflect.EnumNumber {
@@ -122,7 +73,7 @@ func (x MutationCode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MutationCode.Descriptor instead.
 func (MutationCode) EnumDescriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{1}
+	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{0}
 }
 
 type ControlRequest struct {
@@ -466,12 +417,10 @@ func (x *SessionRef) GetGatewayInstanceId() string {
 }
 
 type SessionOpened struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Session           *SessionRef            `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
-	GatewayGeneration uint64                 `protobuf:"varint,2,opt,name=gateway_generation,json=gatewayGeneration,proto3" json:"gateway_generation,omitempty"`
-	OwnedBindings     []*BindingSlot         `protobuf:"bytes,3,rep,name=owned_bindings,json=ownedBindings,proto3" json:"owned_bindings,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Session       *SessionRef            `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SessionOpened) Reset() {
@@ -511,24 +460,10 @@ func (x *SessionOpened) GetSession() *SessionRef {
 	return nil
 }
 
-func (x *SessionOpened) GetGatewayGeneration() uint64 {
-	if x != nil {
-		return x.GatewayGeneration
-	}
-	return 0
-}
-
-func (x *SessionOpened) GetOwnedBindings() []*BindingSlot {
-	if x != nil {
-		return x.OwnedBindings
-	}
-	return nil
-}
-
 type FullSnapshot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Session       *SessionRef            `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
-	Bindings      []*BindingSlot         `protobuf:"bytes,2,rep,name=bindings,proto3" json:"bindings,omitempty"`
+	Bindings      []*LiveBinding         `protobuf:"bytes,2,rep,name=bindings,proto3" json:"bindings,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -570,7 +505,7 @@ func (x *FullSnapshot) GetSession() *SessionRef {
 	return nil
 }
 
-func (x *FullSnapshot) GetBindings() []*BindingSlot {
+func (x *FullSnapshot) GetBindings() []*LiveBinding {
 	if x != nil {
 		return x.Bindings
 	}
@@ -579,7 +514,7 @@ func (x *FullSnapshot) GetBindings() []*BindingSlot {
 
 type SnapshotAccepted struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Presence      PresenceState          `protobuf:"varint,1,opt,name=presence,proto3,enum=relaygate.control.v1.PresenceState" json:"presence,omitempty"`
+	BindingCount  uint32                 `protobuf:"varint,1,opt,name=binding_count,json=bindingCount,proto3" json:"binding_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -614,11 +549,11 @@ func (*SnapshotAccepted) Descriptor() ([]byte, []int) {
 	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *SnapshotAccepted) GetPresence() PresenceState {
+func (x *SnapshotAccepted) GetBindingCount() uint32 {
 	if x != nil {
-		return x.Presence
+		return x.BindingCount
 	}
-	return PresenceState_PRESENCE_STATE_UNSPECIFIED
+	return 0
 }
 
 type BindingMutation struct {
@@ -626,8 +561,8 @@ type BindingMutation struct {
 	Session *SessionRef            `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
 	// Types that are valid to be assigned to Mutation:
 	//
-	//	*BindingMutation_Install
-	//	*BindingMutation_Remove
+	//	*BindingMutation_Declare
+	//	*BindingMutation_Withdraw
 	Mutation      isBindingMutation_Mutation `protobuf_oneof:"mutation"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -677,19 +612,19 @@ func (x *BindingMutation) GetMutation() isBindingMutation_Mutation {
 	return nil
 }
 
-func (x *BindingMutation) GetInstall() *InstallBinding {
+func (x *BindingMutation) GetDeclare() *LiveBinding {
 	if x != nil {
-		if x, ok := x.Mutation.(*BindingMutation_Install); ok {
-			return x.Install
+		if x, ok := x.Mutation.(*BindingMutation_Declare); ok {
+			return x.Declare
 		}
 	}
 	return nil
 }
 
-func (x *BindingMutation) GetRemove() *RemoveBinding {
+func (x *BindingMutation) GetWithdraw() *LiveBinding {
 	if x != nil {
-		if x, ok := x.Mutation.(*BindingMutation_Remove); ok {
-			return x.Remove
+		if x, ok := x.Mutation.(*BindingMutation_Withdraw); ok {
+			return x.Withdraw
 		}
 	}
 	return nil
@@ -699,17 +634,17 @@ type isBindingMutation_Mutation interface {
 	isBindingMutation_Mutation()
 }
 
-type BindingMutation_Install struct {
-	Install *InstallBinding `protobuf:"bytes,2,opt,name=install,proto3,oneof"`
+type BindingMutation_Declare struct {
+	Declare *LiveBinding `protobuf:"bytes,2,opt,name=declare,proto3,oneof"`
 }
 
-type BindingMutation_Remove struct {
-	Remove *RemoveBinding `protobuf:"bytes,3,opt,name=remove,proto3,oneof"`
+type BindingMutation_Withdraw struct {
+	Withdraw *LiveBinding `protobuf:"bytes,3,opt,name=withdraw,proto3,oneof"`
 }
 
-func (*BindingMutation_Install) isBindingMutation_Mutation() {}
+func (*BindingMutation_Declare) isBindingMutation_Mutation() {}
 
-func (*BindingMutation_Remove) isBindingMutation_Mutation() {}
+func (*BindingMutation_Withdraw) isBindingMutation_Mutation() {}
 
 type BindingKey struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -834,29 +769,28 @@ func (x *ListenerBindingRef) GetGatewayId() string {
 	return ""
 }
 
-type BindingSlot struct {
+type LiveBinding struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           *BindingKey            `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	Generation    uint64                 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
-	Ref           *ListenerBindingRef    `protobuf:"bytes,3,opt,name=ref,proto3" json:"ref,omitempty"`
+	Ref           *ListenerBindingRef    `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *BindingSlot) Reset() {
-	*x = BindingSlot{}
+func (x *LiveBinding) Reset() {
+	*x = LiveBinding{}
 	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *BindingSlot) String() string {
+func (x *LiveBinding) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*BindingSlot) ProtoMessage() {}
+func (*LiveBinding) ProtoMessage() {}
 
-func (x *BindingSlot) ProtoReflect() protoreflect.Message {
+func (x *LiveBinding) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -868,173 +802,37 @@ func (x *BindingSlot) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use BindingSlot.ProtoReflect.Descriptor instead.
-func (*BindingSlot) Descriptor() ([]byte, []int) {
+// Deprecated: Use LiveBinding.ProtoReflect.Descriptor instead.
+func (*LiveBinding) Descriptor() ([]byte, []int) {
 	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{10}
 }
 
-func (x *BindingSlot) GetKey() *BindingKey {
+func (x *LiveBinding) GetKey() *BindingKey {
 	if x != nil {
 		return x.Key
 	}
 	return nil
 }
 
-func (x *BindingSlot) GetGeneration() uint64 {
-	if x != nil {
-		return x.Generation
-	}
-	return 0
-}
-
-func (x *BindingSlot) GetRef() *ListenerBindingRef {
+func (x *LiveBinding) GetRef() *ListenerBindingRef {
 	if x != nil {
 		return x.Ref
 	}
 	return nil
 }
 
-type InstallBinding struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	Key                *BindingKey            `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	ExpectedGeneration uint64                 `protobuf:"varint,2,opt,name=expected_generation,json=expectedGeneration,proto3" json:"expected_generation,omitempty"`
-	ExpectedRef        *ListenerBindingRef    `protobuf:"bytes,3,opt,name=expected_ref,json=expectedRef,proto3" json:"expected_ref,omitempty"`
-	NewRef             *ListenerBindingRef    `protobuf:"bytes,4,opt,name=new_ref,json=newRef,proto3" json:"new_ref,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *InstallBinding) Reset() {
-	*x = InstallBinding{}
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *InstallBinding) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*InstallBinding) ProtoMessage() {}
-
-func (x *InstallBinding) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use InstallBinding.ProtoReflect.Descriptor instead.
-func (*InstallBinding) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *InstallBinding) GetKey() *BindingKey {
-	if x != nil {
-		return x.Key
-	}
-	return nil
-}
-
-func (x *InstallBinding) GetExpectedGeneration() uint64 {
-	if x != nil {
-		return x.ExpectedGeneration
-	}
-	return 0
-}
-
-func (x *InstallBinding) GetExpectedRef() *ListenerBindingRef {
-	if x != nil {
-		return x.ExpectedRef
-	}
-	return nil
-}
-
-func (x *InstallBinding) GetNewRef() *ListenerBindingRef {
-	if x != nil {
-		return x.NewRef
-	}
-	return nil
-}
-
-type RemoveBinding struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	Key                *BindingKey            `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	ExpectedGeneration uint64                 `protobuf:"varint,2,opt,name=expected_generation,json=expectedGeneration,proto3" json:"expected_generation,omitempty"`
-	ExpectedRef        *ListenerBindingRef    `protobuf:"bytes,3,opt,name=expected_ref,json=expectedRef,proto3" json:"expected_ref,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *RemoveBinding) Reset() {
-	*x = RemoveBinding{}
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[12]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RemoveBinding) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RemoveBinding) ProtoMessage() {}
-
-func (x *RemoveBinding) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[12]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RemoveBinding.ProtoReflect.Descriptor instead.
-func (*RemoveBinding) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{12}
-}
-
-func (x *RemoveBinding) GetKey() *BindingKey {
-	if x != nil {
-		return x.Key
-	}
-	return nil
-}
-
-func (x *RemoveBinding) GetExpectedGeneration() uint64 {
-	if x != nil {
-		return x.ExpectedGeneration
-	}
-	return 0
-}
-
-func (x *RemoveBinding) GetExpectedRef() *ListenerBindingRef {
-	if x != nil {
-		return x.ExpectedRef
-	}
-	return nil
-}
-
 type MutationResult struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	Code             MutationCode           `protobuf:"varint,1,opt,name=code,proto3,enum=relaygate.control.v1.MutationCode" json:"code,omitempty"`
-	Slot             *BindingSlot           `protobuf:"bytes,2,opt,name=slot,proto3" json:"slot,omitempty"`
-	Error            string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
-	SameGatewayOwner bool                   `protobuf:"varint,4,opt,name=same_gateway_owner,json=sameGatewayOwner,proto3" json:"same_gateway_owner,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          MutationCode           `protobuf:"varint,1,opt,name=code,proto3,enum=relaygate.control.v1.MutationCode" json:"code,omitempty"`
+	Binding       *LiveBinding           `protobuf:"bytes,2,opt,name=binding,proto3" json:"binding,omitempty"`
+	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MutationResult) Reset() {
 	*x = MutationResult{}
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[13]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1046,7 +844,7 @@ func (x *MutationResult) String() string {
 func (*MutationResult) ProtoMessage() {}
 
 func (x *MutationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[13]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1059,7 +857,7 @@ func (x *MutationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MutationResult.ProtoReflect.Descriptor instead.
 func (*MutationResult) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{13}
+	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MutationResult) GetCode() MutationCode {
@@ -1069,9 +867,9 @@ func (x *MutationResult) GetCode() MutationCode {
 	return MutationCode_MUTATION_CODE_UNSPECIFIED
 }
 
-func (x *MutationResult) GetSlot() *BindingSlot {
+func (x *MutationResult) GetBinding() *LiveBinding {
 	if x != nil {
-		return x.Slot
+		return x.Binding
 	}
 	return nil
 }
@@ -1081,13 +879,6 @@ func (x *MutationResult) GetError() string {
 		return x.Error
 	}
 	return ""
-}
-
-func (x *MutationResult) GetSameGatewayOwner() bool {
-	if x != nil {
-		return x.SameGatewayOwner
-	}
-	return false
 }
 
 type AuthContext struct {
@@ -1102,7 +893,7 @@ type AuthContext struct {
 
 func (x *AuthContext) Reset() {
 	*x = AuthContext{}
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[14]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1114,7 +905,7 @@ func (x *AuthContext) String() string {
 func (*AuthContext) ProtoMessage() {}
 
 func (x *AuthContext) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[14]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1127,7 +918,7 @@ func (x *AuthContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthContext.ProtoReflect.Descriptor instead.
 func (*AuthContext) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{14}
+	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *AuthContext) GetClientSessionId() string {
@@ -1170,7 +961,7 @@ type AdmitOpenRequest struct {
 
 func (x *AdmitOpenRequest) Reset() {
 	*x = AdmitOpenRequest{}
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[15]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1182,7 +973,7 @@ func (x *AdmitOpenRequest) String() string {
 func (*AdmitOpenRequest) ProtoMessage() {}
 
 func (x *AdmitOpenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[15]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1195,7 +986,7 @@ func (x *AdmitOpenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdmitOpenRequest.ProtoReflect.Descriptor instead.
 func (*AdmitOpenRequest) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{15}
+	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *AdmitOpenRequest) GetSession() *SessionRef {
@@ -1232,19 +1023,20 @@ type OpenContext struct {
 	AuthorityId              string                 `protobuf:"bytes,2,opt,name=authority_id,json=authorityId,proto3" json:"authority_id,omitempty"`
 	AttemptId                string                 `protobuf:"bytes,3,opt,name=attempt_id,json=attemptId,proto3" json:"attempt_id,omitempty"`
 	Auth                     *AuthContext           `protobuf:"bytes,4,opt,name=auth,proto3" json:"auth,omitempty"`
-	Binding                  *BindingSlot           `protobuf:"bytes,5,opt,name=binding,proto3" json:"binding,omitempty"`
+	Binding                  *LiveBinding           `protobuf:"bytes,5,opt,name=binding,proto3" json:"binding,omitempty"`
 	IngressGatewayId         string                 `protobuf:"bytes,6,opt,name=ingress_gateway_id,json=ingressGatewayId,proto3" json:"ingress_gateway_id,omitempty"`
 	IngressGatewayInstanceId string                 `protobuf:"bytes,7,opt,name=ingress_gateway_instance_id,json=ingressGatewayInstanceId,proto3" json:"ingress_gateway_instance_id,omitempty"`
 	IngressControlSessionId  string                 `protobuf:"bytes,8,opt,name=ingress_control_session_id,json=ingressControlSessionId,proto3" json:"ingress_control_session_id,omitempty"`
 	OwnerRelayAddress        string                 `protobuf:"bytes,9,opt,name=owner_relay_address,json=ownerRelayAddress,proto3" json:"owner_relay_address,omitempty"`
 	ExpiresAtUnixMillis      int64                  `protobuf:"varint,10,opt,name=expires_at_unix_millis,json=expiresAtUnixMillis,proto3" json:"expires_at_unix_millis,omitempty"`
+	OwnerControlSessionId    string                 `protobuf:"bytes,11,opt,name=owner_control_session_id,json=ownerControlSessionId,proto3" json:"owner_control_session_id,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
 
 func (x *OpenContext) Reset() {
 	*x = OpenContext{}
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[16]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1256,7 +1048,7 @@ func (x *OpenContext) String() string {
 func (*OpenContext) ProtoMessage() {}
 
 func (x *OpenContext) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[16]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1269,7 +1061,7 @@ func (x *OpenContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenContext.ProtoReflect.Descriptor instead.
 func (*OpenContext) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{16}
+	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *OpenContext) GetClusterEpoch() string {
@@ -1300,7 +1092,7 @@ func (x *OpenContext) GetAuth() *AuthContext {
 	return nil
 }
 
-func (x *OpenContext) GetBinding() *BindingSlot {
+func (x *OpenContext) GetBinding() *LiveBinding {
 	if x != nil {
 		return x.Binding
 	}
@@ -1342,6 +1134,13 @@ func (x *OpenContext) GetExpiresAtUnixMillis() int64 {
 	return 0
 }
 
+func (x *OpenContext) GetOwnerControlSessionId() string {
+	if x != nil {
+		return x.OwnerControlSessionId
+	}
+	return ""
+}
+
 type AdmitOpenResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Context       *OpenContext           `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
@@ -1351,7 +1150,7 @@ type AdmitOpenResponse struct {
 
 func (x *AdmitOpenResponse) Reset() {
 	*x = AdmitOpenResponse{}
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[17]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1363,7 +1162,7 @@ func (x *AdmitOpenResponse) String() string {
 func (*AdmitOpenResponse) ProtoMessage() {}
 
 func (x *AdmitOpenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[17]
+	mi := &file_proto_relaygate_control_v1_control_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1376,7 +1175,7 @@ func (x *AdmitOpenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdmitOpenResponse.ProtoReflect.Descriptor instead.
 func (*AdmitOpenResponse) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{17}
+	return file_proto_relaygate_control_v1_control_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AdmitOpenResponse) GetContext() *OpenContext {
@@ -1414,20 +1213,18 @@ const file_proto_relaygate_control_v1_control_proto_rawDesc = "" +
 	"\x12control_session_id\x18\x03 \x01(\tR\x10controlSessionId\x12\x1d\n" +
 	"\n" +
 	"gateway_id\x18\x04 \x01(\tR\tgatewayId\x12.\n" +
-	"\x13gateway_instance_id\x18\x05 \x01(\tR\x11gatewayInstanceId\"\xc4\x01\n" +
+	"\x13gateway_instance_id\x18\x05 \x01(\tR\x11gatewayInstanceId\"K\n" +
 	"\rSessionOpened\x12:\n" +
-	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\x12-\n" +
-	"\x12gateway_generation\x18\x02 \x01(\x04R\x11gatewayGeneration\x12H\n" +
-	"\x0eowned_bindings\x18\x03 \x03(\v2!.relaygate.control.v1.BindingSlotR\rownedBindings\"\x89\x01\n" +
+	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\"\x89\x01\n" +
 	"\fFullSnapshot\x12:\n" +
 	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\x12=\n" +
-	"\bbindings\x18\x02 \x03(\v2!.relaygate.control.v1.BindingSlotR\bbindings\"S\n" +
-	"\x10SnapshotAccepted\x12?\n" +
-	"\bpresence\x18\x01 \x01(\x0e2#.relaygate.control.v1.PresenceStateR\bpresence\"\xda\x01\n" +
+	"\bbindings\x18\x02 \x03(\v2!.relaygate.control.v1.LiveBindingR\bbindings\"7\n" +
+	"\x10SnapshotAccepted\x12#\n" +
+	"\rbinding_count\x18\x01 \x01(\rR\fbindingCount\"\xd9\x01\n" +
 	"\x0fBindingMutation\x12:\n" +
-	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\x12@\n" +
-	"\ainstall\x18\x02 \x01(\v2$.relaygate.control.v1.InstallBindingH\x00R\ainstall\x12=\n" +
-	"\x06remove\x18\x03 \x01(\v2#.relaygate.control.v1.RemoveBindingH\x00R\x06removeB\n" +
+	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\x12=\n" +
+	"\adeclare\x18\x02 \x01(\v2!.relaygate.control.v1.LiveBindingH\x00R\adeclare\x12?\n" +
+	"\bwithdraw\x18\x03 \x01(\v2!.relaygate.control.v1.LiveBindingH\x00R\bwithdrawB\n" +
 	"\n" +
 	"\bmutation\"q\n" +
 	"\n" +
@@ -1439,27 +1236,14 @@ const file_proto_relaygate_control_v1_control_proto_rawDesc = "" +
 	"\x13gateway_instance_id\x18\x01 \x01(\tR\x11gatewayInstanceId\x12.\n" +
 	"\x13listener_binding_id\x18\x02 \x01(\tR\x11listenerBindingId\x12\x1d\n" +
 	"\n" +
-	"gateway_id\x18\x03 \x01(\tR\tgatewayId\"\x9d\x01\n" +
-	"\vBindingSlot\x122\n" +
-	"\x03key\x18\x01 \x01(\v2 .relaygate.control.v1.BindingKeyR\x03key\x12\x1e\n" +
-	"\n" +
-	"generation\x18\x02 \x01(\x04R\n" +
-	"generation\x12:\n" +
-	"\x03ref\x18\x03 \x01(\v2(.relaygate.control.v1.ListenerBindingRefR\x03ref\"\x85\x02\n" +
-	"\x0eInstallBinding\x122\n" +
-	"\x03key\x18\x01 \x01(\v2 .relaygate.control.v1.BindingKeyR\x03key\x12/\n" +
-	"\x13expected_generation\x18\x02 \x01(\x04R\x12expectedGeneration\x12K\n" +
-	"\fexpected_ref\x18\x03 \x01(\v2(.relaygate.control.v1.ListenerBindingRefR\vexpectedRef\x12A\n" +
-	"\anew_ref\x18\x04 \x01(\v2(.relaygate.control.v1.ListenerBindingRefR\x06newRef\"\xc1\x01\n" +
-	"\rRemoveBinding\x122\n" +
-	"\x03key\x18\x01 \x01(\v2 .relaygate.control.v1.BindingKeyR\x03key\x12/\n" +
-	"\x13expected_generation\x18\x02 \x01(\x04R\x12expectedGeneration\x12K\n" +
-	"\fexpected_ref\x18\x03 \x01(\v2(.relaygate.control.v1.ListenerBindingRefR\vexpectedRef\"\xc3\x01\n" +
+	"gateway_id\x18\x03 \x01(\tR\tgatewayId\"}\n" +
+	"\vLiveBinding\x122\n" +
+	"\x03key\x18\x01 \x01(\v2 .relaygate.control.v1.BindingKeyR\x03key\x12:\n" +
+	"\x03ref\x18\x02 \x01(\v2(.relaygate.control.v1.ListenerBindingRefR\x03ref\"\x9b\x01\n" +
 	"\x0eMutationResult\x126\n" +
-	"\x04code\x18\x01 \x01(\x0e2\".relaygate.control.v1.MutationCodeR\x04code\x125\n" +
-	"\x04slot\x18\x02 \x01(\v2!.relaygate.control.v1.BindingSlotR\x04slot\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\x12,\n" +
-	"\x12same_gateway_owner\x18\x04 \x01(\bR\x10sameGatewayOwner\"\x99\x01\n" +
+	"\x04code\x18\x01 \x01(\x0e2\".relaygate.control.v1.MutationCodeR\x04code\x12;\n" +
+	"\abinding\x18\x02 \x01(\v2!.relaygate.control.v1.LiveBindingR\abinding\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\x99\x01\n" +
 	"\vAuthContext\x12*\n" +
 	"\x11client_session_id\x18\x01 \x01(\tR\x0fclientSessionId\x12\x1b\n" +
 	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\x1c\n" +
@@ -1470,31 +1254,28 @@ const file_proto_relaygate_control_v1_control_proto_rawDesc = "" +
 	"\asession\x18\x01 \x01(\v2 .relaygate.control.v1.SessionRefR\asession\x125\n" +
 	"\x04auth\x18\x02 \x01(\v2!.relaygate.control.v1.AuthContextR\x04auth\x12\x1a\n" +
 	"\bendpoint\x18\x03 \x01(\tR\bendpoint\x12\x1b\n" +
-	"\ttarget_id\x18\x04 \x01(\tR\btargetId\"\xf7\x03\n" +
+	"\ttarget_id\x18\x04 \x01(\tR\btargetId\"\xb0\x04\n" +
 	"\vOpenContext\x12#\n" +
 	"\rcluster_epoch\x18\x01 \x01(\tR\fclusterEpoch\x12!\n" +
 	"\fauthority_id\x18\x02 \x01(\tR\vauthorityId\x12\x1d\n" +
 	"\n" +
 	"attempt_id\x18\x03 \x01(\tR\tattemptId\x125\n" +
 	"\x04auth\x18\x04 \x01(\v2!.relaygate.control.v1.AuthContextR\x04auth\x12;\n" +
-	"\abinding\x18\x05 \x01(\v2!.relaygate.control.v1.BindingSlotR\abinding\x12,\n" +
+	"\abinding\x18\x05 \x01(\v2!.relaygate.control.v1.LiveBindingR\abinding\x12,\n" +
 	"\x12ingress_gateway_id\x18\x06 \x01(\tR\x10ingressGatewayId\x12=\n" +
 	"\x1bingress_gateway_instance_id\x18\a \x01(\tR\x18ingressGatewayInstanceId\x12;\n" +
 	"\x1aingress_control_session_id\x18\b \x01(\tR\x17ingressControlSessionId\x12.\n" +
 	"\x13owner_relay_address\x18\t \x01(\tR\x11ownerRelayAddress\x123\n" +
 	"\x16expires_at_unix_millis\x18\n" +
-	" \x01(\x03R\x13expiresAtUnixMillis\"P\n" +
+	" \x01(\x03R\x13expiresAtUnixMillis\x127\n" +
+	"\x18owner_control_session_id\x18\v \x01(\tR\x15ownerControlSessionId\"P\n" +
 	"\x11AdmitOpenResponse\x12;\n" +
-	"\acontext\x18\x01 \x01(\v2!.relaygate.control.v1.OpenContextR\acontext*k\n" +
-	"\rPresenceState\x12\x1e\n" +
-	"\x1aPRESENCE_STATE_UNSPECIFIED\x10\x00\x12\x1d\n" +
-	"\x19PRESENCE_STATE_REBUILDING\x10\x01\x12\x1b\n" +
-	"\x17PRESENCE_STATE_COMPLETE\x10\x02*\xab\x01\n" +
+	"\acontext\x18\x01 \x01(\v2!.relaygate.control.v1.OpenContextR\acontext*\xab\x01\n" +
 	"\fMutationCode\x12\x1d\n" +
 	"\x19MUTATION_CODE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15MUTATION_CODE_APPLIED\x10\x01\x12!\n" +
 	"\x1dMUTATION_CODE_ALREADY_APPLIED\x10\x02\x12\x1a\n" +
-	"\x16MUTATION_CODE_REJECTED\x10\x03\x12\"\n" +
+	"\x16MUTATION_CODE_CONFLICT\x10\x03\x12\"\n" +
 	"\x1eMUTATION_CODE_CAPACITY_REACHED\x10\x042\xca\x01\n" +
 	"\x0eGatewayControl\x12Z\n" +
 	"\aConnect\x12$.relaygate.control.v1.ControlRequest\x1a%.relaygate.control.v1.ControlResponse(\x010\x01\x12\\\n" +
@@ -1512,68 +1293,58 @@ func file_proto_relaygate_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_proto_relaygate_control_v1_control_proto_rawDescData
 }
 
-var file_proto_relaygate_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_relaygate_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_proto_relaygate_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_proto_relaygate_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_proto_relaygate_control_v1_control_proto_goTypes = []any{
-	(PresenceState)(0),         // 0: relaygate.control.v1.PresenceState
-	(MutationCode)(0),          // 1: relaygate.control.v1.MutationCode
-	(*ControlRequest)(nil),     // 2: relaygate.control.v1.ControlRequest
-	(*ControlResponse)(nil),    // 3: relaygate.control.v1.ControlResponse
-	(*Hello)(nil),              // 4: relaygate.control.v1.Hello
-	(*SessionRef)(nil),         // 5: relaygate.control.v1.SessionRef
-	(*SessionOpened)(nil),      // 6: relaygate.control.v1.SessionOpened
-	(*FullSnapshot)(nil),       // 7: relaygate.control.v1.FullSnapshot
-	(*SnapshotAccepted)(nil),   // 8: relaygate.control.v1.SnapshotAccepted
-	(*BindingMutation)(nil),    // 9: relaygate.control.v1.BindingMutation
-	(*BindingKey)(nil),         // 10: relaygate.control.v1.BindingKey
-	(*ListenerBindingRef)(nil), // 11: relaygate.control.v1.ListenerBindingRef
-	(*BindingSlot)(nil),        // 12: relaygate.control.v1.BindingSlot
-	(*InstallBinding)(nil),     // 13: relaygate.control.v1.InstallBinding
-	(*RemoveBinding)(nil),      // 14: relaygate.control.v1.RemoveBinding
-	(*MutationResult)(nil),     // 15: relaygate.control.v1.MutationResult
-	(*AuthContext)(nil),        // 16: relaygate.control.v1.AuthContext
-	(*AdmitOpenRequest)(nil),   // 17: relaygate.control.v1.AdmitOpenRequest
-	(*OpenContext)(nil),        // 18: relaygate.control.v1.OpenContext
-	(*AdmitOpenResponse)(nil),  // 19: relaygate.control.v1.AdmitOpenResponse
+	(MutationCode)(0),          // 0: relaygate.control.v1.MutationCode
+	(*ControlRequest)(nil),     // 1: relaygate.control.v1.ControlRequest
+	(*ControlResponse)(nil),    // 2: relaygate.control.v1.ControlResponse
+	(*Hello)(nil),              // 3: relaygate.control.v1.Hello
+	(*SessionRef)(nil),         // 4: relaygate.control.v1.SessionRef
+	(*SessionOpened)(nil),      // 5: relaygate.control.v1.SessionOpened
+	(*FullSnapshot)(nil),       // 6: relaygate.control.v1.FullSnapshot
+	(*SnapshotAccepted)(nil),   // 7: relaygate.control.v1.SnapshotAccepted
+	(*BindingMutation)(nil),    // 8: relaygate.control.v1.BindingMutation
+	(*BindingKey)(nil),         // 9: relaygate.control.v1.BindingKey
+	(*ListenerBindingRef)(nil), // 10: relaygate.control.v1.ListenerBindingRef
+	(*LiveBinding)(nil),        // 11: relaygate.control.v1.LiveBinding
+	(*MutationResult)(nil),     // 12: relaygate.control.v1.MutationResult
+	(*AuthContext)(nil),        // 13: relaygate.control.v1.AuthContext
+	(*AdmitOpenRequest)(nil),   // 14: relaygate.control.v1.AdmitOpenRequest
+	(*OpenContext)(nil),        // 15: relaygate.control.v1.OpenContext
+	(*AdmitOpenResponse)(nil),  // 16: relaygate.control.v1.AdmitOpenResponse
 }
 var file_proto_relaygate_control_v1_control_proto_depIdxs = []int32{
-	4,  // 0: relaygate.control.v1.ControlRequest.hello:type_name -> relaygate.control.v1.Hello
-	7,  // 1: relaygate.control.v1.ControlRequest.full_snapshot:type_name -> relaygate.control.v1.FullSnapshot
-	9,  // 2: relaygate.control.v1.ControlRequest.binding_mutation:type_name -> relaygate.control.v1.BindingMutation
-	6,  // 3: relaygate.control.v1.ControlResponse.session_opened:type_name -> relaygate.control.v1.SessionOpened
-	8,  // 4: relaygate.control.v1.ControlResponse.snapshot_accepted:type_name -> relaygate.control.v1.SnapshotAccepted
-	15, // 5: relaygate.control.v1.ControlResponse.mutation_result:type_name -> relaygate.control.v1.MutationResult
-	5,  // 6: relaygate.control.v1.SessionOpened.session:type_name -> relaygate.control.v1.SessionRef
-	12, // 7: relaygate.control.v1.SessionOpened.owned_bindings:type_name -> relaygate.control.v1.BindingSlot
-	5,  // 8: relaygate.control.v1.FullSnapshot.session:type_name -> relaygate.control.v1.SessionRef
-	12, // 9: relaygate.control.v1.FullSnapshot.bindings:type_name -> relaygate.control.v1.BindingSlot
-	0,  // 10: relaygate.control.v1.SnapshotAccepted.presence:type_name -> relaygate.control.v1.PresenceState
-	5,  // 11: relaygate.control.v1.BindingMutation.session:type_name -> relaygate.control.v1.SessionRef
-	13, // 12: relaygate.control.v1.BindingMutation.install:type_name -> relaygate.control.v1.InstallBinding
-	14, // 13: relaygate.control.v1.BindingMutation.remove:type_name -> relaygate.control.v1.RemoveBinding
-	10, // 14: relaygate.control.v1.BindingSlot.key:type_name -> relaygate.control.v1.BindingKey
-	11, // 15: relaygate.control.v1.BindingSlot.ref:type_name -> relaygate.control.v1.ListenerBindingRef
-	10, // 16: relaygate.control.v1.InstallBinding.key:type_name -> relaygate.control.v1.BindingKey
-	11, // 17: relaygate.control.v1.InstallBinding.expected_ref:type_name -> relaygate.control.v1.ListenerBindingRef
-	11, // 18: relaygate.control.v1.InstallBinding.new_ref:type_name -> relaygate.control.v1.ListenerBindingRef
-	10, // 19: relaygate.control.v1.RemoveBinding.key:type_name -> relaygate.control.v1.BindingKey
-	11, // 20: relaygate.control.v1.RemoveBinding.expected_ref:type_name -> relaygate.control.v1.ListenerBindingRef
-	1,  // 21: relaygate.control.v1.MutationResult.code:type_name -> relaygate.control.v1.MutationCode
-	12, // 22: relaygate.control.v1.MutationResult.slot:type_name -> relaygate.control.v1.BindingSlot
-	5,  // 23: relaygate.control.v1.AdmitOpenRequest.session:type_name -> relaygate.control.v1.SessionRef
-	16, // 24: relaygate.control.v1.AdmitOpenRequest.auth:type_name -> relaygate.control.v1.AuthContext
-	16, // 25: relaygate.control.v1.OpenContext.auth:type_name -> relaygate.control.v1.AuthContext
-	12, // 26: relaygate.control.v1.OpenContext.binding:type_name -> relaygate.control.v1.BindingSlot
-	18, // 27: relaygate.control.v1.AdmitOpenResponse.context:type_name -> relaygate.control.v1.OpenContext
-	2,  // 28: relaygate.control.v1.GatewayControl.Connect:input_type -> relaygate.control.v1.ControlRequest
-	17, // 29: relaygate.control.v1.GatewayControl.AdmitOpen:input_type -> relaygate.control.v1.AdmitOpenRequest
-	3,  // 30: relaygate.control.v1.GatewayControl.Connect:output_type -> relaygate.control.v1.ControlResponse
-	19, // 31: relaygate.control.v1.GatewayControl.AdmitOpen:output_type -> relaygate.control.v1.AdmitOpenResponse
-	30, // [30:32] is the sub-list for method output_type
-	28, // [28:30] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	3,  // 0: relaygate.control.v1.ControlRequest.hello:type_name -> relaygate.control.v1.Hello
+	6,  // 1: relaygate.control.v1.ControlRequest.full_snapshot:type_name -> relaygate.control.v1.FullSnapshot
+	8,  // 2: relaygate.control.v1.ControlRequest.binding_mutation:type_name -> relaygate.control.v1.BindingMutation
+	5,  // 3: relaygate.control.v1.ControlResponse.session_opened:type_name -> relaygate.control.v1.SessionOpened
+	7,  // 4: relaygate.control.v1.ControlResponse.snapshot_accepted:type_name -> relaygate.control.v1.SnapshotAccepted
+	12, // 5: relaygate.control.v1.ControlResponse.mutation_result:type_name -> relaygate.control.v1.MutationResult
+	4,  // 6: relaygate.control.v1.SessionOpened.session:type_name -> relaygate.control.v1.SessionRef
+	4,  // 7: relaygate.control.v1.FullSnapshot.session:type_name -> relaygate.control.v1.SessionRef
+	11, // 8: relaygate.control.v1.FullSnapshot.bindings:type_name -> relaygate.control.v1.LiveBinding
+	4,  // 9: relaygate.control.v1.BindingMutation.session:type_name -> relaygate.control.v1.SessionRef
+	11, // 10: relaygate.control.v1.BindingMutation.declare:type_name -> relaygate.control.v1.LiveBinding
+	11, // 11: relaygate.control.v1.BindingMutation.withdraw:type_name -> relaygate.control.v1.LiveBinding
+	9,  // 12: relaygate.control.v1.LiveBinding.key:type_name -> relaygate.control.v1.BindingKey
+	10, // 13: relaygate.control.v1.LiveBinding.ref:type_name -> relaygate.control.v1.ListenerBindingRef
+	0,  // 14: relaygate.control.v1.MutationResult.code:type_name -> relaygate.control.v1.MutationCode
+	11, // 15: relaygate.control.v1.MutationResult.binding:type_name -> relaygate.control.v1.LiveBinding
+	4,  // 16: relaygate.control.v1.AdmitOpenRequest.session:type_name -> relaygate.control.v1.SessionRef
+	13, // 17: relaygate.control.v1.AdmitOpenRequest.auth:type_name -> relaygate.control.v1.AuthContext
+	13, // 18: relaygate.control.v1.OpenContext.auth:type_name -> relaygate.control.v1.AuthContext
+	11, // 19: relaygate.control.v1.OpenContext.binding:type_name -> relaygate.control.v1.LiveBinding
+	15, // 20: relaygate.control.v1.AdmitOpenResponse.context:type_name -> relaygate.control.v1.OpenContext
+	1,  // 21: relaygate.control.v1.GatewayControl.Connect:input_type -> relaygate.control.v1.ControlRequest
+	14, // 22: relaygate.control.v1.GatewayControl.AdmitOpen:input_type -> relaygate.control.v1.AdmitOpenRequest
+	2,  // 23: relaygate.control.v1.GatewayControl.Connect:output_type -> relaygate.control.v1.ControlResponse
+	16, // 24: relaygate.control.v1.GatewayControl.AdmitOpen:output_type -> relaygate.control.v1.AdmitOpenResponse
+	23, // [23:25] is the sub-list for method output_type
+	21, // [21:23] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_proto_relaygate_control_v1_control_proto_init() }
@@ -1592,16 +1363,16 @@ func file_proto_relaygate_control_v1_control_proto_init() {
 		(*ControlResponse_MutationResult)(nil),
 	}
 	file_proto_relaygate_control_v1_control_proto_msgTypes[7].OneofWrappers = []any{
-		(*BindingMutation_Install)(nil),
-		(*BindingMutation_Remove)(nil),
+		(*BindingMutation_Declare)(nil),
+		(*BindingMutation_Withdraw)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_relaygate_control_v1_control_proto_rawDesc), len(file_proto_relaygate_control_v1_control_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   18,
+			NumEnums:      1,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
