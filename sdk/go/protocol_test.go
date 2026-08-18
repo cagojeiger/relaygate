@@ -3,6 +3,7 @@ package relaygate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	relayv1 "github.com/cagojeiger/relaygate/sdk/go/internal/gen/relay/v1"
@@ -51,7 +52,7 @@ func acceptingOfferTestClient(attemptID string) (*Client, *Offer) {
 	client := &Client{
 		authenticated:   true,
 		offers:          make(map[string]*Offer),
-		offerTombstones: make(map[string]string),
+		offerTombstones: make(map[string]offerTombstone),
 		pipes:           make(map[string]*Pipe),
 		pipeTombstones:  make(map[string]*Pipe),
 	}
@@ -73,6 +74,14 @@ func acceptingReservedOfferTestClient(attemptID string) (*Client, *Offer) {
 func listenerDecisionRejectedResponse(attemptID string, failure relayv1.ListenerDecisionFailure) *relayv1.ConnectResponse {
 	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerDecisionRejected{
 		ListenerDecisionRejected: &relayv1.ListenerDecisionRejected{AttemptId: attemptID, Failure: failure},
+	}}
+}
+
+func listenerOfferResponse(attemptID string) *relayv1.ConnectResponse {
+	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerOffer{
+		ListenerOffer: &relayv1.ListenerOffer{
+			AttemptId: attemptID, ListenerBindingId: "listener", Endpoint: "/service", TargetId: "target", CallerSessionId: "caller-session",
+		},
 	}}
 }
 
@@ -193,6 +202,40 @@ func TestOpenRequestRejectedStrictEnumAndTypedOutcome(t *testing.T) {
 	})
 }
 
+func TestListenerOfferCannotReviveRetiredAttempt(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		retired offerTombstone
+	}{
+		{name: "terminal", retired: offerTombstone{pipeID: "pipe-retired"}},
+		{name: "decision rejection", retired: offerTombstone{decisionFailure: relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_WRONG_PHASE}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const attemptID = "attempt-retired"
+			client := &Client{
+				authenticated:   true,
+				listeners:       make(map[string]*Listener),
+				offers:          make(map[string]*Offer),
+				offerTombstones: map[string]offerTombstone{attemptID: test.retired},
+			}
+			listener := newListener(client, "listener", "/service", "target")
+			client.listeners[listener.id] = listener
+
+			if err := client.dispatch(listenerOfferResponse(attemptID)); !errors.Is(err, errProtocol) {
+				t.Fatalf("ListenerOffer for retired attempt = %v, want protocol failure", err)
+			}
+			if len(client.offers) != 0 || client.offerTombstones[attemptID] != test.retired {
+				t.Fatal("retired ListenerOffer changed active or terminal attempt state")
+			}
+			select {
+			case revived := <-listener.offers:
+				t.Fatalf("retired attempt became live: %#v", revived)
+			default:
+			}
+		})
+	}
+}
+
 func TestListenerDecisionRejectedStrictEnumDecoding(t *testing.T) {
 	for _, failure := range []relayv1.ListenerDecisionFailure{
 		relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_INVALID_REQUEST,
@@ -247,6 +290,20 @@ func TestListenerDecisionRejectedStrictEnumDecoding(t *testing.T) {
 		}
 	})
 
+	t.Run("retired by another outcome", func(t *testing.T) {
+		client := &Client{
+			authenticated: true,
+			offers:        make(map[string]*Offer),
+			offerTombstones: map[string]offerTombstone{
+				"attempt-terminal": {pipeID: "pipe-terminal"},
+			},
+		}
+		err := client.dispatch(listenerDecisionRejectedResponse("attempt-terminal", relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_WRONG_PHASE))
+		if !errors.Is(err, errProtocol) {
+			t.Fatalf("ListenerDecisionRejected after another terminal outcome = %v, want protocol failure", err)
+		}
+	})
+
 	t.Run("invalid identity", func(t *testing.T) {
 		client, offer := acceptingOfferTestClient("attempt-current")
 		err := client.dispatch(listenerDecisionRejectedResponse("", relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_INVALID_REQUEST))
@@ -264,14 +321,24 @@ func TestListenerDecisionRejectedStrictEnumDecoding(t *testing.T) {
 		}
 	})
 
-	t.Run("retired", func(t *testing.T) {
+	t.Run("exact replay and conflicting replay", func(t *testing.T) {
 		client, offer := acceptingOfferTestClient("attempt-retired")
 		response := listenerDecisionRejectedResponse(offer.attemptID, relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_ATTEMPT_NOT_PENDING)
 		if err := client.dispatch(response); err != nil {
 			t.Fatalf("first ListenerDecisionRejected: %v", err)
 		}
-		if err := client.dispatch(response); !errors.Is(err, errProtocol) {
-			t.Fatalf("retired ListenerDecisionRejected = %v, want protocol failure", err)
+		<-offer.failure
+		if err := client.dispatch(response); err != nil {
+			t.Fatalf("exact ListenerDecisionRejected replay = %v, want no-op", err)
+		}
+		select {
+		case extra := <-offer.failure:
+			t.Fatalf("exact ListenerDecisionRejected replay published another failure: %v", extra)
+		default:
+		}
+		conflict := listenerDecisionRejectedResponse(offer.attemptID, relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_WRONG_PHASE)
+		if err := client.dispatch(conflict); !errors.Is(err, errProtocol) {
+			t.Fatalf("conflicting ListenerDecisionRejected replay = %v, want protocol failure", err)
 		}
 	})
 }
@@ -284,7 +351,9 @@ func TestListenerDecisionRejectedRetiresExactOfferAndReservation(t *testing.T) {
 	client.pipes[unrelatedPipe.id] = unrelatedPipe
 	client.pipeSlots <- struct{}{}
 
-	if err := client.dispatch(listenerDecisionRejectedResponse(offer.attemptID, relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_INVALID_REQUEST)); err != nil {
+	failure := relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_INVALID_REQUEST
+	response := listenerDecisionRejectedResponse(offer.attemptID, failure)
+	if err := client.dispatch(response); err != nil {
 		t.Fatalf("dispatch ListenerDecisionRejected: %v", err)
 	}
 	if _, exists := client.offers[offer.attemptID]; exists {
@@ -293,8 +362,8 @@ func TestListenerDecisionRejectedRetiresExactOfferAndReservation(t *testing.T) {
 	if client.offers[unrelatedOffer.attemptID] != unrelatedOffer || client.pipes[unrelatedPipe.id] != unrelatedPipe {
 		t.Fatal("rejection changed unrelated Offer or Pipe state")
 	}
-	if pipeID, exists := client.offerTombstones[offer.attemptID]; !exists || pipeID != "" {
-		t.Fatalf("retired Offer history = %q, %t, want exact empty Pipe identity", pipeID, exists)
+	if retired, exists := client.offerTombstones[offer.attemptID]; !exists || retired.pipeID != "" || retired.decisionFailure != failure {
+		t.Fatalf("retired Offer history = %#v, %t, want exact rejection", retired, exists)
 	}
 	if len(client.pipeSlots) != 1 {
 		t.Fatalf("Pipe slots after rejection = %d, want only unrelated Pipe slot", len(client.pipeSlots))
@@ -312,14 +381,23 @@ func TestListenerDecisionRejectedRetiresExactOfferAndReservation(t *testing.T) {
 		t.Fatalf("unrelated Pipe became terminal: %v", unrelatedPipe.Err())
 	default:
 	}
+	if err := client.dispatch(response); err != nil {
+		t.Fatalf("exact ListenerDecisionRejected replay = %v, want no-op", err)
+	}
+	if client.offers[unrelatedOffer.attemptID] != unrelatedOffer || client.pipes[unrelatedPipe.id] != unrelatedPipe || len(client.pipeSlots) != 1 {
+		t.Fatal("exact rejection replay changed unrelated state or released another Pipe slot")
+	}
 
 	terminal := &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerTerminated{
 		ListenerTerminated: &relayv1.ListenerTerminated{AttemptId: offer.attemptID},
 	}}
-	for range 2 {
-		if err := client.dispatch(terminal); err != nil {
-			t.Fatalf("exact terminal after rejection was not idempotent: %v", err)
-		}
+	retired := client.offerTombstones[offer.attemptID]
+	if err := client.dispatch(terminal); !errors.Is(err, errProtocol) {
+		t.Fatalf("ListenerTerminated after decision rejection = %v, want protocol failure", err)
+	}
+	if client.offerTombstones[offer.attemptID] != retired || client.offers[unrelatedOffer.attemptID] != unrelatedOffer ||
+		client.pipes[unrelatedPipe.id] != unrelatedPipe || len(client.pipeSlots) != 1 {
+		t.Fatal("ListenerTerminated after decision rejection changed terminal or unrelated state")
 	}
 }
 
@@ -342,7 +420,9 @@ func TestListenerDecisionRejectedCleansExactProvisionalPipe(t *testing.T) {
 		t.Fatalf("provisional Pipe registration = %#v, offer=%#v, slots=%d", provisional, offer.provisional, len(client.pipeSlots))
 	}
 
-	if err := client.dispatch(listenerDecisionRejectedResponse(offer.attemptID, relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_WRONG_PHASE)); err != nil {
+	failure := relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_WRONG_PHASE
+	response := listenerDecisionRejectedResponse(offer.attemptID, failure)
+	if err := client.dispatch(response); err != nil {
 		t.Fatalf("dispatch ListenerDecisionRejected: %v", err)
 	}
 	if _, exists := client.offers[offer.attemptID]; exists {
@@ -354,8 +434,8 @@ func TestListenerDecisionRejectedCleansExactProvisionalPipe(t *testing.T) {
 	if client.offers[unrelatedOffer.attemptID] != unrelatedOffer || client.pipes[unrelatedPipe.id] != unrelatedPipe {
 		t.Fatal("provisional cleanup changed unrelated Offer or Pipe state")
 	}
-	if pipeID := client.offerTombstones[offer.attemptID]; pipeID != provisional.id {
-		t.Fatalf("retired Offer Pipe identity = %q, want %q", pipeID, provisional.id)
+	if retired := client.offerTombstones[offer.attemptID]; retired.pipeID != provisional.id || retired.decisionFailure != failure {
+		t.Fatalf("retired Offer history = %#v, want Pipe %q and failure %s", retired, provisional.id, failure)
 	}
 	if client.pipeTombstones[provisional.id] != provisional {
 		t.Fatal("provisional Pipe terminal history was not retained")
@@ -376,20 +456,64 @@ func TestListenerDecisionRejectedCleansExactProvisionalPipe(t *testing.T) {
 		t.Fatalf("unrelated Pipe became terminal: %v", unrelatedPipe.Err())
 	default:
 	}
+	if err := client.dispatch(response); err != nil {
+		t.Fatalf("exact provisional rejection replay = %v, want no-op", err)
+	}
+	if client.offers[unrelatedOffer.attemptID] != unrelatedOffer || client.pipes[unrelatedPipe.id] != unrelatedPipe || len(client.pipeSlots) != 1 {
+		t.Fatal("exact provisional rejection replay changed unrelated state or released another Pipe slot")
+	}
+	conflict := listenerDecisionRejectedResponse(offer.attemptID, relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_ATTEMPT_NOT_PENDING)
+	if err := client.dispatch(conflict); !errors.Is(err, errProtocol) {
+		t.Fatalf("conflicting provisional rejection replay = %v, want protocol failure", err)
+	}
+	if client.offers[unrelatedOffer.attemptID] != unrelatedOffer || client.pipes[unrelatedPipe.id] != unrelatedPipe || len(client.pipeSlots) != 1 {
+		t.Fatal("conflicting provisional rejection replay changed unrelated state")
+	}
 
 	terminal := &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerTerminated{
 		ListenerTerminated: &relayv1.ListenerTerminated{AttemptId: offer.attemptID, PipeId: provisional.id},
 	}}
-	for range 2 {
-		if err := client.dispatch(terminal); err != nil {
-			t.Fatalf("exact provisional terminal was not idempotent: %v", err)
-		}
+	retired := client.offerTombstones[offer.attemptID]
+	if err := client.dispatch(terminal); !errors.Is(err, errProtocol) {
+		t.Fatalf("ListenerTerminated after provisional decision rejection = %v, want protocol failure", err)
+	}
+	if client.offerTombstones[offer.attemptID] != retired || client.pipeTombstones[provisional.id] != provisional ||
+		client.offers[unrelatedOffer.attemptID] != unrelatedOffer || client.pipes[unrelatedPipe.id] != unrelatedPipe || len(client.pipeSlots) != 1 {
+		t.Fatal("ListenerTerminated after provisional decision rejection changed terminal or unrelated state")
 	}
 	foreignTerminal := &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerTerminated{
 		ListenerTerminated: &relayv1.ListenerTerminated{AttemptId: offer.attemptID, PipeId: "pipe-foreign"},
 	}}
 	if err := client.dispatch(foreignTerminal); !errors.Is(err, errProtocol) {
 		t.Fatalf("foreign terminal after rejection = %v, want protocol failure", err)
+	}
+}
+
+func TestListenerDecisionRejectedReplayHistoryIsBounded(t *testing.T) {
+	client := &Client{
+		authenticated:   true,
+		offers:          make(map[string]*Offer),
+		offerTombstones: make(map[string]offerTombstone),
+	}
+	failure := relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_ATTEMPT_NOT_PENDING
+	client.mu.Lock()
+	for index := 0; index <= maxPendingOffers; index++ {
+		attemptID := fmt.Sprintf("attempt-%d", index)
+		client.addOfferTombstoneLocked(attemptID, offerTombstone{decisionFailure: failure})
+	}
+	client.mu.Unlock()
+	if len(client.offerTombstones) != maxPendingOffers || len(client.offerHistory) != maxPendingOffers {
+		t.Fatalf("rejection replay history = %d records, %d order entries, want %d", len(client.offerTombstones), len(client.offerHistory), maxPendingOffers)
+	}
+	if _, exists := client.offerTombstones["attempt-0"]; exists {
+		t.Fatal("oldest rejection replay history was not evicted")
+	}
+	newest := fmt.Sprintf("attempt-%d", maxPendingOffers)
+	if err := client.dispatch(listenerDecisionRejectedResponse(newest, failure)); err != nil {
+		t.Fatalf("exact replay in bounded history = %v, want no-op", err)
+	}
+	if err := client.dispatch(listenerDecisionRejectedResponse("attempt-0", failure)); !errors.Is(err, errProtocol) {
+		t.Fatalf("replay after bounded-history eviction = %v, want protocol failure", err)
 	}
 }
 

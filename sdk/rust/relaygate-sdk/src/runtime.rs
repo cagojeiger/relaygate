@@ -61,6 +61,12 @@ enum OpenTerminal {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OfferTerminal {
+    Retired { pipe_id: String },
+    DecisionRejected { failure: i32 },
+}
+
 pub(crate) struct Shared {
     pub(crate) outbound: mpsc::Sender<wire::ConnectRequest>,
     pub(crate) session: Session,
@@ -75,7 +81,7 @@ pub(crate) struct Shared {
     retired_bindings: StdMutex<VecDeque<String>>,
     binding_fingerprints: StdMutex<VecDeque<BindingFingerprint>>,
     open_history: StdMutex<VecDeque<(String, OpenTerminal)>>,
-    confirmation_history: StdMutex<VecDeque<(String, String)>>,
+    offer_history: StdMutex<VecDeque<(String, OfferTerminal)>>,
     close_history: StdMutex<VecDeque<(String, bool)>>,
     cancel_history: StdMutex<VecDeque<(String, Option<bool>)>>,
     pipe_history: StdMutex<VecDeque<(String, String)>>,
@@ -100,7 +106,7 @@ impl Shared {
             retired_bindings: StdMutex::new(VecDeque::new()),
             binding_fingerprints: StdMutex::new(VecDeque::new()),
             open_history: StdMutex::new(VecDeque::new()),
-            confirmation_history: StdMutex::new(VecDeque::new()),
+            offer_history: StdMutex::new(VecDeque::new()),
             close_history: StdMutex::new(VecDeque::new()),
             cancel_history: StdMutex::new(VecDeque::new()),
             pipe_history: StdMutex::new(VecDeque::new()),
@@ -338,19 +344,51 @@ impl Shared {
     }
 
     fn confirmation_matches(&self, attempt_id: &str, pipe_id: &str) -> Option<bool> {
-        self.confirmation_history
+        self.offer_history
             .lock()
-            .expect("confirmation history lock poisoned")
+            .expect("offer history lock poisoned")
             .iter()
             .find(|(known_attempt, _)| known_attempt == attempt_id)
-            .map(|(_, known_pipe)| known_pipe == pipe_id)
+            .map(|(_, terminal)| {
+                matches!(
+                    terminal,
+                    OfferTerminal::Retired {
+                        pipe_id: known_pipe,
+                    } if known_pipe == pipe_id
+                )
+            })
     }
 
-    fn remember_confirmation(&self, attempt_id: String, pipe_id: String) {
-        let mut history = self
-            .confirmation_history
+    fn offer_terminal_exists(&self, attempt_id: &str) -> bool {
+        self.offer_history
             .lock()
-            .expect("confirmation history lock poisoned");
+            .expect("offer history lock poisoned")
+            .iter()
+            .any(|(known_attempt, _)| known_attempt == attempt_id)
+    }
+
+    fn decision_rejection_matches(&self, attempt_id: &str, failure: i32) -> Option<bool> {
+        self.offer_history
+            .lock()
+            .expect("offer history lock poisoned")
+            .iter()
+            .find(|(known_attempt, _)| known_attempt == attempt_id)
+            .map(|(_, terminal)| {
+                matches!(
+                    terminal,
+                    OfferTerminal::DecisionRejected {
+                        failure: known_failure,
+                        ..
+                    } if *known_failure == failure
+                )
+            })
+    }
+
+    fn remember_offer_terminal(&self, attempt_id: String, terminal: OfferTerminal) {
+        let mut history = self
+            .offer_history
+            .lock()
+            .expect("offer history lock poisoned");
         if history
             .iter()
             .any(|(known_attempt, _)| known_attempt == &attempt_id)
@@ -360,7 +398,15 @@ impl Shared {
         if history.len() == MAX_OFFERS {
             history.pop_front();
         }
-        history.push_back((attempt_id, pipe_id));
+        history.push_back((attempt_id, terminal));
+    }
+
+    fn remember_confirmation(&self, attempt_id: String, pipe_id: String) {
+        self.remember_offer_terminal(attempt_id, OfferTerminal::Retired { pipe_id });
+    }
+
+    fn remember_decision_rejection(&self, attempt_id: String, failure: i32) {
+        self.remember_offer_terminal(attempt_id, OfferTerminal::DecisionRejected { failure });
     }
 
     pub(crate) fn retire_offer_identity(&self, attempt_id: &str, pipe_id: &str) {
@@ -1304,6 +1350,9 @@ async fn listener_offer(
             "ListenerOffer contained invalid identity",
         ));
     }
+    if shared.offer_terminal_exists(&offer.attempt_id) {
+        return Err(SessionError::Protocol("retired ListenerOffer attempt"));
+    }
     let listener = shared
         .listeners
         .lock()
@@ -1336,8 +1385,16 @@ async fn listener_offer(
         shared: Arc::downgrade(shared),
     });
     let rejected_for_capacity = {
+        let history = shared
+            .offer_history
+            .lock()
+            .expect("offer history lock poisoned");
         let mut offers = shared.offers.lock().expect("offers lock poisoned");
-        if offers.contains_key(&offer.attempt_id) {
+        if history
+            .iter()
+            .any(|(known_attempt, _)| known_attempt == &offer.attempt_id)
+            || offers.contains_key(&offer.attempt_id)
+        {
             return Err(SessionError::Protocol("duplicate ListenerOffer attempt"));
         }
         if offers.len() >= MAX_OFFERS {
@@ -1758,6 +1815,15 @@ fn listener_decision_rejected(
             ));
         }
     }
+    match shared.decision_rejection_matches(&rejected.attempt_id, rejected.failure) {
+        Some(true) => return Ok(()),
+        Some(false) => {
+            return Err(SessionError::Protocol(
+                "ListenerDecisionRejected conflicted with terminal history",
+            ));
+        }
+        None => {}
+    }
     let state = {
         let mut offers = shared.offers.lock().expect("offers lock poisoned");
         let state = offers
@@ -1784,7 +1850,7 @@ fn listener_decision_rejected(
         .expect("offer pipe lock poisoned")
         .clone()
         .unwrap_or_default();
-    shared.retire_offer_identity(&rejected.attempt_id, &pipe_id);
+    shared.remember_decision_rejection(rejected.attempt_id.clone(), rejected.failure);
     if !pipe_id.is_empty() {
         shared.terminalize_pipe(&pipe_id, PipeError::Terminal);
     }

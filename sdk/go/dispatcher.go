@@ -197,6 +197,10 @@ func (c *Client) dispatchListenerOffer(message *relayv1.ListenerOffer) error {
 		c.mu.Unlock()
 		return protocolError("foreign ListenerOffer")
 	}
+	if _, exists := c.offerTombstones[message.GetAttemptId()]; exists {
+		c.mu.Unlock()
+		return protocolError("replayed ListenerOffer")
+	}
 	if len(c.offers) >= maxPendingOffers {
 		c.mu.Unlock()
 		return protocolError("offer table capacity exceeded")
@@ -254,7 +258,7 @@ func (c *Client) dispatchListenerConfirmationAcknowledged(message *relayv1.Liste
 		return protocolError("foreign ListenerConfirmationAcknowledged")
 	}
 	delete(c.offers, message.GetAttemptId())
-	c.addOfferTombstoneLocked(message.GetAttemptId(), message.GetPipeId())
+	c.addOfferTombstoneLocked(message.GetAttemptId(), offerTombstone{pipeID: message.GetPipeId()})
 	c.mu.Unlock()
 	if !offer.acknowledge(pipe) {
 		return protocolError("confirmation acknowledgement in wrong phase")
@@ -279,9 +283,8 @@ func (c *Client) dispatchListenerTerminated(message *relayv1.ListenerTerminated)
 			}
 		}
 		if pipe == nil {
-			if tombstone := c.pipeTombstones[message.GetPipeId()]; tombstone != nil && tombstone.attemptID == message.GetAttemptId() {
-				c.matchesPipeTombstoneLocked(message.GetPipeId())
-				c.matchesOfferTombstoneLocked(message.GetAttemptId(), message.GetPipeId())
+			if tombstone := c.pipeTombstones[message.GetPipeId()]; tombstone != nil && tombstone.attemptID == message.GetAttemptId() &&
+				c.matchesOfferTombstoneLocked(message.GetAttemptId(), message.GetPipeId()) {
 				c.mu.Unlock()
 				return nil
 			}
@@ -292,7 +295,7 @@ func (c *Client) dispatchListenerTerminated(message *relayv1.ListenerTerminated)
 		}
 		delete(c.pipes, pipe.id)
 		c.addPipeTombstoneLocked(pipe)
-		c.addOfferTombstoneLocked(message.GetAttemptId(), message.GetPipeId())
+		c.addOfferTombstoneLocked(message.GetAttemptId(), offerTombstone{pipeID: message.GetPipeId()})
 		if call := c.closeCalls[pipe.id]; call != nil {
 			call.terminalSeen = true
 		}
@@ -306,7 +309,7 @@ func (c *Client) dispatchListenerTerminated(message *relayv1.ListenerTerminated)
 		return protocolError("unknown ListenerTerminated")
 	}
 	delete(c.offers, message.GetAttemptId())
-	c.addOfferTombstoneLocked(message.GetAttemptId(), message.GetPipeId())
+	c.addOfferTombstoneLocked(message.GetAttemptId(), offerTombstone{pipeID: message.GetPipeId()})
 	c.mu.Unlock()
 	if offer != nil {
 		offer.terminate(ErrPipeClosed)
@@ -325,7 +328,14 @@ func (c *Client) dispatchListenerDecisionRejected(message *relayv1.ListenerDecis
 	c.mu.Lock()
 	offer := c.offers[message.GetAttemptId()]
 	if offer == nil {
+		retired, exists := c.offerTombstones[message.GetAttemptId()]
 		c.mu.Unlock()
+		if exists && retired.decisionFailure == message.GetFailure() {
+			return nil
+		}
+		if exists && retired.decisionFailure != relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_UNSPECIFIED {
+			return protocolError("conflicting duplicate ListenerDecisionRejected")
+		}
 		return protocolError("foreign ListenerDecisionRejected")
 	}
 	pipe, ok := offer.markDecisionRejected()
@@ -342,7 +352,10 @@ func (c *Client) dispatchListenerDecisionRejected(message *relayv1.ListenerDecis
 		}
 		c.addPipeTombstoneLocked(pipe)
 	}
-	c.addOfferTombstoneLocked(message.GetAttemptId(), pipeID)
+	c.addOfferTombstoneLocked(message.GetAttemptId(), offerTombstone{
+		pipeID:          pipeID,
+		decisionFailure: message.GetFailure(),
+	})
 	c.mu.Unlock()
 	if pipe != nil {
 		pipe.terminate(rejection)
@@ -673,7 +686,7 @@ func (c *Client) removePipe(pipe *Pipe) {
 	c.mu.Unlock()
 }
 
-func (c *Client) addOfferTombstoneLocked(attemptID, pipeID string) {
+func (c *Client) addOfferTombstoneLocked(attemptID string, tombstone offerTombstone) {
 	if _, exists := c.offerTombstones[attemptID]; !exists {
 		for len(c.offerTombstones) >= maxPendingOffers && len(c.offerHistory) > 0 {
 			oldest := c.offerHistory[0]
@@ -682,7 +695,7 @@ func (c *Client) addOfferTombstoneLocked(attemptID, pipeID string) {
 		}
 		c.offerHistory = append(c.offerHistory, attemptID)
 	}
-	c.offerTombstones[attemptID] = pipeID
+	c.offerTombstones[attemptID] = tombstone
 }
 
 func (c *Client) addBindingRecordLocked(record bindingRecord) bool {
@@ -708,7 +721,7 @@ func (c *Client) addBindingRecordLocked(record bindingRecord) bool {
 
 func (c *Client) matchesOfferTombstoneLocked(attemptID, pipeID string) bool {
 	expected, exists := c.offerTombstones[attemptID]
-	if !exists || expected != pipeID {
+	if !exists || expected.pipeID != pipeID || expected.decisionFailure != relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_UNSPECIFIED {
 		return false
 	}
 	return true

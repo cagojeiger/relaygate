@@ -760,7 +760,7 @@ func (c *Client) retireOffer(offer *Offer, pipeID string) {
 	c.mu.Lock()
 	if c.offers[offer.attemptID] == offer {
 		delete(c.offers, offer.attemptID)
-		c.addOfferTombstoneLocked(offer.attemptID, pipeID)
+		c.addOfferTombstoneLocked(offer.attemptID, offerTombstone{pipeID: pipeID})
 	}
 	c.mu.Unlock()
 }

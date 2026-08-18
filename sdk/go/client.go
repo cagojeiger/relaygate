@@ -121,6 +121,11 @@ type bindingRecord struct {
 	unbound  bool
 }
 
+type offerTombstone struct {
+	pipeID          string
+	decisionFailure relayv1.ListenerDecisionFailure
+}
+
 type sendCommand struct {
 	ctx     context.Context //nolint:containedctx // The queued command preserves the exact caller deadline.
 	request *relayv1.ConnectRequest
@@ -156,7 +161,7 @@ type Client struct {
 	bindingRecords   map[string]bindingRecord
 	bindingHistory   []string
 	offers           map[string]*Offer
-	offerTombstones  map[string]string
+	offerTombstones  map[string]offerTombstone
 	offerHistory     []string
 	opens            map[string]*openCall
 	openTombstones   map[string]openTombstone
@@ -218,7 +223,7 @@ func Connect(ctx context.Context, config Config) (*Client, error) {
 		listeners:        make(map[string]*Listener),
 		bindingRecords:   make(map[string]bindingRecord),
 		offers:           make(map[string]*Offer),
-		offerTombstones:  make(map[string]string),
+		offerTombstones:  make(map[string]offerTombstone),
 		opens:            make(map[string]*openCall),
 		openTombstones:   make(map[string]openTombstone),
 		pipes:            make(map[string]*Pipe),
