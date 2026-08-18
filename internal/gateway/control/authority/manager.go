@@ -256,7 +256,7 @@ func (m *Manager) Observe(ctx context.Context) (Ref, Presence, error) {
 // a new leader-local control stream (V=false). A same-instance reconnect keeps
 // its committed routes until its replacement snapshot arrives; a new instance
 // is an atomic FSM replacement that deletes the old instance's routes.
-func (m *Manager) OpenSession(gatewayID, gatewayInstanceID, relayAddress string) (Session, error) {
+func (m *Manager) OpenSession(ctx context.Context, gatewayID, gatewayInstanceID, relayAddress string) (Session, error) {
 	if err := routing.ValidateIdentity("gateway_id", gatewayID); err != nil {
 		return Session{}, err
 	}
@@ -282,7 +282,7 @@ func (m *Manager) OpenSession(gatewayID, gatewayInstanceID, relayAddress string)
 	if err != nil {
 		return Session{}, fmt.Errorf("encode gateway registration: %w", err)
 	}
-	if _, err := m.apply(command); err != nil {
+	if _, err := m.applyWithParent(ctx, command); err != nil {
 		return Session{}, err
 	}
 	controlSessionID, err := newID()
@@ -320,14 +320,14 @@ func (m *Manager) OpenSession(gatewayID, gatewayInstanceID, relayAddress string)
 
 // Revalidate atomically replaces C for this gateway and only then marks its
 // leader-local V record available for Open admission.
-func (m *Manager) Revalidate(ref SessionRef, bindings []routing.LiveBinding) error {
+func (m *Manager) Revalidate(ctx context.Context, ref SessionRef, bindings []routing.LiveBinding) error {
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
 	candidate, encoded, err := m.snapshotCommand(ref, bindings)
 	if err != nil {
 		return err
 	}
-	if _, err := m.apply(encoded); err != nil {
+	if _, err := m.applyWithParent(ctx, encoded); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -356,7 +356,7 @@ func (m *Manager) RequireRevalidated(ref SessionRef) error {
 }
 
 // Declare commits the exact route before changing the local V mirror.
-func (m *Manager) Declare(ref SessionRef, binding routing.LiveBinding) (bool, error) {
+func (m *Manager) Declare(ctx context.Context, ref SessionRef, binding routing.LiveBinding) (bool, error) {
 	if err := binding.Validate(); err != nil {
 		return false, err
 	}
@@ -384,7 +384,7 @@ func (m *Manager) Declare(ref SessionRef, binding routing.LiveBinding) (bool, er
 	if err != nil {
 		return false, fmt.Errorf("encode route declaration: %w", err)
 	}
-	result, err := m.apply(command)
+	result, err := m.applyWithParent(ctx, command)
 	if err != nil {
 		return false, err
 	}
@@ -403,7 +403,7 @@ func (m *Manager) Declare(ref SessionRef, binding routing.LiveBinding) (bool, er
 
 // Withdraw removes only the exact C route for this exact durable gateway
 // incarnation. A stale control stream cannot erase a replacement instance.
-func (m *Manager) Withdraw(ref SessionRef, binding routing.LiveBinding) (bool, error) {
+func (m *Manager) Withdraw(ctx context.Context, ref SessionRef, binding routing.LiveBinding) (bool, error) {
 	if err := binding.Validate(); err != nil {
 		return false, err
 	}
@@ -427,7 +427,7 @@ func (m *Manager) Withdraw(ref SessionRef, binding routing.LiveBinding) (bool, e
 	if err != nil {
 		return false, fmt.Errorf("encode route withdrawal: %w", err)
 	}
-	result, err := m.apply(command)
+	result, err := m.applyWithParent(ctx, command)
 	if err != nil {
 		if errors.Is(err, ErrStaleSession) {
 			return true, nil
@@ -715,10 +715,6 @@ func (m *Manager) snapshotCommand(ref SessionRef, bindings []routing.LiveBinding
 	return candidate, command, nil
 }
 
-func (m *Manager) apply(command []byte) (controlstate.ApplyResult, error) {
-	return m.applyWithParent(context.Background(), command)
-}
-
 func (m *Manager) applyWithParent(parent context.Context, command []byte) (controlstate.ApplyResult, error) {
 	ctx, cancel := context.WithTimeout(parent, m.config.ApplyTimeout)
 	defer cancel()
@@ -728,7 +724,7 @@ func (m *Manager) applyWithParent(parent context.Context, command []byte) (contr
 		// V on every proposal transport failure and let the Gateway reconnect to
 		// a freshly barrier-confirmed authority; C remains untouched in Raft.
 		m.fence()
-		return controlstate.ApplyResult{}, fmt.Errorf("%w: apply replicated current state: %v", ErrNoAuthority, err)
+		return controlstate.ApplyResult{}, fmt.Errorf("%w: apply replicated current state: %w", ErrNoAuthority, err)
 	}
 	if !result.Applied() {
 		switch result.Code {

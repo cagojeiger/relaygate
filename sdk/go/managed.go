@@ -2,9 +2,10 @@ package relaygate
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -73,7 +74,6 @@ type managedBinding struct {
 // current Listener declarations. Open, Offer, Pipe, and payload state are
 // never retried, resumed, or replayed across a session boundary.
 type ManagedClient struct {
-	ctx    context.Context //nolint:containedctx // The context is the supervisor lifetime.
 	cancel context.CancelCauseFunc
 	config Config
 	done   chan struct{}
@@ -108,9 +108,8 @@ func ConnectManaged(ctx context.Context, config Config) (*ManagedClient, error) 
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
-	lifetime, cancel := context.WithCancelCause(context.Background())
+	lifetime, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	managed := &ManagedClient{
-		ctx:      lifetime,
 		cancel:   cancel,
 		config:   config,
 		done:     make(chan struct{}),
@@ -121,7 +120,7 @@ func ConnectManaged(ctx context.Context, config Config) (*ManagedClient, error) 
 		now:      time.Now,
 		backoff:  jitterBackoff,
 	}
-	go managed.run()
+	go managed.run(lifetime)
 	if err := managed.WaitReady(ctx); err != nil {
 		_ = managed.Close()
 		return nil, err
@@ -439,16 +438,16 @@ func (m *ManagedClient) bindDeclaration(ctx context.Context, binding *managedBin
 	}
 }
 
-func (m *ManagedClient) run() {
+func (m *ManagedClient) run(ctx context.Context) {
 	defer close(m.done)
 	delay := managedInitialBackoff
 	for {
-		if err := m.ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			m.finish(ManagedClosed, nil)
 			return
 		}
 		m.setState(ManagedConnecting, nil)
-		attemptCtx, cancelAttempt := context.WithTimeout(m.ctx, managedConnectTimeout)
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, managedConnectTimeout)
 		client, err := m.connect(attemptCtx, m.config)
 		cancelAttempt()
 		if err != nil {
@@ -456,7 +455,7 @@ func (m *ManagedClient) run() {
 				m.finish(ManagedFailed, err)
 				return
 			}
-			if !m.waitBackoff(delay, err) {
+			if !m.waitBackoff(ctx, delay, err) {
 				m.finish(ManagedClosed, nil)
 				return
 			}
@@ -464,14 +463,14 @@ func (m *ManagedClient) run() {
 			continue
 		}
 
-		readyAt, err := m.installAndRebind(client)
+		readyAt, err := m.installAndRebind(ctx, client)
 		if err != nil {
 			_ = client.Close()
 			if isPermanentManagedConnectError(err) {
 				m.finish(ManagedFailed, err)
 				return
 			}
-			if !m.waitBackoff(delay, err) {
+			if !m.waitBackoff(ctx, delay, err) {
 				m.finish(ManagedClosed, nil)
 				return
 			}
@@ -490,12 +489,12 @@ func (m *ManagedClient) run() {
 				delay = managedInitialBackoff
 			}
 			m.detach(client)
-			if !m.waitBackoff(delay, clientErr) {
+			if !m.waitBackoff(ctx, delay, clientErr) {
 				m.finish(ManagedClosed, nil)
 				return
 			}
 			delay = nextManagedBackoff(delay)
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			_ = client.Close()
 			m.finish(ManagedClosed, nil)
 			return
@@ -503,7 +502,7 @@ func (m *ManagedClient) run() {
 	}
 }
 
-func (m *ManagedClient) installAndRebind(client *Client) (time.Time, error) {
+func (m *ManagedClient) installAndRebind(ctx context.Context, client *Client) (time.Time, error) {
 	m.mu.Lock()
 	m.current = client
 	m.generation++
@@ -539,7 +538,7 @@ func (m *ManagedClient) installAndRebind(client *Client) (time.Time, error) {
 		}
 
 		for _, binding := range pending {
-			raw, err := client.Bind(m.ctx, binding.key.endpoint, binding.key.target)
+			raw, err := client.Bind(ctx, binding.key.endpoint, binding.key.target)
 			if err != nil {
 				return time.Time{}, err
 			}
@@ -553,7 +552,7 @@ func (m *ManagedClient) installAndRebind(client *Client) (time.Time, error) {
 			}
 			m.mu.Unlock()
 			if !current || !active {
-				_ = raw.Unbind(m.ctx)
+				_ = raw.Unbind(ctx)
 			}
 		}
 	}
@@ -573,7 +572,7 @@ func (m *ManagedClient) detach(client *Client) {
 	m.mu.Unlock()
 }
 
-func (m *ManagedClient) waitBackoff(delay time.Duration, cause error) bool {
+func (m *ManagedClient) waitBackoff(ctx context.Context, delay time.Duration, cause error) bool {
 	m.mu.Lock()
 	if m.state != ManagedClosed && m.state != ManagedFailed {
 		m.state = ManagedBackoff
@@ -586,7 +585,7 @@ func (m *ManagedClient) waitBackoff(delay time.Duration, cause error) bool {
 	select {
 	case <-timer.C:
 		return true
-	case <-m.ctx.Done():
+	case <-ctx.Done():
 		return false
 	}
 }
@@ -633,7 +632,13 @@ func nextManagedBackoff(delay time.Duration) time.Duration {
 }
 
 func jitterBackoff(delay time.Duration) time.Duration {
-	factor := 1 - managedJitterRatio + rand.Float64()*(2*managedJitterRatio)
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return delay
+	}
+	const unitPrecision = uint64(1) << 53
+	fraction := float64(binary.LittleEndian.Uint64(random[:])>>(64-53)) / float64(unitPrecision)
+	factor := 1 - managedJitterRatio + fraction*(2*managedJitterRatio)
 	result := time.Duration(float64(delay) * factor)
 	if result < 0 {
 		return delay

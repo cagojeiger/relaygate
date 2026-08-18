@@ -154,7 +154,7 @@ func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello
 	if _, err := s.authority.Confirm(ctx); err != nil {
 		return authority.Session{}, unavailable("confirm authority", err)
 	}
-	session, err := s.authority.OpenSession(hello.GetGatewayId(), hello.GetGatewayInstanceId(), hello.GetRelayAddress())
+	session, err := s.authority.OpenSession(ctx, hello.GetGatewayId(), hello.GetGatewayInstanceId(), hello.GetRelayAddress())
 	if err != nil {
 		return authority.Session{}, mapAuthorityError("open control session", err)
 	}
@@ -165,7 +165,7 @@ func (s *Service) revalidate(ctx context.Context, ref authority.SessionRef, bind
 	if _, err := s.authority.Confirm(ctx); err != nil {
 		return unavailable("confirm authority", err)
 	}
-	if err := s.authority.Revalidate(ref, bindings); err != nil {
+	if err := s.authority.Revalidate(ctx, ref, bindings); err != nil {
 		return mapAuthorityError("accept snapshot", err)
 	}
 	return nil
@@ -193,9 +193,9 @@ func (s *Service) applyMutation(ctx context.Context, ref authority.SessionRef, m
 	}
 	var already bool
 	if withdraw {
-		already, err = s.authority.Withdraw(ref, binding)
+		already, err = s.authority.Withdraw(ctx, ref, binding)
 	} else {
-		already, err = s.authority.Declare(ref, binding)
+		already, err = s.authority.Declare(ctx, ref, binding)
 	}
 	if err != nil {
 		switch {

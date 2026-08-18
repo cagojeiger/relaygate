@@ -87,7 +87,7 @@ func testBinding() routing.LiveBinding {
 
 func TestSnapshotBindingsRejectsCrossSessionOwner(t *testing.T) {
 	_, manager := newLiveService(t)
-	session, err := manager.OpenSession("gateway-a", "instance-a", "127.0.0.1:27430")
+	session, err := manager.OpenSession(context.Background(), "gateway-a", "instance-a", "127.0.0.1:27430")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,11 +100,11 @@ func TestSnapshotBindingsRejectsCrossSessionOwner(t *testing.T) {
 
 func TestDeclareReportsCurrentLiveConflict(t *testing.T) {
 	service, manager := newLiveService(t)
-	first, err := manager.OpenSession("gateway-a", "instance-a", "127.0.0.1:27430")
+	first, err := manager.OpenSession(context.Background(), "gateway-a", "instance-a", "127.0.0.1:27430")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Revalidate(first.Ref, nil); err != nil {
+	if err := manager.Revalidate(context.Background(), first.Ref, nil); err != nil {
 		t.Fatal(err)
 	}
 	binding := testBinding()
@@ -112,11 +112,11 @@ func TestDeclareReportsCurrentLiveConflict(t *testing.T) {
 	if err != nil || result.GetCode() != controlv1.MutationCode_MUTATION_CODE_APPLIED {
 		t.Fatalf("first declare = %#v, %v", result, err)
 	}
-	second, err := manager.OpenSession("gateway-b", "instance-b", "127.0.0.1:27431")
+	second, err := manager.OpenSession(context.Background(), "gateway-b", "instance-b", "127.0.0.1:27431")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Revalidate(second.Ref, nil); err != nil {
+	if err := manager.Revalidate(context.Background(), second.Ref, nil); err != nil {
 		t.Fatal(err)
 	}
 	foreign := binding

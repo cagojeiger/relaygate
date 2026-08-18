@@ -134,7 +134,7 @@ func TestSyncingSessionExpiresWithoutFullSnapshot(t *testing.T) {
 	now := time.Unix(1_000, 0)
 	manager.now = func() time.Time { return now }
 	confirm(t, manager)
-	session, err := manager.OpenSession("syncing", "syncing-1", "127.0.0.1:9000")
+	session, err := manager.OpenSession(context.Background(), "syncing", "syncing-1", "127.0.0.1:9000")
 	if err != nil {
 		t.Fatalf("OpenSession(): %v", err)
 	}
@@ -148,7 +148,7 @@ func TestSyncingSessionExpiresWithoutFullSnapshot(t *testing.T) {
 	default:
 		t.Fatal("expired syncing control session was not fenced")
 	}
-	if err := manager.Revalidate(session.Ref, nil); !errors.Is(err, ErrStaleSession) {
+	if err := manager.Revalidate(context.Background(), session.Ref, nil); !errors.Is(err, ErrStaleSession) {
 		t.Fatalf("Revalidate(expired syncing session) = %v, want ErrStaleSession", err)
 	}
 }
@@ -182,13 +182,13 @@ func TestSnapshotConflictIsAtomicAndExactCAndVAreRequired(t *testing.T) {
 	ingress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
 	binding := testBinding("owner", "owner-1", "listener-1")
 	owner := openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
-	other, err := manager.OpenSession("other", "other-1", "127.0.0.1:9003")
+	other, err := manager.OpenSession(context.Background(), "other", "other-1", "127.0.0.1:9003")
 	if err != nil {
 		t.Fatalf("OpenSession(other): %v", err)
 	}
 	foreign := binding
 	foreign.Ref.GatewayID, foreign.Ref.GatewayInstanceID = "other", "other-1"
-	if err := manager.Revalidate(other.Ref, []routing.LiveBinding{foreign}); !errors.Is(err, routing.ErrConflict) {
+	if err := manager.Revalidate(context.Background(), other.Ref, []routing.LiveBinding{foreign}); !errors.Is(err, routing.ErrConflict) {
 		t.Fatalf("conflicting snapshot = %v, want routing.ErrConflict", err)
 	}
 	if err := manager.RequireRevalidated(other.Ref); !errors.Is(err, ErrSnapshotFirst) {
@@ -203,7 +203,7 @@ func TestSnapshotConflictIsAtomicAndExactCAndVAreRequired(t *testing.T) {
 func TestSnapshotOverReplicatedGatewayCapacityReturnsCapacityWithoutV(t *testing.T) {
 	manager, node := newManagerWithMaxBindings(t, 1)
 	confirm(t, manager)
-	session, err := manager.OpenSession("owner", "owner-1", "127.0.0.1:9000")
+	session, err := manager.OpenSession(context.Background(), "owner", "owner-1", "127.0.0.1:9000")
 	if err != nil {
 		t.Fatalf("OpenSession(owner): %v", err)
 	}
@@ -211,7 +211,7 @@ func TestSnapshotOverReplicatedGatewayCapacityReturnsCapacityWithoutV(t *testing
 	second := first
 	second.Key.EndpointPattern = "/other"
 	second.Ref.ListenerBindingID = "listener-2"
-	if err := manager.Revalidate(session.Ref, []routing.LiveBinding{first, second}); !errors.Is(err, routing.ErrCapacity) {
+	if err := manager.Revalidate(context.Background(), session.Ref, []routing.LiveBinding{first, second}); !errors.Is(err, routing.ErrCapacity) {
 		t.Fatalf("Revalidate(over capacity) = %v, want routing.ErrCapacity", err)
 	}
 	if err := manager.RequireRevalidated(session.Ref); !errors.Is(err, ErrSnapshotFirst) {
@@ -230,7 +230,7 @@ func TestReconnectSnapshotOrdersAfterInFlightSameInstanceMutation(t *testing.T) 
 	entered, release := node.blockNextApply()
 	declareDone := make(chan error, 1)
 	go func() {
-		_, err := manager.Declare(old, binding)
+		_, err := manager.Declare(context.Background(), old, binding)
 		declareDone <- err
 	}()
 	<-entered
@@ -238,7 +238,7 @@ func TestReconnectSnapshotOrdersAfterInFlightSameInstanceMutation(t *testing.T) 
 	reconnected := make(chan Session, 1)
 	reconnectErr := make(chan error, 1)
 	go func() {
-		session, err := manager.OpenSession("owner", "owner-1", "127.0.0.1:9000")
+		session, err := manager.OpenSession(context.Background(), "owner", "owner-1", "127.0.0.1:9000")
 		if err != nil {
 			reconnectErr <- err
 			return
@@ -264,7 +264,7 @@ func TestReconnectSnapshotOrdersAfterInFlightSameInstanceMutation(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("OpenSession() remained blocked")
 	}
-	if err := manager.Revalidate(session.Ref, nil); err != nil {
+	if err := manager.Revalidate(context.Background(), session.Ref, nil); err != nil {
 		t.Fatalf("Revalidate(empty current snapshot): %v", err)
 	}
 	if _, ok := node.LookupRoute(controlstate.BindingKey(binding.Key)); ok {
@@ -276,11 +276,11 @@ func TestEndSessionDropsVWhileMutationApplyIsInFlight(t *testing.T) {
 	manager, node := newManager(t)
 	confirm(t, manager)
 	ingress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
-	ownerSession, err := manager.OpenSession("owner", "owner-1", "127.0.0.1:9000")
+	ownerSession, err := manager.OpenSession(context.Background(), "owner", "owner-1", "127.0.0.1:9000")
 	if err != nil {
 		t.Fatalf("OpenSession(owner): %v", err)
 	}
-	if err := manager.Revalidate(ownerSession.Ref, nil); err != nil {
+	if err := manager.Revalidate(context.Background(), ownerSession.Ref, nil); err != nil {
 		t.Fatalf("Revalidate(owner): %v", err)
 	}
 
@@ -288,7 +288,7 @@ func TestEndSessionDropsVWhileMutationApplyIsInFlight(t *testing.T) {
 	entered, release := node.blockNextApply()
 	declareDone := make(chan error, 1)
 	go func() {
-		_, err := manager.Declare(ownerSession.Ref, binding)
+		_, err := manager.Declare(context.Background(), ownerSession.Ref, binding)
 		declareDone <- err
 	}()
 	<-entered
@@ -320,7 +320,7 @@ func TestAuthorityChangeDuringMutationCannotRestoreStaleV(t *testing.T) {
 	entered, release := node.blockNextApply()
 	declareDone := make(chan error, 1)
 	go func() {
-		_, err := manager.Declare(owner, binding)
+		_, err := manager.Declare(context.Background(), owner, binding)
 		declareDone <- err
 	}()
 	<-entered
@@ -373,11 +373,11 @@ func confirm(t *testing.T, manager *Manager) Ref {
 
 func openAndRevalidate(t *testing.T, manager *Manager, gatewayID, instanceID string, bindings []routing.LiveBinding) SessionRef {
 	t.Helper()
-	session, err := manager.OpenSession(gatewayID, instanceID, "127.0.0.1:9000")
+	session, err := manager.OpenSession(context.Background(), gatewayID, instanceID, "127.0.0.1:9000")
 	if err != nil {
 		t.Fatalf("OpenSession(%s): %v", gatewayID, err)
 	}
-	if err := manager.Revalidate(session.Ref, bindings); err != nil {
+	if err := manager.Revalidate(context.Background(), session.Ref, bindings); err != nil {
 		t.Fatalf("Revalidate(%s): %v", gatewayID, err)
 	}
 	return session.Ref

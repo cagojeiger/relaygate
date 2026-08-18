@@ -71,7 +71,7 @@ func Start(ctx context.Context, dataDir string, node Node) (*Server, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create membership operator data directory: %w", err)
 	}
-	if err := os.Chmod(dataDir, 0o700); err != nil {
+	if err := os.Chmod(dataDir, 0o700); err != nil { //nolint:gosec // Owner-only directories require execute permission.
 		return nil, fmt.Errorf("secure membership operator data directory: %w", err)
 	}
 
@@ -87,7 +87,7 @@ func Start(ctx context.Context, dataDir string, node Node) (*Server, error) {
 	}()
 
 	path := SocketPath(dataDir)
-	if err := removeStaleSocket(path); err != nil {
+	if err := removeStaleSocket(ctx, path); err != nil {
 		return nil, err
 	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
@@ -195,7 +195,7 @@ func releaseLock(lockFile *os.File) {
 	_ = lockFile.Close()
 }
 
-func removeStaleSocket(path string) error {
+func removeStaleSocket(ctx context.Context, path string) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -207,7 +207,8 @@ func removeStaleSocket(path string) error {
 		return fmt.Errorf("membership operator socket path %q is occupied by a non-socket file", path)
 	}
 
-	connection, dialErr := net.DialTimeout("unix", path, staleDialTimeout)
+	dialer := net.Dialer{Timeout: staleDialTimeout}
+	connection, dialErr := dialer.DialContext(ctx, "unix", path)
 	if dialErr == nil {
 		_ = connection.Close()
 		return fmt.Errorf("membership operator socket %q already has a live listener", path)

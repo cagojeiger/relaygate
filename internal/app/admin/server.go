@@ -76,7 +76,7 @@ func Start(
 		return nil, fmt.Errorf("runtime role, cluster epoch and metrics provider are required")
 	}
 	if (sources.Raft == nil) != (sources.Presence == nil) {
-		return nil, fmt.Errorf("Raft and presence providers must be configured together")
+		return nil, fmt.Errorf("raft and presence providers must be configured together")
 	}
 	controller := sources.Raft != nil
 	gateway := sources.Gateway != nil
@@ -84,7 +84,7 @@ func Start(
 		return nil, fmt.Errorf("exactly one controller or Gateway status source is required")
 	}
 	if gateway && auth == nil {
-		return nil, fmt.Errorf("Gateway auth revision provider is required")
+		return nil, fmt.Errorf("gateway auth revision provider is required")
 	}
 	if controller && auth != nil {
 		return nil, fmt.Errorf("controller must not configure Gateway auth state")
@@ -149,7 +149,7 @@ func Start(
 				runtimeStatus.Presence = &noAuthority
 			}
 		} else if runtimeStatus.GatewayControl == nil || !runtimeStatus.GatewayControl.Ready() {
-			observationErr = fmt.Errorf("Gateway control is not revalidated")
+			observationErr = fmt.Errorf("gateway control is not revalidated")
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		if observationErr != nil {

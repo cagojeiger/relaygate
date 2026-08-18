@@ -161,7 +161,7 @@ func (f *FSM) applyReplaceSnapshot(command ReplaceSnapshot) ApplyResult {
 		candidate[binding.Key] = Route{Key: binding.Key, Owner: command.Gateway, ListenerBindingID: binding.ListenerBindingID}
 	}
 	owned := f.routeCountForGatewayLocked(command.Gateway)
-	if uint64(len(f.routes))-uint64(owned)+uint64(len(candidate)) > uint64(f.state.MaxRoutes) {
+	if uint64(len(f.routes))-owned+uint64(len(candidate)) > uint64(f.state.MaxRoutes) {
 		return capacity("route capacity reached")
 	}
 	for key, route := range candidate {
@@ -192,7 +192,7 @@ func (f *FSM) applyDeclareRoute(command DeclareRoute) ApplyResult {
 		}
 		return conflict("route key is owned or referenced differently")
 	}
-	if uint64(len(f.routes)) >= uint64(f.state.MaxRoutes) || uint64(f.routeCountForGatewayLocked(command.Gateway)) >= uint64(f.state.MaxBindingsPerGateway) {
+	if uint64(len(f.routes)) >= uint64(f.state.MaxRoutes) || f.routeCountForGatewayLocked(command.Gateway) >= uint64(f.state.MaxBindingsPerGateway) {
 		return capacity("route capacity reached")
 	}
 	f.routes[route.Key] = route
@@ -262,8 +262,8 @@ func (f *FSM) deleteGatewayRoutesLocked(gateway GatewaySessionRef) {
 	}
 }
 
-func (f *FSM) routeCountForGatewayLocked(gateway GatewaySessionRef) int {
-	count := 0
+func (f *FSM) routeCountForGatewayLocked(gateway GatewaySessionRef) uint64 {
+	var count uint64
 	for _, route := range f.routes {
 		if route.Owner == gateway {
 			count++
