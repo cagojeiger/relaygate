@@ -1,92 +1,98 @@
-# SPEC 003: Failure and Recovery Model
+# SPEC 003: Failure And Recovery Model
 
-## Failure model
+## Failure Model
 
-| Domain | 허용하는 failure | 안전한 결과 |
+| Domain | Failure | Safe result |
 | --- | --- | --- |
-| Process | SDK/Gateway/authority/voter crash와 restart | Old runtime identity를 복구하지 않고 새 identity/session/Pipe 사용 |
-| Network | delay, loss, duplicate, reorder, partition | Exact current identity가 아니면 state advancement 거부 |
-| Control | leader/quorum/session loss | 새 bind/resolve/context fail closed; directory clear |
-| Storage | intact restart, voter store loss/corruption | Intact store는 safety/epoch만 복구하고 route 0; lost/corrupt store는 old NodeId 재사용 없이 fail closed |
-| Config | invalid/delayed/process별 reload | Validated local snapshot만 사용 |
-| Clock | authority-owner skew | `ClockSkewBound < open_timeout`일 때만 remote expiry ready |
-| Operator | reset/bootstrap | 모든 old path를 외부 fence한 뒤 fresh epoch |
+| Controller process | crash/restart with existing store | Same `NodeId` and Raft/FSM state reopen |
+| Controller leader | same-epoch leader loss with quorum | New leader, new `AuthorityId`, volatile `V` reset, gateways reconnect/full-snapshot |
+| Controller store | disk/PVC loss for one member | Replacement uses new `NodeId`; add/catch-up/remove through surviving quorum |
+| Controller quorum | majority unavailable | New authority/control/admission fail closed |
+| Gateway/SDK | crash, reconnect, process restart | Fresh session and current Listener redeclare only |
+| Network | delay, loss, duplicate, reorder, partition | Exact current identity required; stale state rejected |
+| Config | invalid/delayed/process-local reload | Validated local snapshot only |
+| Clock | authority-owner skew | Remote expiry ready only with operational `ClockSkewBound < open_timeout` |
+| Operator | initial bootstrap or disaster reset | Initial bootstrap is one-shot; disaster reset requires old-path fence and new epoch/cohort |
 
-Timeout은 failure suspicion이지 death proof가 아니다. False positive는 session/route availability만 줄이며
-admission gate를 새로 true로 만들지 않는다.
+Timeout is failure suspicion, not death proof. False positives may reduce availability but must not make an admission gate true.
 
-## Linearization points
+## Linearization Points
 
-| Operation | 선형화점 | ACK/loss 뒤 의미 |
+| Operation | Linearization point | Loss meaning |
 | --- | --- | --- |
-| Config reload | Valid snapshot atomic swap | Removed local state retirement 진행 |
-| Full redeclare | 전체 validate 뒤 session+entry set atomic install | Stream end면 bulk delete; fresh session이 current set 재선언 |
-| Declare | Exact current directory insert | Same-session exact duplicate만 idempotent |
-| Unbind | Local binding ineligible | Withdraw는 true delete; stale cleanup은 new entry 보존 |
-| Authority loss/change | Old authority fence + all session/directory clear | New authority는 empty view |
-| Authority admission | `A·L·Q·D·V` context 발급 | O/Pipe success가 아님 |
-| Owner admission O | Local reservation + `AttemptId` fence insert | O 이후 attempt만 local lifecycle 계속 |
-| Open | Listener accept 기록 + `PipeId` 생성 | Response loss는 `Unknown` 가능 |
-| Pipe terminal | First participant-local terminal | Local absorbing, peer propagation best-effort |
+| Config reload | Valid snapshot atomic swap | Removed local runtime retires |
+| Register Gateway | Raft `RegisterGateway` commit | `C` has current session; `V` still false until full snapshot |
+| Full snapshot | Raft `ReplaceSnapshot` commit | Atomic replace of that gateway's exact routes |
+| Declare | Raft `DeclareRoute` commit | Exact duplicate idempotent; conflict preserves current route |
+| Withdraw/remove | Raft `WithdrawRoute`/`RemoveGateway` commit | True delete/cascade, no tombstone |
+| Authority change | Leader confirmation in a new term | New `AuthorityId`; `V` empty |
+| Authority admission | `A·L·Q·D·V` context issuance | Not owner reservation or Pipe success |
+| Owner admission O | Local reservation + `AttemptId` fence | O-after success continues locally |
+| Open | Listener accept + `PipeId` creation | Later response loss can be `Unknown` |
+| Pipe terminal | First participant-local terminal | Local absorbing; peer propagation best effort |
 
-## Required race outcomes
+## Required Race Outcomes
 
 | Race | Winner | Result |
 | --- | --- | --- |
-| Caller verification cancel ↔ authority | Caller cancel/deadline only | 해당 call만 unavailable; global authority/session 유지 |
-| Definitive step-down/quorum loss ↔ authority | Loss | Authority/session/directory clear |
-| Authority/session change ↔ O | O | 그 attempt만 Listener lifecycle 계속 |
-| Authority/session change ↔ O | Fence/end | Context stale, no offer/PipeId |
-| Session end ↔ declare | Declare then end | End bulk delete |
-| Session end ↔ declare | End first | Late declare stale rejection |
-| Old withdraw ↔ new owner | New owner current | Old exact identity가 new entry를 지우지 못함 |
-| Unbind ↔ O | O | 그 attempt만 계속; future attempt 차단 |
-| Unbind ↔ O | Retirement | O=false, no offer |
-| Listener accept ↔ cancel | Accept | Open LP 뒤 local terminal/`Unknown` 가능 |
-| Listener accept ↔ cancel | Cancel | Late accept no-op |
-| Expiry ↔ O | O before strict expiry | Attempt 계속; expiry가 opened Pipe를 닫지 않음 |
-| Expiry ↔ O | `now >= ExpiresAt` | No reservation/offer/Pipe |
-| Duplicate ForwardOpen ↔ original | First successful O | 최대 한 reservation/offer/PipeId; response replay 없음 |
-| Public ACK ↔ payload | ACK write | 그 뒤에만 Listener→Caller payload release |
-| Backpressure ↔ close/crash | First local terminal | Silent drop 없이 bounded 종료 |
+| Caller verification cancel vs authority | Caller cancel/deadline only | Call unavailable; authority/session/routes stay current |
+| Definitive step-down/quorum loss vs authority | Loss | Authority `V` cleared; new admissions fail closed |
+| Authority/session change vs O | O first | That attempt may continue |
+| Authority/session change vs O | Fence first | Context stale; no offer/PipeId |
+| Gateway replacement vs old route | New `GatewayInstanceId` | Old owned routes deleted; stale messages cannot repopulate |
+| Old withdraw vs new owner | New owner current | Old exact identity cannot delete new route |
+| Session end vs declare | Declare commits first | End clears `V` immediately; exact `C` remains only through revalidation grace |
+| Session end vs in-flight declare | End first | Late commit may affect `C` but cannot restore `V`; caller is stale and exact grace cleanup or reconnect snapshot converges |
+| Unbind vs O | O first | That attempt may continue; future attempts blocked |
+| Unbind vs O | Retirement first | O=false, no offer |
+| Listener accept vs cancel | Accept first | Open LP reached; later result may be terminal/`Unknown` |
+| Listener accept vs cancel | Cancel first | Late accept no-op |
+| Expiry vs O | O before strict expiry | Attempt continues; expiry does not close opened Pipe |
+| Expiry vs O | `now >= ExpiresAt` | No reservation/offer/Pipe |
+| Duplicate ForwardOpen vs original | First successful O | One reservation max; no outcome/PipeId replay |
+| Public ACK vs payload | ACK write | Listener-to-caller payload released only after ACK |
+| Backpressure vs close/crash | First terminal | Bounded stop; no silent drop |
 
-## Crash cuts
+## Crash Cuts
 
-| Flow | 반드시 검사할 cut | Oracle |
+| Flow | Cut | Oracle |
 | --- | --- | --- |
-| Snapshot | validate 전 / install 뒤 ACK 전 / stream end | Partial install 0; ended session entry 0 |
-| Declare/withdraw | local effect와 ACK 전후 / session end | Outcome 추측·history 없음; current cardinality로 수렴 |
-| Failover | O 전 / O 뒤 / directory clear / partial redeclare | O 전 context stale; clear 후 fresh exact route만 사용 |
-| Open | O / offer / accept+PipeId / response / public ACK 전후 | Pre-LP stable failure, uncertain post-LP `Unknown`, no replay |
-| Payload | activation / enqueue / write / pressure / hop loss | Direction FIFO, no silent drop/replay, terminal priority |
-| Voter restart | safety write/log/snapshot restore | Safety/epoch만 복구, route domain data 0 |
-| Epoch reset | external fence proof 전후 | Proof 전 bootstrap 금지; 두 current epoch 금지 |
+| Controller restart | before/after snapshot and log compaction | Same durable store restores current FSM |
+| Lost controller store | replacement starts empty | Must use fresh `NodeId`, add/catch-up/remove |
+| Membership response | commit before CLI response loss | Exact retry converges to current membership; same identity at another address rejects |
+| Snapshot | validate before commit / commit before ACK / stream end | Partial install 0; committed current state exact |
+| Declare/withdraw | local effect and ACK before/after session end | No response replay; current cardinality converges |
+| Failover | before O / after O / after `V` clear / partial redeclare | Before O stale; after O may continue; fresh exact route only after revalidation |
+| Open | O / offer / accept+PipeId / response / public ACK | Pre-LP stable failure; post-LP can be `Unknown`; no replay |
+| Payload | activation / enqueue / write / pressure / hop loss | FIFO per direction, no silent drop/replay, terminal priority |
+| Disaster reset | before/after external fence | No reset without fence; new epoch is a separate machine |
 
-## Recovery levels
+## Recovery Levels
 
-| Level | 의미 | 예 |
+| Level | Meaning | Examples |
 | --- | --- | --- |
-| `R0` | 자동 복구 | Surviving quorum election, Gateway auto reconnect/redeclare |
-| `R1` | Participant action | Re-auth, rebind, 새 Open/Pipe |
-| `R2` | Operator/infrastructure action | Voter replacement, network repair, safe fresh epoch |
-| `R3` | Exact old target 복구 불가 | Old Pipe, payload position, uncertain Open outcome, fenced identity |
+| `R0` | Automatic within existing state | Same-store restart, surviving-quorum election, Gateway reconnect/revalidate |
+| `R1` | Participant action | Re-auth, rebind, new Open/Pipe |
+| `R2` | Operator action | Repair quorum, replace lost store with new `NodeId`, explicit disaster reset |
+| `R3` | Not recoverable | Old Pipe, payload position, uncertain Open outcome, erased member identity |
 
 ```text
-ServiceRecoverable = surviving quorum
-                  OR (all old paths externally fenced AND safe fresh epoch)
+ServiceRecoverable = surviving Raft quorum
+                  OR restored same member store
+                  OR replacement add/catch-up/remove through quorum
 
-RouteRecoverable = ServiceRecoverable AND owner reconnects/redeclares
+RouteEligible = ServiceRecoverable
+             AND current route exists in C
+             AND owner reconnects/revalidates V
 ```
 
-정확한 old Pipe/outcome/payload position은 저장하지 않으므로 복구할 수 없다. Application은 새 operation과
-업무 수준 deduplication을 사용한다. Same epoch가 불가능한데 old authority path 하나라도 fence할 수 없으면
-service도 fail closed 상태가 최종 결과다.
+Disaster reset after full old-path fencing creates a new cohort and empty current FSM. It does not recover old outcomes, Pipes, payload positions, or route history.
 
-## Production blockers
+## Production Blockers
 
-| Contract | Local code로 닫히지 않는 이유 |
+| Contract | Why local code cannot close it |
 | --- | --- |
-| Lost voter store replacement | Dynamic membership/new NodeId operator flow가 없음 |
-| Fresh epoch safety | Partition된 old process/network path 전체 fence는 배포 계층 책임 |
-| Remote expiry readiness | 실제 node 간 clock-skew bound는 배포 evidence 필요 |
-| Internal transport trust | Control/peer/Raft authentication 또는 mTLS가 아직 없음 |
+| Disaster reset safety | Needs operator evidence that old controller/control/gateway paths are fenced |
+| Controller storage HA | Local Unix-socket add/remove exists; production PVC/storage class and replacement runbook evidence remain external |
+| Remote expiry readiness | Needs real node clock-skew bound evidence |
+| Internal transport trust | Control/peer/Raft authentication or mTLS is not implemented here |

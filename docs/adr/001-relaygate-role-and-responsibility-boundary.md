@@ -1,26 +1,22 @@
-# ADR 001: RelayGate의 역할과 책임 경계
+# ADR 001: RelayGate의 역할
 
 ## Context
 
-RelayGate의 경계가 없으면 연결 중계가 저장, 재전송, workflow까지 확장될 수 있다.
+연결 중계의 경계를 정하지 않으면 저장, 재전송, workflow까지 제품 책임이 확장된다.
 
 ## Decision
 
-RelayGate는 **주소 가능한 일시적 Pipe의 연결과 중계**를 책임진다.
+RelayGate는 **주소 가능한 일시적 양방향 Pipe**를 연결하고 중계한다.
 
-```text
-Endpoint = Listener가 연결을 받을 수 있는 논리적 주소
-Pipe     = 두 참여자 사이의 일시적 양방향 연결
-```
+- 인증된 namespace 안에서 현재 Listener를 찾는다.
+- Pipe를 열고, bounded backpressure로 불투명 payload를 전달하고, 종료를 전파한다.
+- 연결 상태와 buffer는 process memory에만 둔다.
 
-RelayGate는 Endpoint 탐색, Pipe 연결, 인가, backpressure가 있는 불투명 payload 전달과 종료 전파만
-담당한다.
-
-Offline storage, durable queue, pub/sub, 재전송, replay, resume, workflow와 application routing은
-범위 밖이다. 끊어진 연결은 이어지지 않으며 재연결은 새 Pipe다.
+Durable storage, queue, pub/sub, application routing, workflow, retry, replay와 resume은 제공하지 않는다.
+연결이 끊어지면 다음 연결은 새 session, 새 Listener 선언 또는 새 Pipe다.
 
 ## Consequences
 
-- Buffer와 연결 상태는 일시적이다.
-- Application이 retry, resume, deduplication과 업무 결과를 책임진다.
-- 새 기능은 Pipe의 탐색·연결·전달·종료에 직접 필요할 때만 포함한다.
+- RelayGate는 현재 연결 상태만 다룬다.
+- 업무 결과의 저장, 중복 제거와 재시도는 application이 책임진다.
+- 새 기능은 Pipe의 탐색, 연결, 전달 또는 종료에 직접 필요할 때만 포함한다.

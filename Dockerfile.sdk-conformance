@@ -2,11 +2,11 @@ ARG GO_VERSION=1.26.6
 ARG RUST_VERSION=1.96.1
 
 FROM golang:${GO_VERSION}-alpine AS go-builder
-WORKDIR /src
-COPY go.mod go.sum ./
+WORKDIR /src/sdk/go
+COPY sdk/go/go.mod sdk/go/go.sum ./
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/relaygate-sdk-conformance ./sdk/go/cmd/conformance
+COPY sdk/go ./
+RUN GOWORK=off CGO_ENABLED=0 go build -trimpath -o /out/relaygate-sdk-conformance ./cmd/conformance
 
 FROM gcr.io/distroless/static-debian12:nonroot AS go-runtime
 COPY --from=go-builder /out/relaygate-sdk-conformance /relaygate-sdk-conformance

@@ -3,10 +3,15 @@ ARG RUST_VERSION=1.96.1
 
 FROM golang:${GO_VERSION}-alpine AS go-builder
 WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/relaygate-echo ./examples/echo/go
+COPY sdk/go/go.mod sdk/go/go.sum ./sdk/go/
+COPY examples/echo/go/go.mod examples/echo/go/go.sum ./examples/echo/go/
+WORKDIR /src/examples/echo/go
+RUN GOWORK=off go mod download
+WORKDIR /src
+COPY sdk/go ./sdk/go
+COPY examples/echo/go ./examples/echo/go
+WORKDIR /src/examples/echo/go
+RUN GOWORK=off CGO_ENABLED=0 go build -trimpath -o /out/relaygate-echo .
 
 FROM gcr.io/distroless/static-debian12:nonroot AS go-runtime
 COPY --from=go-builder /out/relaygate-echo /relaygate-echo

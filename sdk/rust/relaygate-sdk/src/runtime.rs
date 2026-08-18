@@ -960,7 +960,7 @@ pub(crate) async fn receive_responses(
     }
 }
 
-async fn dispatch_response(
+pub(crate) async fn dispatch_response(
     shared: &Arc<Shared>,
     response: wire::ConnectResponse,
 ) -> Result<(), SessionError> {

@@ -216,7 +216,7 @@ func TestControlKeepaliveBlackholeDeletesAndRedeclaresCurrentRoutes(t *testing.T
 
 	waitForControlState(t, 5*time.Second, func() bool {
 		presence := manager.Presence()
-		return client.Status().Ready() && presence.Sessions == 1 && presence.Revalidated == 1 && presence.Bindings == 1
+		return client.Status().Ready() && presence.CommittedGateways == 1 && presence.CommittedRoutes == 1 && presence.RevalidatedGateways == 1 && presence.EligibleRoutes == 1
 	}, "initial revalidated route")
 	oldSession, ok := client.CurrentSession()
 	if !ok {
@@ -226,7 +226,7 @@ func TestControlKeepaliveBlackholeDeletesAndRedeclaresCurrentRoutes(t *testing.T
 	// One complete healthy keepalive interval proves that an idle but responsive
 	// control stream is retained before the same TCP path is blackholed.
 	time.Sleep(controltransport.KeepaliveTime + controltransport.KeepaliveTimeout + time.Second)
-	if !client.Status().Ready() || manager.Presence().Bindings != 1 {
+	if !client.Status().Ready() || manager.Presence().EligibleRoutes != 1 {
 		t.Fatalf("healthy idle stream ended: status=%#v presence=%#v", client.Status(), manager.Presence())
 	}
 
@@ -235,8 +235,8 @@ func TestControlKeepaliveBlackholeDeletesAndRedeclaresCurrentRoutes(t *testing.T
 	blackholeBudget := 2*controltransport.KeepaliveTime + 2*controltransport.KeepaliveTimeout
 	waitForControlState(t, blackholeBudget, func() bool {
 		presence := manager.Presence()
-		return !client.Status().Ready() && presence.Sessions == 0 && presence.Revalidated == 0 && presence.Bindings == 0
-	}, "blackholed session and route deletion")
+		return !client.Status().Ready() && presence.CommittedGateways == 1 && presence.CommittedRoutes == 1 && presence.RevalidatedGateways == 0 && presence.EligibleRoutes == 0
+	}, "blackholed session eligibility loss with committed route retained")
 	if elapsed := time.Since(blackholedAt); elapsed >= blackholeBudget {
 		t.Fatalf("blackhole detection took %s, budget %s", elapsed, blackholeBudget)
 	}
@@ -258,7 +258,7 @@ func TestControlKeepaliveBlackholeDeletesAndRedeclaresCurrentRoutes(t *testing.T
 	proxy.Restore()
 	waitForControlState(t, 5*time.Second, func() bool {
 		presence := manager.Presence()
-		return client.Status().Ready() && presence.Sessions == 1 && presence.Revalidated == 1 && presence.Bindings == 1
+		return client.Status().Ready() && presence.CommittedGateways == 1 && presence.CommittedRoutes == 1 && presence.RevalidatedGateways == 1 && presence.EligibleRoutes == 1
 	}, "fresh reconnect and full redeclare")
 	newSession, ok := client.CurrentSession()
 	if !ok || newSession.ControlSessionID == oldSession.ControlSessionID {

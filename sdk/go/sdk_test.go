@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	relayv1 "github.com/cagojeiger/relaygate/internal/gen/relay/v1"
+	relayv1 "github.com/cagojeiger/relaygate/sdk/go/internal/gen/relay/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"

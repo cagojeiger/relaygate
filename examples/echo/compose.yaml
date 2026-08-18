@@ -7,12 +7,15 @@ x-echo-environment: &echo-environment
 
 x-echo: &echo
   depends_on:
-    - relaygate
-  network_mode: service:relaygate
+    - gateway
+  # Relay stays loopback-only. Example clients use the Gateway network
+  # namespace rather than publishing its public port to the host.
+  network_mode: service:gateway
   restart: on-failure:10
 
 services:
-  relaygate:
+  controller:
+    image: ${RELAYGATE_ECHO_RUNTIME_IMAGE:-relaygate-echo:dev}
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -20,25 +23,39 @@ services:
         VERSION: echo-dev
     command: ["-config", "/etc/relaygate/relaygate.yaml"]
     environment:
-      RELAYGATE_RAFT_NODE_ID: echo-node
-      RELAYGATE_RAFT_BIND_ADDRESS: 127.0.0.1:27400
-      RELAYGATE_RAFT_ADVERTISE_ADDRESS: 127.0.0.1:27400
+      RELAYGATE_RUNTIME_ROLE: controller
+      RELAYGATE_RAFT_NODE_ID: echo-controller
+      RELAYGATE_RAFT_DATA_DIR: /var/lib/relaygate
+      RELAYGATE_RAFT_BIND_ADDRESS: 0.0.0.0:27400
+      RELAYGATE_RAFT_ADVERTISE_ADDRESS: controller:27400
       RELAYGATE_RAFT_BOOTSTRAP: "true"
       RELAYGATE_RAFT_BOOTSTRAP_VOTERS: >-
-        [{"node_id":"echo-node","address":"127.0.0.1:27400"}]
+        [{"node_id":"echo-controller","address":"controller:27400"}]
       RELAYGATE_CONTROL_CLUSTER_EPOCH: local-echo-1
-      RELAYGATE_CONTROL_BIND_ADDRESS: 127.0.0.1:27410
-      RELAYGATE_GATEWAY_ID: echo-gateway
-      RELAYGATE_GATEWAY_CONTROL_ENDPOINTS: '["127.0.0.1:27410"]'
-      RELAYGATE_INTERNAL_RELAY_BIND_ADDRESS: 127.0.0.1:27430
-      RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS: 127.0.0.1:27430
-      RELAYGATE_ADMIN_BIND_ADDRESS: 127.0.0.1:27490
+      RELAYGATE_CONTROL_BIND_ADDRESS: 0.0.0.0:27410
+      RELAYGATE_ADMIN_BIND_ADDRESS: 0.0.0.0:27490
+    volumes:
+      - controller-data:/var/lib/relaygate
     stop_grace_period: 15s
-    tmpfs:
-      - /var/lib/relaygate:uid=65532,gid=65532,mode=0700
+
+  gateway:
+    image: ${RELAYGATE_ECHO_RUNTIME_IMAGE:-relaygate-echo:dev}
+    depends_on:
+      - controller
+    command: ["-config", "/etc/relaygate/relaygate.yaml"]
+    environment:
+      RELAYGATE_RUNTIME_ROLE: gateway
+      RELAYGATE_CONTROL_CLUSTER_EPOCH: local-echo-1
+      RELAYGATE_GATEWAY_ID: echo-gateway
+      RELAYGATE_GATEWAY_CONTROL_ENDPOINTS: '["controller:27410"]'
+      RELAYGATE_INTERNAL_RELAY_BIND_ADDRESS: 0.0.0.0:27430
+      RELAYGATE_INTERNAL_RELAY_ADVERTISE_ADDRESS: gateway:27430
+      RELAYGATE_ADMIN_BIND_ADDRESS: 0.0.0.0:27490
+    stop_grace_period: 15s
 
   echo-go:
     <<: *echo
+    image: ${RELAYGATE_ECHO_GO_IMAGE:-relaygate-echo-go:dev}
     build:
       context: ../..
       dockerfile: examples/echo/Dockerfile
@@ -49,6 +66,7 @@ services:
 
   echo-rust:
     <<: *echo
+    image: ${RELAYGATE_ECHO_RUST_IMAGE:-relaygate-echo-rust:dev}
     build:
       context: ../..
       dockerfile: examples/echo/Dockerfile
@@ -56,3 +74,6 @@ services:
     environment:
       <<: *echo-environment
     command: ["serve", "rust"]
+
+volumes:
+  controller-data:

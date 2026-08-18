@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,15 +22,25 @@ import (
 	"github.com/cagojeiger/relaygate/internal/raft/state"
 )
 
+const (
+	raftMaxAppendEntries = 64
+	maxRaftVoters        = 7
+	storeOpenTimeout     = 5 * time.Second
+)
+
 var nodeIDKey = []byte("relaygate/node-id/v1")
 
-const storeOpenTimeout = 5 * time.Second
-
 type Config struct {
-	NodeID            string
-	BindAddress       string
-	AdvertiseAddress  string
-	DataDir           string
+	NodeID           string
+	BindAddress      string
+	AdvertiseAddress string
+	// DataDir is the durable identity, log, stable-state, and snapshot root for
+	// this Raft member. A replacement member must use a new NodeID and a new
+	// directory; it must never reuse an erased member identity.
+	DataDir string
+	// Bootstrap is a one-shot operator action for a brand-new cluster. It is
+	// ignored for an intact store, but must not remain enabled on a replacement
+	// whose former store was lost.
 	Bootstrap         bool
 	BootstrapVoters   []BootstrapVoter
 	ApplyTimeout      time.Duration
@@ -60,40 +71,41 @@ func (c Config) validate() error {
 	if _, _, err := net.SplitHostPort(c.AdvertiseAddress); err != nil {
 		return fmt.Errorf("invalid advertise address: %w", err)
 	}
-	if !c.Bootstrap && len(c.BootstrapVoters) != 0 {
-		return fmt.Errorf("bootstrap voters require bootstrap=true")
+	if len(c.BootstrapVoters) > maxRaftVoters {
+		return fmt.Errorf("cohort voter manifest must contain at most %d voters", maxRaftVoters)
 	}
-	if c.Bootstrap && len(c.BootstrapVoters) != 0 {
-		seenIDs := make(map[string]struct{}, len(c.BootstrapVoters))
-		seenAddresses := make(map[string]struct{}, len(c.BootstrapVoters))
-		localFound := false
-		for _, voter := range c.BootstrapVoters {
-			if voter.NodeID == "" {
-				return fmt.Errorf("bootstrap voter node ID is required")
-			}
-			if _, _, err := net.SplitHostPort(voter.Address); err != nil {
-				return fmt.Errorf("invalid bootstrap voter address %q: %w", voter.Address, err)
-			}
-			if _, exists := seenIDs[voter.NodeID]; exists {
-				return fmt.Errorf("duplicate bootstrap voter node ID %q", voter.NodeID)
-			}
-			if _, exists := seenAddresses[voter.Address]; exists {
-				return fmt.Errorf("duplicate bootstrap voter address %q", voter.Address)
-			}
-			seenIDs[voter.NodeID] = struct{}{}
-			seenAddresses[voter.Address] = struct{}{}
-			if voter.NodeID == c.NodeID {
-				if voter.Address != c.AdvertiseAddress {
-					return fmt.Errorf("local bootstrap voter address differs from advertise address")
-				}
-				localFound = true
-			}
+	if c.Bootstrap && len(c.BootstrapVoters) == 0 {
+		return fmt.Errorf("bootstrap voter manifest is required for initial bootstrap")
+	}
+	seenIDs := make(map[string]struct{}, len(c.BootstrapVoters))
+	seenAddresses := make(map[string]struct{}, len(c.BootstrapVoters))
+	localFound := false
+	for _, voter := range c.BootstrapVoters {
+		if voter.NodeID == "" {
+			return fmt.Errorf("bootstrap voter node ID is required")
 		}
-		if !localFound {
-			return fmt.Errorf("bootstrap voters must contain local node ID %q", c.NodeID)
+		if _, _, err := net.SplitHostPort(voter.Address); err != nil {
+			return fmt.Errorf("invalid bootstrap voter address %q: %w", voter.Address, err)
+		}
+		if _, exists := seenIDs[voter.NodeID]; exists {
+			return fmt.Errorf("duplicate bootstrap voter node ID %q", voter.NodeID)
+		}
+		if _, exists := seenAddresses[voter.Address]; exists {
+			return fmt.Errorf("duplicate bootstrap voter address %q", voter.Address)
+		}
+		seenIDs[voter.NodeID] = struct{}{}
+		seenAddresses[voter.Address] = struct{}{}
+		if voter.NodeID == c.NodeID {
+			if voter.Address != c.AdvertiseAddress {
+				return fmt.Errorf("local bootstrap voter address differs from advertise address")
+			}
+			localFound = true
 		}
 	}
-	if c.DataDir == "" {
+	if c.Bootstrap && !localFound {
+		return fmt.Errorf("bootstrap voters must contain local node ID %q", c.NodeID)
+	}
+	if strings.TrimSpace(c.DataDir) == "" {
 		return fmt.Errorf("data directory is required")
 	}
 	if c.ApplyTimeout <= 0 || c.TransportTimeout <= 0 || c.ShutdownTimeout <= 0 {
@@ -119,6 +131,8 @@ type Node struct {
 	draining  atomic.Bool
 	closeOnce sync.Once
 	closeErr  error
+
+	membershipMu sync.Mutex
 }
 
 type Status struct {
@@ -146,7 +160,6 @@ func Open(config Config, logger hclog.Logger, registerer prometheus.Registerer) 
 	if err := os.MkdirAll(config.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create raft data directory: %w", err)
 	}
-
 	store, err := raftboltdb.New(raftboltdb.Options{
 		Path: filepath.Join(config.DataDir, "raft.db"),
 		BoltOptions: &bbolt.Options{
@@ -201,6 +214,8 @@ func Open(config Config, logger hclog.Logger, registerer prometheus.Registerer) 
 	raftConfig.Logger = logger.Named("core")
 	raftConfig.SnapshotThreshold = config.SnapshotThreshold
 	raftConfig.SnapshotInterval = config.SnapshotInterval
+	raftConfig.TrailingLogs = trailingLogEntries(config.SnapshotThreshold)
+	raftConfig.MaxAppendEntries = raftMaxAppendEntries
 	raftConfig.NoLegacyTelemetry = true
 
 	fsm := controlstate.NewFSM()
@@ -261,22 +276,23 @@ func (n *Node) VerifyLeader(ctx context.Context) error {
 	if n.draining.Load() {
 		return fmt.Errorf("raft node is shutting down")
 	}
-	future := n.raft.VerifyLeader()
-	completed := make(chan error, 1)
-	go func() { completed <- future.Error() }()
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("verify raft leader: %w", ctx.Err())
-	case err := <-completed:
-		if err != nil {
-			return fmt.Errorf("verify raft leader: %w", err)
-		}
-		return nil
+	if err := waitFuture(ctx, n.raft.VerifyLeader().Error); err != nil {
+		return fmt.Errorf("verify raft leader: %w", err)
 	}
+	// VerifyLeader establishes current leadership; Barrier additionally waits
+	// until this member has applied every committed log entry before a caller
+	// reads the local FSM. The pair is the linearizable read fence used by
+	// control-plane resolution and presence views.
+	if err := waitFuture(ctx, n.raft.Barrier(n.applyTimeout(ctx)).Error); err != nil {
+		return fmt.Errorf("barrier raft leader read: %w", err)
+	}
+	return nil
 }
 
-func (n *Node) EnsureEpoch(ctx context.Context, clusterEpoch string) (controlstate.ApplyResult, error) {
-	command, err := controlstate.EncodeInitializeEpoch(controlstate.InitializeEpoch{ClusterEpoch: clusterEpoch})
+// EnsureCluster initializes the immutable cluster epoch and current-state
+// capacity limits exactly once. Later calls must match the replicated values.
+func (n *Node) EnsureCluster(ctx context.Context, cluster controlstate.InitializeCluster) (controlstate.ApplyResult, error) {
+	command, err := controlstate.EncodeInitializeCluster(cluster)
 	if err != nil {
 		return controlstate.ApplyResult{}, err
 	}
@@ -284,14 +300,17 @@ func (n *Node) EnsureEpoch(ctx context.Context, clusterEpoch string) (controlsta
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if current := n.fsm.ClusterEpoch(); current != "" {
-			if current != clusterEpoch {
-				return controlstate.ApplyResult{}, fmt.Errorf("configured control epoch differs from durable state")
+		if current := n.fsm.State(); current.ClusterEpoch != "" {
+			if current.ClusterEpoch != cluster.ClusterEpoch ||
+				current.MaxGatewaySessions != cluster.MaxGatewaySessions ||
+				current.MaxRoutes != cluster.MaxRoutes ||
+				current.MaxBindingsPerGateway != cluster.MaxBindingsPerGateway {
+				return controlstate.ApplyResult{}, fmt.Errorf("configured control cluster differs from active cohort state")
 			}
 			return controlstate.ApplyResult{Code: controlstate.ResultAlreadyApplied}, nil
 		}
 		if n.raft.State() == raft.Leader {
-			result, applyErr := n.applyEpoch(ctx, command)
+			result, applyErr := n.Apply(ctx, command)
 			if applyErr == nil {
 				return result, nil
 			}
@@ -313,7 +332,10 @@ func (n *Node) ClusterEpoch() string {
 	return n.fsm.ClusterEpoch()
 }
 
-func (n *Node) applyEpoch(ctx context.Context, command []byte) (controlstate.ApplyResult, error) {
+// Apply commits one bounded control-state command through the current leader.
+// It is intentionally generic so the FSM can evolve without coupling its
+// command vocabulary to the Raft transport package.
+func (n *Node) Apply(ctx context.Context, command []byte) (controlstate.ApplyResult, error) {
 	if n.draining.Load() {
 		return controlstate.ApplyResult{}, fmt.Errorf("raft node is shutting down")
 	}
@@ -343,7 +365,7 @@ func (n *Node) applyEpoch(ctx context.Context, command []byte) (controlstate.App
 	case result := <-completed:
 		if result.err != nil {
 			n.metrics.observeProposal("error", time.Since(started))
-			return controlstate.ApplyResult{}, fmt.Errorf("apply raft safety command: %w", result.err)
+			return controlstate.ApplyResult{}, fmt.Errorf("apply raft control command: %w", result.err)
 		}
 		response, ok := result.response.(controlstate.ApplyResult)
 		if !ok {
@@ -357,6 +379,91 @@ func (n *Node) applyEpoch(ctx context.Context, command []byte) (controlstate.App
 		n.metrics.observeProposal(metricResult, time.Since(started))
 		return response, nil
 	}
+}
+
+// State returns a copy of the locally applied replicated control state.
+func (n *Node) State() controlstate.State {
+	return n.fsm.State()
+}
+
+// LookupGateway returns one current durable gateway incarnation, if any.
+// Callers that need a linearizable read must call VerifyLeader first.
+func (n *Node) LookupGateway(gatewayID string) (controlstate.GatewaySessionRef, bool) {
+	return n.fsm.LookupGateway(gatewayID)
+}
+
+// LookupRoute returns one current exact route, if any. Pattern selection stays
+// outside the replicated FSM; callers that need a linearizable read must call
+// VerifyLeader first.
+func (n *Node) LookupRoute(key controlstate.BindingKey) (controlstate.Route, bool) {
+	return n.fsm.LookupRoute(key)
+}
+
+// GetConfiguration returns the latest Raft membership configuration. It does
+// not mutate membership and may be served by any local member.
+func (n *Node) GetConfiguration(ctx context.Context) (raft.Configuration, error) {
+	future := n.raft.GetConfiguration()
+	if err := waitFuture(ctx, future.Error); err != nil {
+		return raft.Configuration{}, fmt.Errorf("get raft configuration: %w", err)
+	}
+	return future.Configuration(), nil
+}
+
+// AddVoter starts the standard Raft staging/catch-up/promotion flow. The
+// caller must execute it on the leader; membership changes are serialized per
+// local node because HashiCorp Raft accepts only one configuration change at a
+// time. Replacing lost storage must use a fresh NodeID before this call.
+func (n *Node) AddVoter(ctx context.Context, nodeID, address string) error {
+	if err := validateMember(nodeID, address); err != nil {
+		return err
+	}
+	if n.draining.Load() {
+		return fmt.Errorf("raft node is shutting down")
+	}
+
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
+
+	configuration, err := n.GetConfiguration(ctx)
+	if err != nil {
+		return err
+	}
+	for _, server := range configuration.Servers {
+		if server.ID == raft.ServerID(nodeID) && server.Address != raft.ServerAddress(address) {
+			return fmt.Errorf("raft member %q already exists at %q; an erased member identity must not be reused", nodeID, server.Address)
+		}
+		if server.ID != raft.ServerID(nodeID) && server.Address == raft.ServerAddress(address) {
+			return fmt.Errorf("raft address %q already belongs to member %q", address, server.ID)
+		}
+	}
+	if !isExistingVoter(configuration, raft.ServerID(nodeID)) && voterCount(configuration) >= maxRaftVoters {
+		return fmt.Errorf("raft voter limit is %d", maxRaftVoters)
+	}
+	future := n.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(address), 0, n.applyTimeout(ctx))
+	if err := waitFuture(ctx, future.Error); err != nil {
+		return fmt.Errorf("add raft voter %q: %w", nodeID, err)
+	}
+	return nil
+}
+
+// RemoveServer removes a member through the normal Raft configuration-change
+// path. It never performs recovery or force-reset behavior.
+func (n *Node) RemoveServer(ctx context.Context, nodeID string) error {
+	if strings.TrimSpace(nodeID) == "" {
+		return fmt.Errorf("raft member node ID is required")
+	}
+	if n.draining.Load() {
+		return fmt.Errorf("raft node is shutting down")
+	}
+
+	n.membershipMu.Lock()
+	defer n.membershipMu.Unlock()
+
+	future := n.raft.RemoveServer(raft.ServerID(nodeID), 0, n.applyTimeout(ctx))
+	if err := waitFuture(ctx, future.Error); err != nil {
+		return fmt.Errorf("remove raft server %q: %w", nodeID, err)
+	}
+	return nil
 }
 
 func (n *Node) Snapshot(ctx context.Context) error {
@@ -421,6 +528,8 @@ func (n *Node) Close() error {
 			if err := n.transport.Close(); err != nil {
 				n.closeErr = errors.Join(n.closeErr, fmt.Errorf("close raft transport after timeout: %w", err))
 			}
+			// Raft may still access the durable store after an unconfirmed
+			// shutdown, so do not close it underneath its goroutines.
 			return
 		}
 		if err := n.transport.Close(); err != nil {
@@ -447,6 +556,18 @@ func (n *Node) applyTimeout(ctx context.Context) time.Duration {
 	return timeout
 }
 
+func parseStat(stats map[string]string, key string) uint64 {
+	value, _ := strconv.ParseUint(stats[key], 10, 64)
+	return value
+}
+
+func trailingLogEntries(snapshotThreshold uint64) uint64 {
+	if snapshotThreshold < 4 {
+		return 1
+	}
+	return snapshotThreshold / 4
+}
+
 func ensureNodeIdentity(store *raftboltdb.BoltStore, nodeID string, existingRaftState bool) error {
 	stored, err := store.Get(nodeIDKey)
 	if err == nil {
@@ -461,24 +582,58 @@ func ensureNodeIdentity(store *raftboltdb.BoltStore, nodeID string, existingRaft
 	if existingRaftState {
 		return fmt.Errorf("raft state exists without RelayGate node identity; refuse unsafe reuse")
 	}
+	// An empty directory has no retained evidence with which to distinguish a
+	// new voter from a deleted member. It may join only through the normal
+	// AddVoter workflow; operators must give replacements a never-reused NodeID.
 	if err := store.Set(nodeIDKey, []byte(nodeID)); err != nil {
 		return fmt.Errorf("persist node identity: %w", err)
 	}
 	return nil
 }
 
-func parseStat(stats map[string]string, key string) uint64 {
-	value, _ := strconv.ParseUint(stats[key], 10, 64)
-	return value
+func waitFuture(ctx context.Context, await func() error) error {
+	completed := make(chan error, 1)
+	go func() { completed <- await() }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-completed:
+		return err
+	}
+}
+
+func validateMember(nodeID, address string) error {
+	if strings.TrimSpace(nodeID) == "" {
+		return fmt.Errorf("raft member node ID is required")
+	}
+	if _, _, err := net.SplitHostPort(address); err != nil {
+		return fmt.Errorf("invalid raft member address %q: %w", address, err)
+	}
+	return nil
+}
+
+func voterCount(configuration raft.Configuration) int {
+	count := 0
+	for _, server := range configuration.Servers {
+		if server.Suffrage == raft.Voter {
+			count++
+		}
+	}
+	return count
+}
+
+func isExistingVoter(configuration raft.Configuration, id raft.ServerID) bool {
+	for _, server := range configuration.Servers {
+		if server.ID == id {
+			return server.Suffrage == raft.Voter
+		}
+	}
+	return false
 }
 
 func bootstrapConfiguration(config Config) raft.Configuration {
-	voters := config.BootstrapVoters
-	if len(voters) == 0 {
-		voters = []BootstrapVoter{{NodeID: config.NodeID, Address: config.AdvertiseAddress}}
-	}
-	servers := make([]raft.Server, 0, len(voters))
-	for _, voter := range voters {
+	servers := make([]raft.Server, 0, len(config.BootstrapVoters))
+	for _, voter := range config.BootstrapVoters {
 		servers = append(servers, raft.Server{
 			Suffrage: raft.Voter,
 			ID:       raft.ServerID(voter.NodeID),

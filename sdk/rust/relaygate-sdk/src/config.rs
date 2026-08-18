@@ -28,6 +28,16 @@ impl std::fmt::Debug for Config {
 }
 
 impl Config {
+    pub(crate) fn reconnect_copy(&self) -> Self {
+        Self {
+            endpoint: self.endpoint.clone(),
+            client_id: self.client_id.clone(),
+            api_key_id: self.api_key_id.clone(),
+            api_key: self.api_key.clone(),
+            insecure_local: self.insecure_local,
+        }
+    }
+
     /// Creates a TLS-only connection configuration.
     pub fn new(
         endpoint: impl Into<String>,

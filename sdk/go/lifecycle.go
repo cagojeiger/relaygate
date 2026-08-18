@@ -7,7 +7,7 @@ import (
 	"io"
 	"sync"
 
-	relayv1 "github.com/cagojeiger/relaygate/internal/gen/relay/v1"
+	relayv1 "github.com/cagojeiger/relaygate/sdk/go/internal/gen/relay/v1"
 )
 
 type Listener struct {

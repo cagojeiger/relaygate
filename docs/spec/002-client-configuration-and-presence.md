@@ -49,6 +49,10 @@ Presence state는 `NoAuthority` 또는 `Current`다. `Current`의 counters는 cu
 Expected replica roster가 없으므로 zero/partial counts도 정상 observation이며 complete/converged flag를 제공하지
 않는다. Presence는 authorization이나 New-Pipe gate가 아니다.
 
+Disaster reset으로 `ClusterEpoch`가 바뀌면 old controller/control/gateway path는 이미 외부에서 fenced된
+상태여야 한다. SDK와 Gateway는 새 epoch의 fresh session에서 현재 Listener만 다시 Bind/declare한다.
+Presence는 old epoch의 session, binding, Pipe 또는 history를 표시하거나 복구하지 않는다.
+
 ## Invariants
 
 1. Authentication 결과만 `ClientId` namespace를 정한다.

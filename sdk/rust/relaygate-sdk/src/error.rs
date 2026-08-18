@@ -124,3 +124,27 @@ pub enum CloseError {
     #[error(transparent)]
     Session(#[from] SessionError),
 }
+
+/// A connection-supervision or current-session operation failure.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ManagedError {
+    #[error("the managed client is closed")]
+    Closed,
+    #[error("the managed client has no Ready session")]
+    NotReady,
+    #[error("the managed listener already exists")]
+    BindingExists,
+    #[error("managed listener capacity reached")]
+    CapacityReached,
+    #[error("managed connection failed permanently: {0}")]
+    Failed(String),
+    #[error(transparent)]
+    Bind(#[from] BindError),
+    #[error(transparent)]
+    Open(#[from] OpenError),
+    #[error(transparent)]
+    Session(#[from] SessionError),
+    #[error(transparent)]
+    Unbind(#[from] UnbindError),
+}

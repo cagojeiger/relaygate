@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
@@ -15,14 +14,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Service owns only the ordered control-stream protocol. Authority owns the
-// volatile directory; this layer never reads or writes Raft application state.
+// Service owns only the ordered control-stream protocol. Authority translates
+// accepted snapshots and mutations into the replicated current-state FSM while
+// keeping control streams and relay addresses leader-local.
 type Service struct {
 	controlv1.UnimplementedGatewayControlServer
 
 	clusterEpoch string
 	authority    *authority.Manager
-	controlMu    sync.Mutex
 }
 
 func NewService(clusterEpoch string, manager *authority.Manager) (*Service, error) {
@@ -118,7 +117,8 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[controlv1.ControlReque
 }
 
 // AdmitOpen is side-effect free. It confirms current authority and resolves an
-// exact current-directory route; it does not reserve, persist, or replay one.
+// exact committed route plus current owner revalidation; it does not reserve,
+// persist, or replay an Open attempt.
 func (s *Service) AdmitOpen(ctx context.Context, request *controlv1.AdmitOpenRequest) (*controlv1.AdmitOpenResponse, error) {
 	if request == nil {
 		return nil, status.Error(codes.InvalidArgument, "Open admission request is required")
@@ -135,8 +135,6 @@ func (s *Service) AdmitOpen(ctx context.Context, request *controlv1.AdmitOpenReq
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
-	s.controlMu.Lock()
-	defer s.controlMu.Unlock()
 	current, err := s.authority.Confirm(ctx)
 	if err != nil {
 		return nil, unavailable("confirm Open authority", err)
@@ -153,8 +151,6 @@ func (s *Service) AdmitOpen(ctx context.Context, request *controlv1.AdmitOpenReq
 }
 
 func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello) (authority.Session, error) {
-	s.controlMu.Lock()
-	defer s.controlMu.Unlock()
 	if _, err := s.authority.Confirm(ctx); err != nil {
 		return authority.Session{}, unavailable("confirm authority", err)
 	}
@@ -166,8 +162,6 @@ func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello
 }
 
 func (s *Service) revalidate(ctx context.Context, ref authority.SessionRef, bindings []routing.LiveBinding) error {
-	s.controlMu.Lock()
-	defer s.controlMu.Unlock()
 	if _, err := s.authority.Confirm(ctx); err != nil {
 		return unavailable("confirm authority", err)
 	}
@@ -194,8 +188,6 @@ func (s *Service) applyMutation(ctx context.Context, ref authority.SessionRef, m
 		return nil, status.Errorf(codes.InvalidArgument, "invalid live binding: %v", err)
 	}
 
-	s.controlMu.Lock()
-	defer s.controlMu.Unlock()
 	if _, err := s.authority.Confirm(ctx); err != nil {
 		return nil, unavailable("confirm authority", err)
 	}

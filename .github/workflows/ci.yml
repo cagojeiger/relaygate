@@ -18,6 +18,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            sdk/go/go.sum
+            examples/echo/go/go.sum
       - name: Check formatting
         run: |
           out=$(gofmt -l .)
@@ -35,7 +39,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go vet ./...
+      - run: GOWORK=off go vet ./...
+      - run: cd sdk/go && GOWORK=off go vet ./...
+      - run: cd examples/echo/go && GOWORK=off go vet ./...
 
   lint:
     name: golangci-lint
@@ -49,6 +55,10 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          working-directory: sdk/go
 
   vuln:
     name: govulncheck
@@ -61,7 +71,9 @@ jobs:
           cache: true
       - run: |
           GOTOOLCHAIN=local go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
-          GOTOOLCHAIN=local govulncheck ./...
+          GOTOOLCHAIN=local GOWORK=off govulncheck ./...
+          cd sdk/go
+          GOTOOLCHAIN=local GOWORK=off govulncheck ./...
 
   test:
     name: go test -race
@@ -72,7 +84,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -race ./...
+      - run: GOWORK=off go test -race ./...
+      - run: cd sdk/go && GOWORK=off go test -race ./...
+      - name: Verify Go SDK module boundary
+        run: |
+          if (cd sdk/go && GOWORK=off go list -deps -f '{{with .Module}}{{.Path}}{{end}}' ./...) | grep --fixed-strings --line-regexp 'github.com/cagojeiger/relaygate'; then
+            echo 'Go SDK depends on the RelayGate server module'
+            exit 1
+          fi
+          cmp internal/gen/relay/v1/relay.pb.go sdk/go/internal/gen/relay/v1/relay.pb.go
+          cmp internal/gen/relay/v1/relay_grpc.pb.go sdk/go/internal/gen/relay/v1/relay_grpc.pb.go
+      - run: cd examples/echo/go && GOWORK=off go test -race ./...
 
   rust-sdk:
     name: rust sdk

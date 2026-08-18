@@ -45,12 +45,22 @@ type AuthRevisionProvider interface {
 	Revision() string
 }
 
+type RuntimeSources struct {
+	Role         string
+	ClusterEpoch string
+	Raft         StatusProvider
+	Gateway      GatewayStatusProvider
+	Presence     PresenceProvider
+}
+
 type RuntimeStatus struct {
-	raftnode.Status
-	AuthorityID    string                `json:"authority_id,omitempty"`
-	AuthRevision   string                `json:"auth_revision"`
-	GatewayControl gatewaycontrol.Status `json:"gateway_control"`
-	Presence       authority.Presence    `json:"presence"`
+	RuntimeRole    string                 `json:"runtime_role"`
+	ClusterEpoch   string                 `json:"cluster_epoch"`
+	Raft           *raftnode.Status       `json:"raft,omitempty"`
+	AuthorityID    string                 `json:"authority_id,omitempty"`
+	AuthRevision   string                 `json:"auth_revision,omitempty"`
+	GatewayControl *gatewaycontrol.Status `json:"gateway_control,omitempty"`
+	Presence       *authority.Presence    `json:"presence,omitempty"`
 }
 
 // Start exposes an unauthenticated, read-only trusted-local observation
@@ -58,12 +68,27 @@ type RuntimeStatus struct {
 func Start(
 	ctx context.Context,
 	config Config,
-	node StatusProvider,
-	gateway GatewayStatusProvider,
-	presence PresenceProvider,
+	sources RuntimeSources,
 	auth AuthRevisionProvider,
 	gatherer prometheus.Gatherer,
 ) (*Server, error) {
+	if sources.Role == "" || sources.ClusterEpoch == "" || gatherer == nil {
+		return nil, fmt.Errorf("runtime role, cluster epoch and metrics provider are required")
+	}
+	if (sources.Raft == nil) != (sources.Presence == nil) {
+		return nil, fmt.Errorf("Raft and presence providers must be configured together")
+	}
+	controller := sources.Raft != nil
+	gateway := sources.Gateway != nil
+	if controller == gateway {
+		return nil, fmt.Errorf("exactly one controller or Gateway status source is required")
+	}
+	if gateway && auth == nil {
+		return nil, fmt.Errorf("Gateway auth revision provider is required")
+	}
+	if controller && auth != nil {
+		return nil, fmt.Errorf("controller must not configure Gateway auth state")
+	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", config.BindAddress)
 	if err != nil {
 		return nil, fmt.Errorf("listen on admin address: %w", err)
@@ -76,35 +101,55 @@ func Start(
 		_, _ = writer.Write([]byte("{\"status\":\"live\"}\n"))
 	})
 	mux.HandleFunc("GET /healthz/ready", func(writer http.ResponseWriter, _ *http.Request) {
-		raftStatus := node.Status()
-		gatewayStatus := gateway.Status()
-		ready := raftStatus.Ready && gatewayStatus.Ready()
+		ready := true
+		response := map[string]any{
+			"runtime_role": sources.Role,
+		}
+		if sources.Gateway != nil {
+			gatewayStatus := sources.Gateway.Status()
+			ready = gatewayStatus.Ready()
+			response["gateway_control"] = gatewayStatus.State
+		}
+		if sources.Raft != nil {
+			raftStatus := sources.Raft.Status()
+			ready = raftStatus.Ready
+			response["raft_role"] = raftStatus.Role
+			response["has_leader"] = raftStatus.LeaderAddress != ""
+		}
+		response["status"] = map[bool]string{true: "ready", false: "not_ready"}[ready]
 		writer.Header().Set("Content-Type", "application/json")
 		if !ready {
 			writer.WriteHeader(http.StatusServiceUnavailable)
 		}
-		_ = json.NewEncoder(writer).Encode(map[string]any{
-			"status":          map[bool]string{true: "ready", false: "not_ready"}[ready],
-			"raft_role":       raftStatus.Role,
-			"has_leader":      raftStatus.LeaderAddress != "",
-			"gateway_control": gatewayStatus.State,
-		})
+		_ = json.NewEncoder(writer).Encode(response)
 	})
 	mux.HandleFunc("GET /status", func(writer http.ResponseWriter, request *http.Request) {
-		observationContext, cancelObservation := context.WithTimeout(request.Context(), config.ReadTimeout)
-		authorityRef, currentPresence, observationErr := presence.Observe(observationContext)
-		cancelObservation()
 		runtimeStatus := RuntimeStatus{
-			Status:         node.Status(),
-			AuthRevision:   auth.Revision(),
-			GatewayControl: gateway.Status(),
-			Presence:       currentPresence,
+			RuntimeRole:  sources.Role,
+			ClusterEpoch: sources.ClusterEpoch,
 		}
-		if observationErr == nil {
-			runtimeStatus.ClusterEpoch = authorityRef.ClusterEpoch
-			runtimeStatus.AuthorityID = authorityRef.AuthorityID
-		} else {
-			runtimeStatus.Presence = authority.Presence{State: authority.PresenceNoAuthority}
+		if sources.Gateway != nil {
+			gatewayStatus := sources.Gateway.Status()
+			runtimeStatus.GatewayControl = &gatewayStatus
+			runtimeStatus.AuthRevision = auth.Revision()
+		}
+		var observationErr error
+		if sources.Raft != nil {
+			raftStatus := sources.Raft.Status()
+			runtimeStatus.Raft = &raftStatus
+			observationContext, cancelObservation := context.WithTimeout(request.Context(), config.ReadTimeout)
+			authorityRef, currentPresence, err := sources.Presence.Observe(observationContext)
+			cancelObservation()
+			observationErr = err
+			if observationErr == nil {
+				runtimeStatus.AuthorityID = authorityRef.AuthorityID
+				runtimeStatus.Presence = &currentPresence
+			} else {
+				noAuthority := authority.Presence{State: authority.PresenceNoAuthority}
+				runtimeStatus.Presence = &noAuthority
+			}
+		} else if runtimeStatus.GatewayControl == nil || !runtimeStatus.GatewayControl.Ready() {
+			observationErr = fmt.Errorf("Gateway control is not revalidated")
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		if observationErr != nil {

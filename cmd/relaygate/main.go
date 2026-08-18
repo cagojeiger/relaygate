@@ -18,6 +18,9 @@ func main() {
 }
 
 func run(args []string, getenv func(string) string) error {
+	if len(args) > 0 && args[0] == "membership" {
+		return runMembership(args[1:], getenv, os.Stdout)
+	}
 	configPath, err := parseConfigPath(args, getenv)
 	if err != nil {
 		return err
@@ -34,6 +37,9 @@ func parseConfigPath(args []string, getenv func(string) string) (string, error) 
 	flags.StringVar(&configPath, "config", configPath, "path to RelayGate YAML config")
 	if err := flags.Parse(args); err != nil {
 		return "", err
+	}
+	if flags.NArg() != 0 {
+		return "", fmt.Errorf("unexpected positional arguments: %v", flags.Args())
 	}
 	return configPath, nil
 }

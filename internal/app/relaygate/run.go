@@ -3,11 +3,9 @@ package relaygate
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"github.com/hashicorp/go-hclog"
@@ -16,15 +14,7 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/app/admin"
 	"github.com/cagojeiger/relaygate/internal/app/config"
-	"github.com/cagojeiger/relaygate/internal/gateway/access/runtime"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/client"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/server"
-	"github.com/cagojeiger/relaygate/internal/gateway/relay/peer"
-	"github.com/cagojeiger/relaygate/internal/gateway/relay/public"
-	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
-	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
-	"github.com/cagojeiger/relaygate/internal/raft/node"
+	raftnode "github.com/cagojeiger/relaygate/internal/raft/node"
 )
 
 func Run(configPath, version string) error {
@@ -35,21 +25,15 @@ func Run(configPath, version string) error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: appConfig.LogLevel()})).With(
 		"service", "relaygate",
 		"version", version,
-		"node_id", appConfig.Raft.NodeID,
+		"runtime_role", appConfig.Runtime.Role,
 	)
-	slog.SetDefault(logger)
-	clientRuntime, err := clientruntime.New(appConfig)
-	if err != nil {
-		return err
+	if appConfig.Runtime.Role.HasController() {
+		logger = logger.With("node_id", appConfig.Raft.NodeID)
+	} else {
+		logger = logger.With("gateway_id", appConfig.Gateway.ID)
 	}
-	defer clientRuntime.Close()
+	slog.SetDefault(logger)
 
-	raftLogger := hclog.New(&hclog.LoggerOptions{
-		Name:       "relaygate.raft",
-		Level:      hclogLevel(appConfig.LogLevel()),
-		Output:     os.Stdout,
-		JSONFormat: true,
-	})
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(
 		collectors.NewGoCollector(),
@@ -57,246 +41,47 @@ func Run(configPath, version string) error {
 		collectors.NewBuildInfoCollector(),
 	)
 
-	node, err := raftnode.Open(raftnode.Config{
-		NodeID:            appConfig.Raft.NodeID,
-		BindAddress:       appConfig.Raft.BindAddress,
-		AdvertiseAddress:  appConfig.Raft.AdvertiseAddress,
-		DataDir:           appConfig.Raft.DataDir,
-		Bootstrap:         appConfig.Raft.Bootstrap,
-		BootstrapVoters:   bootstrapVoters(appConfig.Raft.BootstrapVoters),
-		ApplyTimeout:      appConfig.Raft.ApplyTimeout.Value(),
-		TransportTimeout:  appConfig.Raft.TransportTimeout.Value(),
-		ShutdownTimeout:   appConfig.Raft.ShutdownTimeout.Value(),
-		SnapshotRetain:    appConfig.Raft.SnapshotRetain,
-		SnapshotThreshold: appConfig.Raft.SnapshotThreshold,
-		SnapshotInterval:  appConfig.Raft.SnapshotInterval.Value(),
-		MaxPool:           appConfig.Raft.MaxPool,
-		MaxCommandBytes:   appConfig.Raft.MaxCommandBytes,
-	}, raftLogger, registry)
-	if err != nil {
-		return err
+	var controller *controllerRuntime
+	var gateway *gatewayRuntime
+	if appConfig.Runtime.Role.HasController() {
+		controller, err = startControllerRuntime(appConfig, registry, logger)
+		if err != nil {
+			return err
+		}
+	} else {
+		gateway, err = startGatewayRuntime(appConfig, logger)
+		if err != nil {
+			return err
+		}
 	}
-	defer node.Close()
 
-	startupContext, cancelStartup := context.WithTimeout(context.Background(), appConfig.Raft.StartupTimeout.Value())
-	if err := node.WaitForLeader(startupContext); err != nil {
-		cancelStartup()
-		return err
-	}
-	result, err := node.EnsureEpoch(startupContext, appConfig.Control.ClusterEpoch)
-	if err != nil {
-		cancelStartup()
-		return fmt.Errorf("initialize or verify control epoch: %w", err)
-	}
-	logger.Info("control epoch ready", "cluster_epoch", appConfig.Control.ClusterEpoch, "result", result.Code)
-	cancelStartup()
-
-	authorityManager, err := authority.New(authority.Config{
-		ClusterEpoch:   appConfig.Control.ClusterEpoch,
-		ProbeInterval:  appConfig.Control.AuthorityProbeInterval.Value(),
-		ProbeTimeout:   appConfig.Control.AuthorityProbeTimeout.Value(),
-		OpenContextTTL: appConfig.Relay.OpenTimeout.Value(),
-	}, node)
-	if err != nil {
-		return fmt.Errorf("configure authority manager: %w", err)
-	}
-	authorityManager.Start(context.Background())
-	controlService, err := controlgrpc.NewService(appConfig.Control.ClusterEpoch, authorityManager)
-	if err != nil {
-		authorityManager.Close()
-		return fmt.Errorf("configure control service: %w", err)
-	}
-	controlServer, err := controlgrpc.Start(context.Background(), controlgrpc.Config{
-		BindAddress: appConfig.Control.BindAddress,
-	}, controlService)
-	if err != nil {
-		authorityManager.Close()
-		return err
-	}
-	gatewayClient, err := gatewaycontrol.New(gatewaycontrol.Config{
-		ClusterEpoch:     appConfig.Control.ClusterEpoch,
-		GatewayID:        appConfig.Gateway.ID,
-		RelayAddress:     appConfig.InternalRelay.AdvertiseAddress,
-		ControlEndpoints: appConfig.Gateway.ControlEndpoints,
-		ConnectTimeout:   appConfig.Gateway.ConnectTimeout.Value(),
-		RetryInterval:    appConfig.Gateway.RetryInterval.Value(),
-	}, logger)
-	if err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("configure gateway control client: %w", err)
-	}
-	bindingManager, err := localbinding.New(
-		appConfig.Gateway.ID,
-		gatewayClient.Status().GatewayInstanceID,
-		appConfig.Relay.MaxListenerBindings,
-		gatewayClient,
-		clientRuntime.Sessions(),
-	)
-	if err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("configure listener binding runtime: %w", err)
-	}
-	defer bindingManager.Close()
-	if err := gatewayClient.AttachSnapshotProvider(bindingManager); err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("attach current binding snapshot provider: %w", err)
-	}
-	if err := clientRuntime.AttachBindings(bindingManager); err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("attach listener binding runtime: %w", err)
-	}
-	gatewayRelayClient, err := gatewayrelay.NewClient(
-		appConfig.InternalRelay.ConnectTimeout.Value(),
-		appConfig.Relay.OpenTimeout.Value(),
-		appConfig.Relay.MaxPipes,
-	)
-	if err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("configure Gateway relay client: %w", err)
-	}
-	defer gatewayRelayClient.Close()
-	openingManager, err := opening.New(opening.Config{
+	adminSources := admin.RuntimeSources{
+		Role:         string(appConfig.Runtime.Role),
 		ClusterEpoch: appConfig.Control.ClusterEpoch,
-		MaxPipes:     appConfig.Relay.MaxPipes,
-		OpenTimeout:  appConfig.Relay.OpenTimeout.Value(),
-	}, gatewayClient, bindingManager, gatewayRelayClient)
-	if err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("configure Open runtime: %w", err)
 	}
-	defer openingManager.Close()
-	if err := clientRuntime.AttachPipes(openingManager); err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("attach Open runtime: %w", err)
+	var authSource admin.AuthRevisionProvider
+	if controller != nil {
+		adminSources.Raft = controller.node
+		adminSources.Presence = controller.authority
+	} else {
+		adminSources.Gateway = gateway.controlClient
+		authSource = gateway.clients
 	}
-	gatewayRelayService, err := gatewayrelay.NewService(
-		openingManager,
-		appConfig.Relay.OpenTimeout.Value(),
-		appConfig.Relay.MaxPipes,
-	)
-	if err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("configure Gateway relay service: %w", err)
-	}
-	gatewayRelayServer, err := gatewayrelay.Start(context.Background(), gatewayrelay.Config{
-		BindAddress: appConfig.InternalRelay.BindAddress,
-		OpenTimeout: appConfig.Relay.OpenTimeout.Value(),
-		MaxPipes:    appConfig.Relay.MaxPipes,
-	}, gatewayRelayService)
-	if err != nil {
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("start Gateway relay service: %w", err)
-	}
-	var stopGatewayRelayOnce sync.Once
-	var gatewayRelayShutdownErr error
-	stopGatewayRelay := func() error {
-		stopGatewayRelayOnce.Do(func() {
-			gatewayRelayClient.Close()
-			shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.InternalRelay.ShutdownTimeout.Value())
-			gatewayRelayShutdownErr = gatewayRelayServer.Shutdown(shutdownContext)
-			cancelShutdown()
-		})
-		return gatewayRelayShutdownErr
-	}
-	defer func() { _ = stopGatewayRelay() }()
-	gatewayContext, cancelGateway := context.WithCancel(context.Background())
-	gatewayDone := make(chan struct{})
-	go func() {
-		gatewayClient.Run(gatewayContext)
-		close(gatewayDone)
-	}()
-	var stopGatewayOnce sync.Once
-	stopGateway := func() {
-		stopGatewayOnce.Do(func() {
-			cancelGateway()
-			<-gatewayDone
-		})
-	}
-	defer stopGateway()
-	relayService, err := relaygrpc.NewService(
-		clientRuntime.Sessions(),
-		bindingManager,
-		openingManager,
-		appConfig.Relay.AuthenticationTimeout.Value(),
-		appConfig.Relay.OpenTimeout.Value(),
-		appConfig.Relay.MaxPipes,
-	)
-	if err != nil {
-		stopGateway()
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return fmt.Errorf("configure relay service: %w", err)
-	}
-	relayServer, err := relaygrpc.Start(context.Background(), relaygrpc.Config{
-		BindAddress:          appConfig.Relay.BindAddress,
-		MaxConcurrentStreams: appConfig.Relay.MaxClientSessions,
-	}, relayService)
-	if err != nil {
-		stopGateway()
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return err
-	}
-
 	adminServer, err := admin.Start(context.Background(), admin.Config{
 		BindAddress:  appConfig.Admin.BindAddress,
 		ReadTimeout:  appConfig.Admin.ReadTimeout.Value(),
 		WriteTimeout: appConfig.Admin.WriteTimeout.Value(),
-	}, node, gatewayClient, authorityManager, clientRuntime, registry)
+	}, adminSources, authSource, registry)
 	if err != nil {
-		stopGateway()
-		clientRuntime.Close()
-		relayShutdownContext, cancelRelayShutdown := context.WithTimeout(context.Background(), appConfig.Relay.ShutdownTimeout.Value())
-		_ = relayServer.Shutdown(relayShutdownContext)
-		cancelRelayShutdown()
-		authorityManager.Close()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-		defer cancelShutdown()
-		_ = controlServer.Shutdown(shutdownContext)
-		return err
+		return errors.Join(err, gateway.shutdown(), controller.shutdown())
 	}
-	logger.Info("relaygate started",
-		"raft_address", appConfig.Raft.AdvertiseAddress,
-		"control_address", controlServer.Address(),
-		"relay_address", relayServer.Address(),
-		"internal_relay_address", gatewayRelayServer.Address(),
+
+	fields := append([]any{
+		"runtime_role", appConfig.Runtime.Role,
 		"admin_address", adminServer.Address(),
-		"gateway_id", appConfig.Gateway.ID,
-		"gateway_instance_id", gatewayClient.Status().GatewayInstanceID,
-		"auth_revision", clientRuntime.Revision(),
-		"raft_role", node.Status().Role,
-	)
+	}, gateway.logFields()...)
+	fields = append(fields, controller.logFields()...)
+	logger.Info("relaygate started", fields...)
 
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
@@ -306,19 +91,23 @@ func Run(configPath, version string) error {
 	runErr := (eventLoop{
 		reloadSignals:      reloadSignals,
 		adminErrors:        adminServer.Errors(),
-		controlErrors:      controlServer.Errors(),
-		relayErrors:        relayServer.Errors(),
-		gatewayRelayErrors: gatewayRelayServer.Errors(),
+		controlErrors:      controller.errors(),
+		relayErrors:        gateway.publicErrors(),
+		gatewayRelayErrors: gateway.peerErrors(),
 		onShutdown: func() {
 			logger.Info("shutdown requested")
 		},
 		onReload: func() {
+			if gateway == nil {
+				logger.Info("client config reload ignored by controller runtime")
+				return
+			}
 			candidate, err := config.Load(configPath)
 			if err != nil {
 				logger.Error("client config reload rejected", "error", err)
 				return
 			}
-			result, err := clientRuntime.Apply(candidate)
+			result, err := gateway.reload(candidate)
 			if err != nil {
 				logger.Error("client config reload rejected", "error", err)
 				return
@@ -333,36 +122,15 @@ func Run(configPath, version string) error {
 		},
 	}).wait(signalContext)
 
-	stopGateway()
-	node.BeginShutdown()
-	authorityManager.Close()
-	clientRuntime.Close()
-	shutdownErr := runErr
-	relayShutdownContext, cancelRelayShutdown := context.WithTimeout(context.Background(), appConfig.Relay.ShutdownTimeout.Value())
-	if err := relayServer.Shutdown(relayShutdownContext); err != nil {
-		shutdownErr = errors.Join(shutdownErr, err)
-		logger.Error("relay shutdown failed", "error", err)
-	}
-	cancelRelayShutdown()
-	if err := stopGatewayRelay(); err != nil {
-		shutdownErr = errors.Join(shutdownErr, err)
-		logger.Error("Gateway relay shutdown failed", "error", err)
-	}
-	controlShutdownContext, cancelControlShutdown := context.WithTimeout(context.Background(), appConfig.Control.ShutdownTimeout.Value())
-	if err := controlServer.Shutdown(controlShutdownContext); err != nil {
-		shutdownErr = errors.Join(shutdownErr, err)
-		logger.Error("control shutdown failed", "error", err)
-	}
-	cancelControlShutdown()
-	adminShutdownContext, cancelAdminShutdown := context.WithTimeout(context.Background(), appConfig.Admin.ShutdownTimeout.Value())
-	if err := adminServer.Shutdown(adminShutdownContext); err != nil {
+	gateway.stopControl()
+	controller.beginShutdown()
+	shutdownErr := errors.Join(runErr, gateway.shutdown(), controller.shutdown())
+	adminContext, cancelAdmin := context.WithTimeout(context.Background(), appConfig.Admin.ShutdownTimeout.Value())
+	if err := adminServer.Shutdown(adminContext); err != nil {
 		shutdownErr = errors.Join(shutdownErr, err)
 		logger.Error("admin shutdown failed", "error", err)
 	}
-	cancelAdminShutdown()
-	if err := node.Close(); err != nil {
-		shutdownErr = errors.Join(shutdownErr, err)
-	}
+	cancelAdmin()
 	logger.Info("relaygate stopped")
 	return shutdownErr
 }

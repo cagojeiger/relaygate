@@ -26,25 +26,26 @@ func TestTrustedLocalHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 		Ready:         true,
 	}}
 	registry := prometheus.NewRegistry()
-	gatewayProvider := staticGatewayStatusProvider{status: gatewaycontrol.Status{
-		GatewayID:         "gateway-1",
-		GatewayInstanceID: "instance-1",
-		State:             gatewaycontrol.StateRevalidated,
-	}}
 	presenceProvider := staticPresenceProvider{
 		ref: authority.Ref{ClusterEpoch: "epoch-1", AuthorityID: "authority-1"},
 		presence: authority.Presence{
-			State:       authority.PresenceCurrent,
-			Sessions:    1,
-			Revalidated: 1,
-			Bindings:    2,
+			State:               authority.PresenceCurrent,
+			CommittedGateways:   1,
+			CommittedRoutes:     2,
+			RevalidatedGateways: 1,
+			EligibleRoutes:      2,
 		},
 	}
 	server, err := Start(context.Background(), Config{
 		BindAddress:  "127.0.0.1:0",
 		ReadTimeout:  time.Second,
 		WriteTimeout: time.Second,
-	}, provider, gatewayProvider, presenceProvider, staticAuthRevisionProvider("sha256:revision-1"), registry)
+	}, RuntimeSources{
+		Role:         "controller",
+		ClusterEpoch: "epoch-1",
+		Raft:         provider,
+		Presence:     presenceProvider,
+	}, nil, registry)
 	if err != nil {
 		t.Fatalf("Start(): %v", err)
 	}
@@ -55,7 +56,7 @@ func TestTrustedLocalHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 	})
 
 	baseURL := "http://" + server.Address()
-	for _, path := range []string{"/healthz/live", "/healthz/ready", "/status", "/metrics"} {
+	for _, path := range []string{"/healthz/live", "/healthz/ready", "/metrics"} {
 		response, err := http.Get(baseURL + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
@@ -71,36 +72,20 @@ func TestTrustedLocalHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /status: %v", err)
 	}
-	defer response.Body.Close()
-	var status raftnode.Status
-	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
-		t.Fatalf("decode status: %v", err)
-	}
-	if status.NodeID != "node-1" || !status.Ready {
-		t.Fatalf("status = %#v", status)
-	}
-
-	response, err = http.Get(baseURL + "/status")
-	if err != nil {
-		t.Fatalf("GET /status runtime: %v", err)
-	}
-	defer response.Body.Close()
-	var runtimeStatus RuntimeStatus
-	if err := json.NewDecoder(response.Body).Decode(&runtimeStatus); err != nil {
-		t.Fatalf("decode runtime status: %v", err)
-	}
-	if !runtimeStatus.GatewayControl.Ready() || runtimeStatus.Presence.State != authority.PresenceCurrent || runtimeStatus.AuthorityID != "authority-1" || runtimeStatus.AuthRevision != "sha256:revision-1" {
-		t.Fatalf("runtime status = %#v", runtimeStatus)
-	}
-
-	response, err = http.Get(baseURL + "/status")
-	if err != nil {
-		t.Fatalf("GET /status redaction: %v", err)
-	}
 	statusBody, err := io.ReadAll(response.Body)
 	_ = response.Body.Close()
 	if err != nil {
-		t.Fatalf("read /status redaction: %v", err)
+		t.Fatalf("read /status: %v", err)
+	}
+	var status RuntimeStatus
+	if err := json.Unmarshal(statusBody, &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.Raft == nil || status.Raft.NodeID != "node-1" || !status.Raft.Ready {
+		t.Fatalf("status = %#v", status)
+	}
+	if status.GatewayControl != nil || status.Presence == nil || status.Presence.State != authority.PresenceCurrent || status.AuthorityID != "authority-1" || status.AuthRevision != "" || status.RuntimeRole != "controller" || status.ClusterEpoch != "epoch-1" {
+		t.Fatalf("runtime status = %#v", status)
 	}
 	for _, forbidden := range []string{
 		"api_key",
@@ -135,22 +120,26 @@ func TestStatusFailsClosedWhenAuthorityCannotBeConfirmed(t *testing.T) {
 		BindAddress:  "127.0.0.1:0",
 		ReadTimeout:  time.Second,
 		WriteTimeout: time.Second,
-	}, staticStatusProvider{status: raftnode.Status{
-		Role:         "Leader",
+	}, RuntimeSources{
+		Role:         "controller",
 		ClusterEpoch: "epoch-1",
-		Ready:        true,
-	}}, staticGatewayStatusProvider{status: gatewaycontrol.Status{
-		State: gatewaycontrol.StateRevalidated,
-	}}, staticPresenceProvider{
-		ref: authority.Ref{ClusterEpoch: "epoch-1", AuthorityID: "stale-authority"},
-		presence: authority.Presence{
-			State:       authority.PresenceCurrent,
-			Sessions:    1,
-			Revalidated: 1,
-			Bindings:    1,
+		Raft: staticStatusProvider{status: raftnode.Status{
+			Role:         "Leader",
+			ClusterEpoch: "epoch-1",
+			Ready:        true,
+		}},
+		Presence: staticPresenceProvider{
+			ref: authority.Ref{ClusterEpoch: "epoch-1", AuthorityID: "stale-authority"},
+			presence: authority.Presence{
+				State:               authority.PresenceCurrent,
+				CommittedGateways:   1,
+				CommittedRoutes:     1,
+				RevalidatedGateways: 1,
+				EligibleRoutes:      1,
+			},
+			err: authority.ErrNoAuthority,
 		},
-		err: authority.ErrNoAuthority,
-	}, staticAuthRevisionProvider("sha256:revision-1"), prometheus.NewRegistry())
+	}, nil, prometheus.NewRegistry())
 	if err != nil {
 		t.Fatalf("Start(): %v", err)
 	}
@@ -172,7 +161,7 @@ func TestStatusFailsClosedWhenAuthorityCannotBeConfirmed(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&runtimeStatus); err != nil {
 		t.Fatalf("decode runtime status: %v", err)
 	}
-	if runtimeStatus.AuthorityID != "" || runtimeStatus.Presence.State != authority.PresenceNoAuthority {
+	if runtimeStatus.AuthorityID != "" || runtimeStatus.Presence == nil || runtimeStatus.Presence.State != authority.PresenceNoAuthority {
 		t.Fatalf("runtime status reused stale authority: %#v", runtimeStatus)
 	}
 }
@@ -182,9 +171,11 @@ func TestReadyRequiresGatewayControlRevalidation(t *testing.T) {
 		BindAddress:  "127.0.0.1:0",
 		ReadTimeout:  time.Second,
 		WriteTimeout: time.Second,
-	}, staticStatusProvider{status: raftnode.Status{Ready: true}}, staticGatewayStatusProvider{
-		status: gatewaycontrol.Status{State: gatewaycontrol.StateDisconnected},
-	}, staticPresenceProvider{}, staticAuthRevisionProvider("sha256:revision-1"), prometheus.NewRegistry())
+	}, RuntimeSources{
+		Role:         "gateway",
+		ClusterEpoch: "epoch-1",
+		Gateway:      staticGatewayStatusProvider{status: gatewaycontrol.Status{State: gatewaycontrol.StateDisconnected}},
+	}, staticAuthRevisionProvider("sha256:revision-1"), prometheus.NewRegistry())
 	if err != nil {
 		t.Fatalf("Start(): %v", err)
 	}
@@ -200,6 +191,52 @@ func TestReadyRequiresGatewayControlRevalidation(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("ready status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+func TestGatewayRoleReadinessDoesNotRequireLocalRaft(t *testing.T) {
+	server, err := Start(context.Background(), Config{
+		BindAddress:  "127.0.0.1:0",
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	}, RuntimeSources{
+		Role:         "gateway",
+		ClusterEpoch: "epoch-1",
+		Gateway: staticGatewayStatusProvider{status: gatewaycontrol.Status{
+			GatewayID: "gateway-4",
+			State:     gatewaycontrol.StateRevalidated,
+		}},
+	}, staticAuthRevisionProvider("sha256:revision-1"), prometheus.NewRegistry())
+	if err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	})
+
+	for _, path := range []string{"/healthz/ready", "/status"} {
+		response, err := http.Get("http://" + server.Address() + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		if response.StatusCode != http.StatusOK {
+			_ = response.Body.Close()
+			t.Fatalf("GET %s status = %d", path, response.StatusCode)
+		}
+		if path == "/status" {
+			var status RuntimeStatus
+			if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+				_ = response.Body.Close()
+				t.Fatalf("decode status: %v", err)
+			}
+			if status.RuntimeRole != "gateway" || status.ClusterEpoch != "epoch-1" || status.AuthRevision != "sha256:revision-1" || status.Raft != nil || status.Presence != nil || status.GatewayControl == nil || !status.GatewayControl.Ready() {
+				_ = response.Body.Close()
+				t.Fatalf("gateway-only status = %#v", status)
+			}
+		}
+		_ = response.Body.Close()
 	}
 }
 

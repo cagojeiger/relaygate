@@ -1,11 +1,11 @@
 # RelayGate Echo
 
-이 로컬 예제는 RelayGate voter 하나와 동일하게 동작하는 Echo listener 두 개를 실행한다.
+이 로컬 예제는 persistent Raft controller 하나, stateless Gateway 하나, Echo listener 두 개를 실행한다.
 
 - Go listener: endpoint `/examples/echo`, target `go`
 - Rust listener: endpoint `/examples/echo`, target `rust`
 
-각 listener는 한 번에 Pipe 하나를 처리하며, 받은 non-empty payload frame을 그대로 돌려준다. 기준 local-development credential과 명시적인 loopback plaintext를 사용한다. Raft 고가용성, failover와 TLS는 이 예제의 검증 범위가 아니다.
+각 listener는 한 번에 Pipe 하나를 처리하며, 받은 non-empty payload frame을 그대로 돌려준다. controller의 named volume은 local single-node Raft state를 보존하고, Gateway는 Raft volume이나 listener를 갖지 않는다. 기준 local-development credential과 명시적인 loopback plaintext를 사용한다. Raft 고가용성, failover와 TLS는 이 예제의 검증 범위가 아니다.
 
 ## 실행
 
@@ -25,14 +25,14 @@ docker compose run --rm echo-rust send go "hello from Rust"
 첫 명령은 Go SDK에서 Rust listener를 호출하고, 두 번째 명령은 Rust SDK에서 Go listener를 호출한다. 임시 single-node 환경은 다음 명령으로 종료하고 제거한다.
 
 ```bash
-docker compose down --volumes
+docker compose down --remove-orphans
 ```
 
-RelayGate port는 host에 publish하지 않는다. Echo container가 RelayGate container의 network namespace를 공유하고 loopback-only public Relay listener에 연결한다.
+Relay port는 host에 publish하지 않는다. Echo container가 Gateway container의 network namespace를 공유하고 loopback-only public Relay listener에 연결한다.
 
 ## 네 SDK 조합 검증
 
-테스트는 고유한 Compose project를 소유하고 Bind 이후의 정확한 readiness를 기다린다. 네 caller/listener 언어 조합을 실행한 뒤 자신이 만든 container, image와 임시 Raft data를 제거한다.
+테스트는 고유한 Compose project를 소유하고 Bind 이후의 정확한 readiness를 기다린다. 네 caller/listener 언어 조합을 실행한 뒤 자신이 만든 container를 제거한다.
 
 ```bash
 ./test/run.sh

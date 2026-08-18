@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -37,6 +36,7 @@ func (d Duration) Value() time.Duration {
 }
 
 type Config struct {
+	Runtime       RuntimeConfig                      `yaml:"runtime"`
 	Raft          RaftConfig                         `yaml:"raft"`
 	Gateway       GatewayConfig                      `yaml:"gateway"`
 	Relay         RelayConfig                        `yaml:"relay"`
@@ -47,20 +47,36 @@ type Config struct {
 	Clients       map[string]clientauth.ClientConfig `yaml:"clients"`
 }
 
+type RuntimeRole string
+
+const (
+	RuntimeRoleController RuntimeRole = "controller"
+	RuntimeRoleGateway    RuntimeRole = "gateway"
+)
+
+type RuntimeConfig struct {
+	Role RuntimeRole `yaml:"role"`
+}
+
+func (r RuntimeRole) HasController() bool {
+	return r == RuntimeRoleController
+}
+
 type RaftConfig struct {
-	NodeID            string            `yaml:"node_id"`
-	BindAddress       string            `yaml:"bind_address"`
-	AdvertiseAddress  string            `yaml:"advertise_address"`
-	DataDir           string            `yaml:"data_dir"`
+	NodeID           string `yaml:"node_id"`
+	DataDir          string `yaml:"data_dir"`
+	BindAddress      string `yaml:"bind_address"`
+	AdvertiseAddress string `yaml:"advertise_address"`
+	// Bootstrap is an explicit initial-cluster action, never a recovery mode.
+	// Production deployment must turn it off after the first successful seed.
 	Bootstrap         bool              `yaml:"bootstrap"`
 	BootstrapVoters   []RaftVoterConfig `yaml:"bootstrap_voters"`
 	ApplyTimeout      Duration          `yaml:"apply_timeout"`
 	TransportTimeout  Duration          `yaml:"transport_timeout"`
-	StartupTimeout    Duration          `yaml:"startup_timeout"`
 	ShutdownTimeout   Duration          `yaml:"shutdown_timeout"`
-	SnapshotRetain    int               `yaml:"snapshot_retain"`
 	SnapshotThreshold uint64            `yaml:"snapshot_threshold"`
 	SnapshotInterval  Duration          `yaml:"snapshot_interval"`
+	SnapshotRetain    int               `yaml:"snapshot_retain"`
 	MaxPool           int               `yaml:"max_pool"`
 	MaxCommandBytes   int               `yaml:"max_command_bytes"`
 }
@@ -97,14 +113,21 @@ type InternalRelayConfig struct {
 const (
 	maxRelayPipes                uint32 = 100_000
 	maxInternalRelayAddressBytes int    = 1024
+	maxRaftVoters                       = 7
+	minimumRaftCommandBytes             = 1 << 20
 )
 
 type ControlConfig struct {
-	ClusterEpoch           string   `yaml:"cluster_epoch"`
-	BindAddress            string   `yaml:"bind_address"`
-	AuthorityProbeInterval Duration `yaml:"authority_probe_interval"`
-	AuthorityProbeTimeout  Duration `yaml:"authority_probe_timeout"`
-	ShutdownTimeout        Duration `yaml:"shutdown_timeout"`
+	ClusterEpoch               string   `yaml:"cluster_epoch"`
+	BindAddress                string   `yaml:"bind_address"`
+	AuthorityProbeInterval     Duration `yaml:"authority_probe_interval"`
+	AuthorityProbeTimeout      Duration `yaml:"authority_probe_timeout"`
+	GatewayRevalidationTimeout Duration `yaml:"gateway_revalidation_timeout"`
+	OpenContextTTL             Duration `yaml:"open_context_ttl"`
+	ShutdownTimeout            Duration `yaml:"shutdown_timeout"`
+	MaxGatewaySessions         uint32   `yaml:"max_gateway_sessions"`
+	MaxRoutes                  uint32   `yaml:"max_routes"`
+	MaxBindingsPerGateway      uint32   `yaml:"max_bindings_per_gateway"`
 }
 
 type AdminConfig struct {
@@ -120,19 +143,19 @@ type LoggingConfig struct {
 
 func Defaults() Config {
 	return Config{
+		Runtime: RuntimeConfig{Role: RuntimeRoleController},
 		Raft: RaftConfig{
+			DataDir:           "./data/relaygate",
 			BindAddress:       "127.0.0.1:27400",
 			AdvertiseAddress:  "127.0.0.1:27400",
-			DataDir:           "./data/relaygate",
 			ApplyTimeout:      Duration(5 * time.Second),
 			TransportTimeout:  Duration(10 * time.Second),
-			StartupTimeout:    Duration(15 * time.Second),
 			ShutdownTimeout:   Duration(10 * time.Second),
-			SnapshotRetain:    2,
-			SnapshotThreshold: 8192,
+			SnapshotThreshold: 256,
 			SnapshotInterval:  Duration(2 * time.Minute),
+			SnapshotRetain:    2,
 			MaxPool:           3,
-			MaxCommandBytes:   64 << 10,
+			MaxCommandBytes:   2 << 20,
 		},
 		Gateway: GatewayConfig{
 			ControlEndpoints: []string{"127.0.0.1:27410"},
@@ -155,10 +178,15 @@ func Defaults() Config {
 			ShutdownTimeout:  Duration(5 * time.Second),
 		},
 		Control: ControlConfig{
-			BindAddress:            "127.0.0.1:27410",
-			AuthorityProbeInterval: Duration(250 * time.Millisecond),
-			AuthorityProbeTimeout:  Duration(2 * time.Second),
-			ShutdownTimeout:        Duration(5 * time.Second),
+			BindAddress:                "127.0.0.1:27410",
+			AuthorityProbeInterval:     Duration(250 * time.Millisecond),
+			AuthorityProbeTimeout:      Duration(2 * time.Second),
+			GatewayRevalidationTimeout: Duration(15 * time.Second),
+			OpenContextTTL:             Duration(10 * time.Second),
+			ShutdownTimeout:            Duration(5 * time.Second),
+			MaxGatewaySessions:         1024,
+			MaxRoutes:                  100_000,
+			MaxBindingsPerGateway:      routing.MaxListenerBindingsPerGateway,
 		},
 		Admin: AdminConfig{
 			BindAddress:     "127.0.0.1:27490",
@@ -192,7 +220,6 @@ func Load(path string) (Config, error) {
 	if err := applyEnvironment(&config, os.LookupEnv); err != nil {
 		return Config{}, fmt.Errorf("apply environment to config %q: %w", path, err)
 	}
-	config.Raft.DataDir = filepath.Clean(config.Raft.DataDir)
 	if err := config.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate config %q: %w", path, err)
 	}
@@ -200,17 +227,20 @@ func Load(path string) (Config, error) {
 }
 
 func applyEnvironment(config *Config, lookupEnv func(string) (string, bool)) error {
+	if value, ok := lookupEnv("RELAYGATE_RUNTIME_ROLE"); ok {
+		config.Runtime.Role = RuntimeRole(value)
+	}
 	if value, ok := lookupEnv("RELAYGATE_RAFT_NODE_ID"); ok {
 		config.Raft.NodeID = value
+	}
+	if value, ok := lookupEnv("RELAYGATE_RAFT_DATA_DIR"); ok {
+		config.Raft.DataDir = value
 	}
 	if value, ok := lookupEnv("RELAYGATE_RAFT_BIND_ADDRESS"); ok {
 		config.Raft.BindAddress = value
 	}
 	if value, ok := lookupEnv("RELAYGATE_RAFT_ADVERTISE_ADDRESS"); ok {
 		config.Raft.AdvertiseAddress = value
-	}
-	if value, ok := lookupEnv("RELAYGATE_RAFT_DATA_DIR"); ok {
-		config.Raft.DataDir = value
 	}
 	if value, ok := lookupEnv("RELAYGATE_RAFT_BOOTSTRAP"); ok {
 		bootstrap, err := strconv.ParseBool(value)
@@ -287,8 +317,44 @@ func decodeJSON(value string, destination any) error {
 }
 
 func (c Config) Validate() error {
+	if c.Runtime.Role != RuntimeRoleController && c.Runtime.Role != RuntimeRoleGateway {
+		return fmt.Errorf("runtime.role must be %q or %q", RuntimeRoleController, RuntimeRoleGateway)
+	}
+	if err := c.validateCommon(); err != nil {
+		return err
+	}
+	if c.Runtime.Role.HasController() {
+		if err := c.validateVoter(); err != nil {
+			return err
+		}
+		return nil
+	}
+	return c.validateGateway()
+}
+
+func (c Config) validateCommon() error {
+	if c.Control.ClusterEpoch == "" || len(c.Control.ClusterEpoch) > raftstate.MaxClusterEpochBytes {
+		return fmt.Errorf("control.cluster_epoch must be 1..%d bytes", raftstate.MaxClusterEpochBytes)
+	}
+	if err := validateListenAddress("admin.bind_address", c.Admin.BindAddress); err != nil {
+		return err
+	}
+	if c.Admin.ReadTimeout.Value() <= 0 || c.Admin.WriteTimeout.Value() <= 0 || c.Admin.ShutdownTimeout.Value() <= 0 {
+		return fmt.Errorf("admin timeouts must be positive")
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(c.Logging.Level)); err != nil {
+		return fmt.Errorf("logging.level: %w", err)
+	}
+	return nil
+}
+
+func (c Config) validateVoter() error {
 	if c.Raft.NodeID == "" {
 		return fmt.Errorf("raft.node_id is required")
+	}
+	if strings.TrimSpace(c.Raft.DataDir) == "" {
+		return fmt.Errorf("raft.data_dir is required")
 	}
 	if err := validateListenAddress("raft.bind_address", c.Raft.BindAddress); err != nil {
 		return err
@@ -296,57 +362,75 @@ func (c Config) Validate() error {
 	if err := validateAdvertiseAddress(c.Raft.AdvertiseAddress); err != nil {
 		return err
 	}
-	if !c.Raft.Bootstrap && len(c.Raft.BootstrapVoters) != 0 {
-		return fmt.Errorf("raft.bootstrap_voters requires raft.bootstrap=true")
+	if len(c.Raft.BootstrapVoters) > maxRaftVoters {
+		return fmt.Errorf("raft.bootstrap_voters must contain at most %d voters", maxRaftVoters)
 	}
-	if c.Raft.Bootstrap && len(c.Raft.BootstrapVoters) != 0 {
-		seenIDs := make(map[string]struct{}, len(c.Raft.BootstrapVoters))
-		seenAddresses := make(map[string]struct{}, len(c.Raft.BootstrapVoters))
-		localFound := false
-		for index, voter := range c.Raft.BootstrapVoters {
-			if voter.NodeID == "" {
-				return fmt.Errorf("raft.bootstrap_voters[%d].node_id is required", index)
-			}
-			if err := validateAdvertiseAddress(voter.Address); err != nil {
-				return fmt.Errorf("raft.bootstrap_voters[%d].address: %w", index, err)
-			}
-			if _, exists := seenIDs[voter.NodeID]; exists {
-				return fmt.Errorf("raft.bootstrap_voters has duplicate node_id %q", voter.NodeID)
-			}
-			if _, exists := seenAddresses[voter.Address]; exists {
-				return fmt.Errorf("raft.bootstrap_voters has duplicate address %q", voter.Address)
-			}
-			seenIDs[voter.NodeID] = struct{}{}
-			seenAddresses[voter.Address] = struct{}{}
-			if voter.NodeID == c.Raft.NodeID {
-				if voter.Address != c.Raft.AdvertiseAddress {
-					return fmt.Errorf("local bootstrap voter address %q differs from raft.advertise_address %q", voter.Address, c.Raft.AdvertiseAddress)
-				}
-				localFound = true
-			}
+	seenIDs := make(map[string]struct{}, len(c.Raft.BootstrapVoters))
+	seenAddresses := make(map[string]struct{}, len(c.Raft.BootstrapVoters))
+	localFound := false
+	for index, voter := range c.Raft.BootstrapVoters {
+		if voter.NodeID == "" {
+			return fmt.Errorf("raft.bootstrap_voters[%d].node_id is required", index)
 		}
-		if !localFound {
-			return fmt.Errorf("raft.bootstrap_voters must contain local node_id %q", c.Raft.NodeID)
+		if err := validateAdvertiseAddress(voter.Address); err != nil {
+			return fmt.Errorf("raft.bootstrap_voters[%d].address: %w", index, err)
+		}
+		if _, exists := seenIDs[voter.NodeID]; exists {
+			return fmt.Errorf("raft.bootstrap_voters has duplicate node_id %q", voter.NodeID)
+		}
+		if _, exists := seenAddresses[voter.Address]; exists {
+			return fmt.Errorf("raft.bootstrap_voters has duplicate address %q", voter.Address)
+		}
+		seenIDs[voter.NodeID] = struct{}{}
+		seenAddresses[voter.Address] = struct{}{}
+		if voter.NodeID == c.Raft.NodeID {
+			if voter.Address != c.Raft.AdvertiseAddress {
+				return fmt.Errorf("local bootstrap voter address %q differs from raft.advertise_address %q", voter.Address, c.Raft.AdvertiseAddress)
+			}
+			localFound = true
 		}
 	}
-	if c.Raft.DataDir == "" || c.Raft.DataDir == "." {
-		return fmt.Errorf("raft.data_dir must name a dedicated directory")
+	if c.Raft.Bootstrap && len(c.Raft.BootstrapVoters) == 0 {
+		return fmt.Errorf("raft.bootstrap_voters is required for initial bootstrap")
 	}
-	if c.Raft.ApplyTimeout.Value() <= 0 || c.Raft.TransportTimeout.Value() <= 0 || c.Raft.StartupTimeout.Value() <= 0 || c.Raft.ShutdownTimeout.Value() <= 0 {
+	if c.Raft.Bootstrap && !localFound {
+		return fmt.Errorf("raft.bootstrap_voters must contain local node_id %q", c.Raft.NodeID)
+	}
+	if c.Raft.ApplyTimeout.Value() <= 0 || c.Raft.TransportTimeout.Value() <= 0 || c.Raft.ShutdownTimeout.Value() <= 0 {
 		return fmt.Errorf("raft timeouts must be positive")
-	}
-	if c.Raft.SnapshotRetain < 1 {
-		return fmt.Errorf("raft.snapshot_retain must be at least 1")
 	}
 	if c.Raft.SnapshotThreshold == 0 || c.Raft.SnapshotInterval.Value() <= 0 {
 		return fmt.Errorf("raft snapshot threshold and interval must be positive")
 	}
+	if c.Raft.SnapshotRetain < 1 {
+		return fmt.Errorf("raft.snapshot_retain must be at least 1")
+	}
 	if c.Raft.MaxPool < 1 {
 		return fmt.Errorf("raft.max_pool must be at least 1")
 	}
-	if c.Raft.MaxCommandBytes < 1 {
-		return fmt.Errorf("raft.max_command_bytes must be positive")
+	if c.Raft.MaxCommandBytes < minimumRaftCommandBytes {
+		return fmt.Errorf("raft.max_command_bytes must be at least %d for a maximum-size current binding snapshot", minimumRaftCommandBytes)
 	}
+	if err := validateListenAddress("control.bind_address", c.Control.BindAddress); err != nil {
+		return err
+	}
+	if c.Control.AuthorityProbeInterval.Value() <= 0 || c.Control.AuthorityProbeTimeout.Value() <= 0 || c.Control.GatewayRevalidationTimeout.Value() <= 0 || c.Control.OpenContextTTL.Value() <= 0 || c.Control.ShutdownTimeout.Value() <= 0 {
+		return fmt.Errorf("control timeouts must be positive")
+	}
+	if c.Control.MaxGatewaySessions == 0 || c.Control.MaxGatewaySessions > raftstate.MaxGatewaySessions {
+		return fmt.Errorf("control.max_gateway_sessions must be between 1 and %d", raftstate.MaxGatewaySessions)
+	}
+	if c.Control.MaxBindingsPerGateway == 0 || c.Control.MaxBindingsPerGateway > routing.MaxListenerBindingsPerGateway {
+		return fmt.Errorf("control.max_bindings_per_gateway must be between 1 and %d", routing.MaxListenerBindingsPerGateway)
+	}
+	maximumRoutes := uint64(c.Control.MaxGatewaySessions) * uint64(c.Control.MaxBindingsPerGateway)
+	if c.Control.MaxRoutes == 0 || c.Control.MaxRoutes > raftstate.MaxRoutes || uint64(c.Control.MaxRoutes) > maximumRoutes {
+		return fmt.Errorf("control.max_routes must fit the configured current Gateway capacity")
+	}
+	return nil
+}
+
+func (c Config) validateGateway() error {
 	if c.Gateway.ID == "" || len(c.Gateway.ID) > routing.MaxIdentityBytes {
 		return fmt.Errorf("gateway.id must be 1..%d bytes", routing.MaxIdentityBytes)
 	}
@@ -392,25 +476,6 @@ func (c Config) Validate() error {
 	}
 	if c.InternalRelay.ConnectTimeout.Value() <= 0 || c.InternalRelay.ShutdownTimeout.Value() <= 0 {
 		return fmt.Errorf("internal_relay timeouts must be positive")
-	}
-	if c.Control.ClusterEpoch == "" || len(c.Control.ClusterEpoch) > raftstate.MaxClusterEpochBytes {
-		return fmt.Errorf("control.cluster_epoch must be 1..%d bytes", raftstate.MaxClusterEpochBytes)
-	}
-	if err := validateListenAddress("control.bind_address", c.Control.BindAddress); err != nil {
-		return err
-	}
-	if c.Control.AuthorityProbeInterval.Value() <= 0 || c.Control.AuthorityProbeTimeout.Value() <= 0 || c.Control.ShutdownTimeout.Value() <= 0 {
-		return fmt.Errorf("control timeouts must be positive")
-	}
-	if err := validateListenAddress("admin.bind_address", c.Admin.BindAddress); err != nil {
-		return err
-	}
-	if c.Admin.ReadTimeout.Value() <= 0 || c.Admin.WriteTimeout.Value() <= 0 || c.Admin.ShutdownTimeout.Value() <= 0 {
-		return fmt.Errorf("admin timeouts must be positive")
-	}
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(c.Logging.Level)); err != nil {
-		return fmt.Errorf("logging.level: %w", err)
 	}
 	return nil
 }

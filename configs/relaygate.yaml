@@ -1,18 +1,25 @@
+runtime:
+  role: controller
+
 raft:
   node_id: node-1
+  data_dir: ./data/relaygate
   bind_address: 127.0.0.1:27400
   advertise_address: 127.0.0.1:27400
-  data_dir: ./data/relaygate
-  bootstrap: true
+  # One-shot initial-cluster action. Compose overrides this only for its fresh,
+  # isolated project; normal restarts and replacement members leave it false.
+  bootstrap: false
+  bootstrap_voters:
+    - node_id: node-1
+      address: 127.0.0.1:27400
   apply_timeout: 5s
   transport_timeout: 10s
-  startup_timeout: 15s
   shutdown_timeout: 10s
-  snapshot_retain: 2
-  snapshot_threshold: 8192
+  snapshot_threshold: 256
   snapshot_interval: 2m
+  snapshot_retain: 2
   max_pool: 3
-  max_command_bytes: 65536
+  max_command_bytes: 2097152
 
 gateway:
   id: gateway-1
@@ -41,7 +48,12 @@ control:
   bind_address: 127.0.0.1:27410
   authority_probe_interval: 250ms
   authority_probe_timeout: 2s
+  gateway_revalidation_timeout: 15s
+  open_context_ttl: 10s
   shutdown_timeout: 5s
+  max_gateway_sessions: 1024
+  max_routes: 100000
+  max_bindings_per_gateway: 512
 
 admin:
   bind_address: 127.0.0.1:27490

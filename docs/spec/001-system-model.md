@@ -1,119 +1,136 @@
 # SPEC 001: System Model
 
-## 범위
+## Scope
 
-RelayGate는 인증된 caller와 Listener 사이에 주소 가능한 일시적 양방향 Pipe를 만든다. Offline storage,
-durable queue, pub/sub, retry, resume, deduplication과 workflow는 application 책임이다.
+RelayGate creates temporary bidirectional Pipes between authenticated callers and currently reachable Listeners. Offline storage, durable queueing, pub/sub, retry, resume, deduplication, and workflow are application responsibilities.
 
 ```mermaid
 flowchart LR
-    SDK["Go / Rust SDK"] <--> PUB["Public Relay gRPC"]
-    PUB --> GW["Gateway runtime"]
-    GW <--> CTL["Current authority\ncontrol gRPC"]
-    CTL --> RAFT["Raft leader / quorum"]
-    GW <--> PEER["Owner Gateway\ninternal peer gRPC"]
-    GW --> REST["Read-only status"]
+    SDK["Go / Rust SDK"] <--> GW["Gateway\npublic Relay"]
+    GW <--> CTL["Controller leader\ncontrol gRPC"]
+    CTL <--> RAFT["Durable Raft quorum\ncurrent FSM"]
+    GW <--> OWNER["Owner Gateway\npeer relay"]
+    CTL --> REST["Read-only admin"]
+    GW --> GREST["Read-only admin"]
 ```
 
-Public Relay, control, peer relay, Raft TCP와 REST는 서로 다른 protocol/trust boundary다.
+Public Relay, control, peer relay, Raft TCP, and REST are separate protocol/trust boundaries.
 
-## Identity와 ownership
+## Identity And Ownership
 
 ```text
 BindingKey       = (ClientId, EndpointPattern, TargetId)
+GatewaySession   = (GatewayId, GatewayInstanceId)
 ControlSession   = (ClusterEpoch, AuthorityId, ControlSessionId,
                     GatewayId, GatewayInstanceId)
 ListenerBinding = (GatewayId, GatewayInstanceId, ListenerBindingId)
 Pipe participant = exact ClientSessionRef
 ```
 
-`ClientId`는 인증으로 정해지는 strict namespace다. v0의 Open은 literal endpoint와 required exact target만
-지원한다. Wildcard, priority, target 생략 선택과 `OpenAll`은 범위 밖이다.
+`ClientId` is determined by authentication and is a strict namespace. v0 Open uses literal endpoint plus required exact target. Wildcard, priority, target omission, and `OpenAll` are outside scope.
 
-| Owner | 소유 상태 | 종료 시 효과 |
+| Owner | State | Persistence |
 | --- | --- | --- |
-| Raft | term/vote/log/membership/snapshot, `ClusterEpoch` | Safety/epoch만 복구 |
-| Current authority | `AuthorityId`, control sessions, live directory, owner address | 전체 clear |
-| Gateway | auth/session, local binding, attempt fence, Pipe segment, buffers | exact local state terminal/delete |
-| External config | Client/API-key verifier | validated snapshot으로만 교체 |
+| Controller Raft | term, vote, log, membership, stable state, snapshots, `NodeId` | durable `raft.data_dir` |
+| Controller FSM | `ClusterEpoch`, current `GatewaySession`, exact current routes | durable Raft log/snapshot |
+| Current authority | `AuthorityId`, control sessions, revalidated mirror, owner relay addresses | leader-local memory |
+| Gateway | auth/session, local bindings, attempt fence, Pipe segments, buffers, payload | process memory |
+| External config | Client/API-key verifier | external YAML |
 
-Route, session, Listener, Pipe, payload와 tombstone은 Raft에 저장하지 않는다.
+The FSM stores only current Gateway sessions and exact routes. Absence means deletion. It stores no control session ID, owner relay address, route tombstone, history, credential, Pipe, payload, replay, or resume state.
 
-## Control session과 directory
+## Runtime Roles
+
+| Role | Local owner | Not present |
+| --- | --- | --- |
+| `controller` | Raft voter/store, current FSM, authority/control server, admin | Public Relay, peer Relay, SDK sessions |
+| `gateway` | control client, public/peer Relay, auth/session/binding/Pipe runtime, admin | Raft node/store, authority, control listener |
+
+Role is fixed at process start. Gateway readiness requires a current control connection. Controller `/healthz/ready` is member readiness: the local FSM has an initialized `ClusterEpoch` and the member can see a Raft leader, so healthy followers are ready. Authority-only observation remains `/status`; followers and quorum loss return `503/NoAuthority` there.
+
+## Controller Cohort Lifecycle
+
+Initial bootstrap is external and one-shot for empty controller stores. After bootstrap, Raft's committed membership is authoritative.
+
+Normal lifecycle:
+
+1. Controllers persist Raft identity, log, stable state, membership, and snapshots in durable volumes.
+2. Same-store restart reopens the existing `NodeId` and state without bootstrap.
+3. Same-epoch leader failover creates a new authority and clears leader-local `V` state.
+4. Gateways reconnect and send full current binding snapshots to rebuild `V`.
+5. Lost controller storage is replaced with a new `NodeId` through leader-only add/catch-up/remove while surviving quorum is available. The mutation surface is a permission-restricted local Unix socket keyed by the live controller data directory; Admin REST remains read-only.
+6. Quorum loss fails closed for new authority/control/admission.
+
+Disaster reset is not recovery of the old Raft machine. Operators must fence old controller/control/gateway paths, choose a new epoch/cohort, and bootstrap from empty current application state. `bootstrap=true` must not be used as member replacement.
+
+Production controllers use durable PVCs or equivalent persistent volumes. Compose uses named controller volumes. `emptyDir` is disposable dev storage only.
+
+## Control Session And Directory
 
 ```mermaid
 sequenceDiagram
     participant G as Gateway
-    participant A as Current authority
-    G->>A: Hello(epoch, gateway, instance, owner address)
+    participant A as Controller authority
+    participant R as Raft FSM
+    G->>A: Hello(epoch, gateway, instance, relay address)
+    A->>R: RegisterGateway
     A-->>G: SessionOpened(exact ControlSessionRef)
     G->>A: FullSnapshot(current LiveBinding only)
-    A->>A: validate all, atomically install session set
+    A->>R: ReplaceSnapshot
     A-->>G: SnapshotApplied
     G->>A: serial Declare / Withdraw
+    A->>R: DeclareRoute / WithdrawRoute
 ```
 
-- `Syncing` session은 route owner가 될 수 없다.
-- Snapshot은 전체가 valid/non-conflicting/capacity 안일 때만 설치한다. Partial install은 없다.
-- Same current session의 same declaration은 idempotent다. Same key의 다른 owner/ref는 conflict다.
-- Withdraw는 exact current entry를 true delete한다. Session end는 그 session의 모든 entry/address를 삭제한다.
-- Authority change/loss는 all sessions/directory를 삭제한다. 새 authority는 empty view에서 시작한다.
-- ACK loss를 history로 복구하지 않는다. 새 session은 local current `LiveB`만 다시 선언한다.
+- `C` is committed current FSM state: current Gateway sessions and exact routes.
+- `V` is leader-local verified state: current control session, full snapshot accepted, and owner relay address.
+- A route is eligible only when exact `C` and exact `V` both exist.
+- `Syncing` sessions are not eligible.
+- Full snapshot install is atomic. Invalid, conflicting, or over-capacity snapshots install nothing.
+- Same session and same declaration are idempotent.
+- Different owner/ref for the same route key is a conflict.
+- Withdraw deletes the exact current route.
+- Gateway replacement deletes the previous instance's owned routes before the new full snapshot is installed.
+- Gateway removal cascades deletion of all exact owned routes.
+- Authority change resets `V`, not durable `C`; reconnect/full-snapshot rebuilds eligibility.
 
-Directory cardinality는 current live declarations에만 비례한다. 한 Gateway의 snapshot은 최대 512개이며 최대
-field 크기에서도 internal gRPC 1 MiB envelope 안에 들어가야 한다.
-
-## New-Pipe admission
+## New-Pipe Admission
 
 ```text
 Admit = A ∧ L ∧ Q ∧ D ∧ V ∧ O
 ```
 
-| Gate | 조건 |
+| Gate | Condition |
 | --- | --- |
-| `A` | caller auth/session이 current |
-| `L` | current authority가 같은 epoch의 confirmed leader |
-| `Q` | quorum verification 성공 |
-| `D` | exact `(ClientId, endpoint, target)` directory entry 존재 |
-| `V` | entry owner의 exact control session이 current + revalidated |
-| `O` | owner가 authority/session/auth/binding/expiry/capacity를 재확인하고 attempt를 원자 예약 |
+| `A` | caller auth/session is current |
+| `L` | current authority is confirmed leader for the epoch |
+| `Q` | quorum verification and read barrier succeed |
+| `D` | exact `(ClientId, endpoint, target)` route exists in committed current FSM |
+| `V` | exact owner control session is current, revalidated, and has a relay address |
+| `O` | owner rechecks authority/session/auth/binding/expiry/capacity and reserves the attempt |
 
-`111111`만 Listener offer를 만든다. Context 발급은 reservation이나 Pipe가 아니다. O 이전에 authority 또는
-owner control session이 바뀌면 context는 stale이다. O와 successful `AttemptId` fence insert는 하나의 atomic
-effect다.
+Only `111111` creates a Listener offer. Context issuance is not a reservation or Pipe. O and successful `AttemptId` fence insertion are one atomic owner effect.
 
-## Bind, Open과 Pipe
+## Bind, Open, Pipe, SDK
 
-- Bind는 local `RegisteringB`를 만든 뒤 directory ACK를 받아야 `LiveB`다.
-- Unbind/credential/session 종료는 먼저 local binding을 ineligible로 만들고 exact withdraw를 시도한다.
-- O가 unbind보다 먼저면 그 attempt만 계속할 수 있다. Unbind가 먼저면 no offer다.
-- Listener accept를 owner가 기록하고 `PipeId`를 만드는 순간이 Open 선형화점이다.
-- Listener handle은 exact confirmation이 server에 적용되고 ACK된 뒤에만 노출한다.
-- Caller `PipeOpened` write 뒤에만 Listener→Caller payload를 release한다.
-- Open LP 전 실패가 증명되면 stable failure다. LP 통과 가능 또는 이후 response/hop loss는 `Unknown`이다.
-- Remote owner는 dedicated internal bidi stream 하나를 Pipe 하나에 사용한다. Retry/redial/multiplex는 없다.
-
-Pipe는 caller와 Listener 두 exact participant가 닫을 수 있다. 첫 local terminal이 absorbing이고 peer에는
-best-effort/idempotent하게 전파한다. Permanent partition에서 global cause/order/convergence는 보장하지 않는다.
-
-Payload는 1..60 KiB opaque frame이며 방향별 FIFO만 보장한다. `Send` 성공은 bounded queue/stream write
-성공이지 peer application ACK가 아니다. Queue/backpressure 한계는 silent drop 대신 Pipe terminal을 만든다.
-Control/terminal lane은 payload lane보다 우선한다. Payload replay와 delivery-position 복구는 없다.
+- Bind creates a local pending binding and becomes live only after controller ACK.
+- Unbind/revocation/session end first makes the local binding ineligible, then attempts exact withdraw.
+- Listener accept is the Open linearization point and mints `PipeId`.
+- Post-linearization response or hop loss can produce caller `Unknown`.
+- Remote owner uses one dedicated internal bidirectional stream per Pipe; no redial, retry, multiplexed resume, or payload replay.
+- Payload is opaque, bounded, per-direction FIFO. `Send` success is not peer application ACK.
+- Backpressure fails closed without silent drop; terminal/control events bypass payload pressure.
+- `ManagedClient` reconnects only sessions and current Listener declarations. It rejects Open while not ready and never replays Open/Pipe/payload state.
 
 ## Presence
 
-`/status`의 presence는 confirmed current authority가 그 순간 memory에서 관찰한
-`sessions/revalidated/bindings` 수치다. Replica 전체, completeness, config convergence, history 또는 admission
-성공을 뜻하지 않는다. No authority/follower/quorum uncertainty는 `503 + NoAuthority`다.
+`/status` is observation only. Controller status may expose Raft and presence. Gateway status may expose control-client readiness. Presence counters are current observed values, not completeness, revocation proof, or admission success. No authority/follower/quorum uncertainty is fail-closed for readiness/admission.
 
 ## Invariants
 
-1. 모든 state advancement는 exact epoch/authority/session/instance/binding/participant identity를 요구한다.
-2. Stale identity는 current state를 만들거나 지우지 못한다.
-3. Directory에는 current entry만 있고 delete는 tombstone을 남기지 않는다.
-4. New Open은 여섯 gate를 모두 요구하지만 이미 accepted된 Pipe는 향후 authority/quorum 상실만으로 닫지 않는다.
-5. Runtime capacity 초과는 새 작업만 fail closed하고 existing live state를 evict하지 않는다.
-6. Retry, response replay, Pipe resume/attach와 payload replay는 없다.
-
-관련 상태와 장애 계약은 [SPEC 003](003-failure-and-recovery-model.md),
-[SPEC 004](004-state-transition-model.md)를 따른다.
+1. Every state advance requires exact epoch/session/instance/binding/participant identity.
+2. Stale identity cannot create or delete current state.
+3. Durable FSM state is current-only; delete leaves no tombstone/history.
+4. New Open requires all six gates; accepted Pipes are not terminated solely because future authority/quorum admission fails.
+5. Capacity excess rejects new work and does not evict existing live state.
+6. Session reconnect can fresh-bind current Listeners only. Open retry, response replay, Pipe resume/attach, and payload replay do not exist.

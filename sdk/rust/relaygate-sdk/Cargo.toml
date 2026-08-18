@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 prost = "=0.14.4"
 thiserror = "=2.0.20"
-tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "=0.1.19"
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "tls-native-roots"] }
 tonic-prost = "=0.14.6"

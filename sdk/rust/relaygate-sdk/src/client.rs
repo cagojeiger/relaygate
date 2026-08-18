@@ -48,6 +48,12 @@ pub struct Client {
 }
 
 impl Client {
+    pub(crate) fn managed_handle(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     /// Connects, authenticates with the first stream message, and waits for the
     /// authenticated session response before returning.
     pub async fn connect(config: Config) -> Result<Self, ConnectError> {

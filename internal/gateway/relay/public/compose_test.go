@@ -41,6 +41,18 @@ func TestComposeCrossGatewayRelaySmoke(t *testing.T) {
 	runComposeRelaySmoke(t, callerAddress, listenerAddress)
 }
 
+func TestComposePortClosed(t *testing.T) {
+	address := os.Getenv("RELAYGATE_COMPOSE_CLOSED_ADDR")
+	if address == "" {
+		t.Skip("RELAYGATE_COMPOSE_CLOSED_ADDR is not set")
+	}
+	connection, err := net.DialTimeout("tcp", address, 500*time.Millisecond)
+	if err == nil {
+		_ = connection.Close()
+		t.Fatalf("unexpected listener on %s", address)
+	}
+}
+
 // TestComposeFailoverRedeclaresLiveBinding is launched on a Gateway that the
 // smoke script keeps alive. It binds before the current leader is stopped,
 // then retries exact Opens until the surviving Gateway has reconnected and
@@ -330,6 +342,7 @@ func TestComposeTCPProxy(t *testing.T) {
 	}
 	defer listener.Close()
 	t.Logf("compose proxy listening on %s for %s", listener.Addr(), targetAddress)
+	_, _ = fmt.Fprintln(os.Stdout, "compose proxy listening")
 
 	downstream, err := acceptComposeProxyConnection(ctx, listener)
 	if err != nil {

@@ -88,13 +88,13 @@ else
 fi
 
 compose=(docker compose --file "$compose_file" --project-name "$project_name")
-caller_gateway=$("${compose[@]}" ps --quiet relaygate-1)
-listener_gateway=$("${compose[@]}" ps --quiet relaygate-2)
+caller_gateway=$("${compose[@]}" ps --quiet gateway-1)
+listener_gateway=$("${compose[@]}" ps --quiet gateway-2)
 if [[ -z "$caller_gateway" || -z "$listener_gateway" ]]; then
-  fail "project $project_name must have running relaygate-1 and relaygate-2 services"
+  fail "project $project_name must have running gateway-1 and gateway-2 services"
 fi
 if [[ $(docker inspect --format '{{.State.Running}}' "$caller_gateway") != true || $(docker inspect --format '{{.State.Running}}' "$listener_gateway") != true ]]; then
-  fail "relaygate-1 and relaygate-2 must both be running"
+  fail "gateway-1 and gateway-2 must both be running"
 fi
 
 docker build --file "$repo_root/Dockerfile.sdk-conformance" --target go-runtime --tag "$go_image" "$repo_root"

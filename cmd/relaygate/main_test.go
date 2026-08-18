@@ -33,3 +33,10 @@ func TestParseConfigPathRejectsUnknownFlag(t *testing.T) {
 		t.Fatal("parseConfigPath() succeeded with unknown flag")
 	}
 }
+
+func TestParseConfigPathRejectsSubcommandAfterGlobalFlag(t *testing.T) {
+	args := []string{"-config", "relaygate.yaml", "membership", "list"}
+	if _, err := parseConfigPath(args, func(string) string { return "" }); err == nil {
+		t.Fatal("parseConfigPath() accepted a membership subcommand after global flags")
+	}
+}

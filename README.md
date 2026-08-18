@@ -1,28 +1,36 @@
 # RelayGate
 
-RelayGate는 작은 Raft-coordinated Gateway cluster에서 **현재 연결 가능한 Listener**를 찾아 일시적 양방향
-Pipe를 연결한다. Route history, Pipe와 payload는 복구하지 않는다.
+RelayGate connects authenticated callers to currently reachable Listeners with short-lived bidirectional Pipes. It does not store payloads, replay responses, resume Pipes, or provide durable delivery.
 
 ## Architecture
 
 ```text
 Go/Rust SDK -- public Relay gRPC --> Gateway
                                       |
-                    +-----------------+-----------------+
-                    |                                   |
-             control gRPC                         peer relay gRPC
-                    |                                   |
-            current Authority                    remote Owner Gateway
-                    |
-              Raft TCP quorum
+                                      | control gRPC
+                                      v
+                  +---------------- Controller quorum ----------------+
+                  | durable HashiCorp Raft + current-state FSM         |
+                  | control authority + read-only admin                |
+                  +----------------------------------------------------+
+                                      |
+                                      | owner relay address from live control session
+                                      v
+                                Owner Gateway
 ```
 
-- Raft는 term/vote/log/membership/snapshot과 `ClusterEpoch`만 저장한다.
-- Current authority는 control session과 live route directory를 memory에만 둔다.
-- Gateway는 자기 Listener, Pipe segment, bounded buffer와 payload를 소유한다.
-- Public Relay, internal control, internal peer relay, Raft TCP와 read-only REST는 분리된 protocol 경계다.
-- `ClientId`는 인증으로 정해지는 strict namespace이며 client/API key는 external YAML이 관리한다.
-- Retry, response replay, Pipe resume/attach, payload replay와 durable delivery는 지원하지 않는다.
+The server binary has two startup roles.
+
+| Role | Owns | Does not own |
+| --- | --- | --- |
+| `controller` | Durable embedded HashiCorp Raft voter/store, authoritative current-only `GatewaySession`/exact route FSM, control gRPC, read-only admin | Public Relay, peer Relay, SDK sessions, Pipe payload |
+| `gateway` | Public Relay, peer Relay, control client, auth/session/binding/Pipe runtime | Raft node/store, control server, authoritative FSM |
+
+Raft persists term, vote, log, membership, stable state, snapshots, `NodeId`, `ClusterEpoch`, current gateway sessions, and exact routes under `raft.data_dir`. The FSM stores only current `GatewaySession` records and exact routes. Delete, withdraw, session replacement, and gateway removal are true deletes: no tombstone, history, route generation, payload, Pipe state, or credential state is retained in Raft.
+
+Successful snapshots compact old logical Raft log entries and retain the configured snapshot count. The Bolt file may keep previously allocated pages as a reusable disk high-water mark instead of shrinking immediately, so physical volume size is monitored separately from current FSM cardinality.
+
+Leader-local volatile state includes the current `AuthorityId`, control sessions, revalidated gateway mirror, owner relay addresses, Open attempt tokens, sessions, bindings, buffers, and Pipe payload. Leadership change resets that volatile layer; gateways reconnect and send a full current binding snapshot to rebuild it from live gateway memory and the committed current FSM.
 
 ## Repository
 
@@ -30,105 +38,101 @@ Go/Rust SDK -- public Relay gRPC --> Gateway
 cmd/relaygate/                         process entrypoint
 internal/
 ├── app/{relaygate,config,admin}       composition, config, observation
-├── raft/{state,node}                  Raft safety/epoch and runtime
+├── raft/{state,node,membership}       durable Raft, current FSM, local operator socket
 ├── gateway/
 │   ├── access/{auth,session,runtime}  authentication and reload retirement
 │   ├── control/{authority,client,server,transport}
 │   ├── routing/{binding,opening}      Listener and Pipe lifecycle
 │   └── relay/{public,peer}            SDK ingress and Gateway hop
-└── gen/{control,gateway,relay}/v1     generated protobuf
+└── gen/{control,gateway,operator,relay}/v1
+                                        generated protobuf
 proto/relaygate/                       canonical wire schemas
-sdk/{go,rust/relaygate-sdk}            public SDKs
-examples/echo/                         isolated one-node echo example
+sdk/go                                independent public Go module
+sdk/rust/relaygate-sdk                independent public Rust crate
+examples/echo/                         isolated echo example
 docs/{adr,spec,test}/                  decisions, contracts, evidence
 ```
 
-각 leaf Go package 안은 flat file layout을 유지하고 `internal/` tree가 component ownership을 나타낸다.
+## Recovery Model
 
-## Implemented v0
+Normal recovery keeps the same Raft cohort and durable controller stores.
 
-- HashiCorp Raft single/정적 3-voter bootstrap과 safety-only persistence
-- Leader/quorum-confirmed authority, memory-only session/directory, failover clear + full redeclare
-- SHA-256 API-key verifier, first-message auth deadline, `SIGHUP` atomic client reload
-- Exact literal endpoint + required target Bind/Open, same/cross-Gateway owner routing
-- `A ∧ L ∧ Q ∧ D ∧ V ∧ O` admission and bounded single-use forwarded attempt fence
-- Listener confirmation ACK, caller `Opened/Failed/Unknown`, participant-owned close
-- 1..60 KiB opaque payload, per-direction FIFO, bounded backpressure and terminal priority
-- Public Go/Rust SDK and four-language-combination Compose conformance
-- Quorum-confirmed read-only status, health/readiness and Prometheus metrics
+| Scenario | Result |
+| --- | --- |
+| Controller process restarts with the same volume and `NodeId` | Reopens the durable Raft store and snapshots; no bootstrap is required |
+| Same-epoch leader fails while quorum survives | New leader forms; authority state starts empty; gateways reconnect and full-snapshot current bindings |
+| Controller store is lost | Do not reuse the erased `NodeId`; add a replacement with a new `NodeId`, let it catch up, then remove the lost member through Raft membership |
+| Quorum is lost | Fail closed for new control/admission until quorum is restored |
+| Disaster reset | Only after explicitly fencing old controller/control/gateway paths, start a separate new epoch/cohort; this is not automatic production recovery |
 
-Wildcard/priority, target selection, `OpenAll`, dynamic membership, automatic retry/resume은 범위 밖이다.
+`raft.bootstrap=true` is one-shot initial cluster formation for an empty controller store. It is not a production recovery mechanism and must not be used to resurrect a lost member identity.
 
-## SDK contract
-
-| SDK | Location | Public handles |
-| --- | --- | --- |
-| Go | `sdk/go` | `Client`, `Listener`, `Offer`, `Pipe` |
-| Rust | `sdk/rust/relaygate-sdk` | `Client`, `Listener`, `Offer`, `Pipe` |
-
-두 SDK는 `relay.proto`만 공유하고 server/control/Raft type을 노출하지 않는다. TLS가 기본이며 plaintext는
-명시적인 loopback local-development opt-in만 허용한다. `Send` 성공은 bounded local queue/stream write
-성공이지 peer application ACK가 아니다.
-
-직접 실행하는 Go/Rust echo 예제는 [examples/echo](examples/echo/README.md)에 있다.
-
-## Local configuration
+Membership changes use no REST endpoint or additional TCP port. Run the same binary inside the current leader controller so it reaches that process's protected Unix socket:
 
 ```bash
-go run ./cmd/relaygate -config ./configs/relaygate.yaml
+relaygate membership list -config /etc/relaygate/relaygate.yaml
+relaygate membership add -node-id controller-4 -raft-address controller-4:27400 -config /etc/relaygate/relaygate.yaml
+# Wait until controller-4 is caught up and ready before removing the lost ID.
+relaygate membership remove -node-id controller-3 -config /etc/relaygate/relaygate.yaml
+```
+
+Start a lost-store replacement first with a fresh `NodeId`, empty data directory, and `bootstrap=false`. Retrying the exact Add or Remove is safe against a lost CLI response and returns the current membership; it does not replay application work.
+
+Production controllers need durable volumes/PVCs. The local Compose file uses named volumes for each controller. `emptyDir` is only acceptable for disposable development environments where losing the cluster is expected and not HA.
+
+## Pipe And SDK Contract
+
+- `ClientId` is set by authentication and is a strict namespace.
+- Public Go/Rust SDKs share only `relay.proto`; server, control, and Raft types stay private.
+- Open admission requires active client session, current authority, quorum, exact directory route, revalidated owner session, and owner reservation.
+- A remote Pipe uses one internal peer gRPC stream. There is no internal redial, retry, resume, or payload replay.
+- `Send` success means local bounded queue/stream write success, not peer application ACK.
+- Backpressure is bounded and fails closed; control and terminal events bypass payload pressure.
+- `ManagedClient` may reconnect a session and fresh-bind current Listeners. It does not queue Opens, replay outcomes, resume Pipes, or replay payload.
+
+## Local Configuration
+
+```bash
+# First creation of this disposable single-node data directory only:
+RELAYGATE_RAFT_BOOTSTRAP=true go run ./cmd/relaygate -config ./configs/relaygate.yaml
 curl http://127.0.0.1:27490/healthz/ready
 curl http://127.0.0.1:27490/status
 ```
 
-기준 설정은 `configs/relaygate.yaml` 하나다. 배포별 node/address/bootstrap 값은 `RELAYGATE_*` 환경변수로
-덮어쓴다. Local port block은 다음과 같다.
+After the initial store exists, start it with the file's default `bootstrap: false`. Do not reuse the bootstrap override after deleting or replacing a production member store.
+
+Key ports:
 
 | Port | Purpose |
 | --- | --- |
-| `27400` | Raft TCP |
-| `27410` | Internal control gRPC |
-| `27420` | Public Relay gRPC |
-| `27430` | Internal owner relay gRPC |
+| `27400` | Controller Raft TCP |
+| `27410` | Controller control gRPC |
+| `27420` | Gateway public Relay gRPC |
+| `27430` | Gateway internal owner relay gRPC |
 | `27490` | Read-only Admin HTTP |
 
-Port와 Raft peer address는 restart-only다. Existing durable peer address를 바꾸면 fresh local volume 또는
-명시적 membership migration이 필요하다. 기본 local-development key는
-`relaygate-local-development-key`이며 production에서는 반드시 교체한다.
+Compose starts three controllers with named volumes and two stateless gateways:
 
-## Local 3-node verification
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:27591/status
+curl http://127.0.0.1:27594/status
+docker compose down --remove-orphans
+```
+
+The smoke harness exercises the multi-role local shape and removes the generated project resources after it runs:
 
 ```bash
 ./scripts/compose-smoke.sh
 ```
 
-이 명령은 격리된 3-node cluster에서 same/cross-Gateway relay, 양방향 payload, Go/Rust 네 조합, leader
-failover, empty directory와 fresh redeclare를 검증하고 생성한 resource를 정리한다.
+## Security And Production Boundary
 
-상태를 직접 관찰할 때만 수동으로 실행한다.
+Current internal control, peer, Raft transport, and Admin REST assume a trusted local/dev network. Production evidence still needs:
 
-```bash
-docker compose up -d --build
-curl http://127.0.0.1:27491/status
-curl http://127.0.0.1:27492/status
-curl http://127.0.0.1:27493/status
-docker compose down -v
-```
-
-Compose는 internal owner relay를 host에 publish하지 않는다. Public bearer listener는 loopback만 허용하고,
-Compose는 private container network를 위해 명시적으로 bind override한다.
-
-## Security and production boundary
-
-현재 internal control/peer/Raft transport와 Admin REST는 trusted local/dev network 전제다. Shared/untrusted
-network에 그대로 노출하지 않는다. Production 전에는 다음이 필요하다.
-
-- Internal peer/control identity authentication 또는 mTLS
-- Raft transport mTLS 정책
+- Internal peer/control identity authentication or mTLS
+- Raft transport mTLS policy
 - `ClockSkewBound < relay.open_timeout` evidence
-- Lost voter replacement와 safe old-path fencing operator flow
+- Production operator runbook evidence for controller replacement, quorum restoration, and explicit disaster reset fencing
 
-상세 계약은 [SPEC 001](docs/spec/001-system-model.md), 장애/복구는
-[SPEC 003](docs/spec/003-failure-and-recovery-model.md), canonical transition은
-[SPEC 004](docs/spec/004-state-transition-model.md), 검증 목록과 현재 evidence는
-[TEST 001](docs/test/001-core-correctness-test-plan.md),
-[TEST 002](docs/test/002-failure-evidence-matrix.md)를 따른다.
+Contracts: [SPEC 001](docs/spec/001-system-model.md), [SPEC 003](docs/spec/003-failure-and-recovery-model.md), [SPEC 004](docs/spec/004-state-transition-model.md). Evidence: [TEST 001](docs/test/001-core-correctness-test-plan.md), [TEST 002](docs/test/002-failure-evidence-matrix.md). Runtime decisions: [ADR 002](docs/adr/002-current-state-cluster-and-recovery.md), [ADR 005](docs/adr/005-runtime-and-release-boundary.md).
