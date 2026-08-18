@@ -28,7 +28,7 @@ Timeout is failure suspicion, not death proof. False positives may reduce availa
 | Declare | Raft `DeclareRoute` commit | Exact duplicate idempotent; conflict preserves current route |
 | Withdraw/remove | Raft `WithdrawRoute`/`RemoveGateway` commit | True delete/cascade, no tombstone |
 | Authority change | Leader confirmation in a new term | New `AuthorityId`; `V` empty |
-| Authority admission | One authority-owned confirmed read fence binds exact `A·L·Q·D·V` to the issued context | Not owner reservation or Pipe success |
+| Authority admission | One authority-owned confirmed read fence binds exact `A·L·Q·C·V` to the issued context | Not owner reservation or Pipe success |
 | Owner admission O | Local reservation + `AttemptId` fence | O-after success continues locally |
 | Open | Listener accept + `PipeId` creation | Later response loss can be `Unknown` |
 | Pipe terminal | First participant-local terminal | Local absorbing; peer propagation best effort |
@@ -54,6 +54,21 @@ Timeout is failure suspicion, not death proof. False positives may reduce availa
 | Duplicate ForwardOpen vs original | First successful O | One reservation max; no outcome/PipeId replay |
 | Public ACK vs payload | ACK write | Listener-to-caller payload released only after ACK |
 | Backpressure vs close/crash | First terminal | Bounded stop; no silent drop |
+
+## Error Boundaries
+
+| Result | Meaning | Retry/session effect |
+| --- | --- | --- |
+| `Rejected` | The current request/frame cannot be accepted or applied | Operation-local to the named request/resource unless authentication/session/protocol integrity is invalid |
+| `Failed` | The named operation ended with a stable outcome; Open `Failed` is before the Listener-accept LP | A new logical operation may be attempted; never replay the old attempt |
+| `Unknown` | Open may have crossed the LP but its result was lost | Never retry/resume the same logical operation or Pipe |
+| `Acknowledged` | The exact correlated operation was applied/observed | Duplicate exact ACK is a bounded NoOp; conflicting ACK is protocol-fatal |
+| `Terminated` | The exact participant-local resource reached its absorbing terminal state | No revival, resume, or payload replay |
+
+Bind/Unbind validation, capacity, conflict, and control-unavailable outcomes are operation-local. Authentication failure,
+session end, malformed protocol state, and stream transport failure are session-fatal. Any `PipePayloadRejected` terminalizes
+the SDK's exact Pipe view because payload writes have no application ACK or frame correlation. The server terminalizes only
+an exact owned Pipe; unknown or foreign ownership cannot mutate server state.
 
 ## Crash Cuts
 

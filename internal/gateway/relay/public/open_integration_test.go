@@ -135,16 +135,39 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 	sendPipePayload(t, caller, established.GetPipeId(), maximumPayload)
 	requirePipePayload(t, listener, established.GetPipeId(), maximumPayload)
 	sendPipePayload(t, caller, established.GetPipeId(), append(maximumPayload, 0x5a))
-	rejectedResponse, err := caller.Recv()
+	var rejected, callerTerminated bool
+	for range 2 {
+		response, err := caller.Recv()
+		if err != nil {
+			t.Fatalf("Recv(maximum+1 result): %v", err)
+		}
+		switch {
+		case response.GetPipePayloadRejected() != nil:
+			value := response.GetPipePayloadRejected()
+			if value.GetPipeId() != established.GetPipeId() || value.GetFailure() != relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST {
+				t.Fatalf("maximum+1 PipePayloadRejected = %#v", response)
+			}
+			rejected = true
+		case response.GetPipeTerminated() != nil:
+			if value := response.GetPipeTerminated(); value.GetPipeId() != established.GetPipeId() {
+				t.Fatalf("maximum+1 PipeTerminated = %#v", response)
+			}
+			callerTerminated = true
+		default:
+			t.Fatalf("maximum+1 response = %#v", response)
+		}
+	}
+	if !rejected || !callerTerminated {
+		t.Fatalf("maximum+1 results: rejected=%t callerTerminated=%t", rejected, callerTerminated)
+	}
+	waitForCount(t, opener.ActiveCount, 0, "active pipes after invalid payload")
+	terminatedResponse, err := listener.Recv()
 	if err != nil {
-		t.Fatalf("Recv(maximum+1 PipePayloadRejected): %v", err)
+		t.Fatalf("Recv(ListenerTerminated after invalid payload): %v", err)
 	}
-	if rejected := rejectedResponse.GetPipePayloadRejected(); rejected.GetPipeId() != established.GetPipeId() ||
-		rejected.GetFailure() != relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST {
-		t.Fatalf("maximum+1 PipePayloadRejected = %#v", rejectedResponse)
-	}
-	if opener.ActiveCount() != 1 {
-		t.Fatalf("active pipes = %d, want 1", opener.ActiveCount())
+	terminated := terminatedResponse.GetListenerTerminated()
+	if terminated.GetAttemptId() != offer.GetAttemptId() || terminated.GetPipeId() != established.GetPipeId() {
+		t.Fatalf("ListenerTerminated after invalid payload = %#v", terminatedResponse)
 	}
 
 	slot := committer.current()
@@ -160,8 +183,8 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 		t.Fatalf("Recv(ListenerUnbound) = %#v, %v", response, err)
 	}
 	waitForCount(t, bindings.ActiveCount, 0, "active bindings")
-	if opener.ActiveCount() != 1 {
-		t.Fatalf("explicit Unbind ended accepted pipe: active=%d", opener.ActiveCount())
+	if opener.ActiveCount() != 0 {
+		t.Fatalf("explicit Unbind changed terminal pipe count: active=%d", opener.ActiveCount())
 	}
 
 	if err := caller.CloseSend(); err != nil {
@@ -169,15 +192,6 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 	}
 	if _, err := caller.Recv(); err != io.EOF {
 		t.Fatalf("Recv(caller close) = %v, want EOF", err)
-	}
-	waitForCount(t, opener.ActiveCount, 0, "active pipes")
-	terminatedResponse, err := listener.Recv()
-	if err != nil {
-		t.Fatalf("Recv(ListenerTerminated): %v", err)
-	}
-	terminated := terminatedResponse.GetListenerTerminated()
-	if terminated.GetAttemptId() != offer.GetAttemptId() || terminated.GetPipeId() != established.GetPipeId() {
-		t.Fatalf("ListenerTerminated = %#v", terminated)
 	}
 }
 

@@ -55,6 +55,7 @@ func TestNewServiceCapsProcessPayloadSlots(t *testing.T) {
 
 func TestConnectPayloadRejectionsAreStableAndOwnershipPrivate(t *testing.T) {
 	called := make(chan localbinding.PipePayload, 1)
+	closed := make(chan string, 2)
 	opener := &testOpener{relayPayload: func(_ context.Context, _ clientsession.Ref, pipeID string, payload []byte) error {
 		switch pipeID {
 		case "owned":
@@ -67,6 +68,12 @@ func TestConnectPayloadRejectionsAreStableAndOwnershipPrivate(t *testing.T) {
 		default:
 			return opening.ErrPipeNotOwned
 		}
+	}, closePipe: func(_ clientsession.Ref, pipeID string) bool {
+		if pipeID == "owned" {
+			closed <- pipeID
+			return true
+		}
+		return false
 	}}
 	_, _, server := startTestServerWithDependencies(t, &testBindingManager{}, opener)
 	connection := dialTestServer(t, server.Address())
@@ -85,18 +92,25 @@ func TestConnectPayloadRejectionsAreStableAndOwnershipPrivate(t *testing.T) {
 		}
 	}
 
-	assertRejected("owned", nil, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
 	assertRejected("unknown", []byte("x"), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED)
 	assertRejected("foreign", []byte("x"), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED)
 	assertRejected("terminal", []byte("x"), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED)
 	assertRejected("backpressure", []byte("x"), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE)
 	assertRejected("unavailable", []byte("x"), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE)
-	assertRejected("owned", make([]byte, localbinding.MaxPayloadBytes+1), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
-
 	want := bytes.Repeat([]byte{0x6d}, localbinding.MaxPayloadBytes)
 	sendPipePayload(t, stream, "owned", want)
 	if got := receiveWithin(t, called, "maximum legal RelayPayload call"); got.PipeID != "owned" || !bytes.Equal(got.Data, want) {
 		t.Fatalf("RelayPayload call = pipe %q, %d bytes", got.PipeID, len(got.Data))
+	}
+	assertRejected("owned", make([]byte, localbinding.MaxPayloadBytes+1), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
+	if got := receiveWithin(t, closed, "owned invalid payload close"); got != "owned" {
+		t.Fatalf("ClosePipe invalid payload = %q", got)
+	}
+	assertRejected("unknown", nil, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
+	select {
+	case got := <-closed:
+		t.Fatalf("invalid unknown payload changed pipe %q", got)
+	default:
 	}
 	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ClosePipe{
 		ClosePipe: &relayv1.ClosePipe{PipeId: "after-success"},

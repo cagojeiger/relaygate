@@ -23,8 +23,12 @@ func (c *Client) dispatch(response *relayv1.ConnectResponse) error {
 	switch {
 	case response.GetListenerBound() != nil:
 		return c.dispatchListenerBound(response.GetListenerBound())
+	case response.GetListenerBindFailed() != nil:
+		return c.dispatchListenerBindFailed(response.GetListenerBindFailed())
 	case response.GetListenerUnbound() != nil:
 		return c.dispatchListenerUnbound(response.GetListenerUnbound())
+	case response.GetListenerUnbindFailed() != nil:
+		return c.dispatchListenerUnbindFailed(response.GetListenerUnbindFailed())
 	case response.GetListenerOffer() != nil:
 		return c.dispatchListenerOffer(response.GetListenerOffer())
 	case response.GetListenerEstablished() != nil:
@@ -56,6 +60,41 @@ func (c *Client) dispatch(response *relayv1.ConnectResponse) error {
 	default:
 		return protocolError("unknown response")
 	}
+}
+
+func (c *Client) dispatchListenerBindFailed(failed *relayv1.ListenerBindFailed) error {
+	failure, ok := bindingFailureFromProto(failed.GetFailure())
+	if !ok || !validEndpoint(failed.GetEndpointPattern()) || !validIdentity(failed.GetTargetId()) {
+		return protocolError("invalid ListenerBindFailed")
+	}
+	c.mu.Lock()
+	call := c.pendingBinding
+	if call == nil || call.kind != bindingBind || call.endpoint != failed.GetEndpointPattern() || call.target != failed.GetTargetId() {
+		c.mu.Unlock()
+		return protocolError("foreign ListenerBindFailed")
+	}
+	c.pendingBinding = nil
+	c.mu.Unlock()
+	call.result <- bindingResult{err: &BindError{Failure: failure, Endpoint: call.endpoint, Target: call.target}}
+	return nil
+}
+
+func (c *Client) dispatchListenerUnbindFailed(failed *relayv1.ListenerUnbindFailed) error {
+	failure, ok := bindingFailureFromProto(failed.GetFailure())
+	if !ok || !validIdentity(failed.GetListenerBindingId()) {
+		return protocolError("invalid ListenerUnbindFailed")
+	}
+	c.mu.Lock()
+	call := c.pendingBinding
+	listener := c.listeners[failed.GetListenerBindingId()]
+	if call == nil || call.kind != bindingUnbind || call.id != failed.GetListenerBindingId() || listener == nil {
+		c.mu.Unlock()
+		return protocolError("foreign ListenerUnbindFailed")
+	}
+	c.pendingBinding = nil
+	c.mu.Unlock()
+	call.result <- bindingResult{err: &UnbindError{Failure: failure, ListenerID: call.id}}
+	return nil
 }
 
 func (c *Client) dispatchSession(opened *relayv1.ClientSessionOpened) error {
@@ -480,17 +519,24 @@ func (c *Client) dispatchPipePayloadRejected(message *relayv1.PipePayloadRejecte
 	if !validIdentity(message.GetPipeId()) {
 		return protocolError("invalid PipePayloadRejected")
 	}
+	failure, ok := payloadFailureFromProto(message.GetFailure())
+	if !ok {
+		return protocolError("invalid PipePayloadRejected failure")
+	}
 	c.mu.Lock()
 	pipe := c.pipes[message.GetPipeId()]
 	if pipe != nil {
 		delete(c.pipes, pipe.id)
 		c.addPipeTombstoneLocked(pipe)
+	} else if c.matchesPipeTombstoneLocked(message.GetPipeId()) {
+		c.mu.Unlock()
+		return nil
 	}
 	c.mu.Unlock()
 	if pipe == nil {
 		return protocolError("foreign PipePayloadRejected")
 	}
-	pipe.terminate(&PipeError{Failure: payloadFailureFromProto(message.GetFailure())})
+	pipe.terminate(&PipeError{Failure: failure})
 	return nil
 }
 
@@ -698,15 +744,32 @@ func openFailureFromProto(failure relayv1.OpenFailure) OpenFailure {
 	}
 }
 
-func payloadFailureFromProto(failure relayv1.PipePayloadFailure) PipePayloadFailure {
+func bindingFailureFromProto(failure relayv1.ListenerBindingFailure) (BindingFailure, bool) {
+	switch failure {
+	case relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_INVALID_REQUEST:
+		return BindingFailureInvalidRequest, true
+	case relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_CAPACITY_REACHED:
+		return BindingFailureCapacityReached, true
+	case relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_CONFLICT:
+		return BindingFailureConflict, true
+	case relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_UNAVAILABLE:
+		return BindingFailureUnavailable, true
+	default:
+		return 0, false
+	}
+}
+
+func payloadFailureFromProto(failure relayv1.PipePayloadFailure) (PipePayloadFailure, bool) {
 	switch failure {
 	case relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST:
-		return PipePayloadInvalidRequest
+		return PipePayloadInvalidRequest, true
 	case relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED:
-		return PipePayloadNotOwned
+		return PipePayloadNotOwned, true
 	case relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE:
-		return PipePayloadBackpressure
+		return PipePayloadBackpressure, true
+	case relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE:
+		return PipePayloadUnavailable, true
 	default:
-		return PipePayloadUnavailable
+		return 0, false
 	}
 }

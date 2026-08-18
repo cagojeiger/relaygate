@@ -17,8 +17,9 @@ var (
 	ErrCapacity = errors.New("live route capacity reached")
 )
 
-// BindingKey is the exact, client-scoped route lookup key. It is a volatile
-// routing identity and is never part of Raft state.
+// BindingKey is the Gateway-runtime representation of the exact, client-scoped
+// route lookup key. The same semantic fields are replicated in the Raft current
+// FSM through controlstate.BindingKey; this type carries no Raft dependency.
 type BindingKey struct {
 	ClientID        string
 	EndpointPattern string

@@ -169,62 +169,77 @@ async fn bind_operations_are_serialized() {
 }
 
 #[tokio::test]
-async fn stale_binding_responses_are_bounded_noops_without_consuming_current_operation() {
+async fn bind_and_unbind_failures_are_operation_local() {
     let (client, mut outbound) = harness();
-    let bind_client = Arc::clone(&client);
-    let bind = tokio::spawn(async move { bind_client.bind("current", "target").await });
+    let first_client = Arc::clone(&client);
+    let first = tokio::spawn(async move { first_client.bind("conflict", "target").await });
     assert!(matches!(
         next_message(&mut outbound).await,
         connect_request::Message::BindListener(_)
     ));
-
     dispatch_response(
         &client.shared,
-        response(connect_response::Message::ListenerBound(
-            wire::ListenerBound {
-                binding: Some(wire::ListenerBinding {
-                    listener_binding_id: "stale-binding".into(),
-                    endpoint_pattern: "stale".into(),
-                    target_id: "target".into(),
-                }),
+        response(connect_response::Message::ListenerBindFailed(
+            wire::ListenerBindFailed {
+                endpoint_pattern: "conflict".into(),
+                target_id: "target".into(),
+                failure: wire::ListenerBindingFailure::Conflict as i32,
             },
         )),
     )
     .await
-    .unwrap();
-    assert!(!bind.is_finished());
+    .expect("dispatch operation-local Bind failure");
+    assert!(matches!(first.await.unwrap(), Err(BindError::Conflict)));
+    assert!(client.shared.terminal().is_none());
+
+    let listener = Arc::new(bind_listener(&client, &mut outbound, "binding-1").await);
+    let listener_for_unbind = Arc::clone(&listener);
+    let first_unbind = tokio::spawn(async move { listener_for_unbind.unbind().await });
+    assert!(matches!(
+        next_message(&mut outbound).await,
+        connect_request::Message::UnbindListener(_)
+    ));
     dispatch_response(
         &client.shared,
-        response(connect_response::Message::ListenerBound(
-            wire::ListenerBound {
-                binding: Some(wire::ListenerBinding {
-                    listener_binding_id: "current-binding".into(),
-                    endpoint_pattern: "current".into(),
-                    target_id: "target".into(),
-                }),
+        response(connect_response::Message::ListenerUnbindFailed(
+            wire::ListenerUnbindFailed {
+                listener_binding_id: "binding-1".into(),
+                failure: wire::ListenerBindingFailure::Unavailable as i32,
             },
         )),
     )
     .await
-    .unwrap();
-    let listener = Arc::new(bind.await.unwrap().unwrap());
+    .expect("dispatch operation-local Unbind failure");
+    assert!(matches!(
+        first_unbind.await.unwrap(),
+        Err(UnbindError::Unavailable)
+    ));
+    assert!(listener.state.active.load(Ordering::Acquire));
+    assert!(client.shared.terminal().is_none());
 
-    let stale_cleanup = match next_message(&mut outbound).await {
-        connect_request::Message::UnbindListener(unbind) => unbind,
-        other => panic!("unexpected stale cleanup request: {other:?}"),
-    };
-    assert_eq!(stale_cleanup.listener_binding_id, "stale-binding");
+    let listener_for_retry = Arc::clone(&listener);
+    let retry = tokio::spawn(async move { listener_for_retry.unbind().await });
+    assert!(matches!(
+        next_message(&mut outbound).await,
+        connect_request::Message::UnbindListener(_)
+    ));
     dispatch_response(
         &client.shared,
         response(connect_response::Message::ListenerUnbound(
             wire::ListenerUnbound {
-                listener_binding_id: "stale-binding".into(),
+                listener_binding_id: "binding-1".into(),
             },
         )),
     )
     .await
-    .unwrap();
+    .expect("dispatch retry Unbind acknowledgement");
+    retry.await.unwrap().expect("retry Unbind");
+}
 
+#[tokio::test]
+async fn exact_retired_binding_responses_are_bounded_noops() {
+    let (client, mut outbound) = harness();
+    let listener = Arc::new(bind_listener(&client, &mut outbound, "binding-1").await);
     let listener_for_unbind = Arc::clone(&listener);
     let unbind = tokio::spawn(async move { listener_for_unbind.unbind().await });
     assert!(matches!(
@@ -235,18 +250,7 @@ async fn stale_binding_responses_are_bounded_noops_without_consuming_current_ope
         &client.shared,
         response(connect_response::Message::ListenerUnbound(
             wire::ListenerUnbound {
-                listener_binding_id: "older-binding".into(),
-            },
-        )),
-    )
-    .await
-    .unwrap();
-    assert!(!unbind.is_finished());
-    dispatch_response(
-        &client.shared,
-        response(connect_response::Message::ListenerUnbound(
-            wire::ListenerUnbound {
-                listener_binding_id: "current-binding".into(),
+                listener_binding_id: "binding-1".into(),
             },
         )),
     )
@@ -255,29 +259,25 @@ async fn stale_binding_responses_are_bounded_noops_without_consuming_current_ope
     assert_eq!(unbind.await.unwrap(), Ok(()));
 
     for _ in 0..3 {
-        for binding_id in ["stale-binding", "older-binding", "current-binding"] {
-            dispatch_response(
-                &client.shared,
-                response(connect_response::Message::ListenerUnbound(
-                    wire::ListenerUnbound {
-                        listener_binding_id: binding_id.into(),
-                    },
-                )),
-            )
-            .await
-            .unwrap();
-        }
-    }
-    for _ in 0..3 {
         dispatch_response(
             &client.shared,
             response(connect_response::Message::ListenerBound(
                 wire::ListenerBound {
                     binding: Some(wire::ListenerBinding {
-                        listener_binding_id: "stale-binding".into(),
-                        endpoint_pattern: "stale".into(),
+                        listener_binding_id: "binding-1".into(),
+                        endpoint_pattern: "service".into(),
                         target_id: "target".into(),
                     }),
+                },
+            )),
+        )
+        .await
+        .unwrap();
+        dispatch_response(
+            &client.shared,
+            response(connect_response::Message::ListenerUnbound(
+                wire::ListenerUnbound {
+                    listener_binding_id: "binding-1".into(),
                 },
             )),
         )
@@ -291,13 +291,88 @@ async fn stale_binding_responses_are_bounded_noops_without_consuming_current_ope
     ));
     assert!(client.shared.terminal().is_none());
     assert!(client.shared.retired_bindings.lock().unwrap().len() <= MAX_LISTENERS);
+}
+
+#[tokio::test]
+async fn foreign_binding_responses_fail_closed() {
+    let (client, mut outbound) = harness();
+    let bind_client = Arc::clone(&client);
+    let bind = tokio::spawn(async move { bind_client.bind("current", "target").await });
+    assert!(matches!(
+        next_message(&mut outbound).await,
+        connect_request::Message::BindListener(_)
+    ));
+    let error = dispatch_as_receive_loop(
+        &client.shared,
+        response(connect_response::Message::ListenerBound(
+            wire::ListenerBound {
+                binding: Some(wire::ListenerBinding {
+                    listener_binding_id: "foreign-binding".into(),
+                    endpoint_pattern: "foreign".into(),
+                    target_id: "target".into(),
+                }),
+            },
+        )),
+    )
+    .await;
+    assert!(matches!(error, SessionError::Protocol(_)));
+    assert!(matches!(
+        bind.await.unwrap(),
+        Err(BindError::Session(SessionError::Protocol(_)))
+    ));
+
+    let (client, mut outbound) = harness();
+    let listener = Arc::new(bind_listener(&client, &mut outbound, "binding-1").await);
+    let listener_for_unbind = Arc::clone(&listener);
+    let unbind = tokio::spawn(async move { listener_for_unbind.unbind().await });
+    assert!(matches!(
+        next_message(&mut outbound).await,
+        connect_request::Message::UnbindListener(_)
+    ));
+    let error = dispatch_as_receive_loop(
+        &client.shared,
+        response(connect_response::Message::ListenerUnbound(
+            wire::ListenerUnbound {
+                listener_binding_id: "foreign-binding".into(),
+            },
+        )),
+    )
+    .await;
+    assert!(matches!(error, SessionError::Protocol(_)));
+    assert!(matches!(
+        unbind.await.unwrap(),
+        Err(UnbindError::Session(SessionError::Protocol(_)))
+    ));
+}
+
+#[tokio::test]
+async fn retired_binding_metadata_conflict_fails_closed() {
+    let (client, mut outbound) = harness();
+    let listener = Arc::new(bind_listener(&client, &mut outbound, "binding-1").await);
+    let listener_for_unbind = Arc::clone(&listener);
+    let unbind = tokio::spawn(async move { listener_for_unbind.unbind().await });
+    assert!(matches!(
+        next_message(&mut outbound).await,
+        connect_request::Message::UnbindListener(_)
+    ));
+    dispatch_response(
+        &client.shared,
+        response(connect_response::Message::ListenerUnbound(
+            wire::ListenerUnbound {
+                listener_binding_id: "binding-1".into(),
+            },
+        )),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unbind.await.unwrap(), Ok(()));
     assert!(matches!(
         dispatch_response(
             &client.shared,
             response(connect_response::Message::ListenerBound(
                 wire::ListenerBound {
                     binding: Some(wire::ListenerBinding {
-                        listener_binding_id: "stale-binding".into(),
+                        listener_binding_id: "binding-1".into(),
                         endpoint_pattern: "conflicting".into(),
                         target_id: "target".into(),
                     }),
@@ -1069,6 +1144,85 @@ async fn pipe_payload_is_bidirectional_and_async_rejection_is_terminal() {
     .await
     .unwrap();
     assert_eq!(pipe.done().await, PipeError::Backpressure);
+}
+
+#[tokio::test]
+async fn every_payload_rejection_is_pipe_terminal_and_invalid_failure_is_protocol_fatal() {
+    for (failure, expected) in [
+        (
+            wire::PipePayloadFailure::InvalidRequest,
+            PipeError::InvalidPayload,
+        ),
+        (wire::PipePayloadFailure::NotOwned, PipeError::NotOwned),
+        (
+            wire::PipePayloadFailure::Backpressure,
+            PipeError::Backpressure,
+        ),
+        (
+            wire::PipePayloadFailure::Unavailable,
+            PipeError::Unavailable,
+        ),
+    ] {
+        let (client, _) = harness();
+        let pipe = register_pipe(&client.shared, "pipe-rejected");
+        dispatch_response(
+            &client.shared,
+            response(connect_response::Message::PipePayloadRejected(
+                wire::PipePayloadRejected {
+                    pipe_id: "pipe-rejected".into(),
+                    failure: failure as i32,
+                },
+            )),
+        )
+        .await
+        .expect("dispatch operation-local payload rejection");
+        assert_eq!(pipe.done().await, expected);
+        assert!(client.shared.terminal().is_none());
+    }
+
+    for failure in [wire::PipePayloadFailure::Unspecified as i32, i32::MAX] {
+        let (client, _) = harness();
+        let _pipe = register_pipe(&client.shared, "pipe-invalid-failure");
+        assert!(matches!(
+            dispatch_response(
+                &client.shared,
+                response(connect_response::Message::PipePayloadRejected(
+                    wire::PipePayloadRejected {
+                        pipe_id: "pipe-invalid-failure".into(),
+                        failure,
+                    },
+                )),
+            )
+            .await,
+            Err(SessionError::Protocol(_))
+        ));
+    }
+
+    let (client, _) = harness();
+    let pipe = register_pipe(&client.shared, "pipe-terminal-first");
+    dispatch_response(
+        &client.shared,
+        response(connect_response::Message::PipeTerminated(
+            wire::PipeTerminated {
+                pipe_id: "pipe-terminal-first".into(),
+            },
+        )),
+    )
+    .await
+    .expect("dispatch first terminal");
+    assert_eq!(pipe.done().await, PipeError::Terminal);
+    dispatch_response(
+        &client.shared,
+        response(connect_response::Message::PipePayloadRejected(
+            wire::PipePayloadRejected {
+                pipe_id: "pipe-terminal-first".into(),
+                failure: wire::PipePayloadFailure::InvalidRequest as i32,
+            },
+        )),
+    )
+    .await
+    .expect("absorb exact payload rejection after terminal");
+    assert!(client.shared.terminal().is_none());
 }
 
 #[tokio::test]

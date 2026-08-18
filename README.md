@@ -92,6 +92,8 @@ Production controllers need durable volumes/PVCs. The local Compose file uses na
 - On each multiplexed public Relay stream, separate bounded control/terminal and payload lanes let control and terminal work bypass queued payload pressure.
 - The one-stream-per-Pipe peer hop serializes sends through one bounded lane. A blocked send that reaches its timeout or cancellation fails the Pipe and cancels the stream; it does not silently drop, retry, or replay the frame.
 - `ManagedClient` may reconnect a session and fresh-bind current Listeners. It does not queue Opens, replay outcomes, resume Pipes, or replay payload.
+- Bind/Unbind validation, capacity, conflict, and availability failures are operation-local; authentication, session, protocol, and transport failures end the Relay stream.
+- Any payload rejection ends the SDK's exact Pipe view; the server terminalizes only an exact owned Pipe. Payload is never retried or replayed.
 
 ## Install
 

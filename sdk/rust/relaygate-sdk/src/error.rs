@@ -8,6 +8,8 @@ pub enum SessionError {
     Closed,
     #[error("relay transport ended: {0}")]
     Transport(String),
+    #[error("Relay.Connect ended with gRPC {code}: {message}")]
+    Rpc { code: tonic::Code, message: String },
     #[error("relay protocol violation: {0}")]
     Protocol(&'static str),
 }
@@ -64,6 +66,10 @@ pub enum BindError {
     OperationPending,
     #[error("listener capacity reached")]
     CapacityReached,
+    #[error("another live binding owns the requested route")]
+    Conflict,
+    #[error("the binding authority is temporarily unavailable")]
+    Unavailable,
     #[error(transparent)]
     Session(#[from] SessionError),
 }
@@ -71,8 +77,16 @@ pub enum BindError {
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UnbindError {
+    #[error("invalid listener unbind request")]
+    InvalidRequest,
     #[error("another bind or unbind operation is awaiting its wire response")]
     OperationPending,
+    #[error("listener capacity reached")]
+    CapacityReached,
+    #[error("the listener binding conflicts with current ownership")]
+    Conflict,
+    #[error("the binding authority is temporarily unavailable")]
+    Unavailable,
     #[error(transparent)]
     Session(#[from] SessionError),
 }

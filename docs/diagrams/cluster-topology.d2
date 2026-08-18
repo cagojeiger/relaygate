@@ -100,7 +100,7 @@ controllers: {
 }
 
 admission: {
-  label: "New-Pipe admission\nA · L · Q · D · V · O\nonly 111111 admits"
+  label: "New-Pipe admission\nA · L · Q · C · V · O\nonly 111111 admits"
   shape: diamond
   style.fill: "#ecfdf5"
   style.stroke: "#059669"
@@ -131,11 +131,11 @@ controllers.leader -> controllers.durable: "persist and compact log to snapshots
 controllers.followers.b -> controllers.durable: {class: raft}
 controllers.followers.c -> controllers.durable: {class: raft}
 controllers.durable -> controllers.c_fsm: "restore current rows only" {class: raft}
-controllers.leader -> controllers.c_fsm: "linearizable D route lookup" {class: raft}
+controllers.leader -> controllers.c_fsm: "linearizable C route lookup" {class: raft}
 controllers.leader -> controllers.v_authority: "confirmed leader creates V" {class: control}
 controllers.leader -> admission: "L + Q\nVerifyLeader + Barrier" {class: raft}
 controllers.v_authority -> admission: "V" {class: control}
-controllers.c_fsm -> admission: "D" {class: raft}
+controllers.c_fsm -> admission: "C" {class: raft}
 gateways.ingress -> admission: "A" {class: control}
 gateways.owner -> admission: "O owner reservation" {class: control}
 

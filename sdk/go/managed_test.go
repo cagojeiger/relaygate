@@ -304,3 +304,38 @@ func TestManagedClientStopsOnProtocolFailureWithoutReconnect(t *testing.T) {
 		t.Fatalf("sessions after protocol failure = %d, want 1", sessions.Load())
 	}
 }
+
+func TestManagedRetryClassificationMatchesStableGRPCCodes(t *testing.T) {
+	for _, code := range []codes.Code{
+		codes.InvalidArgument,
+		codes.Unauthenticated,
+		codes.PermissionDenied,
+		codes.FailedPrecondition,
+	} {
+		if !isPermanentManagedConnectError(status.Error(code, "permanent")) {
+			t.Errorf("gRPC %s was not classified permanent", code)
+		}
+	}
+	for _, code := range []codes.Code{
+		codes.Unavailable,
+		codes.DeadlineExceeded,
+		codes.ResourceExhausted,
+		codes.Unknown,
+	} {
+		if isPermanentManagedConnectError(status.Error(code, "transient")) {
+			t.Errorf("gRPC %s was classified permanent", code)
+		}
+	}
+	for _, failure := range []BindingFailure{
+		BindingFailureInvalidRequest,
+		BindingFailureCapacityReached,
+		BindingFailureConflict,
+	} {
+		if !isPermanentManagedConnectError(&BindError{Failure: failure}) {
+			t.Errorf("Bind failure %s was not classified permanent", failure)
+		}
+	}
+	if isPermanentManagedConnectError(&BindError{Failure: BindingFailureUnavailable}) {
+		t.Error("unavailable Bind failure was classified permanent")
+	}
+}
