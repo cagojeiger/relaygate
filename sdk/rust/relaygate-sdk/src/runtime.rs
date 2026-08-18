@@ -554,7 +554,7 @@ impl Shared {
             })
     }
 
-    pub(crate) fn terminalize_pipe(&self, pipe_id: &str, error: PipeError) {
+    pub(crate) fn terminalize_pipe(&self, pipe_id: &str, error: PipeError) -> bool {
         if let Some(pipe) = self
             .pipes
             .lock()
@@ -564,6 +564,9 @@ impl Shared {
             self.remember_pipe(pipe.pipe_id.clone(), pipe.attempt_id.clone());
             pipe.release_slot(self);
             pipe.terminate(error);
+            true
+        } else {
+            false
         }
     }
 
@@ -945,7 +948,10 @@ pub(crate) async fn receive_responses(
             }
             Err(status) => {
                 if let Some(shared) = shared.upgrade() {
-                    shared.terminate(SessionError::Transport(status.to_string()));
+                    shared.terminate(SessionError::Rpc {
+                        code: status.code(),
+                        message: status.message().to_owned(),
+                    });
                 }
                 return;
             }
@@ -972,7 +978,13 @@ pub(crate) async fn dispatch_response(
             return Err(SessionError::Protocol("duplicate ClientSessionOpened"));
         }
         connect_response::Message::ListenerBound(bound) => listener_bound(shared, bound)?,
+        connect_response::Message::ListenerBindFailed(failed) => {
+            listener_bind_failed(shared, failed)?;
+        }
         connect_response::Message::ListenerUnbound(unbound) => listener_unbound(shared, unbound)?,
+        connect_response::Message::ListenerUnbindFailed(failed) => {
+            listener_unbind_failed(shared, failed)?;
+        }
         connect_response::Message::ListenerOffer(offer) => listener_offer(shared, offer).await?,
         connect_response::Message::ListenerEstablished(established) => {
             listener_established(shared, established)?;
@@ -1003,9 +1015,115 @@ pub(crate) async fn dispatch_response(
             pipe_terminated(shared, terminated)?;
         }
         connect_response::Message::PipePayloadRejected(rejected) => {
-            pipe_payload_rejected(shared, rejected);
+            pipe_payload_rejected(shared, rejected)?;
         }
     }
+    Ok(())
+}
+
+fn binding_failure(failure: i32) -> Option<wire::ListenerBindingFailure> {
+    match wire::ListenerBindingFailure::try_from(failure).ok()? {
+        wire::ListenerBindingFailure::InvalidRequest => {
+            Some(wire::ListenerBindingFailure::InvalidRequest)
+        }
+        wire::ListenerBindingFailure::CapacityReached => {
+            Some(wire::ListenerBindingFailure::CapacityReached)
+        }
+        wire::ListenerBindingFailure::Conflict => Some(wire::ListenerBindingFailure::Conflict),
+        wire::ListenerBindingFailure::Unavailable => {
+            Some(wire::ListenerBindingFailure::Unavailable)
+        }
+        wire::ListenerBindingFailure::Unspecified => None,
+    }
+}
+
+fn listener_bind_failed(
+    shared: &Arc<Shared>,
+    failed: wire::ListenerBindFailed,
+) -> Result<(), SessionError> {
+    let Some(failure) = binding_failure(failed.failure) else {
+        return Err(SessionError::Protocol(
+            "ListenerBindFailed contained invalid failure",
+        ));
+    };
+    if !valid_text(&failed.endpoint_pattern, MAX_ENDPOINT_BYTES)
+        || !valid_text(&failed.target_id, MAX_IDENTITY_BYTES)
+    {
+        return Err(SessionError::Protocol(
+            "ListenerBindFailed contained invalid identity",
+        ));
+    }
+    let pending = {
+        let mut pending = shared
+            .binding_pending
+            .lock()
+            .expect("binding pending lock poisoned");
+        let matches_current = matches!(
+            pending.as_ref(),
+            Some(BindingPending::Bind { endpoint_pattern, target_id, .. })
+                if endpoint_pattern == &failed.endpoint_pattern && target_id == &failed.target_id
+        );
+        matches_current.then(|| pending.take().expect("matching Bind must exist"))
+    };
+    let Some(BindingPending::Bind { response, .. }) = pending else {
+        return Err(SessionError::Protocol("foreign ListenerBindFailed"));
+    };
+    let error = match failure {
+        wire::ListenerBindingFailure::InvalidRequest => BindError::InvalidRequest,
+        wire::ListenerBindingFailure::CapacityReached => BindError::CapacityReached,
+        wire::ListenerBindingFailure::Conflict => BindError::Conflict,
+        wire::ListenerBindingFailure::Unavailable => BindError::Unavailable,
+        wire::ListenerBindingFailure::Unspecified => unreachable!("validated binding failure"),
+    };
+    let _ = response.send(Err(error));
+    Ok(())
+}
+
+fn listener_unbind_failed(
+    shared: &Arc<Shared>,
+    failed: wire::ListenerUnbindFailed,
+) -> Result<(), SessionError> {
+    let Some(failure) = binding_failure(failed.failure) else {
+        return Err(SessionError::Protocol(
+            "ListenerUnbindFailed contained invalid failure",
+        ));
+    };
+    if !valid_text(&failed.listener_binding_id, MAX_IDENTITY_BYTES) {
+        return Err(SessionError::Protocol(
+            "ListenerUnbindFailed contained invalid identity",
+        ));
+    }
+    let listener = shared
+        .listeners
+        .lock()
+        .expect("listeners lock poisoned")
+        .get(&failed.listener_binding_id)
+        .cloned();
+    let pending = {
+        let mut pending = shared
+            .binding_pending
+            .lock()
+            .expect("binding pending lock poisoned");
+        let matches_current = matches!(
+            pending.as_ref(),
+            Some(BindingPending::Unbind { binding_id, .. })
+                if binding_id == &failed.listener_binding_id
+        );
+        matches_current.then(|| pending.take().expect("matching Unbind must exist"))
+    };
+    let (Some(listener), Some(BindingPending::Unbind { response, .. })) = (listener, pending)
+    else {
+        return Err(SessionError::Protocol("foreign ListenerUnbindFailed"));
+    };
+    listener.active.store(true, Ordering::Release);
+    let error = match failure {
+        wire::ListenerBindingFailure::InvalidRequest => UnbindError::InvalidRequest,
+        wire::ListenerBindingFailure::CapacityReached => UnbindError::CapacityReached,
+        wire::ListenerBindingFailure::Conflict => UnbindError::Conflict,
+        wire::ListenerBindingFailure::Unavailable => UnbindError::Unavailable,
+        wire::ListenerBindingFailure::Unspecified => unreachable!("validated binding failure"),
+    };
+    let _ = response.send(Err(error));
     Ok(())
 }
 
@@ -1038,13 +1156,35 @@ fn listener_bound(shared: &Arc<Shared>, bound: wire::ListenerBound) -> Result<()
         ));
     }
     match shared.binding_fingerprint_matches(&binding) {
-        Some(true) => return Ok(()),
+        Some(true) => {
+            let ambiguous = shared
+                .binding_pending
+                .lock()
+                .expect("binding pending lock poisoned")
+                .as_ref()
+                .is_some_and(|pending| {
+                    matches!(
+                        pending,
+                        BindingPending::Bind {
+                            endpoint_pattern,
+                            target_id,
+                            ..
+                        } if endpoint_pattern == &binding.endpoint_pattern
+                            && target_id == &binding.target_id
+                    )
+                });
+            if ambiguous {
+                return Err(SessionError::Protocol(
+                    "ListenerBound reused an ambiguous retired identity",
+                ));
+            }
+            return Ok(());
+        }
         Some(false) => {
             return Err(SessionError::Protocol(
                 "ListenerBound conflicted with a retired binding fingerprint",
             ));
         }
-        None if shared.binding_is_retired(&binding.listener_binding_id) => return Ok(()),
         None => {}
     }
     let pending = {
@@ -1060,11 +1200,7 @@ fn listener_bound(shared: &Arc<Shared>, bound: wire::ListenerBound) -> Result<()
         matches_current.then(|| pending.take().expect("matching Bind must exist"))
     };
     let Some(BindingPending::Bind { response, .. }) = pending else {
-        shared.remember_binding_fingerprint(&binding);
-        if shared.record_retired_binding(&binding.listener_binding_id) {
-            shared.auto_unbind(binding.listener_binding_id);
-        }
-        return Ok(());
+        return Err(SessionError::Protocol("foreign ListenerBound"));
     };
     shared.forget_retired_binding(&binding.listener_binding_id);
     let (offers_tx, offers_rx) = mpsc::channel(OFFER_QUEUE_CAPACITY);
@@ -1105,6 +1241,15 @@ fn listener_unbound(
             "ListenerUnbound contained invalid identity",
         ));
     }
+    if shared.binding_is_retired(&unbound.listener_binding_id) {
+        return Ok(());
+    }
+    let listener = shared
+        .listeners
+        .lock()
+        .expect("listeners lock poisoned")
+        .get(&unbound.listener_binding_id)
+        .cloned();
     let pending = {
         let mut pending = shared
             .binding_pending
@@ -1117,19 +1262,27 @@ fn listener_unbound(
         );
         matches_current.then(|| pending.take().expect("matching Unbind must exist"))
     };
-    if let Some(listener) = shared
+    let auto_unbind = pending.is_none()
+        && listener
+            .as_ref()
+            .is_some_and(|listener| !listener.active.load(Ordering::Acquire));
+    if listener.is_none() || (pending.is_none() && !auto_unbind) {
+        return Err(SessionError::Protocol("foreign ListenerUnbound"));
+    }
+    let Some(listener) = shared
         .listeners
         .lock()
         .expect("listeners lock poisoned")
         .remove(&unbound.listener_binding_id)
-    {
-        shared.remember_binding_fingerprint(&wire::ListenerBinding {
-            listener_binding_id: listener.binding_id.clone(),
-            endpoint_pattern: listener.endpoint_pattern.clone(),
-            target_id: listener.target_id.clone(),
-        });
-        listener.retire();
-    }
+    else {
+        return Err(SessionError::Protocol("foreign ListenerUnbound"));
+    };
+    shared.remember_binding_fingerprint(&wire::ListenerBinding {
+        listener_binding_id: listener.binding_id.clone(),
+        endpoint_pattern: listener.endpoint_pattern.clone(),
+        target_id: listener.target_id.clone(),
+    });
+    listener.retire();
     shared.record_retired_binding(&unbound.listener_binding_id);
     if let Some(BindingPending::Unbind { response, .. }) = pending {
         let _ = response.send(Ok(()));
@@ -1716,16 +1869,33 @@ fn pipe_payload(shared: &Arc<Shared>, payload: wire::PipePayload) -> Result<(), 
     Ok(())
 }
 
-fn pipe_payload_rejected(shared: &Arc<Shared>, rejected: wire::PipePayloadRejected) {
+fn pipe_payload_rejected(
+    shared: &Arc<Shared>,
+    rejected: wire::PipePayloadRejected,
+) -> Result<(), SessionError> {
+    if !valid_text(&rejected.pipe_id, MAX_IDENTITY_BYTES) {
+        return Err(SessionError::Protocol(
+            "PipePayloadRejected contained invalid identity",
+        ));
+    }
     let error = match wire::PipePayloadFailure::try_from(rejected.failure).ok() {
         Some(wire::PipePayloadFailure::InvalidRequest) => PipeError::InvalidPayload,
         Some(wire::PipePayloadFailure::NotOwned) => PipeError::NotOwned,
         Some(wire::PipePayloadFailure::Backpressure) => PipeError::Backpressure,
-        Some(wire::PipePayloadFailure::Unavailable)
-        | Some(wire::PipePayloadFailure::Unspecified)
-        | None => PipeError::Unavailable,
+        Some(wire::PipePayloadFailure::Unavailable) => PipeError::Unavailable,
+        Some(wire::PipePayloadFailure::Unspecified) | None => {
+            return Err(SessionError::Protocol(
+                "PipePayloadRejected contained invalid failure",
+            ));
+        }
     };
-    shared.terminalize_pipe(&rejected.pipe_id, error);
+    if shared.terminalize_pipe(&rejected.pipe_id, error)
+        || shared.pipe_was_retired(&rejected.pipe_id)
+    {
+        Ok(())
+    } else {
+        Err(SessionError::Protocol("foreign PipePayloadRejected"))
+    }
 }
 
 pub(crate) async fn wait_for_established(

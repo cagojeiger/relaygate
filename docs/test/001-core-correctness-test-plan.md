@@ -22,10 +22,10 @@ Each test must define initial identity/state, exact event order or crash cut, ob
 | `D04` | Exact stale fence | Old session declare/withdraw/snapshot cannot add/delete replacement owner state | `TestFSMRegisterReplacementCascadesRoutesAndFencesStaleABA`, `TestStaleGraceCleanupCannotDeleteReplacementInstance` |
 | `D05` | ACK-loss convergence | Session end clears `V`; reconnect full-snapshot replaces current state, or exact grace cleanup deletes unrevalidated `C`; no response replay | `TestEndSessionRetainsCAndReconnectCancelsGraceCleanup`, `TestControlKeepaliveBlackholeDeletesAndRedeclaresCurrentRoutes` |
 | `D06` | Maximum snapshot wire | 512 legal bindings fit; 513 rejects before state change | `TestSnapshotEnvelopeAcceptsMaximumLegalSetAndRejectsExcess` |
-| `A01` | Six-gate admission | 64 `A,L,Q,D,V,O` combinations admit only `111111` | `TestSixGateAdmissionComposition` |
+| `A01` | Six-gate admission | 64 `A,L,Q,C,V,O` combinations admit only `111111` | `TestSixGateAdmissionComposition` |
 | `A02` | Authority call cancellation | Caller cancel/deadline affects only that call | authority manager call-scoped verification tests |
 | `A03` | Definitive leadership loss | Authority-local `V` clears and admissions fail closed | `TestAuthorityFailoverRetainsCommittedDirectoryButDropsV` |
-| `A04` | One confirmed admission boundary | One VerifyLeader+Barrier binds exact authority `D/V`; a changed authority ref rejects; steady Open does no full FSM copy | `TestAdmissionRejectsChangedAuthorityRef`, `TestSteadyStateConfirmAndAdmitOpenDoNotCopyFullState` |
+| `A04` | One confirmed admission boundary | One VerifyLeader+Barrier binds exact authority `C/V`; a changed authority ref rejects; steady Open does no full FSM copy | `TestAdmissionRejectsChangedAuthorityRef`, `TestSteadyStateConfirmAndAdmitOpenDoNotCopyFullState` |
 | `O01` | Open LP ordering | O -> offer -> accept/PipeId -> confirmation ACK -> caller activation | Opening/public relay integration tests |
 | `O02` | Accept/cancel/unbind races | First LP wins; late success does not revive; pre-O failure has no offer | `TestOpenAcceptVersusCancelBothOrders` and retirement tests |
 | `O03` | Unknown boundary | Post-LP response/hop loss has no retry/resume and may be `Unknown` | `TestX04ListenerAcceptThenConfirmationLossAndOwnerShutdownIsUnknown`, peer loss tests |
@@ -42,6 +42,9 @@ Each test must define initial identity/state, exact event order or crash cut, ob
 | `S01` | SDK parity | Go-Go, Go-Rust, Rust-Go, Rust-Rust exact Open/payload/close | SDK conformance Compose stage |
 | `S02` | Go SDK module isolation | `GOWORK=off` build/test imports no server/internal API | Go SDK module test/vet and import scan |
 | `S03` | SDK supervision | Fresh auth/current Listener rebind; outage Open=`NotReady`; old Pipe terminal/no replay | `TestManagedClientReconnectsAndRedeclaresCurrentListenerOnly`, `TestManagedClientUnbindDuringBackoffDoesNotRedeclare`, Rust managed tests |
+| `E01` | Bind/Unbind error scope | Invalid/capacity/conflict/unavailable returns exact operation-local failure and a later request succeeds on the same Relay stream; session/auth/protocol failures still end it | Public Relay and Go/Rust SDK binding-failure tests |
+| `E02` | Managed retry parity | Go/Rust both classify invalid argument, unauthenticated, permission denied, failed precondition, and protocol as permanent; transient transport enters bounded backoff | Go/Rust managed classification tests |
+| `E03` | Payload rejection scope | Every rejection terminalizes the SDK's exact Pipe; the server terminalizes only an exact owned Pipe and never mutates unknown/foreign state | Public Relay and Go/Rust SDK payload rejection tests |
 
 ## Cross-Failure Cuts
 

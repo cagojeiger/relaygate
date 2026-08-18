@@ -616,6 +616,10 @@ func (m *ManagedClient) signalLocked() {
 }
 
 func isPermanentManagedConnectError(err error) bool {
+	var bindErr *BindError
+	if errors.As(err, &bindErr) {
+		return bindErr.Failure != BindingFailureUnavailable
+	}
 	switch status.Code(err) {
 	case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied, codes.FailedPrecondition:
 		return true

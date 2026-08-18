@@ -40,6 +40,11 @@ TLS is required by default. Plaintext is available only for loopback development
 or retries Opens, resumes Pipes, or replays payloads across a session boundary. `Pipe::send` success means the frame was
 accepted by the local bounded stream writer, not acknowledged by the peer application.
 
+Bind and Unbind rejections are typed, operation-local errors and leave the authenticated session usable. A
+`PipePayloadRejected` response is terminal for that exact Pipe because payload frames have no acknowledgement ID; it does
+not terminate the Client. Managed reconnect treats invalid arguments, authentication, permission, failed preconditions,
+and protocol violations as permanent, while transient transport and availability failures enter bounded backoff.
+
 The crate packages its protobuf build input under `proto/`. From the repository root, verify the release artifact and
 the full Rust workspace with:
 

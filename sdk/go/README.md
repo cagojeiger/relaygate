@@ -13,6 +13,11 @@ The public API exposes `Client`, `ManagedClient`, `Listener`, `Offer`, and `Pipe
 and fresh-Binds only current `ManagedListener` declarations. It never queues or retries Open/Pipe/payload work across a
 session boundary; `Close` cancels and joins the supervisor.
 
+Bind and Unbind rejections are typed, operation-local errors and leave the authenticated session usable. A
+`PipePayloadRejected` response is terminal for that exact Pipe because payload frames have no acknowledgement ID; it does
+not terminate the Client. Managed reconnect treats invalid arguments, authentication, permission, failed preconditions,
+and protocol violations as permanent, while transient transport and availability failures enter bounded backoff.
+
 ```go
 client, err := relaygate.ConnectManaged(ctx,
     relaygate.NewConfig(address, clientID, keyID, apiKey))

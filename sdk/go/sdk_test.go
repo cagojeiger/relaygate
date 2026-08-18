@@ -990,6 +990,114 @@ func TestPayloadQueuePressureClosesExactPipe(t *testing.T) {
 	}
 }
 
+func TestPayloadRejectionTerminatesOnlyTheExactPipe(t *testing.T) {
+	tests := []struct {
+		name    string
+		wire    relayv1.PipePayloadFailure
+		failure PipePayloadFailure
+	}{
+		{name: "invalid request", wire: relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST, failure: PipePayloadInvalidRequest},
+		{name: "not owned", wire: relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED, failure: PipePayloadNotOwned},
+		{name: "backpressure", wire: relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE, failure: PipePayloadBackpressure},
+		{name: "unavailable", wire: relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE, failure: PipePayloadUnavailable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			address := startScriptedRelay(t, func(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
+				if _, err := authenticateScript(stream); err != nil {
+					return err
+				}
+				request, err := recvRequest(stream)
+				if err != nil {
+					return err
+				}
+				open := request.GetOpen()
+				if open == nil {
+					return status.Error(codes.FailedPrecondition, "Open required")
+				}
+				if err := stream.Send(pipeOpened(open, "attempt-rejected", "pipe-rejected")); err != nil {
+					return err
+				}
+				if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadRejected{
+					PipePayloadRejected: &relayv1.PipePayloadRejected{PipeId: "pipe-rejected", Failure: test.wire},
+				}}); err != nil {
+					return err
+				}
+				<-stream.Context().Done()
+				return stream.Context().Err()
+			})
+			client := connectTestClient(t, address)
+			pipe, err := client.Open(context.Background(), "/rejected", "worker")
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			<-pipe.Done()
+			var pipeErr *PipeError
+			if !errors.As(pipe.Err(), &pipeErr) || pipeErr.Failure != test.failure {
+				t.Fatalf("Pipe Err = %v, want failure %v", pipe.Err(), test.failure)
+			}
+			select {
+			case <-client.Done():
+				t.Fatalf("payload rejection failed the Client: %v", client.Err())
+			default:
+			}
+		})
+	}
+}
+
+func TestPayloadRejectionAfterExactTerminalIsAnIdempotentNoop(t *testing.T) {
+	address := startScriptedRelay(t, func(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
+		if _, err := authenticateScript(stream); err != nil {
+			return err
+		}
+		request, err := recvRequest(stream)
+		if err != nil {
+			return err
+		}
+		open := request.GetOpen()
+		if open == nil {
+			return status.Error(codes.FailedPrecondition, "Open required")
+		}
+		if err := stream.Send(pipeOpened(open, "attempt-terminal-first", "pipe-terminal-first")); err != nil {
+			return err
+		}
+		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipeTerminated{
+			PipeTerminated: &relayv1.PipeTerminated{PipeId: "pipe-terminal-first"},
+		}}); err != nil {
+			return err
+		}
+		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadRejected{
+			PipePayloadRejected: &relayv1.PipePayloadRejected{
+				PipeId: "pipe-terminal-first", Failure: relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST,
+			},
+		}}); err != nil {
+			return err
+		}
+		request, err = recvRequest(stream)
+		if err != nil {
+			return err
+		}
+		bind := request.GetBindListener()
+		if bind == nil {
+			return status.Error(codes.FailedPrecondition, "Bind required after duplicate terminal")
+		}
+		if err := stream.Send(listenerBound("binding-after-terminal", bind.GetEndpointPattern(), bind.GetTargetId())); err != nil {
+			return err
+		}
+		<-stream.Context().Done()
+		return stream.Context().Err()
+	})
+	client := connectTestClient(t, address)
+	pipe, err := client.Open(context.Background(), "/terminal-first", "worker")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	<-pipe.Done()
+	if _, err := client.Bind(context.Background(), "/after-terminal", "worker"); err != nil {
+		t.Fatalf("Bind after duplicate exact terminal: %v", err)
+	}
+}
+
 func TestBindUnbindAbsorbsExactStaleAcknowledgements(t *testing.T) {
 	address := startScriptedRelay(t, func(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
 		if _, err := authenticateScript(stream); err != nil {
@@ -1045,6 +1153,97 @@ func TestBindUnbindAbsorbsExactStaleAcknowledgements(t *testing.T) {
 	second, err := client.Bind(context.Background(), "/second", "worker")
 	if err != nil || second.ID() != "binding-2" {
 		t.Fatalf("second Bind with stale ListenerUnbound = %#v, %v", second, err)
+	}
+}
+
+func TestBindUnbindOperationFailuresKeepSessionUsable(t *testing.T) {
+	address := startScriptedRelay(t, func(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
+		if _, err := authenticateScript(stream); err != nil {
+			return err
+		}
+		request, err := recvRequest(stream)
+		if err != nil {
+			return err
+		}
+		failedBind := request.GetBindListener()
+		if failedBind == nil {
+			return status.Error(codes.FailedPrecondition, "first Bind required")
+		}
+		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerBindFailed{
+			ListenerBindFailed: &relayv1.ListenerBindFailed{
+				EndpointPattern: failedBind.GetEndpointPattern(), TargetId: failedBind.GetTargetId(),
+				Failure: relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_CONFLICT,
+			},
+		}}); err != nil {
+			return err
+		}
+
+		request, err = recvRequest(stream)
+		if err != nil {
+			return err
+		}
+		successfulBind := request.GetBindListener()
+		if successfulBind == nil {
+			return status.Error(codes.FailedPrecondition, "second Bind required")
+		}
+		if err := stream.Send(listenerBound("binding-1", successfulBind.GetEndpointPattern(), successfulBind.GetTargetId())); err != nil {
+			return err
+		}
+
+		request, err = recvRequest(stream)
+		if err != nil || request.GetUnbindListener().GetListenerBindingId() != "binding-1" {
+			return status.Error(codes.FailedPrecondition, "first Unbind required")
+		}
+		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerUnbindFailed{
+			ListenerUnbindFailed: &relayv1.ListenerUnbindFailed{
+				ListenerBindingId: "binding-1",
+				Failure:           relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_UNAVAILABLE,
+			},
+		}}); err != nil {
+			return err
+		}
+
+		request, err = recvRequest(stream)
+		if err != nil || request.GetUnbindListener().GetListenerBindingId() != "binding-1" {
+			return status.Error(codes.FailedPrecondition, "second Unbind required")
+		}
+		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerUnbound{
+			ListenerUnbound: &relayv1.ListenerUnbound{ListenerBindingId: "binding-1"},
+		}}); err != nil {
+			return err
+		}
+		<-stream.Context().Done()
+		return stream.Context().Err()
+	})
+
+	client := connectTestClient(t, address)
+	_, err := client.Bind(context.Background(), "/conflict", "worker")
+	var bindErr *BindError
+	if !errors.As(err, &bindErr) || !errors.Is(err, ErrBindFailed) || bindErr.Failure != BindingFailureConflict {
+		t.Fatalf("failed Bind error = %#v, %v", bindErr, err)
+	}
+	select {
+	case <-client.Done():
+		t.Fatalf("operation-local Bind failure ended Client: %v", client.Err())
+	default:
+	}
+
+	listener, err := client.Bind(context.Background(), "/ok", "worker")
+	if err != nil {
+		t.Fatalf("Bind after operation-local failure: %v", err)
+	}
+	err = listener.Unbind(context.Background())
+	var unbindErr *UnbindError
+	if !errors.As(err, &unbindErr) || !errors.Is(err, ErrUnbindFailed) || unbindErr.Failure != BindingFailureUnavailable {
+		t.Fatalf("failed Unbind error = %#v, %v", unbindErr, err)
+	}
+	select {
+	case <-listener.done:
+		t.Fatalf("operation-local Unbind failure ended Listener: %v", listener.terminalError())
+	default:
+	}
+	if err := listener.Unbind(context.Background()); err != nil {
+		t.Fatalf("Unbind retry on same session: %v", err)
 	}
 }
 

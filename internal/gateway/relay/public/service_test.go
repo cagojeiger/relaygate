@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -149,21 +148,24 @@ func TestConnectBindsAndUnbindsWithinAuthenticatedClientNamespace(t *testing.T) 
 	waitForSessionCount(t, sessions, 0)
 }
 
-func TestConnectMapsBindingFailuresWithoutLeakingDetails(t *testing.T) {
+func TestConnectReturnsBindFailuresAndKeepsStreamUsable(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		err  error
-		code codes.Code
+		name    string
+		err     error
+		failure relayv1.ListenerBindingFailure
 	}{
-		{name: "invalid", err: localbinding.ErrInvalid, code: codes.InvalidArgument},
-		{name: "capacity", err: localbinding.ErrCapacity, code: codes.ResourceExhausted},
-		{name: "conflict", err: localbinding.ErrConflict, code: codes.AlreadyExists},
-		{name: "control unavailable", err: localbinding.ErrUnavailable, code: codes.Unavailable},
-		{name: "session ended", err: localbinding.ErrSessionEnded, code: codes.Unauthenticated},
+		{name: "invalid", err: localbinding.ErrInvalid, failure: relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_INVALID_REQUEST},
+		{name: "capacity", err: localbinding.ErrCapacity, failure: relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_CAPACITY_REACHED},
+		{name: "conflict", err: localbinding.ErrConflict, failure: relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_CONFLICT},
+		{name: "control unavailable", err: localbinding.ErrUnavailable, failure: relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_UNAVAILABLE},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
 			bindings := &testBindingManager{bind: func(context.Context, clientsession.Session, string, string, localbinding.ListenerEndpoint) (routing.LiveBinding, error) {
-				return routing.LiveBinding{}, fmt.Errorf("sensitive detail: %w", test.err)
+				if calls.Add(1) == 1 {
+					return routing.LiveBinding{}, fmt.Errorf("sensitive detail: %w", test.err)
+				}
+				return testListenerSlot("client-a", "/jobs", "worker"), nil
 			}}
 			_, _, server := startTestServerWithOptionsAndBindings(t, map[string]clientauth.ClientConfig{
 				"client-a": {APIKeys: map[string]string{"key-a": verifier("secret-a")}},
@@ -184,11 +186,106 @@ func TestConnectMapsBindingFailuresWithoutLeakingDetails(t *testing.T) {
 			}}); err != nil {
 				t.Fatalf("Send(bind): %v", err)
 			}
-			_, err = stream.Recv()
-			if status.Code(err) != test.code || strings.Contains(status.Convert(err).Message(), "sensitive") {
-				t.Fatalf("Recv(bind) error = %v, want redacted %v", err, test.code)
+			response, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv(bind failure): %v", err)
+			}
+			failed := response.GetListenerBindFailed()
+			if failed == nil || failed.GetFailure() != test.failure || failed.GetEndpointPattern() != "/jobs" || failed.GetTargetId() != "worker" {
+				t.Fatalf("ListenerBindFailed = %#v, want failure %v", failed, test.failure)
+			}
+
+			if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_BindListener{
+				BindListener: &relayv1.BindListener{EndpointPattern: "/jobs", TargetId: "worker"},
+			}}); err != nil {
+				t.Fatalf("Send(valid bind): %v", err)
+			}
+			response, err = stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv(valid bind): %v", err)
+			}
+			if response.GetListenerBound() == nil {
+				t.Fatalf("valid bind response = %#v, want ListenerBound", response)
 			}
 		})
+	}
+}
+
+func TestConnectReturnsUnbindFailureAndKeepsStreamUsable(t *testing.T) {
+	bindings := &testBindingManager{
+		bind: func(context.Context, clientsession.Session, string, string, localbinding.ListenerEndpoint) (routing.LiveBinding, error) {
+			return testListenerSlot("client-a", "/jobs", "worker"), nil
+		},
+		unbind: func(clientsession.Ref, string) error {
+			return fmt.Errorf("sensitive detail: %w", localbinding.ErrConflict)
+		},
+	}
+	_, _, server := startTestServerWithOptionsAndBindings(t, map[string]clientauth.ClientConfig{
+		"client-a": {APIKeys: map[string]string{"key-a": verifier("secret-a")}},
+	}, 10, time.Second, bindings)
+	connection := dialTestServer(t, server.Address())
+	stream, err := relayv1.NewRelayClient(connection).Connect(context.Background())
+	if err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := stream.Send(authenticateRequest("client-a", "key-a", "secret-a")); err != nil {
+		t.Fatalf("Send(authenticate): %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("Recv(session): %v", err)
+	}
+	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_UnbindListener{
+		UnbindListener: &relayv1.UnbindListener{ListenerBindingId: "listener-a"},
+	}}); err != nil {
+		t.Fatalf("Send(unbind): %v", err)
+	}
+	response, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(unbind failure): %v", err)
+	}
+	failed := response.GetListenerUnbindFailed()
+	if failed == nil || failed.GetFailure() != relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_CONFLICT || failed.GetListenerBindingId() != "listener-a" {
+		t.Fatalf("ListenerUnbindFailed = %#v", failed)
+	}
+	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_BindListener{
+		BindListener: &relayv1.BindListener{EndpointPattern: "/jobs", TargetId: "worker"},
+	}}); err != nil {
+		t.Fatalf("Send(valid bind): %v", err)
+	}
+	response, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(valid bind): %v", err)
+	}
+	if response.GetListenerBound() == nil {
+		t.Fatalf("valid bind response = %#v, want ListenerBound", response)
+	}
+}
+
+func TestConnectKeepsSessionEndedBindingFailureStreamFatal(t *testing.T) {
+	bindings := &testBindingManager{bind: func(context.Context, clientsession.Session, string, string, localbinding.ListenerEndpoint) (routing.LiveBinding, error) {
+		return routing.LiveBinding{}, localbinding.ErrSessionEnded
+	}}
+	_, _, server := startTestServerWithOptionsAndBindings(t, map[string]clientauth.ClientConfig{
+		"client-a": {APIKeys: map[string]string{"key-a": verifier("secret-a")}},
+	}, 10, time.Second, bindings)
+	connection := dialTestServer(t, server.Address())
+	stream, err := relayv1.NewRelayClient(connection).Connect(context.Background())
+	if err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := stream.Send(authenticateRequest("client-a", "key-a", "secret-a")); err != nil {
+		t.Fatalf("Send(authenticate): %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("Recv(session): %v", err)
+	}
+	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_BindListener{
+		BindListener: &relayv1.BindListener{EndpointPattern: "/jobs", TargetId: "worker"},
+	}}); err != nil {
+		t.Fatalf("Send(bind): %v", err)
+	}
+	if _, err := stream.Recv(); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("Recv(session-ended bind) = %v, want Unauthenticated", err)
 	}
 }
 

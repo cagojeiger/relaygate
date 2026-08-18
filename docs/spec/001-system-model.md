@@ -97,7 +97,7 @@ sequenceDiagram
 ## New-Pipe Admission
 
 ```text
-Admit = A ∧ L ∧ Q ∧ D ∧ V ∧ O
+Admit = A ∧ L ∧ Q ∧ C ∧ V ∧ O
 ```
 
 | Gate | Condition |
@@ -105,7 +105,7 @@ Admit = A ∧ L ∧ Q ∧ D ∧ V ∧ O
 | `A` | caller auth/session is current |
 | `L` | current authority is confirmed leader for the epoch |
 | `Q` | quorum verification and read barrier succeed |
-| `D` | exact `(ClientId, endpoint, target)` route exists in committed current FSM |
+| `C` | exact `(ClientId, endpoint, target)` route exists in committed current FSM |
 | `V` | exact owner control session is current, revalidated, and has a relay address |
 | `O` | owner rechecks authority/session/auth/binding/expiry/capacity and reserves the attempt |
 
@@ -115,6 +115,8 @@ Only `111111` creates a Listener offer. Context issuance is not a reservation or
 
 - Bind creates a local pending binding and becomes live only after controller ACK.
 - Unbind/revocation/session end first makes the local binding ineligible, then attempts exact withdraw.
+- Bind/Unbind validation, capacity, conflict, and control-unavailable results are operation-local responses; they do not end an otherwise valid Relay session.
+- Authentication/session end, malformed protocol state, and stream transport failure are session-fatal gRPC errors.
 - Listener accept is the Open linearization point and mints `PipeId`.
 - Post-linearization response or hop loss can produce caller `Unknown`.
 - Remote owner uses one dedicated internal bidirectional stream per Pipe; no redial, retry, multiplexed resume, or payload replay.

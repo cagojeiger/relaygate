@@ -185,6 +185,9 @@ func (s *Service) handleRequest(ctx context.Context, session clientsession.Sessi
 	if bind := request.GetBindListener(); bind != nil {
 		slot, err := s.bindings.Bind(ctx, session, bind.GetEndpointPattern(), bind.GetTargetId(), listener)
 		if err != nil {
+			if failure, ok := listenerBindingFailure(err); ok {
+				return listenerBindFailed(bind, failure), nil
+			}
 			return nil, bindingStatus(err)
 		}
 		if slot.Ref.ListenerBindingID == "" {
@@ -201,6 +204,9 @@ func (s *Service) handleRequest(ctx context.Context, session clientsession.Sessi
 
 	if unbind := request.GetUnbindListener(); unbind != nil {
 		if err := s.bindings.Unbind(session.Ref, unbind.GetListenerBindingId()); err != nil {
+			if failure, ok := listenerBindingFailure(err); ok {
+				return listenerUnbindFailed(unbind, failure), nil
+			}
 			return nil, bindingStatus(err)
 		}
 		return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerUnbound{
@@ -245,16 +251,42 @@ func (s *Service) handleRequest(ctx context.Context, session clientsession.Sessi
 	return nil, status.Error(codes.FailedPrecondition, "authenticate must be followed by a relay operation")
 }
 
-func bindingStatus(err error) error {
+func listenerBindFailed(bind *relayv1.BindListener, failure relayv1.ListenerBindingFailure) *relayv1.ConnectResponse {
+	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerBindFailed{
+		ListenerBindFailed: &relayv1.ListenerBindFailed{
+			EndpointPattern: safeWireValue(bind.GetEndpointPattern(), routing.MaxEndpointPatternBytes),
+			TargetId:        safeWireValue(bind.GetTargetId(), routing.MaxIdentityBytes),
+			Failure:         failure,
+		},
+	}}
+}
+
+func listenerUnbindFailed(unbind *relayv1.UnbindListener, failure relayv1.ListenerBindingFailure) *relayv1.ConnectResponse {
+	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerUnbindFailed{
+		ListenerUnbindFailed: &relayv1.ListenerUnbindFailed{
+			ListenerBindingId: safeWireValue(unbind.GetListenerBindingId(), routing.MaxIdentityBytes),
+			Failure:           failure,
+		},
+	}}
+}
+
+func listenerBindingFailure(err error) (relayv1.ListenerBindingFailure, bool) {
 	switch {
 	case errors.Is(err, localbinding.ErrInvalid):
-		return status.Error(codes.InvalidArgument, "invalid listener binding request")
+		return relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_INVALID_REQUEST, true
 	case errors.Is(err, localbinding.ErrCapacity):
-		return status.Error(codes.ResourceExhausted, "listener binding capacity reached")
+		return relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_CAPACITY_REACHED, true
 	case errors.Is(err, localbinding.ErrConflict):
-		return status.Error(codes.AlreadyExists, "listener binding conflicts with an existing binding")
+		return relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_CONFLICT, true
 	case errors.Is(err, localbinding.ErrUnavailable):
-		return status.Error(codes.Unavailable, "gateway control is unavailable")
+		return relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_UNAVAILABLE, true
+	default:
+		return relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_UNSPECIFIED, false
+	}
+}
+
+func bindingStatus(err error) error {
+	switch {
 	case errors.Is(err, localbinding.ErrSessionEnded),
 		errors.Is(err, clientsession.ErrCredentialRevoked),
 		errors.Is(err, clientsession.ErrStaleSession),
@@ -304,7 +336,13 @@ func (s *Service) open(ctx context.Context, session clientsession.Session, calle
 func (s *Service) relayPayload(ctx context.Context, sender clientsession.Ref, request *relayv1.PipePayload) *relayv1.ConnectResponse {
 	pipeID := safeWireValue(request.GetPipeId(), routing.MaxIdentityBytes)
 	payload := request.GetPayload()
-	if pipeID == "" || len(payload) == 0 || len(payload) > localbinding.MaxPayloadBytes {
+	if pipeID == "" {
+		return pipePayloadRejected(pipeID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
+	}
+	if len(payload) == 0 || len(payload) > localbinding.MaxPayloadBytes {
+		// ClosePipe changes state only for the exact participant. Unknown and
+		// foreign IDs are intentionally indistinguishable and remain untouched.
+		s.opener.ClosePipe(sender, pipeID)
 		return pipePayloadRejected(pipeID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
 	}
 	if err := s.opener.RelayPayload(ctx, sender, pipeID, payload); err != nil {

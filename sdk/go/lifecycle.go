@@ -564,7 +564,7 @@ func (c *Client) Bind(ctx context.Context, endpoint, target string) (*Listener, 
 		return nil, fmt.Errorf("relaygate: context is required")
 	}
 	if !validEndpoint(endpoint) || !validIdentity(target) {
-		return nil, fmt.Errorf("relaygate: invalid endpoint or target")
+		return nil, &BindError{Failure: BindingFailureInvalidRequest, Endpoint: endpoint, Target: target}
 	}
 	c.bindingMu.Lock()
 	defer c.bindingMu.Unlock()
@@ -572,7 +572,7 @@ func (c *Client) Bind(ctx context.Context, endpoint, target string) (*Listener, 
 	c.mu.Lock()
 	if c.pendingBinding != nil || len(c.listeners) >= maxListeners {
 		c.mu.Unlock()
-		return nil, errCapacity
+		return nil, &BindError{Failure: BindingFailureCapacityReached, Endpoint: endpoint, Target: target}
 	}
 	c.pendingBinding = call
 	c.mu.Unlock()

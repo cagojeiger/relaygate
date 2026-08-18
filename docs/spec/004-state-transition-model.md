@@ -11,6 +11,12 @@ Every state/event input has exactly one result.
 
 This is semantic closure, not a claim that one test enumerates the full Cartesian product.
 
+`Rejected` is a stable request/frame refusal, `Failed` is a stable operation failure (and is pre-LP for Open), `Unknown`
+means the Open LP may have happened, `Acknowledged` is an exact correlated apply barrier, and `Terminated` is an absorbing
+resource end. Public operation-local failures use response messages; authentication/session/protocol/transport failures
+end the gRPC stream.
+An unrecognized, malformed, foreign, or conflicting public response is a protocol failure, not an operation-local `Rejected` result.
+
 ## Ownership
 
 | Machine | Owner | Persistence | Clear/terminal owner |
@@ -95,7 +101,7 @@ completeness or change admission state.
 | `ActiveS` | close/revocation | `RetiringS` | Stop new work, retire children |
 | `RetiringS` | local retirement complete | `TerminalS` | Identity cannot revive |
 | `AbsentB` | Bind start + capacity | `RegisteringB` | Allocate exact `ListenerBindingId` |
-| `RegisteringB` | exact Raft-backed declare or full-snapshot ACK | `LiveB` | Local declaration is O-capable; end-to-end admission still requires current `D` and `V` |
+| `RegisteringB` | exact Raft-backed declare or full-snapshot ACK | `LiveB` | Local declaration is O-capable; end-to-end admission still requires current `C` and `V` |
 | `RegisteringB` | declare failure, caller cancel, unbind, revocation, client session/Gateway end, or control end before ACK | `RetiredB` | O=false; do not replay into a later control session; late success is conditionally withdrawn before capacity is released |
 | `LiveB` | control session end while Gateway process and client session remain live | `LiveB` | Keep the local declaration for the next FullSnapshot; global `V` is false, so no new O until revalidation |
 | `LiveB` | unbind/revocation/client session/Gateway end | `RetiringB` | Immediately O=false, conditional withdraw |
@@ -104,20 +110,20 @@ completeness or change admission state.
 ## Admission, Open, Replay Fence
 
 `AdmitOpen` owns one confirmed read boundary: it verifies leader/quorum and a Raft read barrier once, then requires the
-same exact `AuthorityId` while looking up `D` and `V`. An authority change before those lookups rejects the request; no
+same exact `AuthorityId` while looking up `C` and `V`. An authority change before those lookups rejects the request; no
 second verification, state mutation, or full-FSM copy belongs to the steady-state admission path.
 
 | From | Event + guard | To | Effect |
 | --- | --- | --- | --- |
-| `OpeningO` | all `A·L·Q·D·V·O` guards | `AdmittedO` | Atomic reservation + `AttemptId` fence; Listener offer |
+| `OpeningO` | all `A·L·Q·C·V·O` guards | `AdmittedO` | Atomic reservation + `AttemptId` fence; Listener offer |
 | `OpeningO` | any guard/deadline/cancel failure | `TerminalO` | No offer/PipeId; failed guard does not consume context |
 | `AdmittedO` | Listener accept wins | `AcceptedO` | Open LP; mint `PipeId` |
 | `AdmittedO` | reject/deadline/cancel/end wins | `TerminalO` | Late accept NoOp; fence remains to expiry |
 | `AcceptedO` | late attempt deadline | `AcceptedO` | NoOp |
 | `AcceptedO` | participant/hop/terminal end | `TerminalO` | Best-effort peer terminal |
-| `AbsentAttemptR` | successful O | `ReservedAttemptR` | Insert `AttemptId` until expiry |
-| `ReservedAttemptR` | duplicate | `ReservedAttemptR` | Reject; do not replay outcome/PipeId |
-| `ReservedAttemptR` | expired | `AbsentAttemptR` | GC allowed; old context expired |
+| `AbsentAttemptF` | successful O | `ReservedAttemptF` | Insert `AttemptId` until expiry |
+| `ReservedAttemptF` | duplicate | `ReservedAttemptF` | Reject; do not replay outcome/PipeId |
+| `ReservedAttemptF` | expired | `AbsentAttemptF` | GC allowed; old context expired |
 
 | Participant machine | Open transition | Terminal transition |
 | --- | --- | --- |
@@ -136,6 +142,7 @@ One remote Pipe uses one hop stream. Mismatched identity, second attempt, redial
 | `Flowing` | queue high | `Backpressured`; stop accepting payload |
 | `Backpressured` | drain before timeout | `Flowing` |
 | `Flowing/Backpressured` | bound, timeout, or write failure | request Pipe terminal; no silent drop |
+| `Flowing/Backpressured` | any payload rejection | terminalize the SDK's exact Pipe view; server mutates only an exact owned Pipe |
 | any non-terminal | exact participant close or session/hop/Gateway end | first local terminal |
 | terminal | duplicate/late success/payload | terminal NoOp or ownership rejection |
 
@@ -158,3 +165,15 @@ stream. Shutdown cancels and joins owned workers; neither path replays queued or
 | any non-terminal | Close | `ClosedM` | Cancel connect/backoff and join one supervisor task |
 
 Logical Listener drop/unbind removes its declaration before current-session cleanup, so later reconnect cannot redeclare it.
+
+## Public Error Scope
+
+| Request/result family | Operation-local | Session-fatal |
+| --- | --- | --- |
+| Bind/Unbind | invalid request, capacity, conflict, control unavailable | session ended/revoked, context/stream end, internal protocol failure |
+| Open/cancel | `PipeOpenFailed`, `PipeOpenUnknown`, `OpenRequestRejected`, exact cancel ACK | malformed stream state or transport failure |
+| Listener decision | `ListenerDecisionRejected`, exact confirmation ACK | malformed/conflicting correlated response |
+| Payload/close | payload rejection and exact close ACK/terminal | malformed/conflicting correlated response or transport failure |
+
+Go and Rust managed supervisors retry only transient transport/availability failures. Invalid configuration, authentication,
+permission, failed precondition, and protocol errors enter `FailedM`. No supervisor retry replays Open/Pipe/payload state.

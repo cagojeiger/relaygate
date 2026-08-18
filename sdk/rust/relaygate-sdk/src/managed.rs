@@ -417,7 +417,7 @@ impl ManagedCore {
             let mut cancel = self.cancel_tx.subscribe();
             tokio::select! {
                 error = client.done() => {
-                    if matches!(error, crate::SessionError::Protocol(_)) {
+                    if permanent_session_error(&error) {
                         self.finish(ManagedState::Failed, Some(error.to_string())).await;
                         return;
                     }
@@ -712,10 +712,27 @@ fn permanent_connect_error(error: &ConnectError) -> bool {
 }
 
 fn retryable_managed_error(error: &ManagedError) -> bool {
-    matches!(
-        error,
-        ManagedError::Session(_) | ManagedError::Bind(BindError::Session(_))
-    )
+    match error {
+        ManagedError::Session(error) | ManagedError::Bind(BindError::Session(error)) => {
+            !permanent_session_error(error)
+        }
+        ManagedError::Bind(BindError::Unavailable) => true,
+        _ => false,
+    }
+}
+
+fn permanent_session_error(error: &crate::SessionError) -> bool {
+    match error {
+        crate::SessionError::Protocol(_) => true,
+        crate::SessionError::Rpc { code, .. } => matches!(
+            code,
+            Code::InvalidArgument
+                | Code::Unauthenticated
+                | Code::PermissionDenied
+                | Code::FailedPrecondition
+        ),
+        crate::SessionError::Closed | crate::SessionError::Transport(_) => false,
+    }
 }
 
 fn next_backoff(delay: Duration) -> Duration {
@@ -991,5 +1008,58 @@ mod tests {
         assert_eq!(client.state(), ManagedState::Failed);
         assert!(sessions.try_recv().is_err());
         client.close().await;
+    }
+
+    #[tokio::test]
+    async fn permanent_rpc_session_failure_stops_without_reconnect() {
+        for code in [
+            Code::InvalidArgument,
+            Code::Unauthenticated,
+            Code::PermissionDenied,
+            Code::FailedPrecondition,
+        ] {
+            let (client, mut sessions) = harness();
+            let first = sessions.recv().await.expect("first session");
+            client.wait_ready().await.expect("initial ready");
+            first.shared.terminate(SessionError::Rpc {
+                code,
+                message: "injected permanent failure".into(),
+            });
+            assert!(matches!(client.done().await, ManagedError::Failed(_)));
+            assert_eq!(client.state(), ManagedState::Failed);
+            assert!(sessions.try_recv().is_err());
+            client.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_rpc_session_failure_reconnects() {
+        let (client, mut sessions) = harness();
+        let first = sessions.recv().await.expect("first session");
+        client.wait_ready().await.expect("initial ready");
+        first.shared.terminate(SessionError::Rpc {
+            code: Code::Unavailable,
+            message: "injected transient failure".into(),
+        });
+        let second = tokio::time::timeout(Duration::from_secs(2), sessions.recv())
+            .await
+            .expect("reconnect timeout")
+            .expect("second session");
+        assert_eq!(second.number, 2);
+        client.close().await;
+    }
+
+    #[test]
+    fn binding_retry_classification_matches_operation_contract() {
+        for error in [
+            BindError::InvalidRequest,
+            BindError::CapacityReached,
+            BindError::Conflict,
+        ] {
+            assert!(!retryable_managed_error(&ManagedError::Bind(error)));
+        }
+        assert!(retryable_managed_error(&ManagedError::Bind(
+            BindError::Unavailable,
+        )));
     }
 }

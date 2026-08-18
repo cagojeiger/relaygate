@@ -66,6 +66,66 @@ type Session struct {
 	AuthRevision string
 }
 
+// BindingFailure is a stable operation-local Bind or Unbind failure. It does
+// not imply that the authenticated Client session ended.
+type BindingFailure uint8
+
+const (
+	BindingFailureInvalidRequest BindingFailure = iota + 1
+	BindingFailureCapacityReached
+	BindingFailureConflict
+	BindingFailureUnavailable
+)
+
+var (
+	ErrBindFailed   = errors.New("relaygate: Bind failed")
+	ErrUnbindFailed = errors.New("relaygate: Unbind failed")
+)
+
+type BindError struct {
+	Failure  BindingFailure
+	Endpoint string
+	Target   string
+}
+
+func (e *BindError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("relaygate: Bind %q target %q failed (%s)", e.Endpoint, e.Target, e.Failure)
+}
+
+func (e *BindError) Is(target error) bool { return e != nil && target == ErrBindFailed }
+
+type UnbindError struct {
+	Failure    BindingFailure
+	ListenerID string
+}
+
+func (e *UnbindError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("relaygate: Unbind listener %q failed (%s)", e.ListenerID, e.Failure)
+}
+
+func (e *UnbindError) Is(target error) bool { return e != nil && target == ErrUnbindFailed }
+
+func (f BindingFailure) String() string {
+	switch f {
+	case BindingFailureInvalidRequest:
+		return "invalid request"
+	case BindingFailureCapacityReached:
+		return "capacity reached"
+	case BindingFailureConflict:
+		return "conflict"
+	case BindingFailureUnavailable:
+		return "unavailable"
+	default:
+		return "unspecified"
+	}
+}
+
 type OpenOutcome uint8
 
 const (

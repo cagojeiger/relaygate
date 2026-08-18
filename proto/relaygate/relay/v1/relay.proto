@@ -42,6 +42,8 @@ message ConnectResponse {
     PipeTerminated pipe_terminated = 15;
     PipePayloadRejected pipe_payload_rejected = 16;
     ListenerConfirmationAcknowledged listener_confirmation_acknowledged = 17;
+    ListenerBindFailed listener_bind_failed = 18;
+    ListenerUnbindFailed listener_unbind_failed = 19;
   }
 }
 
@@ -83,6 +85,25 @@ message ListenerBound {
 
 message ListenerUnbound {
   string listener_binding_id = 1;
+}
+
+enum ListenerBindingFailure {
+  LISTENER_BINDING_FAILURE_UNSPECIFIED = 0;
+  LISTENER_BINDING_FAILURE_INVALID_REQUEST = 1;
+  LISTENER_BINDING_FAILURE_CAPACITY_REACHED = 2;
+  LISTENER_BINDING_FAILURE_CONFLICT = 3;
+  LISTENER_BINDING_FAILURE_UNAVAILABLE = 4;
+}
+
+message ListenerBindFailed {
+  string endpoint_pattern = 1;
+  string target_id = 2;
+  ListenerBindingFailure failure = 3;
+}
+
+message ListenerUnbindFailed {
+  string listener_binding_id = 1;
+  ListenerBindingFailure failure = 2;
 }
 
 message Open {
