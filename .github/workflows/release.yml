@@ -6,14 +6,44 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
   IMAGE: ${{ github.repository }}
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+      - name: Validate release contract
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release tag must be an exact stable SemVer: $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+          version=${GITHUB_REF_NAME#v}
+          crate_version=$(cargo metadata --format-version 1 --no-deps | jq --raw-output '.packages[] | select(.name == "relaygate-sdk") | .version')
+          if [[ "$crate_version" != "$version" ]]; then
+            echo "relaygate-sdk version $crate_version does not match tag $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+          grep --fixed-strings "## $version " CHANGELOG.md
+          cmp proto/relaygate/relay/v1/relay.proto sdk/rust/relaygate-sdk/proto/relaygate/relay/v1/relay.proto
+          cargo package --locked --package relaygate-sdk
+
   image:
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -35,3 +65,113 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.ref_name }}
             ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
+
+  rust-sdk:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+      - name: Publish relaygate-sdk
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
+            echo "CARGO_REGISTRY_TOKEN is required to publish relaygate-sdk"
+            exit 1
+          fi
+          version=${GITHUB_REF_NAME#v}
+          cargo package --locked --package relaygate-sdk
+          archive="target/package/relaygate-sdk-$version.crate"
+          expected_checksum=$(sha256sum "$archive" | awk '{print $1}')
+          response=$(mktemp)
+          trap 'rm -f "$response"' EXIT
+          if ! http_status=$(curl --silent --show-error \
+            --output "$response" \
+            --write-out '%{http_code}' \
+            "https://crates.io/api/v1/crates/relaygate-sdk/$version"); then
+            echo "failed to query crates.io"
+            exit 1
+          fi
+          case "$http_status" in
+            200)
+              published_checksum=$(jq --raw-output '.version.checksum' "$response")
+              if [[ "$published_checksum" != "$expected_checksum" ]]; then
+                echo "published relaygate-sdk $version does not match this release commit"
+                exit 1
+              fi
+              echo "relaygate-sdk $version is already published with the expected checksum"
+              ;;
+            404)
+              cargo publish --locked --package relaygate-sdk
+              ;;
+            *)
+              echo "unexpected crates.io response: HTTP $http_status"
+              cat "$response"
+              exit 1
+              ;;
+          esac
+
+  go-sdk-tag:
+    needs: [image, rust-sdk]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Publish nested Go SDK module tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          sdk_tag="sdk/go/v$version"
+          set +e
+          remote_ref=$(git ls-remote --exit-code --tags origin "refs/tags/$sdk_tag")
+          lookup_status=$?
+          set -e
+          case "$lookup_status" in
+            0)
+              git fetch --force origin "refs/tags/$sdk_tag:refs/tags/$sdk_tag"
+              sdk_commit=$(git rev-list --max-count=1 "$sdk_tag")
+              if [[ "$sdk_commit" != "$GITHUB_SHA" ]]; then
+                echo "$sdk_tag already points to a different commit"
+                exit 1
+              fi
+              echo "$sdk_tag already points to this release commit"
+              ;;
+            2)
+              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                --field ref="refs/tags/$sdk_tag" \
+                --field sha="$GITHUB_SHA"
+              ;;
+            *)
+              echo "failed to inspect $sdk_tag: $remote_ref"
+              exit "$lookup_status"
+              ;;
+          esac
+
+  github-release:
+    needs: go-sdk-tag
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $GITHUB_REF_NAME already exists"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "RelayGate $GITHUB_REF_NAME"
+          fi

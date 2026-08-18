@@ -103,10 +103,13 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
+      - name: Verify Rust SDK schema boundary
+        run: cmp proto/relaygate/relay/v1/relay.proto sdk/rust/relaygate-sdk/proto/relaygate/relay/v1/relay.proto
       - run: cargo fmt --all --check
       - run: cargo check --workspace --locked
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo package --locked --package relaygate-sdk
 
   image:
     name: docker build

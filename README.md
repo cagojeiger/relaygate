@@ -90,6 +90,18 @@ Production controllers need durable volumes/PVCs. The local Compose file uses na
 - Backpressure is bounded and fails closed; control and terminal events bypass payload pressure.
 - `ManagedClient` may reconnect a session and fresh-bind current Listeners. It does not queue Opens, replay outcomes, resume Pipes, or replay payload.
 
+## Install
+
+Release `0.1.0` consists of the server image and the matching Go and Rust SDKs:
+
+```bash
+docker pull ghcr.io/cagojeiger/relaygate:v0.1.0
+go get github.com/cagojeiger/relaygate/sdk/go@v0.1.0
+cargo add relaygate-sdk@0.1.0
+```
+
+All three artifacts use the same public Relay protobuf contract. Release mechanics are documented in [RELEASING.md](RELEASING.md).
+
 ## Local Configuration
 
 ```bash

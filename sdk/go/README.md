@@ -3,7 +3,7 @@
 Public module: `github.com/cagojeiger/relaygate/sdk/go`
 
 ```bash
-go get github.com/cagojeiger/relaygate/sdk/go
+go get github.com/cagojeiger/relaygate/sdk/go@v0.1.0
 ```
 
 The public API exposes `Client`, `ManagedClient`, `Listener`, `Offer`, and `Pipe`. Generated protobuf types are private under

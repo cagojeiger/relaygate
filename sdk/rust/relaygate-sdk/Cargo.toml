@@ -5,7 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
 description = "Public Rust SDK for the RelayGate relay data plane"
-publish = false
+repository = "https://github.com/cagojeiger/relaygate"
+readme = "README.md"
+include = [
+    "/README.md",
+    "/build.rs",
+    "/examples/**",
+    "/proto/**",
+    "/src/**",
+]
 
 [dependencies]
 prost = "=0.14.4"

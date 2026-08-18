@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package relaygate.relay.v1;
+
+option go_package = "github.com/cagojeiger/relaygate/internal/gen/relay/v1;relayv1";
+
+service Relay {
+  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
+}
+
+message ConnectRequest {
+  oneof message {
+    Authenticate authenticate = 1;
+    BindListener bind_listener = 2;
+    UnbindListener unbind_listener = 3;
+    Open open = 4;
+    ListenerAccept listener_accept = 5;
+    ListenerReject listener_reject = 6;
+    ListenerConfirmed listener_confirmed = 7;
+    CancelOpen cancel_open = 8;
+    ClosePipe close_pipe = 9;
+    PipePayload pipe_payload = 10;
+  }
+}
+
+message ConnectResponse {
+  oneof message {
+    ClientSessionOpened client_session_opened = 1;
+    ListenerBound listener_bound = 2;
+    ListenerUnbound listener_unbound = 3;
+    ListenerOffer listener_offer = 4;
+    ListenerEstablished listener_established = 5;
+    ListenerTerminated listener_terminated = 6;
+    PipeOpened pipe_opened = 7;
+    PipeOpenFailed pipe_open_failed = 8;
+    PipeOpenUnknown pipe_open_unknown = 9;
+    ListenerDecisionRejected listener_decision_rejected = 10;
+    OpenCancelAcknowledged open_cancel_acknowledged = 11;
+    PipeCloseAcknowledged pipe_close_acknowledged = 12;
+    OpenRequestRejected open_request_rejected = 13;
+    PipePayload pipe_payload = 14;
+    PipeTerminated pipe_terminated = 15;
+    PipePayloadRejected pipe_payload_rejected = 16;
+    ListenerConfirmationAcknowledged listener_confirmation_acknowledged = 17;
+  }
+}
+
+message Authenticate {
+  string client_id = 1;
+  string api_key_id = 2;
+  string api_key = 3;
+}
+
+message ClientSessionRef {
+  string client_session_id = 1;
+  string client_id = 2;
+  string api_key_id = 3;
+  string auth_revision = 4;
+}
+
+message ClientSessionOpened {
+  ClientSessionRef session = 1;
+}
+
+message BindListener {
+  string endpoint_pattern = 1;
+  string target_id = 2;
+}
+
+message UnbindListener {
+  string listener_binding_id = 1;
+}
+
+message ListenerBinding {
+  string listener_binding_id = 1;
+  string endpoint_pattern = 2;
+  string target_id = 3;
+}
+
+message ListenerBound {
+  ListenerBinding binding = 1;
+}
+
+message ListenerUnbound {
+  string listener_binding_id = 1;
+}
+
+message Open {
+  string request_id = 1;
+  string endpoint = 2;
+  string target_id = 3;
+}
+
+message CancelOpen {
+  string request_id = 1;
+}
+
+message ClosePipe {
+  string pipe_id = 1;
+}
+
+message ListenerAccept {
+  string attempt_id = 1;
+}
+
+message ListenerReject {
+  string attempt_id = 1;
+}
+
+message ListenerConfirmed {
+  string attempt_id = 1;
+  string pipe_id = 2;
+}
+
+message ListenerOffer {
+  string attempt_id = 1;
+  string listener_binding_id = 2;
+  string endpoint = 3;
+  string target_id = 4;
+  string caller_session_id = 5;
+}
+
+message ListenerEstablished {
+  string attempt_id = 1;
+  string pipe_id = 2;
+}
+
+message ListenerTerminated {
+  string attempt_id = 1;
+  string pipe_id = 2;
+}
+
+enum OpenFailure {
+  OPEN_FAILURE_UNSPECIFIED = 0;
+  OPEN_FAILURE_INVALID_REQUEST = 1;
+  OPEN_FAILURE_ROUTE_NOT_FOUND = 2;
+  OPEN_FAILURE_UNAVAILABLE = 3;
+  OPEN_FAILURE_CAPACITY_REACHED = 4;
+  OPEN_FAILURE_LISTENER_REJECTED = 5;
+  OPEN_FAILURE_DEADLINE_EXCEEDED = 6;
+  OPEN_FAILURE_CANCELLED = 7;
+}
+
+message PipeOpened {
+  string request_id = 1;
+  string attempt_id = 2;
+  string pipe_id = 3;
+  string endpoint = 4;
+  string target_id = 5;
+}
+
+message PipeOpenFailed {
+  string request_id = 1;
+  string endpoint = 2;
+  string target_id = 3;
+  OpenFailure failure = 4;
+}
+
+message PipeOpenUnknown {
+  string request_id = 1;
+  string endpoint = 2;
+  string target_id = 3;
+}
+
+message OpenCancelAcknowledged {
+  string request_id = 1;
+  bool was_pending = 2;
+}
+
+message PipeCloseAcknowledged {
+  string pipe_id = 1;
+  bool owned = 2;
+}
+
+enum OpenRequestFailure {
+  OPEN_REQUEST_FAILURE_UNSPECIFIED = 0;
+  OPEN_REQUEST_FAILURE_DUPLICATE_IN_FLIGHT = 1;
+}
+
+message OpenRequestRejected {
+  string request_id = 1;
+  OpenRequestFailure failure = 2;
+}
+
+enum ListenerDecisionFailure {
+  LISTENER_DECISION_FAILURE_UNSPECIFIED = 0;
+  LISTENER_DECISION_FAILURE_INVALID_REQUEST = 1;
+  LISTENER_DECISION_FAILURE_ATTEMPT_NOT_PENDING = 2;
+  LISTENER_DECISION_FAILURE_WRONG_PHASE = 3;
+}
+
+message ListenerDecisionRejected {
+  string attempt_id = 1;
+  ListenerDecisionFailure failure = 2;
+}
+
+message PipePayload {
+  string pipe_id = 1;
+  bytes payload = 2;
+}
+
+message PipeTerminated {
+  string pipe_id = 1;
+}
+
+enum PipePayloadFailure {
+  PIPE_PAYLOAD_FAILURE_UNSPECIFIED = 0;
+  PIPE_PAYLOAD_FAILURE_INVALID_REQUEST = 1;
+  PIPE_PAYLOAD_FAILURE_NOT_OWNED = 2;
+  PIPE_PAYLOAD_FAILURE_BACKPRESSURE = 3;
+  PIPE_PAYLOAD_FAILURE_UNAVAILABLE = 4;
+}
+
+message PipePayloadRejected {
+  string pipe_id = 1;
+  PipePayloadFailure failure = 2;
+}
+
+message ListenerConfirmationAcknowledged {
+  string attempt_id = 1;
+  string pipe_id = 2;
+}
