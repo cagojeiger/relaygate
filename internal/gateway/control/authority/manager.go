@@ -209,11 +209,6 @@ func (m *Manager) confirm(ctx context.Context, fenceOnContextError bool) (Ref, e
 		return Ref{}, ErrNoAuthority
 	}
 
-	// The leader barrier above makes this a committed C snapshot. Do this
-	// before taking the authority lock so a slow copy never blocks stream
-	// fencing or status reads.
-	committed := m.node.State()
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if confirmed.Term < m.currentTerm {
@@ -225,6 +220,10 @@ func (m *Manager) confirm(ctx context.Context, fenceOnContextError bool) (Ref, e
 		}
 	}
 	if m.current == nil {
+		// Only a newly established authority needs the full committed C
+		// snapshot to seed its revalidation cleanup set. Steady-state
+		// confirmations, including Open admission, stay on point lookups.
+		committed := m.node.State()
 		authorityID, err := newID()
 		if err != nil {
 			return Ref{}, err
@@ -444,14 +443,40 @@ func (m *Manager) Withdraw(ctx context.Context, ref SessionRef, binding routing.
 	return result.Code == controlstate.ResultAlreadyApplied, nil
 }
 
-// ResolveOpen requires an exact committed route plus exact, revalidated local
-// ingress and owner sessions. The route itself carries no leader-local address
-// or control-session identifier.
-func (m *Manager) ResolveOpen(ingress SessionRef, auth AuthContext, endpoint, targetID string) (OpenContext, error) {
+// AdmitOpen owns the complete pre-O admission boundary. The successful
+// VerifyLeader barrier in Confirm establishes the committed read point; the
+// exact Ref gate in resolveOpen then prevents mixing that decision with V from
+// another local authority. A second Raft verification would add no stronger
+// guarantee after the operation's linearization point.
+func (m *Manager) AdmitOpen(ctx context.Context, ingress SessionRef, auth AuthContext, endpoint, targetID string) (OpenContext, error) {
 	key, err := ExactBindingKey(auth, endpoint, targetID)
 	if err != nil {
 		return OpenContext{}, err
 	}
+	current, err := m.Confirm(ctx)
+	if err != nil {
+		return OpenContext{}, err
+	}
+	return m.resolveOpen(current, ingress, auth, key)
+}
+
+// resolveOpen requires an exact committed route plus exact, revalidated local
+// ingress and owner sessions from the already confirmed authority. The route
+// itself carries no leader-local address or control-session identifier.
+func (m *Manager) resolveOpen(current Ref, ingress SessionRef, auth AuthContext, key routing.BindingKey) (OpenContext, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.current == nil || *m.current != current {
+		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, ErrNoAuthority)
+	}
+	if ingress.ClusterEpoch != current.ClusterEpoch || ingress.AuthorityID != current.AuthorityID {
+		return OpenContext{}, fmt.Errorf("%w: ingress control session belongs to a stale authority", ErrOpenUnavailable)
+	}
+	ingressEntry, err := m.sessionLocked(ingress)
+	if err != nil || ingressEntry.state != SessionRevalidated || !m.isCurrentGatewayLocked(ingress) {
+		return OpenContext{}, fmt.Errorf("%w: ingress control session", ErrOpenUnavailable)
+	}
+
 	stateKey := controlstate.BindingKey{ClientID: key.ClientID, EndpointPattern: key.EndpointPattern, TargetID: key.TargetID}
 	route, ok := m.node.LookupRoute(stateKey)
 	if !ok {
@@ -461,16 +486,6 @@ func (m *Manager) ResolveOpen(ingress SessionRef, auth AuthContext, endpoint, ta
 		return OpenContext{}, ErrRouteNotFound
 	}
 	binding := routeToBinding(route)
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	ingressEntry, err := m.sessionLocked(ingress)
-	if err != nil || ingressEntry.state != SessionRevalidated || !m.isCurrentGatewayLocked(ingress) {
-		return OpenContext{}, fmt.Errorf("%w: ingress control session", ErrOpenUnavailable)
-	}
-	if m.current == nil {
-		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, ErrNoAuthority)
-	}
 	owner := m.sessions[route.Owner.GatewayID]
 	if owner == nil || owner.closed || owner.state != SessionRevalidated || gatewayRef(owner.ref) != route.Owner || owner.bindings[key] != binding {
 		return OpenContext{}, ErrRouteNotFound
@@ -480,7 +495,7 @@ func (m *Manager) ResolveOpen(ingress SessionRef, auth AuthContext, endpoint, ta
 		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, err)
 	}
 	return NewForwardedOpenContext(
-		m.current.ClusterEpoch, m.current.AuthorityID, attemptID, auth, binding,
+		current.ClusterEpoch, current.AuthorityID, attemptID, auth, binding,
 		ForwardingContext{
 			IngressGatewayID:         ingressEntry.ref.GatewayID,
 			IngressGatewayInstanceID: ingressEntry.ref.GatewayInstanceID,

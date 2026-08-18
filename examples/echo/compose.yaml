@@ -28,7 +28,7 @@ services:
       RELAYGATE_RAFT_DATA_DIR: /var/lib/relaygate
       RELAYGATE_RAFT_BIND_ADDRESS: 0.0.0.0:27400
       RELAYGATE_RAFT_ADVERTISE_ADDRESS: controller:27400
-      RELAYGATE_RAFT_BOOTSTRAP: "true"
+      RELAYGATE_RAFT_BOOTSTRAP: "${RELAYGATE_BOOTSTRAP_ONCE:-false}"
       RELAYGATE_RAFT_BOOTSTRAP_VOTERS: >-
         [{"node_id":"echo-controller","address":"controller:27400"}]
       RELAYGATE_CONTROL_CLUSTER_EPOCH: local-echo-1

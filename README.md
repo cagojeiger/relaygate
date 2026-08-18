@@ -26,11 +26,13 @@ The server binary has two startup roles.
 | `controller` | Durable embedded HashiCorp Raft voter/store, authoritative current-only `GatewaySession`/exact route FSM, control gRPC, read-only admin | Public Relay, peer Relay, SDK sessions, Pipe payload |
 | `gateway` | Public Relay, peer Relay, control client, auth/session/binding/Pipe runtime | Raft node/store, control server, authoritative FSM |
 
-Raft persists term, vote, log, membership, stable state, snapshots, `NodeId`, `ClusterEpoch`, current gateway sessions, and exact routes under `raft.data_dir`. The FSM stores only current `GatewaySession` records and exact routes. Delete, withdraw, session replacement, and gateway removal are true deletes: no tombstone, history, route generation, payload, Pipe state, or credential state is retained in Raft.
+Raft persists term, vote, log, membership, stable state, snapshots, `NodeId`, `ClusterEpoch`, current gateway sessions, and exact routes under `raft.data_dir`. The FSM and snapshots store only current `GatewaySession` records and exact routes. Delete, withdraw, session replacement, and gateway removal are true deletes: no application tombstone, route generation, payload, Pipe state, credential state, or separate route history is retained there. The Raft protocol log remains until snapshot compaction.
 
 Successful snapshots compact old logical Raft log entries and retain the configured snapshot count. The Bolt file may keep previously allocated pages as a reusable disk high-water mark instead of shrinking immediately, so physical volume size is monitored separately from current FSM cardinality.
 
-Leader-local volatile state includes the current `AuthorityId`, control sessions, revalidated gateway mirror, owner relay addresses, Open attempt tokens, sessions, bindings, buffers, and Pipe payload. Leadership change resets that volatile layer; gateways reconnect and send a full current binding snapshot to rebuild it from live gateway memory and the committed current FSM.
+Controller-leader-local volatile state includes the current `AuthorityId`, control sessions, revalidated gateway mirror, and owner relay addresses. Leadership change resets that authority layer; gateways reconnect and send a full current binding snapshot to rebuild it from live gateway memory and the committed current FSM.
+
+Gateway-local volatile state includes authenticated SDK sessions, local Listener bindings, Open attempt fences, Pipe segments, buffers, and payload. Gateway restart discards that process-local state; SDKs reconnect and fresh-bind their current Listener declarations.
 
 ## Repository
 
@@ -87,7 +89,8 @@ Production controllers need durable volumes/PVCs. The local Compose file uses na
 - Open admission requires active client session, current authority, quorum, exact directory route, revalidated owner session, and owner reservation.
 - A remote Pipe uses one internal peer gRPC stream. There is no internal redial, retry, resume, or payload replay.
 - `Send` success means local bounded queue/stream write success, not peer application ACK.
-- Backpressure is bounded and fails closed; control and terminal events bypass payload pressure.
+- On each multiplexed public Relay stream, separate bounded control/terminal and payload lanes let control and terminal work bypass queued payload pressure.
+- The one-stream-per-Pipe peer hop serializes sends through one bounded lane. A blocked send that reaches its timeout or cancellation fails the Pipe and cancels the stream; it does not silently drop, retry, or replay the frame.
 - `ManagedClient` may reconnect a session and fresh-bind current Listeners. It does not queue Opens, replay outcomes, resume Pipes, or replay payload.
 
 ## Install
@@ -111,7 +114,7 @@ curl http://127.0.0.1:27490/healthz/ready
 curl http://127.0.0.1:27490/status
 ```
 
-After the initial store exists, start it with the file's default `bootstrap: false`. Do not reuse the bootstrap override after deleting or replacing a production member store.
+After the initial store exists, start it with the file's default `bootstrap: false`. Do not reuse the one-shot bootstrap input after deleting or replacing a production member store.
 
 Key ports:
 
@@ -123,14 +126,18 @@ Key ports:
 | `27430` | Gateway internal owner relay gRPC |
 | `27490` | Read-only Admin HTTP |
 
-Compose starts three controllers with named volumes and two stateless gateways:
+Compose starts three controllers with named volumes and two gateways that have no durable store. Initial cluster formation sets the command-scoped bootstrap input exactly once:
 
 ```bash
-docker compose up -d --build
+RELAYGATE_BOOTSTRAP_ONCE=true docker compose up -d --build
+# Recreate only controller-1 with the steady-state default (bootstrap=false).
+docker compose up -d --no-build --no-deps --force-recreate controller-1
 curl http://127.0.0.1:27591/status
 curl http://127.0.0.1:27594/status
 docker compose down --remove-orphans
 ```
+
+Later starts use only `docker compose up -d`. `RELAYGATE_BOOTSTRAP_ONCE` is not a recovery mechanism and must not be reused after a controller volume is erased.
 
 The smoke harness exercises the multi-role local shape and removes the generated project resources after it runs:
 

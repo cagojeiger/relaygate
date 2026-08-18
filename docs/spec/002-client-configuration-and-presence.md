@@ -45,9 +45,14 @@ flowchart LR
 | Read-only REST | Local health/readiness, quorum-confirmed current observed counts, metrics | Mutation, secret, payload, buffer, history/completeness |
 | External config | Client/key add/remove/rotation | RelayGate database/Raft credential lifecycle |
 
-Presence state는 `NoAuthority` 또는 `Current`다. `Current`의 counters는 current authority memory만 센다.
-Expected replica roster가 없으므로 zero/partial counts도 정상 observation이며 complete/converged flag를 제공하지
-않는다. Presence는 authorization이나 New-Pipe gate가 아니다.
+Presence state는 `NoAuthority` 또는 `Current`다. `Current`는 committed `C`의 `committed_gateways`와
+`committed_routes`, leader-local `V`의 `revalidated_gateways`, 그리고 exact `C`와 `V`가 일치하는
+`eligible_routes`를 분리해 센다. Expected replica roster가 없으므로 zero/partial counts도 정상 observation이며
+complete/converged flag를 제공하지 않는다. Presence는 authorization이나 New-Pipe gate가 아니다.
+
+Gateway의 control session만 끊기면 해당 Gateway의 local `LiveBinding` 선언은 process memory에 남고 `V`만
+사라진다. 새 control session은 그 현재 선언을 fresh FullSnapshot으로 다시 publish한다. ACK 전
+`RegisteringB`이던 Bind는 실패하며 다음 session으로 mutation을 replay하지 않는다.
 
 Disaster reset으로 `ClusterEpoch`가 바뀌면 old controller/control/gateway path는 이미 외부에서 fenced된
 상태여야 한다. SDK와 Gateway는 새 epoch의 fresh session에서 현재 Listener만 다시 Bind/declare한다.

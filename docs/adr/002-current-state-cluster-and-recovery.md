@@ -16,7 +16,8 @@ Production control state is owned by a `controller` role backed by durable embed
 - Snapshots contain only that current FSM. Successful snapshot compaction removes old logical log entries, while the Bolt file may retain reusable high-water pages instead of shrinking immediately.
 - Route withdraw, gateway replacement, and gateway removal are true deletes with cascade of owned routes.
 - The FSM stores no tombstone, generation history, credential, control-session ID, relay address, Pipe, payload, replay, or resume state.
-- The current authority, revalidated control sessions, advertised owner relay addresses, and Open attempts are leader-local volatile state.
+- The current authority, revalidated control sessions, advertised owner relay addresses, and pre-O context issuance work are leader-local volatile state.
+- After successful O, the owning Gateway retains only the bounded `AttemptId` replay fence until context expiry; it retains no outcome or `PipeId` for replay.
 - Gateways reconnect to the current leader and send a full current binding snapshot to rebuild leader-local volatile state after authority changes.
 
 Normal recovery stays in the same epoch and same Raft cluster:
@@ -40,6 +41,6 @@ Production controllers require durable volumes/PVCs. Compose named volumes are t
 - Logical application-state cardinality follows current gateways/routes; physical volume sizing also accounts for Raft log bursts, snapshots, and the Bolt high-water mark.
 - Storage loss of one controller is recoverable through add/catch-up/remove while surviving quorum remains.
 - Quorum loss stops new admissions instead of inventing authority.
-- Same-epoch failover preserves committed current `GatewaySession` and route FSM state but discards leader-local control sessions, addresses, and Open attempts.
+- Same-epoch failover preserves committed current `GatewaySession` and route FSM state but discards leader-local control sessions, addresses, and unfinished context issuance. A successful owner O fence remains Gateway-local until expiry.
 - Open outcomes, Pipe handles, payload positions, and SDK delivery state remain unrecoverable by design.
-- Relay capacity scales with stateless `gateway` replicas, not by mixing Relay into controllers.
+- Relay capacity scales with `gateway` replicas that own no durable store, not by mixing Relay into controllers.

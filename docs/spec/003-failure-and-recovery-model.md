@@ -8,7 +8,9 @@
 | Controller leader | same-epoch leader loss with quorum | New leader, new `AuthorityId`, volatile `V` reset, gateways reconnect/full-snapshot |
 | Controller store | disk/PVC loss for one member | Replacement uses new `NodeId`; add/catch-up/remove through surviving quorum |
 | Controller quorum | majority unavailable | New authority/control/admission fail closed |
-| Gateway/SDK | crash, reconnect, process restart | Fresh session and current Listener redeclare only |
+| Gateway control | disconnect/reconnect while Gateway process lives | `V` false during outage; existing local `LiveBinding` declarations survive and fresh FullSnapshot revalidates them |
+| Gateway process | crash/restart | Local sessions, bindings, attempts, Pipes, and payload disappear; fresh Gateway instance and SDK reconnect/rebind only |
+| SDK session | disconnect/reconnect | Old child handles terminal; opt-in supervisor may fresh-auth and rebind current logical Listener declarations only |
 | Network | delay, loss, duplicate, reorder, partition | Exact current identity required; stale state rejected |
 | Config | invalid/delayed/process-local reload | Validated local snapshot only |
 | Clock | authority-owner skew | Remote expiry ready only with operational `ClockSkewBound < open_timeout` |
@@ -26,7 +28,7 @@ Timeout is failure suspicion, not death proof. False positives may reduce availa
 | Declare | Raft `DeclareRoute` commit | Exact duplicate idempotent; conflict preserves current route |
 | Withdraw/remove | Raft `WithdrawRoute`/`RemoveGateway` commit | True delete/cascade, no tombstone |
 | Authority change | Leader confirmation in a new term | New `AuthorityId`; `V` empty |
-| Authority admission | `A·L·Q·D·V` context issuance | Not owner reservation or Pipe success |
+| Authority admission | One authority-owned confirmed read fence binds exact `A·L·Q·D·V` to the issued context | Not owner reservation or Pipe success |
 | Owner admission O | Local reservation + `AttemptId` fence | O-after success continues locally |
 | Open | Listener accept + `PipeId` creation | Later response loss can be `Unknown` |
 | Pipe terminal | First participant-local terminal | Local absorbing; peer propagation best effort |
@@ -62,9 +64,10 @@ Timeout is failure suspicion, not death proof. False positives may reduce availa
 | Membership response | commit before CLI response loss | Exact retry converges to current membership; same identity at another address rejects |
 | Snapshot | validate before commit / commit before ACK / stream end | Partial install 0; committed current state exact |
 | Declare/withdraw | local effect and ACK before/after session end | No response replay; current cardinality converges |
+| Gateway control | disconnect before/after FullSnapshot ACK | Existing `LiveB` remains local but `V` is false until fresh exact revalidation; unacknowledged `RegisteringB` fails and is not replayed |
 | Failover | before O / after O / after `V` clear / partial redeclare | Before O stale; after O may continue; fresh exact route only after revalidation |
 | Open | O / offer / accept+PipeId / response / public ACK | Pre-LP stable failure; post-LP can be `Unknown`; no replay |
-| Payload | activation / enqueue / write / pressure / hop loss | FIFO per direction, no silent drop/replay, terminal priority |
+| Payload | activation / enqueue / write / pressure / hop loss | FIFO per direction and no silent drop/replay; public queued control/terminal has priority, while a blocked peer send times out and cancels its dedicated Pipe stream |
 | Disaster reset | before/after external fence | No reset without fence; new epoch is a separate machine |
 
 ## Recovery Levels
@@ -77,14 +80,20 @@ Timeout is failure suspicion, not death proof. False positives may reduce availa
 | `R3` | Not recoverable | Old Pipe, payload position, uncertain Open outcome, erased member identity |
 
 ```text
-ServiceRecoverable = surviving Raft quorum
-                  OR restored same member store
-                  OR replacement add/catch-up/remove through quorum
+CurrentCohortServiceRecoverable = surviving and/or same-store-restored
+                                  compatible current members can form
+                                  the committed Raft quorum
 
-RouteEligible = ServiceRecoverable
+MemberReplacementAllowed = current quorum exists
+                        AND a fresh NodeId catches up before old member removal
+
+RouteEligible = CurrentCohortServiceRecoverable
              AND current route exists in C
              AND owner reconnects/revalidates V
 ```
+
+한 개의 durable member store만 복구한 것은 3-voter cohort의 service recovery가 아니다. Membership replacement도
+이미 current quorum이 있을 때만 진행할 수 있다.
 
 Disaster reset after full old-path fencing creates a new cohort and empty current FSM. It does not recover old outcomes, Pipes, payload positions, or route history.
 

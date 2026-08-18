@@ -19,7 +19,7 @@ This is semantic closure, not a claim that one test enumerates the full Cartesia
 | Current FSM `C` | Controller Raft FSM | durable log/snapshot | exact withdraw/remove/replacement |
 | Authority/session mirror `V` | Current controller leader | leader-local memory | step-down/quorum loss/session end |
 | Auth/ClientSession | Gateway access runtime | external config + process memory | credential/session/Gateway end |
-| LocalBinding | Owning Gateway | process memory | unbind/session/control/Gateway end |
+| LocalBinding | Owning Gateway | process memory | failed registration, unbind, credential/client session, or Gateway end; control end only removes global publication through `V` |
 | Attempt/OwnerPipe | Owning Gateway | process memory | cancel/deadline/participant/hop/Gateway end |
 | Ingress/Caller/ListenerPipe | Exact participant Gateway/SDK | process memory | first local terminal |
 | RemoteHop | Ingress + owner segment | process memory | stream/hop/participant end |
@@ -78,7 +78,9 @@ No transition creates route tombstones, history, payload, Pipe state, control se
 | `SyncingSessionV` | invalid snapshot, timeout, close, authority end | `AbsentSessionV` | Clear session/address |
 | `RevalidatedSessionV` | close/timeout/replacement/authority end | `AbsentSessionV` | Clear session/address/mirror; `C` cleanup may follow by exact remove |
 
-Presence is `NoAuthority` without `AuthorityV`, otherwise `Current` with observed memory counters. Observation does not change admission state.
+Presence is `NoAuthority` without `AuthorityV`. `Current` separates committed Gateway/route counters from `C`, revalidated
+Gateway counters from `V`, and eligible route counters where exact `C` and `V` agree. These observed counters do not prove
+completeness or change admission state.
 
 ## Authentication, Session, Binding
 
@@ -93,11 +95,17 @@ Presence is `NoAuthority` without `AuthorityV`, otherwise `Current` with observe
 | `ActiveS` | close/revocation | `RetiringS` | Stop new work, retire children |
 | `RetiringS` | local retirement complete | `TerminalS` | Identity cannot revive |
 | `AbsentB` | Bind start + capacity | `RegisteringB` | Allocate exact `ListenerBindingId` |
-| `RegisteringB` | current directory ACK | `LiveB` | Eligible for O |
-| `RegisteringB/LiveB` | unbind/revocation/session/control end | `RetiringB` | Immediately O=false, conditional withdraw |
+| `RegisteringB` | exact Raft-backed declare or full-snapshot ACK | `LiveB` | Local declaration is O-capable; end-to-end admission still requires current `D` and `V` |
+| `RegisteringB` | declare failure, caller cancel, unbind, revocation, client session/Gateway end, or control end before ACK | `RetiredB` | O=false; do not replay into a later control session; late success is conditionally withdrawn before capacity is released |
+| `LiveB` | control session end while Gateway process and client session remain live | `LiveB` | Keep the local declaration for the next FullSnapshot; global `V` is false, so no new O until revalidation |
+| `LiveB` | unbind/revocation/client session/Gateway end | `RetiringB` | Immediately O=false, conditional withdraw |
 | `RetiringB` | cleanup complete | `RetiredB` | Release capacity; late ACK cannot revive |
 
 ## Admission, Open, Replay Fence
+
+`AdmitOpen` owns one confirmed read boundary: it verifies leader/quorum and a Raft read barrier once, then requires the
+same exact `AuthorityId` while looking up `D` and `V`. An authority change before those lookups rejects the request; no
+second verification, state mutation, or full-FSM copy belongs to the steady-state admission path.
 
 | From | Event + guard | To | Effect |
 | --- | --- | --- | --- |
@@ -131,7 +139,9 @@ One remote Pipe uses one hop stream. Mismatched identity, second attempt, redial
 | any non-terminal | exact participant close or session/hop/Gateway end | first local terminal |
 | terminal | duplicate/late success/payload | terminal NoOp or ownership rejection |
 
-Control/terminal messages use priority handling. Shutdown cancels and joins owned workers; it does not replay queued or inflight payload on a new Pipe.
+The multiplexed public Relay stream uses separate bounded lanes so ready control/terminal work bypasses queued payload.
+A one-stream-per-Pipe peer hop instead serializes sends; blocked send timeout or cancellation fails that Pipe and cancels the
+stream. Shutdown cancels and joins owned workers; neither path replays queued or inflight payload on a new Pipe.
 
 ## SDK Session Supervisor
 

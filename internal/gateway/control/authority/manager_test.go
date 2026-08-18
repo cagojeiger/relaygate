@@ -19,8 +19,8 @@ func TestAuthorityFailoverRetainsCommittedDirectoryButDropsV(t *testing.T) {
 	ingress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
 	binding := testBinding("owner", "owner-1", "listener-1")
 	owner := openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
-	if _, err := manager.ResolveOpen(ingress, testAuth(), "/events", "worker"); err != nil {
-		t.Fatalf("ResolveOpen(before failover): %v", err)
+	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); err != nil {
+		t.Fatalf("AdmitOpen(before failover): %v", err)
 	}
 
 	node.setTerm(2)
@@ -32,15 +32,15 @@ func TestAuthorityFailoverRetainsCommittedDirectoryButDropsV(t *testing.T) {
 	if presence.CommittedGateways != 2 || presence.CommittedRoutes != 1 || presence.RevalidatedGateways != 0 || presence.EligibleRoutes != 0 {
 		t.Fatalf("presence after failover = %#v, want C retained and V cleared", presence)
 	}
-	if _, err := manager.ResolveOpen(ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrOpenUnavailable) {
-		t.Fatalf("ResolveOpen(stale ingress) = %v, want unavailable", err)
+	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrOpenUnavailable) {
+		t.Fatalf("AdmitOpen(stale ingress) = %v, want unavailable", err)
 	}
 
 	newIngress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
 	newOwner := openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
-	open, err := manager.ResolveOpen(newIngress, testAuth(), "/events", "worker")
+	open, err := manager.AdmitOpen(context.Background(), newIngress, testAuth(), "/events", "worker")
 	if err != nil {
-		t.Fatalf("ResolveOpen(after revalidate): %v", err)
+		t.Fatalf("AdmitOpen(after revalidate): %v", err)
 	}
 	if open.OwnerControlSessionID != newOwner.ControlSessionID || open.OwnerControlSessionID == owner.ControlSessionID {
 		t.Fatalf("owner control identity = %q, want newly revalidated owner", open.OwnerControlSessionID)
@@ -63,6 +63,63 @@ func TestStaleConfirmationCannotReplaceNewerAuthorityTerm(t *testing.T) {
 	}
 }
 
+func TestAdmissionRejectsChangedAuthorityRef(t *testing.T) {
+	manager, node := newManager(t)
+	stale := confirm(t, manager)
+	openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
+	binding := testBinding("owner", "owner-1", "listener-1")
+	openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
+
+	node.setTerm(2)
+	current := confirm(t, manager)
+	if current == stale {
+		t.Fatalf("authority ref did not change across terms: %#v", current)
+	}
+	newIngress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
+	openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
+	key, err := ExactBindingKey(testAuth(), "/events", "worker")
+	if err != nil {
+		t.Fatalf("ExactBindingKey(): %v", err)
+	}
+
+	if _, err := manager.resolveOpen(stale, newIngress, testAuth(), key); !errors.Is(err, ErrOpenUnavailable) {
+		t.Fatalf("resolveOpen(stale authority ref) = %v, want ErrOpenUnavailable", err)
+	}
+}
+
+func TestSteadyStateConfirmAndAdmitOpenDoNotCopyFullState(t *testing.T) {
+	manager, node := newManager(t)
+	confirm(t, manager)
+	if got := node.stateCallCount(); got != 1 {
+		t.Fatalf("initial authority State() calls = %d, want 1", got)
+	}
+	ingress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
+	binding := testBinding("owner", "owner-1", "listener-1")
+	openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
+	baseline := node.stateCallCount()
+	baselineVerifies := node.verifyCallCount()
+
+	confirm(t, manager)
+	if got := node.verifyCallCount(); got != baselineVerifies+1 {
+		t.Fatalf("steady-state Confirm VerifyLeader calls = %d, want %d", got, baselineVerifies+1)
+	}
+	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); err != nil {
+		t.Fatalf("AdmitOpen(): %v", err)
+	}
+	if got := node.verifyCallCount(); got != baselineVerifies+2 {
+		t.Fatalf("AdmitOpen VerifyLeader calls = %d, want exactly one additional call", got)
+	}
+	if got := node.stateCallCount(); got != baseline {
+		t.Fatalf("steady-state Confirm/AdmitOpen copied full State: calls %d -> %d", baseline, got)
+	}
+
+	node.setTerm(2)
+	confirm(t, manager)
+	if got := node.stateCallCount(); got != baseline+1 {
+		t.Fatalf("new authority State() calls = %d, want %d", got, baseline+1)
+	}
+}
+
 func TestEndSessionRetainsCAndReconnectCancelsGraceCleanup(t *testing.T) {
 	manager, node := newManager(t)
 	now := time.Unix(1_000, 0)
@@ -75,8 +132,8 @@ func TestEndSessionRetainsCAndReconnectCancelsGraceCleanup(t *testing.T) {
 	if got := node.State(); len(got.Routes) != 1 {
 		t.Fatalf("EndSession deleted committed route: %#v", got)
 	}
-	if _, err := manager.ResolveOpen(ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrRouteNotFound) {
-		t.Fatalf("ResolveOpen(with V absent) = %v, want route unavailable", err)
+	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("AdmitOpen(with V absent) = %v, want route unavailable", err)
 	}
 
 	openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
@@ -194,9 +251,9 @@ func TestSnapshotConflictIsAtomicAndExactCAndVAreRequired(t *testing.T) {
 	if err := manager.RequireRevalidated(other.Ref); !errors.Is(err, ErrSnapshotFirst) {
 		t.Fatalf("conflicting snapshot made V true: %v", err)
 	}
-	open, err := manager.ResolveOpen(ingress, testAuth(), "/events", "worker")
+	open, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker")
 	if err != nil || open.OwnerControlSessionID != owner.ControlSessionID {
-		t.Fatalf("ResolveOpen(after rejected snapshot) = %#v, %v", open, err)
+		t.Fatalf("AdmitOpen(after rejected snapshot) = %#v, %v", open, err)
 	}
 }
 
@@ -299,8 +356,8 @@ func TestEndSessionDropsVWhileMutationApplyIsInFlight(t *testing.T) {
 	default:
 		t.Fatal("EndSession did not fence V while the Raft apply was blocked")
 	}
-	if _, err := manager.ResolveOpen(ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrRouteNotFound) {
-		t.Fatalf("ResolveOpen(after V fence) = %v, want ErrRouteNotFound", err)
+	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("AdmitOpen(after V fence) = %v, want ErrRouteNotFound", err)
 	}
 
 	close(release)
@@ -397,6 +454,8 @@ type fakeRaftNode struct {
 	err         error
 	fsm         *controlstate.FSM
 	beforeApply func()
+	stateCalls  int
+	verifyCalls int
 }
 
 func newFakeRaftNode(t *testing.T, epoch string, maxBindings uint32) *fakeRaftNode {
@@ -420,6 +479,7 @@ func (n *fakeRaftNode) ClusterEpoch() string    { return n.fsm.ClusterEpoch() }
 func (n *fakeRaftNode) VerifyLeader(context.Context) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.verifyCalls++
 	return n.err
 }
 func (n *fakeRaftNode) Apply(_ context.Context, command []byte) (controlstate.ApplyResult, error) {
@@ -440,7 +500,12 @@ func (n *fakeRaftNode) Apply(_ context.Context, command []byte) (controlstate.Ap
 	}
 	return n.fsm.Apply(&raft.Log{Data: command}).(controlstate.ApplyResult), nil
 }
-func (n *fakeRaftNode) State() controlstate.State { return n.fsm.State() }
+func (n *fakeRaftNode) State() controlstate.State {
+	n.mu.Lock()
+	n.stateCalls++
+	n.mu.Unlock()
+	return n.fsm.State()
+}
 func (n *fakeRaftNode) LookupGateway(id string) (controlstate.GatewaySessionRef, bool) {
 	return n.fsm.LookupGateway(id)
 }
@@ -448,6 +513,18 @@ func (n *fakeRaftNode) LookupRoute(key controlstate.BindingKey) (controlstate.Ro
 	return n.fsm.LookupRoute(key)
 }
 func (n *fakeRaftNode) setTerm(term uint64) { n.mu.Lock(); n.status.Term = term; n.mu.Unlock() }
+
+func (n *fakeRaftNode) stateCallCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.stateCalls
+}
+
+func (n *fakeRaftNode) verifyCallCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.verifyCalls
+}
 
 func (n *fakeRaftNode) blockNextApply() (<-chan struct{}, chan<- struct{}) {
 	entered := make(chan struct{})
