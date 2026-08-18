@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package relaygate.operator.v1;
+
+option go_package = "github.com/cagojeiger/relaygate/internal/gen/operator/v1;operatorv1";
+
+service Membership {
+  rpc List(ListRequest) returns (MembershipResult);
+  rpc Add(AddRequest) returns (MembershipResult);
+  rpc Remove(RemoveRequest) returns (MembershipResult);
+}
+
+message ListRequest {}
+
+message AddRequest {
+  string node_id = 1;
+  string address = 2;
+}
+
+message RemoveRequest {
+  string node_id = 1;
+}
+
+message Member {
+  string node_id = 1;
+  string address = 2;
+  string suffrage = 3;
+}
+
+message MembershipResult {
+  bool changed = 1;
+  repeated Member members = 2;
+}

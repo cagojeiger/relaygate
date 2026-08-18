@@ -1,0 +1,137 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            sdk/go/go.sum
+            examples/echo/go/go.sum
+      - name: Check formatting
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "$out"
+            exit 1
+          fi
+
+  vet:
+    name: go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: GOWORK=off go vet ./...
+      - run: cd sdk/go && GOWORK=off go vet ./...
+      - run: cd examples/echo/go && GOWORK=off go vet ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          working-directory: sdk/go
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: |
+          GOTOOLCHAIN=local go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+          GOTOOLCHAIN=local GOWORK=off govulncheck ./...
+          cd sdk/go
+          GOTOOLCHAIN=local GOWORK=off govulncheck ./...
+
+  test:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: GOWORK=off go test -race ./...
+      - run: cd sdk/go && GOWORK=off go test -race ./...
+      - name: Verify Go SDK module boundary
+        run: |
+          if (cd sdk/go && GOWORK=off go list -deps -f '{{with .Module}}{{.Path}}{{end}}' ./...) | grep --fixed-strings --line-regexp 'github.com/cagojeiger/relaygate'; then
+            echo 'Go SDK depends on the RelayGate server module'
+            exit 1
+          fi
+          cmp internal/gen/relay/v1/relay.pb.go sdk/go/internal/gen/relay/v1/relay.pb.go
+          cmp internal/gen/relay/v1/relay_grpc.pb.go sdk/go/internal/gen/relay/v1/relay_grpc.pb.go
+      - run: cd examples/echo/go && GOWORK=off go test -race ./...
+
+  rust-sdk:
+    name: rust sdk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
+      - name: Verify Rust SDK schema boundary
+        run: cmp proto/relaygate/relay/v1/relay.proto sdk/rust/relaygate-sdk/proto/relaygate/relay/v1/relay.proto
+      - run: cargo fmt --all --check
+      - run: cargo check --workspace --locked
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo package --locked --package relaygate-sdk
+
+  image:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          tags: relaygate:ci
+
+  compose-smoke:
+    name: docker compose smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify three-node local cluster
+        run: ./scripts/compose-smoke.sh

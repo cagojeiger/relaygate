@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package relaygate.gateway.v1;
+
+option go_package = "github.com/cagojeiger/relaygate/internal/gen/gateway/v1;gatewayv1";
+
+import "proto/relaygate/control/v1/control.proto";
+
+// GatewayRelay is the trusted, volatile hop between an ingress Gateway and
+// the exact Gateway that owns a listener binding. One stream carries exactly
+// one Open attempt and, after acceptance, exactly one Pipe lifetime.
+service GatewayRelay {
+  rpc Forward(stream ForwardRequest) returns (stream ForwardResponse);
+}
+
+message ForwardRequest {
+  oneof message {
+    ForwardOpen forward_open = 1;
+    ActivatePipe activate_pipe = 2;
+    PipePayload pipe_payload = 3;
+    ClosePipe close_pipe = 4;
+  }
+}
+
+message ForwardResponse {
+  oneof message {
+    ForwardAccepted accepted = 1;
+    ForwardFailed failed = 2;
+    ForwardUnknown unknown = 3;
+    PipePayload pipe_payload = 4;
+    PipeTerminal pipe_terminal = 5;
+  }
+}
+
+message ForwardOpen {
+  relaygate.control.v1.OpenContext context = 1;
+}
+
+message ActivatePipe {
+  string pipe_id = 1;
+}
+
+message PipePayload {
+  string pipe_id = 1;
+  bytes payload = 2;
+}
+
+message ClosePipe {
+  string pipe_id = 1;
+}
+
+message ForwardAccepted {
+  string attempt_id = 1;
+  string pipe_id = 2;
+  relaygate.control.v1.LiveBinding binding = 3;
+}
+
+enum ForwardFailure {
+  FORWARD_FAILURE_UNSPECIFIED = 0;
+  FORWARD_FAILURE_INVALID_REQUEST = 1;
+  FORWARD_FAILURE_CAPACITY_REACHED = 2;
+  FORWARD_FAILURE_ROUTE_NOT_FOUND = 3;
+  FORWARD_FAILURE_UNAVAILABLE = 4;
+  FORWARD_FAILURE_LISTENER_REJECTED = 5;
+  FORWARD_FAILURE_DEADLINE_EXCEEDED = 6;
+  FORWARD_FAILURE_SESSION_ENDED = 7;
+  FORWARD_FAILURE_CONTEXT_EXPIRED = 8;
+  FORWARD_FAILURE_ATTEMPT_REPLAYED = 9;
+}
+
+message ForwardFailed {
+  string attempt_id = 1;
+  ForwardFailure failure = 2;
+}
+
+message ForwardUnknown {
+  string attempt_id = 1;
+}
+
+message PipeTerminal {
+  string pipe_id = 1;
+}

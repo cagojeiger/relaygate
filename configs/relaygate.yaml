@@ -1,0 +1,70 @@
+runtime:
+  role: controller
+
+raft:
+  node_id: node-1
+  data_dir: ./data/relaygate
+  bind_address: 127.0.0.1:27400
+  advertise_address: 127.0.0.1:27400
+  # One-shot initial-cluster action. Compose overrides this only for its fresh,
+  # isolated project; normal restarts and replacement members leave it false.
+  bootstrap: false
+  bootstrap_voters:
+    - node_id: node-1
+      address: 127.0.0.1:27400
+  apply_timeout: 5s
+  transport_timeout: 10s
+  shutdown_timeout: 10s
+  snapshot_threshold: 256
+  snapshot_interval: 2m
+  snapshot_retain: 2
+  max_pool: 3
+  max_command_bytes: 2097152
+
+gateway:
+  id: gateway-1
+  control_endpoints:
+    - 127.0.0.1:27410
+  connect_timeout: 2s
+  retry_interval: 250ms
+
+relay:
+  bind_address: 127.0.0.1:27420
+  authentication_timeout: 5s
+  open_timeout: 10s
+  shutdown_timeout: 5s
+  max_client_sessions: 10000
+  max_listener_bindings: 512
+  max_pipes: 10000
+
+internal_relay:
+  bind_address: 127.0.0.1:27430
+  advertise_address: 127.0.0.1:27430
+  connect_timeout: 2s
+  shutdown_timeout: 5s
+
+control:
+  cluster_epoch: relaygate-v1
+  bind_address: 127.0.0.1:27410
+  authority_probe_interval: 250ms
+  authority_probe_timeout: 2s
+  gateway_revalidation_timeout: 15s
+  open_context_ttl: 10s
+  shutdown_timeout: 5s
+  max_gateway_sessions: 1024
+  max_routes: 100000
+  max_bindings_per_gateway: 512
+
+admin:
+  bind_address: 127.0.0.1:27490
+  read_timeout: 5s
+  write_timeout: 10s
+  shutdown_timeout: 5s
+
+logging:
+  level: info
+
+clients:
+  local-development:
+    api_keys:
+      primary: sha256:89e4e33aea3f6317658b0bf1a867fb84f39e57eb75d74ff5bffbe7a486a7779f

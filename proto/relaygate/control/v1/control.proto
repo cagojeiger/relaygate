@@ -1,0 +1,128 @@
+syntax = "proto3";
+
+package relaygate.control.v1;
+
+option go_package = "github.com/cagojeiger/relaygate/internal/gen/control/v1;controlv1";
+
+service GatewayControl {
+  rpc Connect(stream ControlRequest) returns (stream ControlResponse);
+  rpc AdmitOpen(AdmitOpenRequest) returns (AdmitOpenResponse);
+}
+
+message ControlRequest {
+  oneof message {
+    Hello hello = 1;
+    FullSnapshot full_snapshot = 2;
+    BindingMutation binding_mutation = 3;
+  }
+}
+
+message ControlResponse {
+  oneof message {
+    SessionOpened session_opened = 1;
+    SnapshotAccepted snapshot_accepted = 2;
+    MutationResult mutation_result = 3;
+  }
+}
+
+message Hello {
+  string cluster_epoch = 1;
+  string gateway_id = 2;
+  string gateway_instance_id = 3;
+  string relay_address = 4;
+}
+
+message SessionRef {
+  string cluster_epoch = 1;
+  string authority_id = 2;
+  string control_session_id = 3;
+  string gateway_id = 4;
+  string gateway_instance_id = 5;
+}
+
+message SessionOpened {
+  SessionRef session = 1;
+}
+
+message FullSnapshot {
+  SessionRef session = 1;
+  repeated LiveBinding bindings = 2;
+}
+
+message SnapshotAccepted {
+  uint32 binding_count = 1;
+}
+
+message BindingMutation {
+  SessionRef session = 1;
+  oneof mutation {
+    LiveBinding declare = 2;
+    LiveBinding withdraw = 3;
+  }
+}
+
+message BindingKey {
+  string client_id = 1;
+  string endpoint_pattern = 2;
+  string target_id = 3;
+}
+
+message ListenerBindingRef {
+  string gateway_instance_id = 1;
+  string listener_binding_id = 2;
+  // Set when the ref is returned outside its owning control session, such as
+  // in OpenContext. Session-bound snapshots and mutations derive GatewayID
+  // from SessionRef and omit this field.
+  string gateway_id = 3;
+}
+
+message LiveBinding {
+  BindingKey key = 1;
+  ListenerBindingRef ref = 2;
+}
+
+enum MutationCode {
+  MUTATION_CODE_UNSPECIFIED = 0;
+  MUTATION_CODE_APPLIED = 1;
+  MUTATION_CODE_ALREADY_APPLIED = 2;
+  MUTATION_CODE_CONFLICT = 3;
+  MUTATION_CODE_CAPACITY_REACHED = 4;
+}
+
+message MutationResult {
+  MutationCode code = 1;
+  LiveBinding binding = 2;
+  string error = 3;
+}
+
+message AuthContext {
+  string client_session_id = 1;
+  string client_id = 2;
+  string api_key_id = 3;
+  string auth_revision = 4;
+}
+
+message AdmitOpenRequest {
+  SessionRef session = 1;
+  AuthContext auth = 2;
+  string endpoint = 3;
+  string target_id = 4;
+}
+
+message OpenContext {
+  string cluster_epoch = 1;
+  string authority_id = 2;
+  string attempt_id = 3;
+  AuthContext auth = 4;
+  LiveBinding binding = 5;
+  string ingress_gateway_id = 6;
+  string ingress_gateway_instance_id = 7;
+  string ingress_control_session_id = 8;
+  string owner_relay_address = 9;
+  int64 expires_at_unix_millis = 10;
+  string owner_control_session_id = 11;
+}
+
+message AdmitOpenResponse {
+  OpenContext context = 1;
+}
