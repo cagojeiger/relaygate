@@ -116,6 +116,58 @@ fn register_pipe(shared: &Arc<Shared>, pipe_id: &str) -> Pipe {
         .expect("register pipe")
 }
 
+async fn assert_invalid_open_terminal_preserves_pending(
+    case: &str,
+    terminal: impl FnOnce(&wire::Open) -> connect_response::Message,
+) {
+    let (client, mut outbound) = harness();
+    let open_client = Arc::clone(&client);
+    let open = tokio::spawn(async move { open_client.open("service", "target").await });
+    let request = match next_message(&mut outbound).await {
+        connect_request::Message::Open(open) => open,
+        other => panic!("{case}: unexpected Open request: {other:?}"),
+    };
+    let pending = client
+        .shared
+        .opens
+        .lock()
+        .expect("opens lock poisoned")
+        .get(&request.request_id)
+        .cloned()
+        .expect("pending Open correlation");
+
+    let error = dispatch_response(&client.shared, response(terminal(&request)))
+        .await
+        .expect_err("invalid Open terminal enum must fail dispatch");
+    assert!(
+        matches!(error, SessionError::Protocol(_)),
+        "{case}: {error:?}"
+    );
+
+    {
+        let opens = client.shared.opens.lock().expect("opens lock poisoned");
+        assert_eq!(opens.len(), 1);
+        assert!(
+            opens
+                .get(&request.request_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &pending)),
+            "{case}: invalid terminal response replaced or removed pending Open"
+        );
+    }
+    assert!(pending.response.lock().unwrap().is_some());
+    assert!(!pending.cancelled.load(Ordering::Acquire));
+    assert!(pending.slot_reserved.load(Ordering::Acquire));
+    assert_eq!(client.shared.pipe_slots.load(Ordering::Acquire), 1);
+    assert!(client.shared.open_history.lock().unwrap().is_empty());
+    assert!(!open.is_finished(), "{case}: pending Open completed");
+
+    client.shared.terminate(error);
+    assert!(matches!(
+        open.await.expect("Open task"),
+        Err(OpenError::Session(SessionError::Protocol(_)))
+    ));
+}
+
 #[test]
 fn authentication_metadata_and_debug_output_do_not_retain_secret() {
     let config = Config::new("https://relay.example", "client", "key", "super-secret");
@@ -1049,6 +1101,40 @@ async fn concurrent_open_outcomes_preserve_cancelled_vs_unknown() {
     assert_eq!(first.await.unwrap().unwrap_err(), OpenError::Cancelled);
     assert_eq!(second.await.unwrap().unwrap_err(), OpenError::Unknown);
     assert_eq!(client.shared.pipe_slots.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn invalid_pipe_open_failed_enums_preserve_pending_open_until_protocol_termination() {
+    for (case, failure) in [
+        ("unspecified", wire::OpenFailure::Unspecified as i32),
+        ("unknown", i32::MAX),
+    ] {
+        assert_invalid_open_terminal_preserves_pending(case, |request| {
+            connect_response::Message::PipeOpenFailed(wire::PipeOpenFailed {
+                request_id: request.request_id.clone(),
+                endpoint: request.endpoint.clone(),
+                target_id: request.target_id.clone(),
+                failure,
+            })
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn invalid_open_request_rejected_enums_preserve_pending_open_until_protocol_termination() {
+    for (case, failure) in [
+        ("unspecified", wire::OpenRequestFailure::Unspecified as i32),
+        ("unknown_non_duplicate", i32::MAX),
+    ] {
+        assert_invalid_open_terminal_preserves_pending(case, |request| {
+            connect_response::Message::OpenRequestRejected(wire::OpenRequestRejected {
+                request_id: request.request_id.clone(),
+                failure,
+            })
+        })
+        .await;
+    }
 }
 
 #[tokio::test]
