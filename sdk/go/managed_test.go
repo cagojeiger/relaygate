@@ -305,6 +305,74 @@ func TestManagedClientStopsOnProtocolFailureWithoutReconnect(t *testing.T) {
 	}
 }
 
+func TestManagedClientStopsOnWrappedProtocolFailureDuringRebind(t *testing.T) {
+	var sessions atomic.Int32
+	dropFirst := make(chan struct{})
+	secondRebind := make(chan struct{})
+	address := startScriptedRelay(t, func(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
+		number := sessions.Add(1)
+		if err := openManagedSession(stream, number); err != nil {
+			return err
+		}
+		request, err := recvRequest(stream)
+		if err != nil {
+			return err
+		}
+		bind := request.GetBindListener()
+		if bind == nil || bind.GetEndpointPattern() != "/rebind" || bind.GetTargetId() != "server" {
+			return status.Error(codes.FailedPrecondition, "expected exact rebind declaration")
+		}
+		switch number {
+		case 1:
+			if err := stream.Send(listenerBound("managed-rebind-1", bind.GetEndpointPattern(), bind.GetTargetId())); err != nil {
+				return err
+			}
+			<-dropFirst
+			return status.Error(codes.Unavailable, "force rebind")
+		case 2:
+			close(secondRebind)
+			return stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerBindFailed{
+				ListenerBindFailed: &relayv1.ListenerBindFailed{
+					EndpointPattern: bind.GetEndpointPattern(),
+					TargetId:        bind.GetTargetId(),
+					Failure:         relayv1.ListenerBindingFailure_LISTENER_BINDING_FAILURE_UNSPECIFIED,
+				},
+			}})
+		default:
+			<-stream.Context().Done()
+			return stream.Context().Err()
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := ConnectManaged(ctx, NewConfig(address, "client-1", "key-1", "secret").WithInsecureLocal())
+	if err != nil {
+		t.Fatalf("ConnectManaged: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+	if _, err := client.Bind(ctx, "/rebind", "server"); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	close(dropFirst)
+	select {
+	case <-secondRebind:
+	case <-ctx.Done():
+		t.Fatal("managed client did not enter second-session rebind")
+	}
+	select {
+	case <-client.Done():
+	case <-ctx.Done():
+		t.Fatal("wrapped rebind protocol failure did not stop supervisor")
+	}
+	if client.State() != ManagedFailed || !errors.Is(client.Err(), errProtocol) {
+		t.Fatalf("rebind protocol terminal = %s, %v", client.State(), client.Err())
+	}
+	if sessions.Load() != 2 {
+		t.Fatalf("sessions after rebind protocol failure = %d, want 2", sessions.Load())
+	}
+}
+
 func TestManagedRetryClassificationMatchesStableGRPCCodes(t *testing.T) {
 	for _, code := range []codes.Code{
 		codes.InvalidArgument,

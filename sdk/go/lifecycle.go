@@ -109,6 +109,7 @@ type Offer struct {
 	state       offerState
 	abandoned   bool
 	delivered   *Pipe
+	provisional *Pipe
 	reserved    bool
 	established chan *Pipe
 	ack         chan *Pipe
@@ -251,11 +252,14 @@ func (o *Offer) isAccepting() bool {
 }
 
 func (o *Offer) establish(pipe *Pipe) bool {
-	if !o.isAccepting() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.state != offerAccepting || o.provisional != nil {
 		return false
 	}
 	select {
 	case o.established <- pipe:
+		o.provisional = pipe
 		return true
 	default:
 		return false
@@ -294,22 +298,22 @@ func (o *Offer) acknowledge(pipe *Pipe) bool {
 	}
 }
 
-func (o *Offer) rejectDecision(err error) bool {
+func (o *Offer) markDecisionRejected() (*Pipe, bool) {
 	o.mu.Lock()
-	valid := o.state == offerAccepting
-	if valid {
-		o.state = offerTerminal
+	defer o.mu.Unlock()
+	if o.state != offerAccepting {
+		return nil, false
 	}
-	o.mu.Unlock()
-	if !valid {
-		return false
-	}
+	o.state = offerTerminal
+	return o.provisional, true
+}
+
+func (o *Offer) finishDecisionRejection(err error) {
 	o.releaseReservation()
 	select {
 	case o.failure <- err:
 	default:
 	}
-	return true
 }
 
 func (o *Offer) terminate(err error) {
@@ -756,7 +760,7 @@ func (c *Client) retireOffer(offer *Offer, pipeID string) {
 	c.mu.Lock()
 	if c.offers[offer.attemptID] == offer {
 		delete(c.offers, offer.attemptID)
-		c.addOfferTombstoneLocked(offer.attemptID, pipeID)
+		c.addOfferTombstoneLocked(offer.attemptID, offerTombstone{pipeID: pipeID})
 	}
 	c.mu.Unlock()
 }

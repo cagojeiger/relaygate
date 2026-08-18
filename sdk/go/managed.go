@@ -616,6 +616,9 @@ func (m *ManagedClient) signalLocked() {
 }
 
 func isPermanentManagedConnectError(err error) bool {
+	if errors.Is(err, errProtocol) {
+		return true
+	}
 	var bindErr *BindError
 	if errors.As(err, &bindErr) {
 		return bindErr.Failure != BindingFailureUnavailable

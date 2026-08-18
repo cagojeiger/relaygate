@@ -1011,6 +1011,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wrapped_protocol_failure_during_rebind_stops_without_reconnect() {
+        let (client, mut sessions) = harness();
+        let mut first = sessions.recv().await.expect("first session");
+        client.wait_ready().await.expect("initial ready");
+
+        let bind = client.bind("/rebind", "server");
+        let acknowledge = async {
+            assert!(matches!(
+                next_message(&mut first.outbound).await,
+                connect_request::Message::BindListener(_)
+            ));
+            acknowledge_bind(&first, "/rebind", "server").await;
+        };
+        let (listener, ()) = tokio::join!(bind, acknowledge);
+        let _listener = listener.expect("managed bind");
+
+        first
+            .shared
+            .terminate(SessionError::Transport("injected loss".into()));
+        let mut second = tokio::time::timeout(Duration::from_secs(2), sessions.recv())
+            .await
+            .expect("reconnect timeout")
+            .expect("second session");
+        let connect_request::Message::BindListener(rebind) =
+            next_message(&mut second.outbound).await
+        else {
+            panic!("expected rebind request");
+        };
+        assert_eq!(rebind.endpoint_pattern, "/rebind");
+        assert_eq!(rebind.target_id, "server");
+
+        let protocol_error = dispatch_response(
+            &second.shared,
+            wire::ConnectResponse {
+                message: Some(connect_response::Message::ListenerBindFailed(
+                    wire::ListenerBindFailed {
+                        endpoint_pattern: rebind.endpoint_pattern,
+                        target_id: rebind.target_id,
+                        failure: wire::ListenerBindingFailure::Unspecified as i32,
+                    },
+                )),
+            },
+        )
+        .await
+        .expect_err("UNSPECIFIED rebind failure must be protocol-fatal");
+        assert!(matches!(protocol_error, SessionError::Protocol(_)));
+        second.shared.terminate(protocol_error);
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), client.done())
+                .await
+                .expect("wrapped rebind protocol failure must stop supervisor"),
+            ManagedError::Failed(_)
+        ));
+        assert_eq!(client.state(), ManagedState::Failed);
+        assert!(sessions.try_recv().is_err());
+        client.close().await;
+    }
+
+    #[tokio::test]
     async fn permanent_rpc_session_failure_stops_without_reconnect() {
         for code in [
             Code::InvalidArgument,

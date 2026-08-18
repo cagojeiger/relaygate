@@ -132,6 +132,7 @@ const (
 	OpenOutcomeFailed OpenOutcome = iota + 1
 	OpenOutcomeCancelled
 	OpenOutcomeUnknown
+	OpenOutcomeRejected
 )
 
 type OpenFailure uint8
@@ -147,13 +148,23 @@ const (
 )
 
 var (
-	ErrOpenFailed    = errors.New("relaygate: Open failed")
-	ErrOpenCancelled = errors.New("relaygate: Open cancelled")
-	ErrOpenUnknown   = errors.New("relaygate: Open outcome unknown")
-	ErrClientClosed  = errors.New("relaygate: client closed")
-	ErrListenerEnded = errors.New("relaygate: listener ended")
-	ErrPipeClosed    = errors.New("relaygate: pipe closed")
+	ErrOpenFailed            = errors.New("relaygate: Open failed")
+	ErrOpenCancelled         = errors.New("relaygate: Open cancelled")
+	ErrOpenUnknown           = errors.New("relaygate: Open outcome unknown")
+	ErrOpenDuplicateInFlight = errors.New("relaygate: Open request is already in flight")
+	ErrClientClosed          = errors.New("relaygate: client closed")
+	ErrListenerEnded         = errors.New("relaygate: listener ended")
+	ErrPipeClosed            = errors.New("relaygate: pipe closed")
 )
+
+type pipeNotOwnedError struct{}
+
+func (pipeNotOwnedError) Error() string { return "relaygate: pipe is not owned by this session" }
+func (pipeNotOwnedError) Unwrap() error { return ErrPipeClosed }
+
+// ErrPipeNotOwned identifies a Close rejected because the current session no
+// longer owns the Pipe. It unwraps to ErrPipeClosed for existing callers.
+var ErrPipeNotOwned error = pipeNotOwnedError{}
 
 // OpenError reports the caller-visible terminal outcome of an Open. Unknown
 // means the same logical Pipe cannot safely be recovered or resumed.
@@ -174,6 +185,8 @@ func (e *OpenError) Error() string {
 		return fmt.Sprintf("relaygate: Open %q target %q cancelled", e.Endpoint, e.Target)
 	case OpenOutcomeUnknown:
 		return fmt.Sprintf("relaygate: Open %q target %q has unknown outcome", e.Endpoint, e.Target)
+	case OpenOutcomeRejected:
+		return fmt.Sprintf("relaygate: Open %q target %q rejected because the request is already in flight", e.Endpoint, e.Target)
 	default:
 		return fmt.Sprintf("relaygate: Open %q target %q failed (%s)", e.Endpoint, e.Target, e.Failure)
 	}
@@ -192,6 +205,8 @@ func (e *OpenError) Is(target error) bool {
 		return e.Outcome == OpenOutcomeCancelled
 	case ErrOpenUnknown:
 		return e.Outcome == OpenOutcomeUnknown
+	case ErrOpenDuplicateInFlight:
+		return e.Outcome == OpenOutcomeRejected
 	case context.DeadlineExceeded:
 		return e.Outcome == OpenOutcomeFailed && e.Failure == OpenFailureDeadlineExceeded
 	default:
