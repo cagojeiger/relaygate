@@ -7,6 +7,7 @@ This file records what current automation has executed and what remains external
 | Status | Meaning |
 | --- | --- |
 | `executed` | A test/harness directly observes the fault order and oracle |
+| `representative` | Deterministic automation observes the stated local boundary, but not every OS/network/deployment realization of that failure class |
 | `invariant` | Ownership/API boundaries make the interaction unreachable or independent, with boundary tests |
 | `missing-evidence` | Required, but not proven by current automated tests |
 | `external-blocked` | Requires deployment/operator evidence outside this repository |
@@ -20,17 +21,20 @@ This file records what current automation has executed and what remains external
 | Controller replacement primitive | fresh `NodeId` add, current-FSM catch-up, remove; old identity reuse rejected | `executed` | `TestAddCatchUpAndRemoveVoter`, `TestExistingStoreRejectsDifferentNodeID` |
 | Local membership operator | controller-local Unix-socket list/add/remove, leader-only guard, state-idempotent retry | `executed` | membership service/client tests and Compose operator stage |
 | Production replacement operation | deployed runbook drives start/add/readiness/remove safely | `external-blocked` | production operator evidence required |
-| Initial bootstrap validation | one-shot bootstrap requires voter manifest | `executed` | config bootstrap tests |
+| Initial bootstrap validation | one-shot bootstrap requires voter manifest and is removed from steady Compose services | `executed` | config bootstrap tests; the command-scoped Compose input is removed by recreating only the bootstrap controller with `bootstrap=false` before fault stages |
 | Production PVC/runbook | actual storage class, backup, replacement procedure | `external-blocked` | operator evidence required |
 | Disaster reset fence | old controller/control/gateway paths fenced before new epoch | `external-blocked` | operator evidence required; not covered by Compose stop |
-| Authority | current, caller cancel, term change, follower, definitive verify loss | `executed` | authority manager tests including cancellation and definitive loss |
+| Authority | current, caller cancel, term/ref change, follower, definitive verify loss, steady point-lookup admission | `executed` | authority manager tests including `TestAdmissionRejectsChangedAuthorityRef` and `TestSteadyStateConfirmAndAdmitOpenDoNotCopyFullState` |
 | Control session | syncing, revalidated, timeout, replacement, stale message | `executed` | control client/server tests and blackhole integration |
 | Directory `C` | exact, absent, conflict, churn, max snapshot, cascade delete | `executed` | FSM/authority directory tests |
 | Open | all six gates, reject, cancel, deadline, ACK loss, Unknown | `executed` | 64-vector and opening manager race tests |
-| Remote hop | exact provenance, replay, expiry, loss | `executed` | admission decoder, peer relay, forwarded-attempt tests |
-| Payload | both directions, bound, pressure, close/crash | `executed` | opening/public/peer/SDK payload tests |
+| Remote hop | exact provenance, replay, expiry, and representative stream loss | `representative` | admission decoder, peer relay, forwarded-attempt tests; no arbitrary packet-loss/partition campaign |
+| Payload | both directions, bound, pressure, close, and in-process participant termination | `representative` | opening/public/peer/SDK payload tests; no OS process-kill payload crash cut |
 | Auth config | current, invalid candidate, removal, process skew | `executed` | auth/runtime/admin tests |
-| Runtime role | controller owns Raft/control; gateway owns relay and no Raft/store/control server | `executed` | config/admin tests and Compose role checks |
+| Runtime role | controller owns Raft/control; gateway owns relay and no Raft/store/control server | `representative` | runtime composition and config/admin tests; Compose verifies the Gateway-side closed controller ports |
+| Presence | committed `C` counters, leader-local `V` counters, no completeness/revocation claim | `representative` | authority/admin tests verify exact local values; no deployment-wide expected-roster proof |
+| Data-plane process crash | OS/container kill during an active Pipe or payload write | `missing-evidence` | in-process cancellation tests are not a process-crash harness |
+| Arbitrary network fault campaign | packet loss, duplication, reorder, delay, and partition at every peer/control cut | `missing-evidence` | representative stream-loss and timeout tests only |
 | Remote clock bound | real node clock skew | `external-blocked` | operational evidence required |
 | Internal identity | untrusted/shared network | `external-blocked` | peer/control/Raft authentication or mTLS required |
 | Go SDK module | server module/workspace-free build/test | `executed` | `sdk/go` `GOWORK=off` test/vet |
@@ -50,6 +54,6 @@ This file records what current automation has executed and what remains external
 
 ## Runtime Evidence
 
-`./scripts/compose-smoke.sh` validates the local multi-container shape: controller named volumes, gateway services without Raft data volume, local leader-only membership socket, same/cross-Gateway relay, SDK combinations, leader failover, and fail-closed behavior under insufficient quorum.
+`./scripts/compose-smoke.sh` validates the local multi-container shape: command-scoped one-shot bootstrap retirement, controller named volumes, gateway services without Raft data volume, local leader-only membership socket, same/cross-Gateway relay, SDK combinations, leader failover, and fail-closed behavior under insufficient quorum.
 
 Local Compose is not production evidence for PVC durability, backup/restore, mTLS, clock skew, or disaster reset fencing.

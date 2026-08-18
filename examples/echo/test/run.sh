@@ -117,7 +117,9 @@ assert_server_stable() {
 }
 
 "${compose[@]}" config --quiet
-"${compose[@]}" up --build --detach controller gateway echo-go echo-rust
+RELAYGATE_BOOTSTRAP_ONCE=true "${compose[@]}" config --quiet
+RELAYGATE_BOOTSTRAP_ONCE=true "${compose[@]}" up --build --detach controller gateway echo-go echo-rust
+"${compose[@]}" up --detach --no-build --no-deps --force-recreate controller
 wait_for_ready echo-go "ECHO_READY go"
 wait_for_ready echo-rust "ECHO_READY rust"
 go_server=$("${compose[@]}" ps --quiet echo-go)

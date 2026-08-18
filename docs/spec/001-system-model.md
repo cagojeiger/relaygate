@@ -77,7 +77,7 @@ sequenceDiagram
     A-->>G: SessionOpened(exact ControlSessionRef)
     G->>A: FullSnapshot(current LiveBinding only)
     A->>R: ReplaceSnapshot
-    A-->>G: SnapshotApplied
+    A-->>G: SnapshotAccepted
     G->>A: serial Declare / Withdraw
     A->>R: DeclareRoute / WithdrawRoute
 ```
@@ -119,12 +119,13 @@ Only `111111` creates a Listener offer. Context issuance is not a reservation or
 - Post-linearization response or hop loss can produce caller `Unknown`.
 - Remote owner uses one dedicated internal bidirectional stream per Pipe; no redial, retry, multiplexed resume, or payload replay.
 - Payload is opaque, bounded, per-direction FIFO. `Send` success is not peer application ACK.
-- Backpressure fails closed without silent drop; terminal/control events bypass payload pressure.
+- A multiplexed public Relay stream has separate bounded control/terminal and payload lanes; ready control/terminal work bypasses queued payload pressure.
+- A one-stream-per-Pipe peer hop serializes sends through one bounded lane. Send timeout or cancellation terminalizes the Pipe and cancels the stream; no priority bypass inside a blocked gRPC write, silent drop, retry, or replay is provided.
 - `ManagedClient` reconnects only sessions and current Listener declarations. It rejects Open while not ready and never replays Open/Pipe/payload state.
 
 ## Presence
 
-`/status` is observation only. Controller status may expose Raft and presence. Gateway status may expose control-client readiness. Presence counters are current observed values, not completeness, revocation proof, or admission success. No authority/follower/quorum uncertainty is fail-closed for readiness/admission.
+`/status` is observation only. Controller status reports `committed_gateways` and `committed_routes` from committed `C`, plus `revalidated_gateways` from `V` and `eligible_routes` where exact `C` and `V` agree. Gateway status may expose control-client readiness. These are current observed counters, not completeness, revocation proof, or admission success. A follower or quorum uncertainty is fail-closed for authority observation and admission, while a healthy follower may still be member-ready at `/healthz/ready`.
 
 ## Invariants
 

@@ -36,7 +36,7 @@ services:
       <<: *controller-environment
       RELAYGATE_RAFT_NODE_ID: controller-1
       RELAYGATE_RAFT_ADVERTISE_ADDRESS: controller-1:27400
-      RELAYGATE_RAFT_BOOTSTRAP: "true"
+      RELAYGATE_RAFT_BOOTSTRAP: "${RELAYGATE_BOOTSTRAP_ONCE:-false}"
     volumes:
       - controller-1-data:/var/lib/relaygate
     ports:

@@ -116,9 +116,9 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[controlv1.ControlReque
 	}
 }
 
-// AdmitOpen is side-effect free. It confirms current authority and resolves an
-// exact committed route plus current owner revalidation; it does not reserve,
-// persist, or replay an Open attempt.
+// AdmitOpen confirms current authority and resolves an exact committed route
+// plus current owner revalidation. It does not reserve, persist, or replay an
+// Open attempt.
 func (s *Service) AdmitOpen(ctx context.Context, request *controlv1.AdmitOpenRequest) (*controlv1.AdmitOpenResponse, error) {
 	if request == nil {
 		return nil, status.Error(codes.InvalidArgument, "Open admission request is required")
@@ -131,19 +131,8 @@ func (s *Service) AdmitOpen(ctx context.Context, request *controlv1.AdmitOpenReq
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid auth context: %v", err)
 	}
-	if _, err := authority.ExactBindingKey(auth, request.GetEndpoint(), request.GetTargetId()); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-
-	current, err := s.authority.Confirm(ctx)
-	if err != nil {
-		return nil, unavailable("confirm Open authority", err)
-	}
-	if wireSession.GetClusterEpoch() != current.ClusterEpoch || wireSession.GetAuthorityId() != current.AuthorityID {
-		return nil, status.Error(codes.Unavailable, "Open ingress session belongs to a stale authority")
-	}
 	ingress := sessionRefFromProto(wireSession)
-	openContext, err := s.authority.ResolveOpen(ingress, auth, request.GetEndpoint(), request.GetTargetId())
+	openContext, err := s.authority.AdmitOpen(ctx, ingress, auth, request.GetEndpoint(), request.GetTargetId())
 	if err != nil {
 		return nil, mapOpenAdmissionError(err)
 	}

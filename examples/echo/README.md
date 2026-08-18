@@ -1,6 +1,6 @@
 # RelayGate Echo
 
-이 로컬 예제는 persistent Raft controller 하나, stateless Gateway 하나, Echo listener 두 개를 실행한다.
+이 로컬 예제는 persistent Raft controller 하나, durable store가 없는 Gateway 하나, Echo listener 두 개를 실행한다.
 
 - Go listener: endpoint `/examples/echo`, target `go`
 - Rust listener: endpoint `/examples/echo`, target `rust`
@@ -12,8 +12,11 @@
 이 디렉터리에서 실행한다.
 
 ```bash
-docker compose up --build
+RELAYGATE_BOOTSTRAP_ONCE=true docker compose up -d --build
+docker compose up -d --no-build --no-deps --force-recreate controller
 ```
+
+첫 명령의 command-scoped bootstrap 입력은 빈 volume 최초 생성에만 사용한다. 두 번째 명령은 controller만 `bootstrap=false`로 다시 만들며, 이후 재시작에는 `docker compose up -d`만 사용한다.
 
 두 listener가 `ECHO_READY`를 출력하면 다른 터미널에서 호출한다.
 

@@ -37,7 +37,7 @@ external_config: {
 }
 
 gateways: {
-  label: "Gateway role · stateless relay plane"
+  label: "Gateway role · no durable store"
   direction: down
   style.fill: "#f8fafc"
   style.stroke: "#2563eb"
@@ -89,7 +89,7 @@ controllers: {
   }
 
   c_fsm: {
-    label: "C · committed current FSM\nGatewaySession + exact routes\ntrue delete / cascade\nno tombstone or history"
+    label: "C · committed current FSM\nGatewaySession + exact routes\ntrue delete / cascade\nno application tombstone/history"
     class: store
   }
 
@@ -133,8 +133,9 @@ controllers.followers.c -> controllers.durable: {class: raft}
 controllers.durable -> controllers.c_fsm: "restore current rows only" {class: raft}
 controllers.leader -> controllers.c_fsm: "linearizable D route lookup" {class: raft}
 controllers.leader -> controllers.v_authority: "confirmed leader creates V" {class: control}
-controllers.v_authority -> admission: "L + V" {class: control}
-controllers.c_fsm -> admission: "Q + D" {class: raft}
+controllers.leader -> admission: "L + Q\nVerifyLeader + Barrier" {class: raft}
+controllers.v_authority -> admission: "V" {class: control}
+controllers.c_fsm -> admission: "D" {class: raft}
 gateways.ingress -> admission: "A" {class: control}
 gateways.owner -> admission: "O owner reservation" {class: control}
 

@@ -18,7 +18,9 @@ Caller --public--> Ingress ==internal bidi stream==> Owner --public--> Listener
 - 이미 reserve된 attempt는 response나 `PipeId`를 replay하지 않고 fail closed한다.
 - Listener accept가 Open의 선형화점이며 Owner가 여기서 `PipeId`를 만든다.
 - Ingress와 Owner는 같은 logical `PipeId`의 자기 segment만 소유한다.
-- 각 방향은 FIFO이고 buffer는 bounded다. Control과 terminal event는 payload보다 우선한다.
+- 각 방향은 FIFO이고 buffer와 대기는 bounded다.
+- 여러 Pipe를 multiplex하는 public Relay stream은 control/terminal과 payload를 별도 bounded lane으로 보내므로 ready control/terminal work가 queued payload pressure를 우회한다.
+- Pipe 하나만 운반하는 internal peer stream은 모든 send를 하나의 bounded lane에서 직렬화한다. Blocked send가 timeout 또는 cancellation에 도달하면 해당 Pipe를 terminalize하고 stream을 취소하며, blocked gRPC write 안에서 별도 priority bypass를 약속하지 않는다.
 - Internal hop은 redial, retry, resume과 payload replay를 하지 않는다.
 
 Open이 선형화된 뒤 response나 hop을 잃으면 caller outcome은 `Unknown`일 수 있다. 같은 request를 이어 붙이지

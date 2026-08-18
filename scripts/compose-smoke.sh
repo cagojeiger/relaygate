@@ -247,6 +247,17 @@ assert_storage_boundary() {
   done
 }
 
+assert_bootstrap_disabled() {
+  local service container
+  for service in controller-1 controller-2 controller-3; do
+    container=$("${compose[@]}" ps --quiet "$service")
+    [[ -n "$container" ]] || fail "$service container was not found"
+    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" |
+      grep --fixed-strings --line-regexp --quiet 'RELAYGATE_RAFT_BOOTSTRAP=false' ||
+      fail "$service retained initial bootstrap authority"
+  done
+}
+
 wait_for_log_marker() {
   local name=$1 marker=$2
   for ((attempt = 0; attempt < 160; attempt++)); do
@@ -278,13 +289,23 @@ assert all(m["suffrage"] == "Voter" for m in members)
 
 printf 'compose smoke: starting standard controller/gateway topology (%s)\n' "$project_name"
 "${compose[@]}" config --quiet
+RELAYGATE_BOOTSTRAP_ONCE=true "${compose[@]}" config --quiet
 owns_project=true
-"${compose[@]}" up --detach --build
+RELAYGATE_BOOTSTRAP_ONCE=true "${compose[@]}" up --detach --build
 
 initial_leader=$(wait_for_leader 2 0 2 0)
 wait_for_gateways
 assert_storage_boundary
-printf 'compose smoke: %s leads; both stateless gateways are revalidated\n' "$initial_leader"
+
+# Initial bootstrap is a one-shot deployment input. Reconcile immediately to
+# the steady-state Compose definition so an ordinary restart cannot bootstrap
+# an empty controller store under a reused identity.
+"${compose[@]}" up --detach --no-build --no-deps --force-recreate controller-1
+initial_leader=$(wait_for_leader 2 0 2 0)
+wait_for_gateways
+wait_for_controller_ready controller-1
+assert_bootstrap_disabled
+printf 'compose smoke: %s leads; bootstrap input is retired and both gateways are revalidated\n' "$initial_leader"
 
 membership=$(membership_command "$initial_leader" list)
 assert_membership_result "$membership" false 3
@@ -400,7 +421,7 @@ docker run --rm --network "container:$gateway_one" \
   --env RELAYGATE_COMPOSE_RELAY_ADDR=127.0.0.1:27420 "$test_image"
 
 # A coordinated controller outage is recoverable from the same three durable
-# stores. The gateways remain stateless and rebuild only V after a new leader
+# stores. The gateways have no durable store and rebuild only V after a new leader
 # is elected; committed current state is read from the restored Raft FSM.
 docker run --detach --name "$failover_name" --network "container:$gateway_two" \
   --env RELAYGATE_COMPOSE_RELAY_ADDR=127.0.0.1:27420 "$test_image" \
@@ -443,4 +464,4 @@ docker logs "$failover_name"
 [[ "$failover_exit" == 0 ]] || fail "full-cohort restart route did not recover"
 docker rm "$failover_name" >/dev/null
 
-printf 'compose smoke: PASS (3 durable controllers, 2 stateless gateways, same/cross relay, Go/Rust SDK matrix, C/V failover, member/full-cohort persistent restart, quorum-loss recovery)\n'
+printf 'compose smoke: PASS (3 durable controllers, 2 gateways without durable stores, same/cross relay, Go/Rust SDK matrix, C/V failover, member/full-cohort persistent restart, quorum-loss recovery)\n'
