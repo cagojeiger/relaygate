@@ -16,7 +16,10 @@ session boundary; `Close` cancels and joins the supervisor.
 Bind and Unbind rejections are typed, operation-local errors and leave the authenticated session usable. A
 `PipePayloadRejected` response is terminal for that exact Pipe because payload frames have no acknowledgement ID; it does
 not terminate the Client. Managed reconnect treats invalid arguments, authentication, permission, failed preconditions,
-and protocol violations as permanent, while transient transport and availability failures enter bounded backoff.
+and protocol violations in connect, rebind, or ready state as permanent, while transient transport and availability
+failures enter bounded backoff. Unknown or `UNSPECIFIED` response codes and foreign correlations are protocol-fatal.
+`ErrOpenDuplicateInFlight` preserves the distinct rejected-Open result. `ErrPipeNotOwned` identifies a non-owned close and
+also matches `ErrPipeClosed` through `errors.Is` for backward-compatible terminal handling.
 
 ```go
 client, err := relaygate.ConnectManaged(ctx,

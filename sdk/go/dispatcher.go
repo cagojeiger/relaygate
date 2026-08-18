@@ -234,10 +234,11 @@ func (c *Client) dispatchListenerEstablished(message *relayv1.ListenerEstablishe
 	}
 	pipe := newPipe(c, message.GetPipeId(), message.GetAttemptId(), offer.endpoint, offer.target)
 	c.pipes[pipe.id] = pipe
-	c.mu.Unlock()
 	if !offer.establish(pipe) {
+		c.mu.Unlock()
 		return protocolError("ListenerEstablished in wrong phase")
 	}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -317,15 +318,36 @@ func (c *Client) dispatchListenerTerminated(message *relayv1.ListenerTerminated)
 }
 
 func (c *Client) dispatchListenerDecisionRejected(message *relayv1.ListenerDecisionRejected) error {
-	if !validIdentity(message.GetAttemptId()) {
+	if !validIdentity(message.GetAttemptId()) || !validListenerDecisionFailure(message.GetFailure()) {
 		return protocolError("invalid ListenerDecisionRejected")
 	}
+	rejection := fmt.Errorf("relaygate: listener decision rejected (%s)", message.GetFailure())
 	c.mu.Lock()
 	offer := c.offers[message.GetAttemptId()]
-	c.mu.Unlock()
-	if offer == nil || !offer.rejectDecision(fmt.Errorf("relaygate: listener decision rejected (%s)", message.GetFailure())) {
+	if offer == nil {
+		c.mu.Unlock()
 		return protocolError("foreign ListenerDecisionRejected")
 	}
+	pipe, ok := offer.markDecisionRejected()
+	if !ok {
+		c.mu.Unlock()
+		return protocolError("foreign ListenerDecisionRejected")
+	}
+	delete(c.offers, message.GetAttemptId())
+	pipeID := ""
+	if pipe != nil {
+		pipeID = pipe.id
+		if c.pipes[pipe.id] == pipe {
+			delete(c.pipes, pipe.id)
+		}
+		c.addPipeTombstoneLocked(pipe)
+	}
+	c.addOfferTombstoneLocked(message.GetAttemptId(), pipeID)
+	c.mu.Unlock()
+	if pipe != nil {
+		pipe.terminate(rejection)
+	}
+	offer.finishDecisionRejection(rejection)
 	return nil
 }
 
@@ -367,7 +389,10 @@ func (c *Client) dispatchPipeOpened(message *relayv1.PipeOpened) error {
 }
 
 func (c *Client) dispatchPipeOpenFailed(message *relayv1.PipeOpenFailed) error {
-	failure := openFailureFromProto(message.GetFailure())
+	failure, ok := openFailureFromProto(message.GetFailure())
+	if !ok {
+		return protocolError("invalid PipeOpenFailed failure")
+	}
 	outcomeRecord := openTombstone{endpoint: message.GetEndpoint(), target: message.GetTargetId(), kind: openOutcomeFailed, failure: failure}
 	call, duplicate, err := c.takeOpenOutcome(message.GetRequestId(), outcomeRecord)
 	if err != nil {
@@ -400,7 +425,7 @@ func (c *Client) dispatchPipeOpenUnknown(message *relayv1.PipeOpenUnknown) error
 }
 
 func (c *Client) dispatchOpenRequestRejected(message *relayv1.OpenRequestRejected) error {
-	if !validIdentity(message.GetRequestId()) {
+	if !validIdentity(message.GetRequestId()) || message.GetFailure() != relayv1.OpenRequestFailure_OPEN_REQUEST_FAILURE_DUPLICATE_IN_FLIGHT {
 		return protocolError("invalid OpenRequestRejected")
 	}
 	c.mu.Lock()
@@ -415,7 +440,7 @@ func (c *Client) dispatchOpenRequestRejected(message *relayv1.OpenRequestRejecte
 	call := c.opens[message.GetRequestId()]
 	switch {
 	case call != nil && !call.outcomeReceived:
-		c.recordOpenOutcomeLocked(call, openTombstone{endpoint: call.endpoint, target: call.target, kind: openOutcomeRejected, failure: OpenFailureInvalidRequest})
+		c.recordOpenOutcomeLocked(call, openTombstone{endpoint: call.endpoint, target: call.target, kind: openOutcomeRejected})
 	case call != nil && call.outcome.kind == openOutcomeRejected:
 		c.mu.Unlock()
 		return nil
@@ -427,7 +452,7 @@ func (c *Client) dispatchOpenRequestRejected(message *relayv1.OpenRequestRejecte
 		return protocolError("foreign OpenRequestRejected")
 	}
 	c.releaseOpenReservation(call)
-	call.complete(openResult{err: &OpenError{Outcome: OpenOutcomeFailed, Failure: OpenFailureInvalidRequest, Endpoint: call.endpoint, Target: call.target}})
+	call.complete(openResult{err: &OpenError{Outcome: OpenOutcomeRejected, Endpoint: call.endpoint, Target: call.target}})
 	return nil
 }
 
@@ -568,7 +593,7 @@ func (c *Client) dispatchPipeCloseAcknowledged(message *relayv1.PipeCloseAcknowl
 	}
 	var err error
 	if !message.GetOwned() {
-		err = ErrPipeClosed
+		err = ErrPipeNotOwned
 	}
 	call.pipe.terminate(err)
 	call.result <- err
@@ -725,22 +750,35 @@ func protocolError(detail string) error { return fmt.Errorf("%w: %s", errProtoco
 func validIdentity(value string) bool { return value != "" && len(value) <= maxIdentityBytes }
 func validEndpoint(value string) bool { return value != "" && len(value) <= maxEndpointBytes }
 
-func openFailureFromProto(failure relayv1.OpenFailure) OpenFailure {
+func openFailureFromProto(failure relayv1.OpenFailure) (OpenFailure, bool) {
 	switch failure {
 	case relayv1.OpenFailure_OPEN_FAILURE_INVALID_REQUEST:
-		return OpenFailureInvalidRequest
+		return OpenFailureInvalidRequest, true
 	case relayv1.OpenFailure_OPEN_FAILURE_ROUTE_NOT_FOUND:
-		return OpenFailureRouteNotFound
+		return OpenFailureRouteNotFound, true
+	case relayv1.OpenFailure_OPEN_FAILURE_UNAVAILABLE:
+		return OpenFailureUnavailable, true
 	case relayv1.OpenFailure_OPEN_FAILURE_CAPACITY_REACHED:
-		return OpenFailureCapacityReached
+		return OpenFailureCapacityReached, true
 	case relayv1.OpenFailure_OPEN_FAILURE_LISTENER_REJECTED:
-		return OpenFailureListenerRejected
+		return OpenFailureListenerRejected, true
 	case relayv1.OpenFailure_OPEN_FAILURE_DEADLINE_EXCEEDED:
-		return OpenFailureDeadlineExceeded
+		return OpenFailureDeadlineExceeded, true
 	case relayv1.OpenFailure_OPEN_FAILURE_CANCELLED:
-		return OpenFailureCancelled
+		return OpenFailureCancelled, true
 	default:
-		return OpenFailureUnavailable
+		return 0, false
+	}
+}
+
+func validListenerDecisionFailure(failure relayv1.ListenerDecisionFailure) bool {
+	switch failure {
+	case relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_INVALID_REQUEST,
+		relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_ATTEMPT_NOT_PENDING,
+		relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_WRONG_PHASE:
+		return true
+	default:
+		return false
 	}
 }
 

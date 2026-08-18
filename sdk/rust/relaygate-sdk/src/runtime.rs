@@ -999,7 +999,7 @@ pub(crate) async fn dispatch_response(
         connect_response::Message::PipeOpenFailed(failed) => pipe_open_failed(shared, failed)?,
         connect_response::Message::PipeOpenUnknown(unknown) => pipe_open_unknown(shared, unknown)?,
         connect_response::Message::ListenerDecisionRejected(rejected) => {
-            listener_decision_rejected(shared, rejected);
+            listener_decision_rejected(shared, rejected)?;
         }
         connect_response::Message::OpenCancelAcknowledged(acknowledged) => {
             open_cancel_acknowledged(shared, acknowledged)?;
@@ -1739,18 +1739,57 @@ fn open_cancel_acknowledged(
     }
 }
 
-fn listener_decision_rejected(shared: &Arc<Shared>, rejected: wire::ListenerDecisionRejected) {
-    if let Some(state) = shared.remove_offer(&rejected.attempt_id) {
-        state.ended.store(true, Ordering::Release);
-        let pipe_id = state
-            .pipe_id
-            .lock()
-            .expect("offer pipe lock poisoned")
-            .clone()
-            .unwrap_or_default();
-        shared.retire_offer_identity(&rejected.attempt_id, &pipe_id);
-        state.publish(OfferEvent::Rejected);
+fn listener_decision_rejected(
+    shared: &Arc<Shared>,
+    rejected: wire::ListenerDecisionRejected,
+) -> Result<(), SessionError> {
+    if !valid_text(&rejected.attempt_id, MAX_IDENTITY_BYTES) {
+        return Err(SessionError::Protocol(
+            "ListenerDecisionRejected contained invalid identity",
+        ));
     }
+    match wire::ListenerDecisionFailure::try_from(rejected.failure).ok() {
+        Some(wire::ListenerDecisionFailure::InvalidRequest)
+        | Some(wire::ListenerDecisionFailure::AttemptNotPending)
+        | Some(wire::ListenerDecisionFailure::WrongPhase) => {}
+        Some(wire::ListenerDecisionFailure::Unspecified) | None => {
+            return Err(SessionError::Protocol(
+                "ListenerDecisionRejected contained invalid failure",
+            ));
+        }
+    }
+    let state = {
+        let mut offers = shared.offers.lock().expect("offers lock poisoned");
+        let state = offers
+            .get(&rejected.attempt_id)
+            .cloned()
+            .ok_or(SessionError::Protocol("foreign ListenerDecisionRejected"))?;
+        if state.decision.load(Ordering::Acquire) != 1
+            || state.ended.load(Ordering::Acquire)
+            || state.acknowledged.load(Ordering::Acquire)
+        {
+            return Err(SessionError::Protocol(
+                "ListenerDecisionRejected arrived in the wrong offer phase",
+            ));
+        }
+        state.ended.store(true, Ordering::Release);
+        offers
+            .remove(&rejected.attempt_id)
+            .expect("matching offer must remain present")
+    };
+    state.release_slot(shared);
+    let pipe_id = state
+        .pipe_id
+        .lock()
+        .expect("offer pipe lock poisoned")
+        .clone()
+        .unwrap_or_default();
+    shared.retire_offer_identity(&rejected.attempt_id, &pipe_id);
+    if !pipe_id.is_empty() {
+        shared.terminalize_pipe(&pipe_id, PipeError::Terminal);
+    }
+    state.publish(OfferEvent::Rejected);
+    Ok(())
 }
 
 fn pipe_close_acknowledged(

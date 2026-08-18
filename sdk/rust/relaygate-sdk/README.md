@@ -43,7 +43,9 @@ accepted by the local bounded stream writer, not acknowledged by the peer applic
 Bind and Unbind rejections are typed, operation-local errors and leave the authenticated session usable. A
 `PipePayloadRejected` response is terminal for that exact Pipe because payload frames have no acknowledgement ID; it does
 not terminate the Client. Managed reconnect treats invalid arguments, authentication, permission, failed preconditions,
-and protocol violations as permanent, while transient transport and availability failures enter bounded backoff.
+and protocol violations in connect, rebind, or ready state as permanent, while transient transport and availability
+failures enter bounded backoff. Unknown or `UNSPECIFIED` response codes and foreign correlations are protocol-fatal.
+`OpenError::DuplicateInFlight` and `CloseError::NotOwned` preserve the distinct rejected-Open and non-owned close results.
 
 The crate packages its protobuf build input under `proto/`. From the repository root, verify the release artifact and
 the full Rust workspace with:

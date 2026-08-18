@@ -30,7 +30,8 @@ This file records what current automation has executed and what remains external
 | Open | all six gates, reject, cancel, deadline, ACK loss, Unknown | `executed` | 64-vector and opening manager race tests |
 | Remote hop | exact provenance, replay, expiry, and representative stream loss | `representative` | admission decoder, peer relay, forwarded-attempt tests; no arbitrary packet-loss/partition campaign |
 | Payload | both directions, bound, pressure, close, and in-process participant termination | `representative` | opening/public/peer/SDK payload tests; no OS process-kill payload crash cut |
-| Public error scope | Bind/Unbind stable failures stay operation-local; payload rejection ends only the exact Pipe; malformed/foreign responses fail closed | `executed` | public Relay plus Go/Rust SDK error-scope and terminal-order tests |
+| Public error scope | Bind/Unbind stable failures stay operation-local; payload rejection ends only the exact Pipe; every unknown/unspecified enum and malformed/foreign correlation fails closed | `executed` | public Relay plus Go/Rust SDK strict-enum, error-scope, and terminal-order tests |
+| SDK retry state | Protocol failure in connect, rebind, or ready enters terminal Failed; only transient transport/availability enters Backoff | `executed` | Go wrapped rebind-protocol regression and Go/Rust managed classification tests |
 | Auth config | current, invalid candidate, removal, process skew | `executed` | auth/runtime/admin tests |
 | Runtime role | controller owns Raft/control; gateway owns relay and no Raft/store/control server | `representative` | runtime composition and config/admin tests; Compose verifies the Gateway-side closed controller ports |
 | Presence | committed `C` counters, leader-local `V` counters, no completeness/revocation claim | `representative` | authority/admin tests verify exact local values; no deployment-wide expected-roster proof |

@@ -156,10 +156,10 @@ stream. Shutdown cancels and joins owned workers; neither path replays queued or
 | --- | --- | --- | --- |
 | `ConnectingM` | fresh session authenticated | `RebindingM` | Install new raw Client; old handles stay terminal |
 | `ConnectingM` | transient transport failure | `BackoffM` | Bounded exponential backoff + jitter |
-| `ConnectingM` | permanent config/auth/protocol failure | `FailedM` | Terminal; no retry storm |
+| any non-terminal | permanent config/auth/protocol failure | `FailedM` | Terminal in connect, rebind, or ready phase; no retry storm |
 | `RebindingM` | every current logical Listener fresh-bound | `ReadyM` | Publish new underlying Listener generation |
-| `RebindingM` | session loss | `BackoffM` | Clear current raw Listener handles; retain declarations only |
-| `ReadyM` | session loss | `BackoffM` | Old Listener/Offer/Pipe/Open terminal; no replay |
+| `RebindingM` | transient session/transport loss | `BackoffM` | Clear current raw Listener handles; retain declarations only |
+| `ReadyM` | transient session/transport loss | `BackoffM` | Old Listener/Offer/Pipe/Open terminal; no replay |
 | `ReadyM` | Open | `ReadyM` | Submit exactly once to current raw Client |
 | `ConnectingM/RebindingM/BackoffM` | Open | same | Reject `NotReady`; no queue |
 | any non-terminal | Close | `ClosedM` | Cancel connect/backoff and join one supervisor task |
@@ -171,9 +171,11 @@ Logical Listener drop/unbind removes its declaration before current-session clea
 | Request/result family | Operation-local | Session-fatal |
 | --- | --- | --- |
 | Bind/Unbind | invalid request, capacity, conflict, control unavailable | session ended/revoked, context/stream end, internal protocol failure |
-| Open/cancel | `PipeOpenFailed`, `PipeOpenUnknown`, `OpenRequestRejected`, exact cancel ACK | malformed stream state or transport failure |
+| Open/cancel | `PipeOpenFailed`, `PipeOpenUnknown`, exact duplicate-in-flight `OpenRequestRejected`, exact cancel ACK | malformed/unknown failure code, stream state, or transport failure |
 | Listener decision | `ListenerDecisionRejected`, exact confirmation ACK | malformed/conflicting correlated response |
-| Payload/close | payload rejection and exact close ACK/terminal | malformed/conflicting correlated response or transport failure |
+| Payload/close | payload rejection and exact close ACK/terminal; `owned=false` is an explicit NotOwned terminal result | malformed/conflicting correlated response or transport failure |
 
 Go and Rust managed supervisors retry only transient transport/availability failures. Invalid configuration, authentication,
 permission, failed precondition, and protocol errors enter `FailedM`. No supervisor retry replays Open/Pipe/payload state.
+Every enum-valued response rejects `UNSPECIFIED` and unknown numeric values as protocol-fatal. The valid
+duplicate-in-flight Open rejection and close NotOwned result remain distinct from InvalidRequest and generic transport failure.

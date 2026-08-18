@@ -92,6 +92,22 @@ async fn offer(client: &Arc<Client>, listener: &mut Listener, attempt_id: &str) 
     listener.next().await.expect("next offer").expect("offer")
 }
 
+async fn start_accept(
+    client: &Arc<Client>,
+    outbound: &mut mpsc::Receiver<wire::ConnectRequest>,
+    listener: &mut Listener,
+    attempt_id: &str,
+) -> tokio::task::JoinHandle<Result<Pipe, AcceptError>> {
+    let offer = offer(client, listener, attempt_id).await;
+    let accept = tokio::spawn(async move { offer.accept().await });
+    let sent = match next_message(outbound).await {
+        connect_request::Message::ListenerAccept(accept) => accept,
+        other => panic!("unexpected listener decision: {other:?}"),
+    };
+    assert_eq!(sent.attempt_id, attempt_id);
+    accept
+}
+
 fn register_pipe(shared: &Arc<Shared>, pipe_id: &str) -> Pipe {
     assert!(shared.reserve_pipe_slot());
     let reservation = AtomicBool::new(true);
@@ -432,6 +448,231 @@ async fn offer_accept_registers_dispatch_before_confirmation_and_waits_for_ack()
     client
         .shared
         .terminalize_pipe("pipe-1", PipeError::Terminal);
+}
+
+#[tokio::test]
+async fn every_listener_decision_rejection_is_exact_and_operation_local() {
+    for failure in [
+        wire::ListenerDecisionFailure::InvalidRequest,
+        wire::ListenerDecisionFailure::AttemptNotPending,
+        wire::ListenerDecisionFailure::WrongPhase,
+    ] {
+        let (client, mut outbound) = harness();
+        let mut listener = bind_listener(&client, &mut outbound, "binding-1").await;
+        let accept = start_accept(&client, &mut outbound, &mut listener, "attempt-rejected").await;
+        let untouched = offer(&client, &mut listener, "attempt-untouched").await;
+        assert_eq!(client.shared.pipe_slots.load(Ordering::Acquire), 1);
+
+        dispatch_response(
+            &client.shared,
+            response(connect_response::Message::ListenerDecisionRejected(
+                wire::ListenerDecisionRejected {
+                    attempt_id: "attempt-rejected".into(),
+                    failure: failure as i32,
+                },
+            )),
+        )
+        .await
+        .expect("dispatch operation-local listener decision rejection");
+
+        assert!(matches!(
+            accept.await.unwrap(),
+            Err(AcceptError::NotPending)
+        ));
+        let offers = client.shared.offers.lock().unwrap();
+        assert!(!offers.contains_key("attempt-rejected"));
+        assert!(offers.contains_key("attempt-untouched"));
+        drop(offers);
+        assert_eq!(client.shared.pipe_slots.load(Ordering::Acquire), 0);
+        assert!(client.shared.terminal().is_none());
+        drop(untouched);
+        listener.state.active.store(false, Ordering::Release);
+    }
+}
+
+#[tokio::test]
+async fn listener_decision_rejection_cleans_only_its_provisional_pipe() {
+    let (client, mut outbound) = harness();
+    let mut listener = bind_listener(&client, &mut outbound, "binding-1").await;
+    let other_pipe = register_pipe(&client.shared, "pipe-other");
+    let accept = start_accept(&client, &mut outbound, &mut listener, "attempt-rejected").await;
+
+    dispatch_response(
+        &client.shared,
+        response(connect_response::Message::ListenerEstablished(
+            wire::ListenerEstablished {
+                attempt_id: "attempt-rejected".into(),
+                pipe_id: "pipe-rejected".into(),
+            },
+        )),
+    )
+    .await
+    .unwrap();
+    let confirmed = match next_message(&mut outbound).await {
+        connect_request::Message::ListenerConfirmed(confirmed) => confirmed,
+        other => panic!("unexpected listener decision: {other:?}"),
+    };
+    assert_eq!(confirmed.attempt_id, "attempt-rejected");
+    assert_eq!(confirmed.pipe_id, "pipe-rejected");
+    assert_eq!(client.shared.pipe_slots.load(Ordering::Acquire), 2);
+
+    dispatch_response(
+        &client.shared,
+        response(connect_response::Message::ListenerDecisionRejected(
+            wire::ListenerDecisionRejected {
+                attempt_id: "attempt-rejected".into(),
+                failure: wire::ListenerDecisionFailure::WrongPhase as i32,
+            },
+        )),
+    )
+    .await
+    .expect("dispatch rejection after provisional Pipe registration");
+
+    assert!(matches!(
+        accept.await.unwrap(),
+        Err(AcceptError::NotPending)
+    ));
+    let pipes = client.shared.pipes.lock().unwrap();
+    assert!(!pipes.contains_key("pipe-rejected"));
+    assert!(pipes.contains_key("pipe-other"));
+    drop(pipes);
+    assert_eq!(client.shared.pipe_slots.load(Ordering::Acquire), 1);
+    assert!(other_pipe.state.terminal.borrow().is_none());
+    assert!(client.shared.terminal().is_none());
+    client
+        .shared
+        .terminalize_pipe("pipe-other", PipeError::Terminal);
+    listener.state.active.store(false, Ordering::Release);
+}
+
+#[tokio::test]
+async fn invalid_listener_decision_rejection_failures_are_protocol_fatal() {
+    for failure in [wire::ListenerDecisionFailure::Unspecified as i32, i32::MAX] {
+        let (client, mut outbound) = harness();
+        let mut listener = bind_listener(&client, &mut outbound, "binding-1").await;
+        let accept = start_accept(&client, &mut outbound, &mut listener, "attempt-current").await;
+
+        let error = dispatch_as_receive_loop(
+            &client.shared,
+            response(connect_response::Message::ListenerDecisionRejected(
+                wire::ListenerDecisionRejected {
+                    attempt_id: "attempt-current".into(),
+                    failure,
+                },
+            )),
+        )
+        .await;
+
+        assert!(matches!(error, SessionError::Protocol(_)));
+        assert!(matches!(
+            accept.await.unwrap(),
+            Err(AcceptError::Session(SessionError::Protocol(_)))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn invalid_listener_decision_rejection_identities_are_protocol_fatal() {
+    for attempt_id in [String::new(), "x".repeat(MAX_IDENTITY_BYTES + 1)] {
+        let (client, mut outbound) = harness();
+        let mut listener = bind_listener(&client, &mut outbound, "binding-1").await;
+        let accept = start_accept(&client, &mut outbound, &mut listener, "attempt-current").await;
+
+        let error = dispatch_as_receive_loop(
+            &client.shared,
+            response(connect_response::Message::ListenerDecisionRejected(
+                wire::ListenerDecisionRejected {
+                    attempt_id,
+                    failure: wire::ListenerDecisionFailure::InvalidRequest as i32,
+                },
+            )),
+        )
+        .await;
+
+        assert!(matches!(error, SessionError::Protocol(_)));
+        assert!(matches!(
+            accept.await.unwrap(),
+            Err(AcceptError::Session(SessionError::Protocol(_)))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn foreign_listener_decision_rejection_is_protocol_fatal() {
+    let (client, mut outbound) = harness();
+    let mut listener = bind_listener(&client, &mut outbound, "binding-1").await;
+    let accept = start_accept(&client, &mut outbound, &mut listener, "attempt-current").await;
+
+    let error = dispatch_as_receive_loop(
+        &client.shared,
+        response(connect_response::Message::ListenerDecisionRejected(
+            wire::ListenerDecisionRejected {
+                attempt_id: "attempt-foreign".into(),
+                failure: wire::ListenerDecisionFailure::AttemptNotPending as i32,
+            },
+        )),
+    )
+    .await;
+
+    assert!(matches!(error, SessionError::Protocol(_)));
+    assert!(matches!(
+        accept.await.unwrap(),
+        Err(AcceptError::Session(SessionError::Protocol(_)))
+    ));
+}
+
+#[tokio::test]
+async fn retired_listener_decision_rejection_is_protocol_fatal() {
+    let (client, mut outbound) = harness();
+    let mut listener = bind_listener(&client, &mut outbound, "binding-1").await;
+    let accept = start_accept(&client, &mut outbound, &mut listener, "attempt-current").await;
+    let rejected = wire::ListenerDecisionRejected {
+        attempt_id: "attempt-current".into(),
+        failure: wire::ListenerDecisionFailure::AttemptNotPending as i32,
+    };
+
+    dispatch_response(
+        &client.shared,
+        response(connect_response::Message::ListenerDecisionRejected(
+            rejected.clone(),
+        )),
+    )
+    .await
+    .expect("dispatch current listener decision rejection");
+    assert!(matches!(
+        accept.await.unwrap(),
+        Err(AcceptError::NotPending)
+    ));
+
+    let error = dispatch_as_receive_loop(
+        &client.shared,
+        response(connect_response::Message::ListenerDecisionRejected(
+            rejected,
+        )),
+    )
+    .await;
+    assert!(matches!(error, SessionError::Protocol(_)));
+}
+
+#[tokio::test]
+async fn listener_decision_rejection_requires_an_accept_in_progress() {
+    let (client, mut outbound) = harness();
+    let mut listener = bind_listener(&client, &mut outbound, "binding-1").await;
+    let pending = offer(&client, &mut listener, "attempt-pending").await;
+
+    let error = dispatch_as_receive_loop(
+        &client.shared,
+        response(connect_response::Message::ListenerDecisionRejected(
+            wire::ListenerDecisionRejected {
+                attempt_id: "attempt-pending".into(),
+                failure: wire::ListenerDecisionFailure::WrongPhase as i32,
+            },
+        )),
+    )
+    .await;
+
+    assert!(matches!(error, SessionError::Protocol(_)));
+    drop(pending);
 }
 
 #[tokio::test]
