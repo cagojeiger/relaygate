@@ -107,8 +107,8 @@ RouteEligible = CurrentCohortServiceRecoverable
              AND owner reconnects/revalidates V
 ```
 
-한 개의 durable member store만 복구한 것은 3-voter cohort의 service recovery가 아니다. Membership replacement도
-이미 current quorum이 있을 때만 진행할 수 있다.
+Restoring only one durable member store does not recover service for a three-voter cohort. Membership replacement is also
+possible only while a current quorum already exists.
 
 Disaster reset after full old-path fencing creates a new cohort and empty current FSM. It does not recover old outcomes, Pipes, payload positions, or route history.
 

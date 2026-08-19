@@ -2,8 +2,8 @@
 
 ## Context
 
-Caller ingress와 Listener owner가 달라도 하나의 일시적 Pipe 계약을 유지해야 한다. 이를 durable queue나
-reconnect protocol로 만들면 RelayGate의 책임을 넘는다.
+Caller ingress and Listener owner can differ, but the system must preserve one temporary Pipe contract. Turning this
+into a durable queue or reconnect protocol would exceed RelayGate's responsibility.
 
 ## Decision
 
@@ -11,24 +11,27 @@ reconnect protocol로 만들면 RelayGate의 책임을 넘는다.
 Caller --public--> Ingress ==internal bidi stream==> Owner --public--> Listener
 ```
 
-- Owner address는 current control session memory에만 둔다.
-- Remote Pipe마다 internal gRPC bidi stream 하나를 사용한다.
-- Authority는 ingress, owner, auth와 exact binding에 묶인 expiring single-use Open context를 발급한다.
-- Owner는 context와 current local binding을 다시 확인한 뒤 attempt를 원자적으로 reserve한다.
-- 이미 reserve된 attempt는 response나 `PipeId`를 replay하지 않고 fail closed한다.
-- Listener accept가 Open의 선형화점이며 Owner가 여기서 `PipeId`를 만든다.
-- Ingress와 Owner는 같은 logical `PipeId`의 자기 segment만 소유한다.
-- 각 방향은 FIFO이고 buffer와 대기는 bounded다.
-- 여러 Pipe를 multiplex하는 public Relay stream은 control/terminal과 payload를 별도 bounded lane으로 보내므로 ready control/terminal work가 queued payload pressure를 우회한다.
-- Pipe 하나만 운반하는 internal peer stream은 모든 send를 하나의 bounded lane에서 직렬화한다. Blocked send가 timeout 또는 cancellation에 도달하면 해당 Pipe를 terminalize하고 stream을 취소하며, blocked gRPC write 안에서 별도 priority bypass를 약속하지 않는다.
-- Internal hop은 redial, retry, resume과 payload replay를 하지 않는다.
+- Owner address exists only in current control session memory.
+- Each remote Pipe uses one internal gRPC bidirectional stream.
+- Authority issues an expiring single-use Open context bound to ingress, owner, auth, and exact binding.
+- Owner revalidates the context and current local binding, then atomically reserves the attempt.
+- An already reserved attempt fails closed without replaying a response or `PipeId`.
+- Listener accept is the Open linearization point, and Owner creates the `PipeId` there.
+- Ingress and Owner each own only their segment of the same logical `PipeId`.
+- Each direction is FIFO, and buffers and waits are bounded.
+- A public Relay stream that multiplexes multiple Pipes sends control/terminal and payload work on separate bounded
+  lanes, so ready control/terminal work bypasses queued payload pressure.
+- An internal peer stream that carries one Pipe serializes all sends through one bounded lane. If a blocked send reaches
+  timeout or cancellation, it terminalizes that Pipe and cancels the stream; it does not promise a separate priority
+  bypass inside a blocked gRPC write.
+- The internal hop does not redial, retry, resume, or replay payload.
 
-Open이 선형화된 뒤 response나 hop을 잃으면 caller outcome은 `Unknown`일 수 있다. 같은 request를 이어 붙이지
-않고 새 Open을 시작한다.
+If the response or hop is lost after Open linearizes, the caller outcome may be `Unknown`. The caller starts a new Open
+instead of attaching to the same request.
 
 ## Consequences
 
-- Cross-Gateway 경로도 same-Gateway와 같은 volatile Pipe 의미를 가진다.
-- Gateway crash 뒤 attempt outcome과 payload를 복구하지 않는다.
-- Expiring context는 deployment의 bounded clock-skew를 전제로 한다.
-- Internal peer transport는 인증/mTLS가 제공되기 전까지 trusted local/dev network로 제한한다.
+- Cross-Gateway paths keep the same volatile Pipe semantics as same-Gateway paths.
+- Attempt outcomes and payload are not recovered after a Gateway crash.
+- Expiring contexts assume bounded deployment clock skew.
+- Internal peer transport is limited to trusted local/dev networks until authentication/mTLS is provided.
