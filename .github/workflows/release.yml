@@ -91,6 +91,7 @@ jobs:
           if ! http_status=$(curl --silent --show-error \
             --output "$response" \
             --write-out '%{http_code}' \
+            --user-agent "relaygate-release/$version (+https://github.com/$GITHUB_REPOSITORY)" \
             "https://crates.io/api/v1/crates/relaygate-sdk/$version"); then
             echo "failed to query crates.io"
             exit 1
