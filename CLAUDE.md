@@ -20,6 +20,7 @@
 
 ## 문서
 
+- Canonical documents under `docs/` are written in English.
 - 장기 설계 결정은 `docs/adr/`, 상태와 동작 계약은 `docs/spec/`, 검증 계획은 `docs/test/`에 둔다.
 - State/event 의미를 바꾸면 `SPEC 004`의 canonical table과 `TEST 001`의 대응 test를 함께 갱신한다.
 - Accepted ADR의 의미를 바꿀 때는 기존 문장을 조용히 고치지 말고 새 결정을 기록한다.

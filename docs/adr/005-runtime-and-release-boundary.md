@@ -21,7 +21,7 @@ Release units are:
 2. `github.com/cagojeiger/relaygate/sdk/go` Go module
 3. `relaygate-sdk` Rust crate
 
-The Go and Rust SDKs share only `proto/relaygate/relay/v1/relay.proto`. Generated server/control/Raft types remain private. Root `go.work` is a local development convenience; the Go SDK must build/test with `GOWORK=off`.
+The Go and Rust SDKs share only `proto/relaygate/relay/v1/relay.proto`. Generated server/control/Raft types remain private. The root runtime, Go SDK, and Go example are independent modules and must build/test without a repository workspace file.
 
 ## Consequences
 

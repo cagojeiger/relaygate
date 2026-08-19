@@ -1,23 +1,23 @@
-# ADR 001: RelayGate의 역할
+# ADR 001: RelayGate Role
 
 ## Context
 
-연결 중계의 경계를 정하지 않으면 저장, 재전송, workflow까지 제품 책임이 확장된다.
+Without a boundary for connection relay, product responsibility expands into storage, redelivery, and workflow.
 
 ## Decision
 
-RelayGate는 **주소 가능한 일시적 양방향 Pipe**를 연결하고 중계한다.
+RelayGate connects and relays **addressable, temporary, bidirectional Pipes**.
 
-- 인증된 namespace 안에서 현재 Listener를 찾는다.
-- Pipe를 열고, bounded backpressure로 불투명 payload를 전달하고, 종료를 전파한다.
-- SDK session, local Listener binding, Pipe, buffer와 payload는 Gateway process memory에만 둔다.
-- Controller가 durable Raft에 보존하는 것은 현재 `GatewaySession`과 exact route로 이루어진 control-plane directory뿐이다. 이 current-only 예외와 복구 경계는 [ADR 002](002-current-state-cluster-and-recovery.md)가 정한다.
+- It finds the current Listener inside the authenticated namespace.
+- It opens a Pipe, forwards opaque payloads with bounded backpressure, and propagates termination.
+- SDK sessions, local Listener bindings, Pipes, buffers, and payloads exist only in Gateway process memory.
+- The Controller persists only the control-plane directory made of current `GatewaySession` entries and exact routes in durable Raft. [ADR 002](002-current-state-cluster-and-recovery.md) defines this current-only exception and the recovery boundary.
 
-Application/Pipe/payload durable storage, message queue, pub/sub, application-level routing, workflow와 application work 또는 Open/Pipe/payload retry, replay, resume은 제공하지 않는다. Control/SDK session의 fresh reconnect는 이 금지와 별개다.
-연결이 끊어지면 다음 연결은 새 session, 새 Listener 선언 또는 새 Pipe다.
+RelayGate does not provide application, Pipe, or payload durable storage; message queues; pub/sub; application-level routing; workflow or application work; or Open, Pipe, or payload retry, replay, or resume. Fresh reconnect for Control/SDK sessions is separate from this prohibition.
+When a connection is lost, the next connection is a new session, new Listener declaration, or new Pipe.
 
 ## Consequences
 
-- RelayGate는 현재 도달 가능성과 연결 상태만 다루며 application outcome이나 payload history를 보존하지 않는다.
-- 업무 결과의 저장, 중복 제거와 재시도는 application이 책임진다.
-- 새 기능은 Pipe의 탐색, 연결, 전달 또는 종료에 직접 필요할 때만 포함한다.
+- RelayGate handles only current reachability and connection state. It does not preserve application outcomes or payload history.
+- The application owns business-result storage, deduplication, and retry.
+- New features are included only when directly required for Pipe discovery, connection, forwarding, or termination.

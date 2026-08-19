@@ -251,6 +251,15 @@ func (c *Client) dispatchListenerConfirmationAcknowledged(message *relayv1.Liste
 		return protocolError("invalid ListenerConfirmationAcknowledged")
 	}
 	c.mu.Lock()
+	if retired, exists := c.offerTombstones[message.GetAttemptId()]; exists {
+		exact := retired.pipeID == message.GetPipeId() &&
+			retired.decisionFailure == relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_UNSPECIFIED
+		c.mu.Unlock()
+		if exact {
+			return nil
+		}
+		return protocolError("ListenerConfirmationAcknowledged conflicted with terminal history")
+	}
 	offer := c.offers[message.GetAttemptId()]
 	pipe := c.pipes[message.GetPipeId()]
 	if offer == nil || pipe == nil || pipe.attemptID != message.GetAttemptId() {

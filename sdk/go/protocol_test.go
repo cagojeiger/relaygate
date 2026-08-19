@@ -85,6 +85,76 @@ func listenerOfferResponse(attemptID string) *relayv1.ConnectResponse {
 	}}
 }
 
+func listenerConfirmationAcknowledgedResponse(attemptID, pipeID string) *relayv1.ConnectResponse {
+	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerConfirmationAcknowledged{
+		ListenerConfirmationAcknowledged: &relayv1.ListenerConfirmationAcknowledged{AttemptId: attemptID, PipeId: pipeID},
+	}}
+}
+
+func TestListenerConfirmationAcknowledgedReplayIsExactAndBounded(t *testing.T) {
+	client, offer := acceptingReservedOfferTestClient("attempt-confirmed")
+	established := &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerEstablished{
+		ListenerEstablished: &relayv1.ListenerEstablished{AttemptId: offer.attemptID, PipeId: "pipe-confirmed"},
+	}}
+	if err := client.dispatch(established); err != nil {
+		t.Fatalf("dispatch ListenerEstablished: %v", err)
+	}
+	acknowledged := listenerConfirmationAcknowledgedResponse(offer.attemptID, "pipe-confirmed")
+	if err := client.dispatch(acknowledged); err != nil {
+		t.Fatalf("dispatch first ListenerConfirmationAcknowledged: %v", err)
+	}
+	if _, exists := client.offers[offer.attemptID]; exists {
+		t.Fatal("acknowledged Offer remained active")
+	}
+	if len(offer.ack) != 1 {
+		t.Fatalf("first acknowledgement deliveries = %d, want 1", len(offer.ack))
+	}
+	for replay := 0; replay < 2; replay++ {
+		if err := client.dispatch(acknowledged); err != nil {
+			t.Fatalf("exact ListenerConfirmationAcknowledged replay %d = %v, want no-op", replay+1, err)
+		}
+	}
+	if len(offer.ack) != 1 {
+		t.Fatalf("acknowledgement deliveries after replay = %d, want 1", len(offer.ack))
+	}
+
+	conflicting := listenerConfirmationAcknowledgedResponse(offer.attemptID, "pipe-conflicting")
+	if err := client.dispatch(conflicting); !errors.Is(err, errProtocol) {
+		t.Fatalf("conflicting ListenerConfirmationAcknowledged = %v, want protocol failure", err)
+	}
+	if client.pipes["pipe-confirmed"] == nil || len(offer.ack) != 1 {
+		t.Fatal("conflicting acknowledgement changed the live Pipe or redelivered the ACK")
+	}
+
+	rejected := &Client{
+		authenticated: true,
+		offers:        make(map[string]*Offer),
+		offerTombstones: map[string]offerTombstone{
+			"attempt-rejected": {decisionFailure: relayv1.ListenerDecisionFailure_LISTENER_DECISION_FAILURE_WRONG_PHASE},
+		},
+	}
+	if err := rejected.dispatch(listenerConfirmationAcknowledgedResponse("attempt-rejected", "pipe-rejected")); !errors.Is(err, errProtocol) {
+		t.Fatalf("confirmation after decision rejection = %v, want protocol failure", err)
+	}
+
+	bounded := &Client{authenticated: true, offers: make(map[string]*Offer), offerTombstones: make(map[string]offerTombstone)}
+	bounded.mu.Lock()
+	for index := 0; index <= maxPendingOffers; index++ {
+		bounded.addOfferTombstoneLocked(fmt.Sprintf("attempt-%d", index), offerTombstone{pipeID: fmt.Sprintf("pipe-%d", index)})
+	}
+	bounded.mu.Unlock()
+	if len(bounded.offerTombstones) != maxPendingOffers || len(bounded.offerHistory) != maxPendingOffers {
+		t.Fatalf("confirmation replay history = %d records, %d order entries, want %d", len(bounded.offerTombstones), len(bounded.offerHistory), maxPendingOffers)
+	}
+	newest := maxPendingOffers
+	if err := bounded.dispatch(listenerConfirmationAcknowledgedResponse(fmt.Sprintf("attempt-%d", newest), fmt.Sprintf("pipe-%d", newest))); err != nil {
+		t.Fatalf("exact acknowledgement in bounded history = %v, want no-op", err)
+	}
+	if err := bounded.dispatch(listenerConfirmationAcknowledgedResponse("attempt-0", "pipe-0")); !errors.Is(err, errProtocol) {
+		t.Fatalf("acknowledgement after bounded-history eviction = %v, want protocol failure", err)
+	}
+}
+
 func TestPipeOpenFailedStrictEnumDecoding(t *testing.T) {
 	known := []struct {
 		name        string
