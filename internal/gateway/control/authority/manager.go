@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	raftnode "github.com/cagojeiger/relaygate/internal/raft/node"
 	controlstate "github.com/cagojeiger/relaygate/internal/raft/state"
@@ -44,24 +45,6 @@ type RaftNode interface {
 	LookupRoute(controlstate.BindingKey) (controlstate.Route, bool)
 }
 
-type Ref struct {
-	ClusterEpoch string
-	AuthorityID  string
-}
-
-type SessionRef struct {
-	ClusterEpoch      string
-	AuthorityID       string
-	ControlSessionID  string
-	GatewayID         string
-	GatewayInstanceID string
-}
-
-type Session struct {
-	Ref  SessionRef
-	Done <-chan struct{}
-}
-
 type SessionState string
 
 const (
@@ -88,7 +71,7 @@ type Presence struct {
 }
 
 type sessionEntry struct {
-	ref          SessionRef
+	ref          controlmodel.SessionRef
 	relayAddress string
 	state        SessionState
 	bindings     map[routing.BindingKey]routing.LiveBinding
@@ -105,7 +88,7 @@ type Manager struct {
 	// admission behind control-plane writes.
 	mutationMu  sync.Mutex
 	mu          sync.RWMutex
-	current     *Ref
+	current     *controlmodel.AuthorityRef
 	currentTerm uint64
 	sessions    map[string]*sessionEntry // leader-local current stream by GatewayID
 	cleanup     map[controlstate.GatewaySessionRef]time.Time
@@ -175,22 +158,24 @@ func (m *Manager) Close() {
 	})
 }
 
-func (m *Manager) Current() (Ref, bool) {
+func (m *Manager) Current() (controlmodel.AuthorityRef, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.current == nil {
-		return Ref{}, false
+		return controlmodel.AuthorityRef{}, false
 	}
 	return *m.current, true
 }
 
-func (m *Manager) Confirm(ctx context.Context) (Ref, error) { return m.confirm(ctx, false) }
+func (m *Manager) Confirm(ctx context.Context) (controlmodel.AuthorityRef, error) {
+	return m.confirm(ctx, false)
+}
 
-func (m *Manager) confirm(ctx context.Context, fenceOnContextError bool) (Ref, error) {
+func (m *Manager) confirm(ctx context.Context, fenceOnContextError bool) (controlmodel.AuthorityRef, error) {
 	status := m.node.Status()
 	if status.Role != "Leader" || m.node.ClusterEpoch() != m.config.ClusterEpoch {
 		m.fence()
-		return Ref{}, ErrNoAuthority
+		return controlmodel.AuthorityRef{}, ErrNoAuthority
 	}
 	if err := m.node.VerifyLeader(ctx); err != nil {
 		callerEnded := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
@@ -201,18 +186,18 @@ func (m *Manager) confirm(ctx context.Context, fenceOnContextError bool) (Ref, e
 		if shouldFence {
 			m.fence()
 		}
-		return Ref{}, fmt.Errorf("%w: %w", ErrNoAuthority, err)
+		return controlmodel.AuthorityRef{}, fmt.Errorf("%w: %w", ErrNoAuthority, err)
 	}
 	confirmed := m.node.Status()
 	if confirmed.Role != "Leader" || m.node.ClusterEpoch() != m.config.ClusterEpoch {
 		m.fence()
-		return Ref{}, ErrNoAuthority
+		return controlmodel.AuthorityRef{}, ErrNoAuthority
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if confirmed.Term < m.currentTerm {
-		return Ref{}, ErrNoAuthority
+		return controlmodel.AuthorityRef{}, ErrNoAuthority
 	}
 	if m.current != nil {
 		if confirmed.Term != m.currentTerm {
@@ -226,9 +211,9 @@ func (m *Manager) confirm(ctx context.Context, fenceOnContextError bool) (Ref, e
 		committed := m.node.State()
 		authorityID, err := newID()
 		if err != nil {
-			return Ref{}, err
+			return controlmodel.AuthorityRef{}, err
 		}
-		m.current = &Ref{ClusterEpoch: m.config.ClusterEpoch, AuthorityID: authorityID}
+		m.current = &controlmodel.AuthorityRef{ClusterEpoch: m.config.ClusterEpoch, AuthorityID: authorityID}
 		m.currentTerm = confirmed.Term
 		deadline := m.now().Add(m.config.GatewayRevalidationTimeout)
 		for _, gateway := range committed.Gateways {
@@ -238,15 +223,15 @@ func (m *Manager) confirm(ctx context.Context, fenceOnContextError bool) (Ref, e
 	return *m.current, nil
 }
 
-func (m *Manager) Observe(ctx context.Context) (Ref, Presence, error) {
+func (m *Manager) Observe(ctx context.Context) (controlmodel.AuthorityRef, Presence, error) {
 	ref, err := m.Confirm(ctx)
 	if err != nil {
-		return Ref{}, m.Presence(), err
+		return controlmodel.AuthorityRef{}, m.Presence(), err
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.current == nil || *m.current != ref {
-		return Ref{}, m.presenceLocked(m.node.State()), ErrNoAuthority
+		return controlmodel.AuthorityRef{}, m.presenceLocked(m.node.State()), ErrNoAuthority
 	}
 	return ref, m.presenceLocked(m.node.State()), nil
 }
@@ -255,15 +240,15 @@ func (m *Manager) Observe(ctx context.Context) (Ref, Presence, error) {
 // a new leader-local control stream (V=false). A same-instance reconnect keeps
 // its committed routes until its replacement snapshot arrives; a new instance
 // is an atomic FSM replacement that deletes the old instance's routes.
-func (m *Manager) OpenSession(ctx context.Context, gatewayID, gatewayInstanceID, relayAddress string) (Session, error) {
+func (m *Manager) OpenSession(ctx context.Context, gatewayID, gatewayInstanceID, relayAddress string) (controlmodel.Session, error) {
 	if err := routing.ValidateIdentity("gateway_id", gatewayID); err != nil {
-		return Session{}, err
+		return controlmodel.Session{}, err
 	}
 	if err := routing.ValidateIdentity("gateway_instance_id", gatewayInstanceID); err != nil {
-		return Session{}, err
+		return controlmodel.Session{}, err
 	}
-	if err := ValidateRelayAddress(relayAddress); err != nil {
-		return Session{}, fmt.Errorf("valid relay address is required: %w", err)
+	if err := routing.ValidateRelayAddress(relayAddress); err != nil {
+		return controlmodel.Session{}, fmt.Errorf("valid relay address is required: %w", err)
 	}
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
@@ -271,7 +256,7 @@ func (m *Manager) OpenSession(ctx context.Context, gatewayID, gatewayInstanceID,
 	m.mu.RLock()
 	if m.current == nil {
 		m.mu.RUnlock()
-		return Session{}, ErrNoAuthority
+		return controlmodel.Session{}, ErrNoAuthority
 	}
 	current := *m.current
 	m.mu.RUnlock()
@@ -279,26 +264,26 @@ func (m *Manager) OpenSession(ctx context.Context, gatewayID, gatewayInstanceID,
 	gateway := controlstate.GatewaySessionRef{GatewayID: gatewayID, GatewayInstanceID: gatewayInstanceID}
 	command, err := controlstate.EncodeRegisterGateway(controlstate.RegisterGateway{ClusterEpoch: current.ClusterEpoch, Gateway: gateway})
 	if err != nil {
-		return Session{}, fmt.Errorf("encode gateway registration: %w", err)
+		return controlmodel.Session{}, fmt.Errorf("encode gateway registration: %w", err)
 	}
 	if _, err := m.applyWithParent(ctx, command); err != nil {
-		return Session{}, err
+		return controlmodel.Session{}, err
 	}
 	controlSessionID, err := newID()
 	if err != nil {
-		return Session{}, err
+		return controlmodel.Session{}, err
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.current == nil || *m.current != current {
-		return Session{}, ErrNoAuthority
+		return controlmodel.Session{}, ErrNoAuthority
 	}
 	if old := m.sessions[gatewayID]; old != nil {
 		old.close()
 	}
 	entry := &sessionEntry{
-		ref: SessionRef{
+		ref: controlmodel.SessionRef{
 			ClusterEpoch:      current.ClusterEpoch,
 			AuthorityID:       current.AuthorityID,
 			ControlSessionID:  controlSessionID,
@@ -314,12 +299,12 @@ func (m *Manager) OpenSession(ctx context.Context, gatewayID, gatewayInstanceID,
 	// Registration establishes C only. Until the full snapshot commits, this
 	// stream has no V and must still expire like an absent gateway.
 	m.cleanup[gateway] = m.now().Add(m.config.GatewayRevalidationTimeout)
-	return Session{Ref: entry.ref, Done: entry.done}, nil
+	return controlmodel.Session{Ref: entry.ref, Done: entry.done}, nil
 }
 
 // Revalidate atomically replaces C for this gateway and only then marks its
 // leader-local V record available for Open admission.
-func (m *Manager) Revalidate(ctx context.Context, ref SessionRef, bindings []routing.LiveBinding) error {
+func (m *Manager) Revalidate(ctx context.Context, ref controlmodel.SessionRef, bindings []routing.LiveBinding) error {
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
 	candidate, encoded, err := m.snapshotCommand(ref, bindings)
@@ -341,7 +326,7 @@ func (m *Manager) Revalidate(ctx context.Context, ref SessionRef, bindings []rou
 	return nil
 }
 
-func (m *Manager) RequireRevalidated(ref SessionRef) error {
+func (m *Manager) RequireRevalidated(ref controlmodel.SessionRef) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	entry, err := m.sessionLocked(ref)
@@ -355,7 +340,7 @@ func (m *Manager) RequireRevalidated(ref SessionRef) error {
 }
 
 // Declare commits the exact route before changing the local V mirror.
-func (m *Manager) Declare(ctx context.Context, ref SessionRef, binding routing.LiveBinding) (bool, error) {
+func (m *Manager) Declare(ctx context.Context, ref controlmodel.SessionRef, binding routing.LiveBinding) (bool, error) {
 	if err := binding.Validate(); err != nil {
 		return false, err
 	}
@@ -402,7 +387,7 @@ func (m *Manager) Declare(ctx context.Context, ref SessionRef, binding routing.L
 
 // Withdraw removes only the exact C route for this exact durable gateway
 // incarnation. A stale control stream cannot erase a replacement instance.
-func (m *Manager) Withdraw(ctx context.Context, ref SessionRef, binding routing.LiveBinding) (bool, error) {
+func (m *Manager) Withdraw(ctx context.Context, ref controlmodel.SessionRef, binding routing.LiveBinding) (bool, error) {
 	if err := binding.Validate(); err != nil {
 		return false, err
 	}
@@ -448,14 +433,14 @@ func (m *Manager) Withdraw(ctx context.Context, ref SessionRef, binding routing.
 // exact Ref gate in resolveOpen then prevents mixing that decision with V from
 // another local authority. A second Raft verification would add no stronger
 // guarantee after the operation's linearization point.
-func (m *Manager) AdmitOpen(ctx context.Context, ingress SessionRef, auth AuthContext, endpoint, targetID string) (OpenContext, error) {
-	key, err := ExactBindingKey(auth, endpoint, targetID)
+func (m *Manager) AdmitOpen(ctx context.Context, ingress controlmodel.SessionRef, auth routing.AuthContext, endpoint, targetID string) (routing.OpenContext, error) {
+	key, err := routing.ExactBindingKey(auth, endpoint, targetID)
 	if err != nil {
-		return OpenContext{}, err
+		return routing.OpenContext{}, err
 	}
 	current, err := m.Confirm(ctx)
 	if err != nil {
-		return OpenContext{}, err
+		return routing.OpenContext{}, err
 	}
 	return m.resolveOpen(current, ingress, auth, key)
 }
@@ -463,40 +448,40 @@ func (m *Manager) AdmitOpen(ctx context.Context, ingress SessionRef, auth AuthCo
 // resolveOpen requires an exact committed route plus exact, revalidated local
 // ingress and owner sessions from the already confirmed authority. The route
 // itself carries no leader-local address or control-session identifier.
-func (m *Manager) resolveOpen(current Ref, ingress SessionRef, auth AuthContext, key routing.BindingKey) (OpenContext, error) {
+func (m *Manager) resolveOpen(current controlmodel.AuthorityRef, ingress controlmodel.SessionRef, auth routing.AuthContext, key routing.BindingKey) (routing.OpenContext, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.current == nil || *m.current != current {
-		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, ErrNoAuthority)
+		return routing.OpenContext{}, fmt.Errorf("%w: %w", routing.ErrOpenUnavailable, ErrNoAuthority)
 	}
 	if ingress.ClusterEpoch != current.ClusterEpoch || ingress.AuthorityID != current.AuthorityID {
-		return OpenContext{}, fmt.Errorf("%w: ingress control session belongs to a stale authority", ErrOpenUnavailable)
+		return routing.OpenContext{}, fmt.Errorf("%w: ingress control session belongs to a stale authority", routing.ErrOpenUnavailable)
 	}
 	ingressEntry, err := m.sessionLocked(ingress)
 	if err != nil || ingressEntry.state != SessionRevalidated || !m.isCurrentGatewayLocked(ingress) {
-		return OpenContext{}, fmt.Errorf("%w: ingress control session", ErrOpenUnavailable)
+		return routing.OpenContext{}, fmt.Errorf("%w: ingress control session", routing.ErrOpenUnavailable)
 	}
 
 	stateKey := controlstate.BindingKey{ClientID: key.ClientID, EndpointPattern: key.EndpointPattern, TargetID: key.TargetID}
 	route, ok := m.node.LookupRoute(stateKey)
 	if !ok {
-		return OpenContext{}, ErrRouteNotFound
+		return routing.OpenContext{}, routing.ErrRouteNotFound
 	}
 	if currentGateway, ok := m.node.LookupGateway(route.Owner.GatewayID); !ok || currentGateway != route.Owner {
-		return OpenContext{}, ErrRouteNotFound
+		return routing.OpenContext{}, routing.ErrRouteNotFound
 	}
 	binding := routeToBinding(route)
 	owner := m.sessions[route.Owner.GatewayID]
 	if owner == nil || owner.closed || owner.state != SessionRevalidated || gatewayRef(owner.ref) != route.Owner || owner.bindings[key] != binding {
-		return OpenContext{}, ErrRouteNotFound
+		return routing.OpenContext{}, routing.ErrRouteNotFound
 	}
 	attemptID, err := newID()
 	if err != nil {
-		return OpenContext{}, fmt.Errorf("%w: %w", ErrOpenUnavailable, err)
+		return routing.OpenContext{}, fmt.Errorf("%w: %w", routing.ErrOpenUnavailable, err)
 	}
-	return NewForwardedOpenContext(
+	return routing.NewForwardedOpenContext(
 		current.ClusterEpoch, current.AuthorityID, attemptID, auth, binding,
-		ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID:         ingressEntry.ref.GatewayID,
 			IngressGatewayInstanceID: ingressEntry.ref.GatewayInstanceID,
 			IngressControlSessionID:  ingressEntry.ref.ControlSessionID,
@@ -511,7 +496,7 @@ func (m *Manager) resolveOpen(current Ref, ingress SessionRef, auth AuthContext,
 // revalidation grace period so an ordinary control reconnect does not erase a
 // healthy gateway's current directory. The sweeper later performs an exact,
 // conditional RemoveGateway if it has not returned.
-func (m *Manager) EndSession(ref SessionRef) {
+func (m *Manager) EndSession(ref controlmodel.SessionRef) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entry := m.sessions[ref.GatewayID]
@@ -678,7 +663,7 @@ func (m *Manager) fenceLocked() {
 	m.current = nil
 }
 
-func (m *Manager) sessionLocked(ref SessionRef) (*sessionEntry, error) {
+func (m *Manager) sessionLocked(ref controlmodel.SessionRef) (*sessionEntry, error) {
 	if m.current == nil || ref.ClusterEpoch != m.current.ClusterEpoch || ref.AuthorityID != m.current.AuthorityID {
 		return nil, ErrStaleSession
 	}
@@ -689,12 +674,12 @@ func (m *Manager) sessionLocked(ref SessionRef) (*sessionEntry, error) {
 	return entry, nil
 }
 
-func (m *Manager) isCurrentGatewayLocked(ref SessionRef) bool {
+func (m *Manager) isCurrentGatewayLocked(ref controlmodel.SessionRef) bool {
 	current, ok := m.node.LookupGateway(ref.GatewayID)
 	return ok && current == gatewayRef(ref)
 }
 
-func (m *Manager) snapshotCommand(ref SessionRef, bindings []routing.LiveBinding) (map[routing.BindingKey]routing.LiveBinding, []byte, error) {
+func (m *Manager) snapshotCommand(ref controlmodel.SessionRef, bindings []routing.LiveBinding) (map[routing.BindingKey]routing.LiveBinding, []byte, error) {
 	if len(bindings) > routing.MaxListenerBindingsPerGateway {
 		return nil, nil, routing.ErrCapacity
 	}
@@ -756,7 +741,7 @@ func (m *Manager) applyWithParent(parent context.Context, command []byte) (contr
 	return result, nil
 }
 
-func gatewayRef(ref SessionRef) controlstate.GatewaySessionRef {
+func gatewayRef(ref controlmodel.SessionRef) controlstate.GatewaySessionRef {
 	return controlstate.GatewaySessionRef{GatewayID: ref.GatewayID, GatewayInstanceID: ref.GatewayInstanceID}
 }
 

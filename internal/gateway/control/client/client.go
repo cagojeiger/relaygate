@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/gateway/control/transport"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
@@ -140,7 +140,7 @@ func (c Config) validate() error {
 	if err := routing.ValidateIdentity("gateway_id", c.GatewayID); err != nil {
 		return err
 	}
-	if err := authority.ValidateRelayAddress(c.RelayAddress); err != nil {
+	if err := routing.ValidateRelayAddress(c.RelayAddress); err != nil {
 		return fmt.Errorf("relay address: %w", err)
 	}
 	if len(c.ControlEndpoints) == 0 {
@@ -180,13 +180,13 @@ func (c *Client) Status() Status {
 
 // CurrentSession returns only a current, revalidated control session. It
 // never returns a last-known session across reconnect/failover.
-func (c *Client) CurrentSession() (authority.SessionRef, bool) {
+func (c *Client) CurrentSession() (controlmodel.SessionRef, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.status.State != StateRevalidated || c.admissionSession == nil {
-		return authority.SessionRef{}, false
+		return controlmodel.SessionRef{}, false
 	}
-	return authority.SessionRef{
+	return controlmodel.SessionRef{
 		ClusterEpoch:      c.admissionSession.GetClusterEpoch(),
 		AuthorityID:       c.admissionSession.GetAuthorityId(),
 		ControlSessionID:  c.admissionSession.GetControlSessionId(),

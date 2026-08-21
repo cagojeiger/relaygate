@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	raftnode "github.com/cagojeiger/relaygate/internal/raft/node"
 	controlstate "github.com/cagojeiger/relaygate/internal/raft/state"
@@ -32,7 +33,7 @@ func TestAuthorityFailoverRetainsCommittedDirectoryButDropsV(t *testing.T) {
 	if presence.CommittedGateways != 2 || presence.CommittedRoutes != 1 || presence.RevalidatedGateways != 0 || presence.EligibleRoutes != 0 {
 		t.Fatalf("presence after failover = %#v, want C retained and V cleared", presence)
 	}
-	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrOpenUnavailable) {
+	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, routing.ErrOpenUnavailable) {
 		t.Fatalf("AdmitOpen(stale ingress) = %v, want unavailable", err)
 	}
 
@@ -77,13 +78,13 @@ func TestAdmissionRejectsChangedAuthorityRef(t *testing.T) {
 	}
 	newIngress := openAndRevalidate(t, manager, "ingress", "ingress-1", nil)
 	openAndRevalidate(t, manager, "owner", "owner-1", []routing.LiveBinding{binding})
-	key, err := ExactBindingKey(testAuth(), "/events", "worker")
+	key, err := routing.ExactBindingKey(testAuth(), "/events", "worker")
 	if err != nil {
-		t.Fatalf("ExactBindingKey(): %v", err)
+		t.Fatalf("routing.ExactBindingKey(): %v", err)
 	}
 
-	if _, err := manager.resolveOpen(stale, newIngress, testAuth(), key); !errors.Is(err, ErrOpenUnavailable) {
-		t.Fatalf("resolveOpen(stale authority ref) = %v, want ErrOpenUnavailable", err)
+	if _, err := manager.resolveOpen(stale, newIngress, testAuth(), key); !errors.Is(err, routing.ErrOpenUnavailable) {
+		t.Fatalf("resolveOpen(stale authority ref) = %v, want routing.ErrOpenUnavailable", err)
 	}
 }
 
@@ -132,7 +133,7 @@ func TestEndSessionRetainsCAndReconnectCancelsGraceCleanup(t *testing.T) {
 	if got := node.State(); len(got.Routes) != 1 {
 		t.Fatalf("EndSession deleted committed route: %#v", got)
 	}
-	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrRouteNotFound) {
+	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, routing.ErrRouteNotFound) {
 		t.Fatalf("AdmitOpen(with V absent) = %v, want route unavailable", err)
 	}
 
@@ -292,7 +293,7 @@ func TestReconnectSnapshotOrdersAfterInFlightSameInstanceMutation(t *testing.T) 
 	}()
 	<-entered
 
-	reconnected := make(chan Session, 1)
+	reconnected := make(chan controlmodel.Session, 1)
 	reconnectErr := make(chan error, 1)
 	go func() {
 		session, err := manager.OpenSession(context.Background(), "owner", "owner-1", "127.0.0.1:9000")
@@ -313,7 +314,7 @@ func TestReconnectSnapshotOrdersAfterInFlightSameInstanceMutation(t *testing.T) 
 	if err := <-declareDone; err != nil {
 		t.Fatalf("Declare(): %v", err)
 	}
-	var session Session
+	var session controlmodel.Session
 	select {
 	case session = <-reconnected:
 	case err := <-reconnectErr:
@@ -356,8 +357,8 @@ func TestEndSessionDropsVWhileMutationApplyIsInFlight(t *testing.T) {
 	default:
 		t.Fatal("EndSession did not fence V while the Raft apply was blocked")
 	}
-	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, ErrRouteNotFound) {
-		t.Fatalf("AdmitOpen(after V fence) = %v, want ErrRouteNotFound", err)
+	if _, err := manager.AdmitOpen(context.Background(), ingress, testAuth(), "/events", "worker"); !errors.Is(err, routing.ErrRouteNotFound) {
+		t.Fatalf("AdmitOpen(after V fence) = %v, want routing.ErrRouteNotFound", err)
 	}
 
 	close(release)
@@ -419,7 +420,7 @@ func newManagerWithMaxBindings(t *testing.T, maxBindings uint32) (*Manager, *fak
 	return manager, node
 }
 
-func confirm(t *testing.T, manager *Manager) Ref {
+func confirm(t *testing.T, manager *Manager) controlmodel.AuthorityRef {
 	t.Helper()
 	ref, err := manager.Confirm(context.Background())
 	if err != nil {
@@ -428,7 +429,7 @@ func confirm(t *testing.T, manager *Manager) Ref {
 	return ref
 }
 
-func openAndRevalidate(t *testing.T, manager *Manager, gatewayID, instanceID string, bindings []routing.LiveBinding) SessionRef {
+func openAndRevalidate(t *testing.T, manager *Manager, gatewayID, instanceID string, bindings []routing.LiveBinding) controlmodel.SessionRef {
 	t.Helper()
 	session, err := manager.OpenSession(context.Background(), gatewayID, instanceID, "127.0.0.1:9000")
 	if err != nil {
@@ -444,8 +445,8 @@ func testBinding(gatewayID, instanceID, listenerID string) routing.LiveBinding {
 	return routing.LiveBinding{Key: routing.BindingKey{ClientID: "client-1", EndpointPattern: "/events", TargetID: "worker"}, Ref: routing.ListenerBindingRef{GatewayID: gatewayID, GatewayInstanceID: instanceID, ListenerBindingID: listenerID}}
 }
 
-func testAuth() AuthContext {
-	return AuthContext{ClientSessionID: "caller", ClientID: "client-1", APIKeyID: "caller-key", AuthRevision: "revision-1"}
+func testAuth() routing.AuthContext {
+	return routing.AuthContext{ClientSessionID: "caller", ClientID: "client-1", APIKeyID: "caller-key", AuthRevision: "revision-1"}
 }
 
 type fakeRaftNode struct {

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 )
 
@@ -46,13 +45,13 @@ func TestReserveFencesOldOwnerControlSession(t *testing.T) {
 	}
 }
 
-func mustOpenContext(t *testing.T, attemptID string, caller clientsession.Ref, binding routing.LiveBinding, ownerSession string) authority.OpenContext {
+func mustOpenContext(t *testing.T, attemptID string, caller clientsession.Ref, binding routing.LiveBinding, ownerSession string) routing.OpenContext {
 	t.Helper()
-	open, err := authority.NewForwardedOpenContext(
+	open, err := routing.NewForwardedOpenContext(
 		"epoch-1", "authority-1", attemptID,
-		authority.AuthContext{ClientSessionID: caller.ClientSessionID, ClientID: caller.ClientID, APIKeyID: caller.APIKeyID, AuthRevision: caller.AuthRevision},
+		routing.AuthContext{ClientSessionID: caller.ClientSessionID, ClientID: caller.ClientID, APIKeyID: caller.APIKeyID, AuthRevision: caller.AuthRevision},
 		binding,
-		authority.ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID: "ingress", IngressGatewayInstanceID: "ingress-1", IngressControlSessionID: "ingress-session",
 			OwnerControlSessionID: ownerSession, OwnerRelayAddress: "127.0.0.1:9000", ExpiresAt: time.Now().Add(time.Minute),
 		},

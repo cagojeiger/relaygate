@@ -12,7 +12,7 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/auth"
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
@@ -282,8 +282,8 @@ func (c *openIntegrationCommitter) Withdraw(_ context.Context, binding routing.L
 	return nil
 }
 
-func (c *openIntegrationCommitter) CurrentSession() (authority.SessionRef, bool) {
-	return authority.SessionRef{
+func (c *openIntegrationCommitter) CurrentSession() (controlmodel.SessionRef, bool) {
+	return controlmodel.SessionRef{
 		ClusterEpoch:      "epoch-1",
 		AuthorityID:       "authority-1",
 		ControlSessionID:  "owner-control-1",
@@ -303,24 +303,24 @@ type openIntegrationAdmitter struct {
 	sequence  atomic.Uint64
 }
 
-func (a *openIntegrationAdmitter) AdmitOpen(_ context.Context, caller clientsession.Ref, endpoint, targetID string) (authority.OpenContext, error) {
+func (a *openIntegrationAdmitter) AdmitOpen(_ context.Context, caller clientsession.Ref, endpoint, targetID string) (routing.OpenContext, error) {
 	slot := a.committer.current()
 	key := routing.BindingKey{ClientID: caller.ClientID, EndpointPattern: endpoint, TargetID: targetID}
 	if slot.Ref.ListenerBindingID == "" || slot.Key != key {
-		return authority.OpenContext{}, authority.ErrRouteNotFound
+		return routing.OpenContext{}, routing.ErrRouteNotFound
 	}
-	return authority.NewForwardedOpenContext(
+	return routing.NewForwardedOpenContext(
 		"epoch-1",
 		"authority-1",
 		fmt.Sprintf("attempt-%d", a.sequence.Add(1)),
-		authority.AuthContext{
+		routing.AuthContext{
 			ClientSessionID: caller.ClientSessionID,
 			ClientID:        caller.ClientID,
 			APIKeyID:        caller.APIKeyID,
 			AuthRevision:    caller.AuthRevision,
 		},
 		slot,
-		authority.ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID:         "gateway-a",
 			IngressGatewayInstanceID: "instance-a",
 			IngressControlSessionID:  "ingress-control-1",

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
 )
@@ -22,7 +22,7 @@ func TestGatewayRelayMapsStableOpenFailure(t *testing.T) {
 		{name: "expired", err: opening.ErrContextExpired},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			owner := &testOwner{open: func(context.Context, authority.OpenContext, localbinding.CallerEndpoint) (opening.Result, error) {
+			owner := &testOwner{open: func(context.Context, routing.OpenContext, localbinding.CallerEndpoint) (opening.Result, error) {
 				return opening.Result{}, test.err
 			}}
 			_, server := startGatewayRelay(t, owner, 1)
@@ -52,7 +52,7 @@ func TestGatewayRelayTransportLossAfterForwardOpenIsUnknownAndNotRetried(t *test
 func TestGatewayRelayRejectsOversizedPayloadBeforeOwner(t *testing.T) {
 	var relayed atomic.Int32
 	owner := &testOwner{
-		open: func(_ context.Context, open authority.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
+		open: func(_ context.Context, open routing.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
 			return opening.Result{AttemptID: open.AttemptID, PipeID: "pipe-limit", Binding: open.Binding}, nil
 		},
 		relayPayload: func(_ context.Context, _ clientsession.Ref, _ string, _ string, _ []byte) error {

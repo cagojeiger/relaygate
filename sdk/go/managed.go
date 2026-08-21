@@ -98,9 +98,10 @@ type ManagedListener struct {
 	binding *managedBinding
 }
 
-// ConnectManaged starts an in-process connection supervisor and waits for its
-// first authenticated, fully rebound session. The supplied context bounds
-// setup only; Close owns the returned ManagedClient lifetime.
+// ConnectManaged is the recommended application entry point. It starts an
+// in-process connection supervisor and waits for its first authenticated,
+// fully rebound session. The supplied context bounds setup only; Close owns the
+// returned ManagedClient lifetime.
 func ConnectManaged(ctx context.Context, config Config) (*ManagedClient, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("relaygate: context is required")

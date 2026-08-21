@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
@@ -22,13 +21,13 @@ import (
 const testTimeout = 2 * time.Second
 
 type testOwner struct {
-	open         func(context.Context, authority.OpenContext, localbinding.CallerEndpoint) (opening.Result, error)
+	open         func(context.Context, routing.OpenContext, localbinding.CallerEndpoint) (opening.Result, error)
 	activate     func(clientsession.Ref, string) bool
 	relayPayload func(context.Context, clientsession.Ref, string, string, []byte) error
 	closePipe    func(clientsession.Ref, string) bool
 }
 
-func (o *testOwner) OpenForwarded(ctx context.Context, open authority.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
+func (o *testOwner) OpenForwarded(ctx context.Context, open routing.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
 	if o.open != nil {
 		return o.open(ctx, open, endpoint)
 	}
@@ -107,7 +106,7 @@ func TestGatewayRelayRoundTripActivationPayloadAndClose(t *testing.T) {
 	service, server := startGatewayRelay(t, owner, 4)
 	_ = service
 	open := validForwardedOpen(t, server.Address(), "attempt-round-trip")
-	owner.open = func(ctx context.Context, got authority.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
+	owner.open = func(ctx context.Context, got routing.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
 		assertSameOpenContext(t, got, open)
 		ownerEndpoint <- endpoint
 		ownerLifetime <- ctx
@@ -313,9 +312,9 @@ func newTestClient(t *testing.T, maxPipes uint32) *Client {
 	return client
 }
 
-func validForwardedOpen(t *testing.T, address, attemptID string) authority.OpenContext {
+func validForwardedOpen(t *testing.T, address, attemptID string) routing.OpenContext {
 	t.Helper()
-	auth := authority.AuthContext{
+	auth := routing.AuthContext{
 		ClientSessionID: "caller-session",
 		ClientID:        "client-a",
 		APIKeyID:        "key-a",
@@ -333,13 +332,13 @@ func validForwardedOpen(t *testing.T, address, attemptID string) authority.OpenC
 			ListenerBindingID: "listener-binding",
 		},
 	}
-	open, err := authority.NewForwardedOpenContext(
+	open, err := routing.NewForwardedOpenContext(
 		"epoch-a",
 		"authority-a",
 		attemptID,
 		auth,
 		binding,
-		authority.ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID:         "gateway-ingress",
 			IngressGatewayInstanceID: "ingress-instance",
 			IngressControlSessionID:  "control-session",
@@ -354,7 +353,7 @@ func validForwardedOpen(t *testing.T, address, attemptID string) authority.OpenC
 	return open
 }
 
-func assertSameOpenContext(t *testing.T, got, want authority.OpenContext) {
+func assertSameOpenContext(t *testing.T, got, want routing.OpenContext) {
 	t.Helper()
 	if got.ClusterEpoch != want.ClusterEpoch || got.AuthorityID != want.AuthorityID || got.AttemptID != want.AttemptID ||
 		got.Auth != want.Auth || !sameBinding(got.Binding, want.Binding) ||

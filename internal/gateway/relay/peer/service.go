@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
@@ -298,7 +297,7 @@ func failureToProto(err error) gatewayv1.ForwardFailure {
 	}
 }
 
-func callerRef(auth authority.AuthContext) clientsession.Ref {
+func callerRef(auth routing.AuthContext) clientsession.Ref {
 	return clientsession.Ref{
 		ClientSessionID: auth.ClientSessionID,
 		ClientID:        auth.ClientID,
@@ -307,7 +306,7 @@ func callerRef(auth authority.AuthContext) clientsession.Ref {
 	}
 }
 
-func validOwnerResult(open authority.OpenContext, result opening.Result) bool {
+func validOwnerResult(open routing.OpenContext, result opening.Result) bool {
 	return result.AttemptID == open.AttemptID && result.PipeID != "" && len(result.PipeID) <= routing.MaxIdentityBytes && sameBinding(result.Binding, open.Binding)
 }
 

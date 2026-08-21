@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	"google.golang.org/grpc"
@@ -139,18 +140,18 @@ func (s *Service) AdmitOpen(ctx context.Context, request *controlv1.AdmitOpenReq
 	return &controlv1.AdmitOpenResponse{Context: openContextToProto(openContext)}, nil
 }
 
-func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello) (authority.Session, error) {
+func (s *Service) openControlSession(ctx context.Context, hello *controlv1.Hello) (controlmodel.Session, error) {
 	if _, err := s.authority.Confirm(ctx); err != nil {
-		return authority.Session{}, unavailable("confirm authority", err)
+		return controlmodel.Session{}, unavailable("confirm authority", err)
 	}
 	session, err := s.authority.OpenSession(ctx, hello.GetGatewayId(), hello.GetGatewayInstanceId(), hello.GetRelayAddress())
 	if err != nil {
-		return authority.Session{}, mapAuthorityError("open control session", err)
+		return controlmodel.Session{}, mapAuthorityError("open control session", err)
 	}
 	return session, nil
 }
 
-func (s *Service) revalidate(ctx context.Context, ref authority.SessionRef, bindings []routing.LiveBinding) error {
+func (s *Service) revalidate(ctx context.Context, ref controlmodel.SessionRef, bindings []routing.LiveBinding) error {
 	if _, err := s.authority.Confirm(ctx); err != nil {
 		return unavailable("confirm authority", err)
 	}
@@ -160,7 +161,7 @@ func (s *Service) revalidate(ctx context.Context, ref authority.SessionRef, bind
 	return nil
 }
 
-func (s *Service) applyMutation(ctx context.Context, ref authority.SessionRef, mutation *controlv1.BindingMutation) (*controlv1.MutationResult, error) {
+func (s *Service) applyMutation(ctx context.Context, ref controlmodel.SessionRef, mutation *controlv1.BindingMutation) (*controlv1.MutationResult, error) {
 	if err := requireSession(mutation.GetSession(), ref); err != nil {
 		return nil, err
 	}
@@ -213,13 +214,13 @@ func (s *Service) validateHello(hello *controlv1.Hello) error {
 	if err := routing.ValidateIdentity("gateway_instance_id", hello.GetGatewayInstanceId()); err != nil {
 		return status.Errorf(codes.InvalidArgument, "%v", err)
 	}
-	if err := authority.ValidateRelayAddress(hello.GetRelayAddress()); err != nil {
+	if err := routing.ValidateRelayAddress(hello.GetRelayAddress()); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid relay_address: %v", err)
 	}
 	return nil
 }
 
-func snapshotBindings(snapshot *controlv1.FullSnapshot, ref authority.SessionRef) ([]routing.LiveBinding, error) {
+func snapshotBindings(snapshot *controlv1.FullSnapshot, ref controlmodel.SessionRef) ([]routing.LiveBinding, error) {
 	if err := requireSession(snapshot.GetSession(), ref); err != nil {
 		return nil, err
 	}
@@ -242,7 +243,7 @@ func snapshotBindings(snapshot *controlv1.FullSnapshot, ref authority.SessionRef
 	return bindings, nil
 }
 
-func requireSession(wire *controlv1.SessionRef, ref authority.SessionRef) error {
+func requireSession(wire *controlv1.SessionRef, ref controlmodel.SessionRef) error {
 	if wire == nil || wire.GetClusterEpoch() != ref.ClusterEpoch || wire.GetAuthorityId() != ref.AuthorityID || wire.GetControlSessionId() != ref.ControlSessionID || wire.GetGatewayId() != ref.GatewayID || wire.GetGatewayInstanceId() != ref.GatewayInstanceID {
 		return status.Error(codes.Unavailable, "control session is stale")
 	}
@@ -261,11 +262,11 @@ func validateAdmissionSession(wire *controlv1.SessionRef) error {
 	return nil
 }
 
-func sessionRefFromProto(wire *controlv1.SessionRef) authority.SessionRef {
-	return authority.SessionRef{ClusterEpoch: wire.GetClusterEpoch(), AuthorityID: wire.GetAuthorityId(), ControlSessionID: wire.GetControlSessionId(), GatewayID: wire.GetGatewayId(), GatewayInstanceID: wire.GetGatewayInstanceId()}
+func sessionRefFromProto(wire *controlv1.SessionRef) controlmodel.SessionRef {
+	return controlmodel.SessionRef{ClusterEpoch: wire.GetClusterEpoch(), AuthorityID: wire.GetAuthorityId(), ControlSessionID: wire.GetControlSessionId(), GatewayID: wire.GetGatewayId(), GatewayInstanceID: wire.GetGatewayInstanceId()}
 }
 
-func sessionRefToProto(ref authority.SessionRef) *controlv1.SessionRef {
+func sessionRefToProto(ref controlmodel.SessionRef) *controlv1.SessionRef {
 	return &controlv1.SessionRef{ClusterEpoch: ref.ClusterEpoch, AuthorityId: ref.AuthorityID, ControlSessionId: ref.ControlSessionID, GatewayId: ref.GatewayID, GatewayInstanceId: ref.GatewayInstanceID}
 }
 
@@ -298,15 +299,15 @@ func liveBindingFromProto(wire *controlv1.LiveBinding, sessionGatewayID, session
 	return binding, nil
 }
 
-func authContextFromProto(wire *controlv1.AuthContext) (authority.AuthContext, error) {
+func authContextFromProto(wire *controlv1.AuthContext) (routing.AuthContext, error) {
 	if wire == nil {
-		return authority.AuthContext{}, errors.New("auth context is required")
+		return routing.AuthContext{}, errors.New("auth context is required")
 	}
-	auth := authority.AuthContext{ClientSessionID: wire.GetClientSessionId(), ClientID: wire.GetClientId(), APIKeyID: wire.GetApiKeyId(), AuthRevision: wire.GetAuthRevision()}
+	auth := routing.AuthContext{ClientSessionID: wire.GetClientSessionId(), ClientID: wire.GetClientId(), APIKeyID: wire.GetApiKeyId(), AuthRevision: wire.GetAuthRevision()}
 	return auth, auth.Validate()
 }
 
-func openContextToProto(open authority.OpenContext) *controlv1.OpenContext {
+func openContextToProto(open routing.OpenContext) *controlv1.OpenContext {
 	return &controlv1.OpenContext{ClusterEpoch: open.ClusterEpoch, AuthorityId: open.AuthorityID, AttemptId: open.AttemptID, Auth: &controlv1.AuthContext{ClientSessionId: open.Auth.ClientSessionID, ClientId: open.Auth.ClientID, ApiKeyId: open.Auth.APIKeyID, AuthRevision: open.Auth.AuthRevision}, Binding: liveBindingToProto(open.Binding, true), IngressGatewayId: open.IngressGatewayID, IngressGatewayInstanceId: open.IngressGatewayInstanceID, IngressControlSessionId: open.IngressControlSessionID, OwnerRelayAddress: open.OwnerRelayAddress, ExpiresAtUnixMillis: open.ExpiresAt.UnixMilli(), OwnerControlSessionId: open.OwnerControlSessionID}
 }
 
@@ -329,11 +330,11 @@ func mapAuthorityError(operation string, err error) error {
 
 func mapOpenAdmissionError(err error) error {
 	switch {
-	case errors.Is(err, authority.ErrRouteNotFound):
+	case errors.Is(err, routing.ErrRouteNotFound):
 		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, authority.ErrInvalidOpen), errors.Is(err, routing.ErrInvalid):
+	case errors.Is(err, routing.ErrInvalidOpen), errors.Is(err, routing.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, authority.ErrNoAuthority), errors.Is(err, authority.ErrStaleSession), errors.Is(err, authority.ErrSnapshotFirst), errors.Is(err, authority.ErrOpenUnavailable):
+	case errors.Is(err, authority.ErrNoAuthority), errors.Is(err, authority.ErrStaleSession), errors.Is(err, authority.ErrSnapshotFirst), errors.Is(err, routing.ErrOpenUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())

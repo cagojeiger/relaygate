@@ -10,7 +10,7 @@
 | Controller quorum | majority unavailable | New authority/control/admission fail closed |
 | Gateway control | disconnect/reconnect while Gateway process lives | `V` false during outage; existing local `LiveBinding` declarations survive and fresh FullSnapshot revalidates them |
 | Gateway process | crash/restart | Local sessions, bindings, attempts, Pipes, and payload disappear; fresh Gateway instance and SDK reconnect/rebind only |
-| SDK session | disconnect/reconnect | Old child handles terminal; opt-in supervisor may fresh-auth and rebind current logical Listener declarations only |
+| SDK session | disconnect/reconnect | Old child handles terminal; recommended managed supervisor fresh-auths and rebinds current logical Listener declarations only |
 | Network | delay, loss, duplicate, reorder, partition | Exact current identity required; stale state rejected |
 | Config | invalid/delayed/process-local reload | Validated local snapshot only |
 | Clock | authority-owner skew | Remote expiry ready only with operational `ClockSkewBound < open_timeout` |

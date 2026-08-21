@@ -11,7 +11,6 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/auth"
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 )
@@ -774,7 +773,7 @@ func TestAcceptedPipeContinuesWhenFutureAdmissionIsUnavailable(t *testing.T) {
 		t.Fatal("ActivatePipe(first) rejected exact caller")
 	}
 
-	h.admitter.setError(authority.ErrOpenUnavailable)
+	h.admitter.setError(routing.ErrOpenUnavailable)
 	if second, err := h.manager.OpenPipe(context.Background(), h.caller, callerEndpoint, testEndpoint, testTarget); !errors.Is(err, ErrUnavailable) || second.PipeID != "" {
 		t.Fatalf("OpenPipe(after authority loss) = %#v, %v, want unavailable without Pipe", second, err)
 	}
@@ -1513,7 +1512,7 @@ type openHarness struct {
 	caller       clientsession.Session
 	listener     clientsession.Session
 	slot         routing.LiveBinding
-	context      authority.OpenContext
+	context      routing.OpenContext
 	callerDone   chan struct{}
 	listenerDone chan struct{}
 }
@@ -1554,19 +1553,19 @@ func newSequenceHarness(t *testing.T, max uint32, endpoint *scriptedEndpoint) *o
 
 type fakeAdmitter struct {
 	mu      sync.Mutex
-	context authority.OpenContext
+	context routing.OpenContext
 	err     error
 	calls   int
 }
 
-func (f *fakeAdmitter) AdmitOpen(context.Context, clientsession.Ref, string, string) (authority.OpenContext, error) {
+func (f *fakeAdmitter) AdmitOpen(context.Context, clientsession.Ref, string, string) (routing.OpenContext, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	return f.context.Clone(), f.err
 }
 
-func (f *fakeAdmitter) setContext(open authority.OpenContext) {
+func (f *fakeAdmitter) setContext(open routing.OpenContext) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.context = open
@@ -1596,15 +1595,15 @@ type fakeStore struct {
 
 func (f *fakeStore) GatewayID() string { return f.gatewayID }
 
-func (f *fakeStore) Reserve(open authority.OpenContext, caller clientsession.Ref) (localbinding.Reservation, error) {
+func (f *fakeStore) Reserve(open routing.OpenContext, caller clientsession.Ref) (localbinding.Reservation, error) {
 	return f.reserve(open, caller, true)
 }
 
-func (f *fakeStore) ReserveForwarded(open authority.OpenContext, caller clientsession.Ref) (localbinding.Reservation, error) {
+func (f *fakeStore) ReserveForwarded(open routing.OpenContext, caller clientsession.Ref) (localbinding.Reservation, error) {
 	return f.reserve(open, caller, false)
 }
 
-func (f *fakeStore) reserve(open authority.OpenContext, caller clientsession.Ref, consume bool) (localbinding.Reservation, error) {
+func (f *fakeStore) reserve(open routing.OpenContext, caller clientsession.Ref, consume bool) (localbinding.Reservation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -1645,7 +1644,7 @@ type fakeRemoteOpener struct {
 	beforeReturn   func()
 }
 
-func (f *fakeRemoteOpener) Open(_ context.Context, _ authority.OpenContext, callerEndpoint localbinding.CallerEndpoint) (RemoteResult, error) {
+func (f *fakeRemoteOpener) Open(_ context.Context, _ routing.OpenContext, callerEndpoint localbinding.CallerEndpoint) (RemoteResult, error) {
 	f.mu.Lock()
 	f.calls++
 	f.callerEndpoint = callerEndpoint
@@ -1945,7 +1944,7 @@ func testSlot(clientID string) routing.LiveBinding {
 	}
 }
 
-func newOpenContext(t *testing.T, attemptID string, caller clientsession.Ref, slot routing.LiveBinding) authority.OpenContext {
+func newOpenContext(t *testing.T, attemptID string, caller clientsession.Ref, slot routing.LiveBinding) routing.OpenContext {
 	t.Helper()
 	return newForwardedOpenContext(t, attemptID, caller, slot, time.Now().Add(time.Minute))
 }
@@ -1956,20 +1955,20 @@ func newForwardedOpenContext(
 	caller clientsession.Ref,
 	slot routing.LiveBinding,
 	expiresAt time.Time,
-) authority.OpenContext {
+) routing.OpenContext {
 	t.Helper()
-	open, err := authority.NewForwardedOpenContext(
+	open, err := routing.NewForwardedOpenContext(
 		"epoch-1",
 		"authority-1",
 		attemptID,
-		authority.AuthContext{
+		routing.AuthContext{
 			ClientSessionID: caller.ClientSessionID,
 			ClientID:        caller.ClientID,
 			APIKeyID:        caller.APIKeyID,
 			AuthRevision:    caller.AuthRevision,
 		},
 		slot,
-		authority.ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID:         "gateway-1",
 			IngressGatewayInstanceID: "instance-1",
 			IngressControlSessionID:  "control-1",
@@ -1990,10 +1989,10 @@ func slotsEqual(left, right routing.LiveBinding) bool {
 
 func gateAdmissionError(gates [6]bool) error {
 	if !gates[1] || !gates[2] || !gates[4] {
-		return authority.ErrOpenUnavailable
+		return routing.ErrOpenUnavailable
 	}
 	if !gates[3] {
-		return authority.ErrRouteNotFound
+		return routing.ErrRouteNotFound
 	}
 	return nil
 }

@@ -5,7 +5,7 @@
 - Go listener: endpoint `/examples/echo`, target `go`
 - Rust listener: endpoint `/examples/echo`, target `rust`
 
-각 listener는 한 번에 Pipe 하나를 처리하며, 받은 non-empty payload frame을 그대로 돌려준다. controller의 named volume은 local single-node Raft state를 보존하고, Gateway는 Raft volume이나 listener를 갖지 않는다. 기준 local-development credential과 명시적인 loopback plaintext를 사용한다. Raft 고가용성, failover와 TLS는 이 예제의 검증 범위가 아니다.
+각 listener는 한 번에 Pipe 하나를 처리하며, 받은 non-empty payload frame을 그대로 돌려준다. Go와 Rust 예제는 권장 SDK 경로인 `ManagedClient`를 사용하므로 일시적인 Relay session 단절 뒤 현재 Listener만 자동 재연결·재등록한다. 기존 Open, Pipe, payload는 재시도하거나 복원하지 않는다. controller의 named volume은 local single-node Raft state를 보존하고, Gateway는 Raft volume이나 listener를 갖지 않는다. 기준 local-development credential과 명시적인 loopback plaintext를 사용한다. Raft 고가용성, failover와 TLS는 이 예제의 검증 범위가 아니다.
 
 ## 실행
 

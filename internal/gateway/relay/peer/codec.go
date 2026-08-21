@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 )
 
-func openContextToProto(open authority.OpenContext) *controlv1.OpenContext {
+func openContextToProto(open routing.OpenContext) *controlv1.OpenContext {
 	return &controlv1.OpenContext{
 		ClusterEpoch:             open.ClusterEpoch,
 		AuthorityId:              open.AuthorityID,
@@ -25,22 +24,22 @@ func openContextToProto(open authority.OpenContext) *controlv1.OpenContext {
 	}
 }
 
-func openContextFromProto(wire *controlv1.OpenContext) (authority.OpenContext, error) {
+func openContextFromProto(wire *controlv1.OpenContext) (routing.OpenContext, error) {
 	if wire == nil {
-		return authority.OpenContext{}, fmt.Errorf("%w: forwarded Open context is required", ErrInvalid)
+		return routing.OpenContext{}, fmt.Errorf("%w: forwarded Open context is required", ErrInvalid)
 	}
 	auth := authContextFromProto(wire.GetAuth())
 	binding, err := liveBindingFromProto(wire.GetBinding())
 	if err != nil {
-		return authority.OpenContext{}, err
+		return routing.OpenContext{}, err
 	}
-	open, err := authority.NewForwardedOpenContext(
+	open, err := routing.NewForwardedOpenContext(
 		wire.GetClusterEpoch(),
 		wire.GetAuthorityId(),
 		wire.GetAttemptId(),
 		auth,
 		binding,
-		authority.ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID:         wire.GetIngressGatewayId(),
 			IngressGatewayInstanceID: wire.GetIngressGatewayInstanceId(),
 			IngressControlSessionID:  wire.GetIngressControlSessionId(),
@@ -50,12 +49,12 @@ func openContextFromProto(wire *controlv1.OpenContext) (authority.OpenContext, e
 		},
 	)
 	if err != nil {
-		return authority.OpenContext{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+		return routing.OpenContext{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	return open, nil
 }
 
-func authContextToProto(auth authority.AuthContext) *controlv1.AuthContext {
+func authContextToProto(auth routing.AuthContext) *controlv1.AuthContext {
 	return &controlv1.AuthContext{
 		ClientSessionId: auth.ClientSessionID,
 		ClientId:        auth.ClientID,
@@ -64,11 +63,11 @@ func authContextToProto(auth authority.AuthContext) *controlv1.AuthContext {
 	}
 }
 
-func authContextFromProto(wire *controlv1.AuthContext) authority.AuthContext {
+func authContextFromProto(wire *controlv1.AuthContext) routing.AuthContext {
 	if wire == nil {
-		return authority.AuthContext{}
+		return routing.AuthContext{}
 	}
-	return authority.AuthContext{
+	return routing.AuthContext{
 		ClientSessionID: wire.GetClientSessionId(),
 		ClientID:        wire.GetClientId(),
 		APIKeyID:        wire.GetApiKeyId(),

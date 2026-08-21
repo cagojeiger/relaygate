@@ -11,7 +11,7 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/auth"
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 )
 
@@ -31,7 +31,7 @@ var (
 type Committer interface {
 	Declare(context.Context, routing.LiveBinding) error
 	Withdraw(context.Context, routing.LiveBinding) error
-	CurrentSession() (authority.SessionRef, bool)
+	CurrentSession() (controlmodel.SessionRef, bool)
 }
 
 type SessionValidator interface {
@@ -61,7 +61,7 @@ type Snapshot struct {
 // not cancel an already admitted attempt. Session lifetime remains observable
 // through ListenerDone.
 type Reservation struct {
-	Context      authority.OpenContext
+	Context      routing.OpenContext
 	Caller       clientsession.Ref
 	Binding      routing.LiveBinding
 	Listener     clientsession.Ref
@@ -268,15 +268,15 @@ func (m *Manager) LiveBindings() []routing.LiveBinding {
 	return bindings
 }
 
-func (m *Manager) Reserve(open authority.OpenContext, caller clientsession.Ref) (Reservation, error) {
+func (m *Manager) Reserve(open routing.OpenContext, caller clientsession.Ref) (Reservation, error) {
 	return m.reserve(open, caller, false)
 }
 
-func (m *Manager) ReserveForwarded(open authority.OpenContext, caller clientsession.Ref) (Reservation, error) {
+func (m *Manager) ReserveForwarded(open routing.OpenContext, caller clientsession.Ref) (Reservation, error) {
 	return m.reserve(open, caller, true)
 }
 
-func (m *Manager) reserve(open authority.OpenContext, caller clientsession.Ref, forwarded bool) (Reservation, error) {
+func (m *Manager) reserve(open routing.OpenContext, caller clientsession.Ref, forwarded bool) (Reservation, error) {
 	if err := validateOpenContext(open); err != nil {
 		return Reservation{}, err
 	}
@@ -589,7 +589,7 @@ func snapshotOf(e *entry) Snapshot {
 	return Snapshot{Binding: e.binding, Session: e.session, State: e.state}
 }
 
-func validateOpenContext(open authority.OpenContext) error {
+func validateOpenContext(open routing.OpenContext) error {
 	for _, identity := range []struct{ field, value string }{
 		{"cluster_epoch", open.ClusterEpoch},
 		{"authority_id", open.AuthorityID},

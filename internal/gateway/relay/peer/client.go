@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
@@ -56,7 +55,7 @@ func NewClient(connectTimeout, openTimeout time.Duration, maxPipes uint32) (*Cli
 	}, nil
 }
 
-func (c *Client) Open(ctx context.Context, open authority.OpenContext, callerEndpoint localbinding.CallerEndpoint) (opening.RemoteResult, error) {
+func (c *Client) Open(ctx context.Context, open routing.OpenContext, callerEndpoint localbinding.CallerEndpoint) (opening.RemoteResult, error) {
 	if ctx == nil || callerEndpoint == nil {
 		return opening.RemoteResult{}, fmt.Errorf("%w: context and caller endpoint are required", ErrInvalid)
 	}
@@ -215,17 +214,17 @@ func (c *Client) Close() {
 	close(c.closedDone)
 }
 
-func validateClientOpen(open authority.OpenContext, now time.Time) error {
+func validateClientOpen(open routing.OpenContext, now time.Time) error {
 	if open.ExpiresAt.IsZero() || !now.Before(open.ExpiresAt) {
 		return opening.ErrContextExpired
 	}
-	if _, err := authority.NewForwardedOpenContext(
+	if _, err := routing.NewForwardedOpenContext(
 		open.ClusterEpoch,
 		open.AuthorityID,
 		open.AttemptID,
 		open.Auth,
 		cloneBinding(open.Binding),
-		authority.ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID:         open.IngressGatewayID,
 			IngressGatewayInstanceID: open.IngressGatewayInstanceID,
 			IngressControlSessionID:  open.IngressControlSessionID,

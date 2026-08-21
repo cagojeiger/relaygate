@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
 	gatewayv1 "github.com/cagojeiger/relaygate/internal/gen/gateway/v1"
@@ -46,7 +46,7 @@ func (c Config) validate() error {
 // Owner is the exact owner-Gateway boundary. It deliberately exposes no Raft,
 // public Relay stream, or SDK types.
 type Owner interface {
-	OpenForwarded(context.Context, authority.OpenContext, localbinding.CallerEndpoint) (opening.Result, error)
+	OpenForwarded(context.Context, routing.OpenContext, localbinding.CallerEndpoint) (opening.Result, error)
 	ActivatePipe(clientsession.Ref, string) bool
 	RelayPayload(context.Context, clientsession.Ref, string, string, []byte) error
 	ClosePipe(clientsession.Ref, string) bool
