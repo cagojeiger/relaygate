@@ -1,4 +1,4 @@
-# ADR 011: SDK session supervision
+# ADR 011: SDK 세션 감독
 
 ## 배경
 
@@ -18,6 +18,6 @@ Go/Rust SDK는 두 계층을 제공한다.
 ## 결과
 
 - 별도 daemon이나 server state 없이 SDK reconnect를 지원한다.
-- Supervisor memory는 current logical Listener 수에만 비례한다.
-- Credential 변경에는 새 `ManagedClient`가 필요하다.
+- 감독자 메모리는 현재 논리 Listener 수에만 비례한다.
+- 인증 정보 변경에는 새 `ManagedClient`가 필요하다.
 - `Close`는 connect/backoff를 취소하고 supervisor를 join한다.

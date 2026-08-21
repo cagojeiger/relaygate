@@ -1,14 +1,14 @@
-# TEST 001: Core correctness 계획
+# TEST 001: 핵심 정확성 검증 계획
 
 ## 근거 규칙
 
-각 test는 initial identity/state, exact event order 또는 crash cut, observable result, residual state cardinality를 정의해야 한다. Timeout을 늘리거나 숨은 retry/replay 또는 log text만으로 통과하는 것은 근거가 아니다.
+각 테스트는 최초 식별자·상태, exact 사건 순서 또는 장애 지점, 관찰 가능한 결과, 남은 상태 개수를 정의해야 한다. 제한 시간을 늘리거나 숨은 재시도·재생 또는 log 문구만으로 통과하는 것은 근거가 아니다.
 
-`SPEC 004`가 canonical state table이며 아래 항목은 각 row family를 representative automation 또는 explicit missing evidence에 연결한다.
+`SPEC 004`가 정규 상태표이며 아래 항목은 각 행 계열을 대표 자동화 또는 명시적인 미확보 근거에 연결한다.
 
-## 필수 matrix
+## 필수 검증표
 
-| ID | 계약 | 필수 oracle | 현재 대표 자동화 |
+| ID | 계약 | 필수 판정 기준 | 현재 대표 자동화 |
 | --- | --- | --- | --- |
 | `R01` | Controller same-store restart | 기존 store를 bootstrap 없이 reopen하고 initialized/current FSM 보존 | `TestSameStoreRestartRestoresStateWithoutBootstrap`, `TestSnapshotRecoveryRestoresCurrentState` |
 | `R02` | Lost store replacement | Fresh `NodeId`를 AddVoter/catch-up한 뒤 lost server 제거 | `TestAddCatchUpAndRemoveVoter`, `TestExistingStoreRejectsDifferentNodeID` |
@@ -24,9 +24,9 @@
 | `D06` | Maximum snapshot wire | 512 binding 허용, 513은 state change 전 거부 | Maximum envelope test |
 | `A01` | Six-gate admission | 64개 `A,L,Q,C,V,O` 조합 중 `111111`만 admit | `TestSixGateAdmissionComposition` |
 | `A02` | Authority call cancellation | Caller cancel/deadline은 해당 call만 영향 | Authority call-scoped test |
-| `A03` | Definitive leadership loss | `V` clear, admission fail closed | Failover authority test |
+| `A03` | 확정 리더 상실 | `V` 제거, 허용 판정 닫힌 실패 | 권한 주체 장애 전환 테스트 |
 | `A04` | One confirmed boundary | VerifyLeader+Barrier 하나가 exact authority `C/V`를 묶고 steady Open은 full FSM copy 없음 | Admission ref/state-call test |
-| `O01` | Open LP ordering | O → offer → accept/PipeId → confirmation ACK → caller activation | Opening/public integration test |
+| `O01` | Open 선형화 순서 | O → 제안 → 수락·PipeId → 확인 ACK → 호출자 활성화 | Opening·공개 통합 테스트 |
 | `O02` | Accept/cancel/unbind race | First LP wins, late success revival 없음, pre-O failure offer 없음 | Both-order/retirement test |
 | `O03` | Unknown boundary | Post-LP response/hop loss는 retry/resume 없이 `Unknown` 가능 | Confirmation-loss/peer-loss test |
 | `O04` | Existing Pipe independence | Future authority/admission failure가 accepted Pipe payload를 종료하지 않음 | `TestAcceptedPipeContinuesWhenFutureAdmissionIsUnavailable` |
@@ -57,9 +57,9 @@
 | `E04` | Strict response decode | Known nonzero enum만 허용, malformed/foreign/conflict는 session fatal, exact bounded replay는 NoOp | Go/Rust strict enum test |
 | `E05` | Open/close SDK parity | Duplicate-in-flight는 distinct Rejected, `owned=false`는 NotOwned이며 Go는 `ErrPipeClosed` 호환 | Go/Rust outcome test |
 
-## 복합 장애 cut
+## 복합 장애 지점
 
-| 상호작용 | Oracle |
+| 상호작용 | 판정 기준 |
 | --- | --- |
 | Same-epoch failover × stale session × partial redeclare | 먼저 빈 `V`, fresh exact revalidated route만 가능, changed authority ref context issuance 불가 |
 | Same-store restart × snapshot compaction | Current FSM 복구, bootstrap 없음 |
@@ -73,7 +73,7 @@
 | Backpressure × cancel × participant crash | Bounded terminal, waiter 종료, slot drain |
 | SDK session loss × Listener rebind × Open | New session/binding만, outage Open queue 없음, old state replay 0 |
 
-## Release command
+## 릴리스 검증 명령
 
 ```bash
 GOWORK=off go test -shuffle=on ./...
@@ -90,7 +90,7 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 ## 아직 없는 외부 근거
 
-Local test pass로 다음 항목을 충족했다고 볼 수 없다.
+로컬 테스트 통과만으로 다음 항목을 충족했다고 볼 수 없다.
 
 - Controller volume의 production PVC/storage-class/backup/restore 근거
 - Fresh `NodeId` lost-store replacement production runbook

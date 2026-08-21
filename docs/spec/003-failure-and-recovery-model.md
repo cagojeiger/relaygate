@@ -4,23 +4,23 @@
 
 | 영역 | 장애 | 안전한 결과 |
 | --- | --- | --- |
-| Controller process | 기존 store를 가진 crash/restart | 같은 `NodeId`와 Raft/FSM state를 다시 연다 |
-| Controller leader | quorum이 있는 same-epoch leader loss | 새 leader/`AuthorityId`, volatile `V` reset, Gateway reconnect/full snapshot |
-| Controller store | member 하나의 disk/PVC loss | 새 `NodeId` replacement를 surviving quorum으로 add/catch-up/remove |
-| Controller quorum | majority unavailable | 새 authority/control/admission fail closed |
-| Gateway control | Gateway process가 살아 있는 disconnect/reconnect | Outage 동안 `V=false`; local `LiveBinding`은 유지하고 fresh FullSnapshot으로 revalidate |
-| Gateway process | crash/restart | Local session/binding/attempt/Pipe/payload 소실; fresh Gateway instance와 SDK reconnect/rebind만 수행 |
-| SDK session | disconnect/reconnect | Old child handle terminal; managed supervisor는 fresh auth와 current Listener rebind만 수행 |
-| Network | delay/loss/duplicate/reorder/partition | Exact current identity만 허용하고 stale state 거부 |
-| Config | invalid/delayed/process-local reload | Validated local snapshot만 사용 |
-| Clock | authority-owner skew | `ClockSkewBound < open_timeout` 운영 근거가 있을 때만 remote expiry ready |
-| Operator | initial bootstrap/disaster reset | Bootstrap은 one-shot, reset은 old-path fence와 새 epoch/cohort 요구 |
+| Controller 프로세스 | 기존 저장소를 가진 장애·재시작 | 같은 `NodeId`와 Raft/FSM 상태를 다시 연다 |
+| Controller 리더 | quorum이 있는 같은 epoch의 리더 상실 | 새 리더와 `AuthorityId`, 휘발성 `V` 초기화, Gateway 재연결과 전체 snapshot |
+| Controller 저장소 | 구성원 하나의 disk/PVC 유실 | 새 `NodeId` 교체 노드를 살아 있는 quorum으로 add/catch-up/remove |
+| Controller quorum | 과반수 사용 불가 | 새 권한·제어·허용 판정을 닫힌 실패로 처리 |
+| Gateway 제어 | Gateway 프로세스가 살아 있는 연결 해제·재연결 | 중단 동안 `V=false`; 로컬 `LiveBinding`을 유지하고 새 FullSnapshot으로 재검증 |
+| Gateway 프로세스 | 장애·재시작 | 로컬 세션·바인딩·시도·Pipe·payload 소실; 새 Gateway instance와 SDK 재연결·재바인딩만 수행 |
+| SDK 세션 | 연결 해제·재연결 | 이전 하위 handle 종료; 감독자는 새 인증과 현재 Listener 재바인딩만 수행 |
+| 네트워크 | 지연·손실·중복·순서 변경·분할 | Exact current identity만 허용하고 오래된 상태 거부 |
+| 설정 | 유효하지 않음·지연·프로세스 로컬 다시 불러오기 | 검증된 로컬 snapshot만 사용 |
+| 시계 | 권한 주체와 owner의 시각 차이 | `ClockSkewBound < open_timeout` 운영 근거가 있을 때만 원격 만료 사용 가능 |
+| 운영자 | 최초 bootstrap·재해 초기화 | Bootstrap은 일회성이며 초기화는 이전 경로 차단과 새 epoch·집합 요구 |
 
-Timeout은 failure suspicion이지 death proof가 아니다. False positive는 availability를 낮출 수 있지만 admission gate를 true로 만들 수 없다.
+제한 시간 초과는 장애 의심이지 사망 증명이 아니다. 오탐은 가용성을 낮출 수 있지만 허용 조건을 참으로 만들 수 없다.
 
-## Linearization point
+## 선형화 지점
 
-| 동작 | Linearization point | 손실 의미 |
+| 동작 | 선형화 지점 | 손실 의미 |
 | --- | --- | --- |
 | Config reload | Valid snapshot atomic swap | 제거된 local runtime retire |
 | Register Gateway | Raft `RegisterGateway` commit | `C`에 current session 존재, full snapshot 전 `V=false` |
@@ -34,12 +34,12 @@ Timeout은 failure suspicion이지 death proof가 아니다. False positive는 a
 | Pipe terminal | 첫 participant-local terminal | Local absorbing, peer propagation best effort |
 | Payload delivery | Peer SDK bounded receive queue admission | Exact receipt가 없으면 sender는 `Unknown` 가능 |
 
-## 필수 race 결과
+## 필수 경합 결과
 
-| Race | 승자 | 결과 |
+| 경합 | 승자 | 결과 |
 | --- | --- | --- |
 | Caller verification cancel vs authority | caller cancel/deadline | 해당 call만 unavailable, authority/session/route 유지 |
-| Definitive step-down/quorum loss vs authority | loss | `V` clear, new admission fail closed |
+| 확정 강등·quorum 상실과 권한 주체 경합 | 상실 | `V` 제거, 새 허용 판정 닫힌 실패 |
 | Authority/session change vs O | O first | 해당 attempt 계속 가능 |
 | Authority/session change vs O | fence first | Stale context, offer/PipeId 없음 |
 | Gateway replacement vs old route | new `GatewayInstanceId` | Old owned route 삭제, stale message 재생성 불가 |
@@ -60,21 +60,21 @@ Timeout은 failure suspicion이지 death proof가 아니다. False positive는 a
 | Peer connection failure vs streams | connection failure | 해당 connection의 Pipe stream 모두 terminal, 다음 Open은 connection recovery 여부에 따라 새 stream 시도 |
 | Backpressure vs close/crash | first terminal | Bounded stop, silent drop 없음 |
 
-## Error 경계
+## 오류 경계
 
-| 결과 | 의미 | Retry/session 영향 |
+| 결과 | 의미 | 재시도·세션 영향 |
 | --- | --- | --- |
-| `Rejected` | Current request/frame을 accept/apply할 수 없음 | Auth/session/protocol integrity 문제 외에는 named request/resource local |
-| `Failed` | Named operation이 stable outcome으로 종료; Open `Failed`는 Listener-accept LP 이전 | 새 logical operation 가능, old attempt replay 금지 |
-| `Unknown` | Operation LP를 지났을 수 있으나 exact result/receipt 손실 | Stable failure로 보고하지 않고 자동 retry/resume/replay 금지 |
-| `Acknowledged` | Exact correlated operation이 apply/observe됨 | Exact duplicate ACK는 bounded NoOp, conflicting ACK는 protocol-fatal |
-| `Terminated` | Exact participant-local resource의 absorbing terminal | Revival/resume/payload replay 금지 |
+| `Rejected` | 현재 요청·frame을 수락하거나 적용할 수 없음 | 인증·세션·프로토콜 무결성 문제 외에는 해당 요청·자원 범위 |
+| `Failed` | 이름 있는 작업이 확정 결과로 종료; Open `Failed`는 Listener 수락 선형화 지점 이전 | 새 논리 작업 가능, 이전 시도 재생 금지 |
+| `Unknown` | 작업 선형화 지점을 지났을 수 있으나 exact 결과·확인 손실 | 확정 실패로 보고하지 않고 자동 재시도·재개·재생 금지 |
+| `Acknowledged` | Exact 연관 작업이 적용·관찰됨 | Exact duplicate ACK는 bounded NoOp, 충돌 ACK는 프로토콜 종료 |
+| `Terminated` | Exact 참여자 로컬 자원의 흡수 종료 상태 | 부활·재개·payload 재생 금지 |
 
-Bind/Unbind validation, capacity, conflict, control-unavailable은 operation-local이다. Authentication failure, session end, malformed protocol, stream transport failure는 session-fatal이다. Payload receipt/rejection은 exact `PipeId + PayloadId`로 correlate한다. `PipePayloadRejected`는 SDK exact Pipe view를 terminalize하며 server는 exact owned Pipe만 바꾼다.
+Bind/Unbind 검증, 용량, 충돌, 제어 사용 불가는 해당 작업 범위다. 인증 실패, 세션 종료, 잘못된 프로토콜, stream 전송 실패는 세션을 종료한다. Payload 확인·거부는 exact `PipeId + PayloadId`로 연결한다. `PipePayloadRejected`는 SDK의 exact Pipe 보기를 종료하며 서버는 exact owned Pipe만 바꾼다.
 
-## Crash cut
+## 장애 발생 지점
 
-| Flow | Cut | Oracle |
+| 흐름 | 장애 지점 | 판정 기준 |
 | --- | --- | --- |
 | Controller restart | snapshot/log compaction 전후 | 같은 durable store에서 current FSM 복구 |
 | Lost Controller store | replacement empty start | Fresh `NodeId`, add/catch-up/remove 필수 |
@@ -93,10 +93,10 @@ Bind/Unbind validation, capacity, conflict, control-unavailable은 operation-loc
 
 | 등급 | 의미 | 예시 |
 | --- | --- | --- |
-| `R0` | Existing state 안의 자동 복구 | Same-store restart, surviving-quorum election, Gateway reconnect/revalidate |
-| `R1` | Participant action | Re-auth, rebind, new Open/Pipe |
-| `R2` | Operator action | Quorum repair, fresh `NodeId` replacement, explicit disaster reset |
-| `R3` | 복구 불가 | Old Pipe, payload position, uncertain Open outcome, erased member identity |
+| `R0` | 기존 상태 안의 자동 복구 | 같은 저장소 재시작, 생존 quorum 선거, Gateway 재연결·재검증 |
+| `R1` | 참여자 작업 | 재인증, 재바인딩, 새 Open/Pipe |
+| `R2` | 운영자 작업 | Quorum 복구, 새 `NodeId` 교체, 명시적 재해 초기화 |
+| `R3` | 복구 불가 | 이전 Pipe, payload 위치, 불확실한 Open 결과, 지워진 구성원 식별자 |
 
 ```text
 CurrentCohortServiceRecoverable = surviving and/or same-store-restored
@@ -111,13 +111,13 @@ RouteEligible = CurrentCohortServiceRecoverable
              AND owner reconnects/revalidates V
 ```
 
-Three-voter cohort에서 durable member store 하나만 복구해서는 service를 복구할 수 없다. Membership replacement도 current quorum이 있을 때만 가능하다. Full old-path fence 뒤 disaster reset은 새 cohort와 empty current FSM을 만들 뿐 old outcome/Pipe/payload position/route history를 복구하지 않는다.
+투표자 3개 집합에서 영속 구성원 저장소 하나만 복구해서는 서비스를 복구할 수 없다. 구성원 교체도 현재 quorum이 있을 때만 가능하다. 이전 경로를 모두 차단한 뒤의 재해 초기화는 새 집합과 빈 현재 FSM을 만들 뿐 이전 결과, Pipe, payload 위치, route 이력을 복구하지 않는다.
 
-## Production blocker
+## 운영 환경 차단 조건
 
-| 계약 | Local code만으로 닫히지 않는 이유 |
+| 계약 | 로컬 코드만으로 닫히지 않는 이유 |
 | --- | --- |
-| Disaster reset safety | Old controller/control/gateway path가 fence되었다는 operator evidence 필요 |
-| Controller storage HA | Local add/remove는 있으나 production PVC/storage class/replacement runbook evidence는 외부 |
-| Remote expiry readiness | Real node clock-skew bound evidence 필요 |
-| Internal transport trust | Control/peer/Raft authentication 또는 mTLS 미구현 |
+| 재해 초기화 안전성 | 이전 Controller·제어·Gateway 경로가 차단되었다는 운영자 근거 필요 |
+| Controller 저장소 고가용성 | 로컬 add/remove는 있으나 운영 PVC·storage class·교체 절차서 근거는 외부에 있음 |
+| 원격 만료 준비 상태 | 실제 노드의 시계 오차 상한 근거 필요 |
+| 내부 전송 신뢰 | 제어·Peer·Raft 인증 또는 mTLS 미구현 |

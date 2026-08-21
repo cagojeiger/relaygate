@@ -1,17 +1,17 @@
-# ADR 005: Runtime과 release 경계
+# ADR 005: 실행 역할과 배포 경계
 
 ## 배경
 
-Server control-plane durability, stateless Relay capacity, public SDK compatibility는 서로 다른 축으로 변한다. Runtime role은 Raft/control 내부 구현을 SDK 밖에 두고 Gateway scale-out이 Controller quorum을 바꾸지 않게 해야 한다.
+서버 제어 영역의 영속성, 무상태 Relay 용량, 공개 SDK 호환성은 서로 다른 축으로 변한다. 실행 역할은 Raft·제어 내부 구현을 SDK 밖에 두고 Gateway 수평 확장이 Controller quorum을 바꾸지 않게 해야 한다.
 
 ## 결정
 
-RelayGate server는 하나의 Go binary/image와 두 startup role로 배포한다.
+RelayGate 서버는 하나의 Go 실행 파일·이미지와 두 시작 역할로 배포한다.
 
-| Role | Component |
+| 역할 | 구성 요소 |
 | --- | --- |
-| `controller` | Durable HashiCorp Raft voter/store, current-only FSM, control authority/server, read-only admin |
-| `gateway` | Control client, public Relay, internal peer Relay, auth/session/binding/Pipe runtime, read-only admin |
+| `controller` | 영속 HashiCorp Raft 투표자·저장소, 현재 상태 전용 FSM, 제어 권한·서버, 읽기 전용 관리 API |
+| `gateway` | 제어 클라이언트, 공개 Relay, 내부 Peer Relay, 인증·세션·바인딩·Pipe 실행 상태, 읽기 전용 관리 API |
 
 `controller`는 public/peer Relay를 실행하지 않는다. `gateway`는 Raft, durable store, control server, authoritative FSM을 열지 않는다. Role은 startup 때 고정되며 reload로 바꿀 수 없다.
 
@@ -25,7 +25,7 @@ Go/Rust SDK는 `proto/relaygate/relay/v1/relay.proto`만 공유한다. Generated
 
 ## 결과
 
-- Production Controller와 Gateway runtime은 Go가 소유한다.
-- Controller quorum과 Relay throughput은 독립적으로 확장된다.
-- Public SDK는 server, control, Raft 구현에 의존하지 않는다.
+- 운영 Controller와 Gateway 실행 환경은 Go가 소유한다.
+- Controller quorum과 Relay 처리량은 독립적으로 확장된다.
+- 공개 SDK는 서버, 제어, Raft 구현에 의존하지 않는다.
 - 동일 image를 환경별로 승격하고 deployment가 `controller` 또는 `gateway`를 선택한다.
