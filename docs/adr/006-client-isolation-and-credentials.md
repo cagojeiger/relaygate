@@ -1,4 +1,4 @@
-# ADR 006: Client 격리와 credential
+# ADR 006: 클라이언트 격리와 인증 정보
 
 ## 배경
 
@@ -14,7 +14,7 @@ Client와 API key의 source of truth는 external config다.
 - 하나의 `ClientId`는 rotation을 위해 여러 immutable `ApiKeyId`를 가질 수 있다.
 - Config는 raw key가 아니라 `sha256:<64 lowercase hex>` verifier만 저장한다.
 - Gateway는 exact `(ClientId, ApiKeyId)` verifier를 constant time으로 비교한다.
-- RelayGate는 credential을 database나 Raft에 저장하지 않으며 CRUD API도 제공하지 않는다.
+- RelayGate는 인증 정보를 database나 Raft에 저장하지 않으며 CRUD API도 제공하지 않는다.
 - Public `Relay.Connect`의 첫 message만 raw key를 포함한다. 이후 identity는 authenticated session에서 가져온다.
 - 잘못된 startup config는 fail closed한다. Reload candidate가 잘못되면 거부하고 현재 snapshot을 유지한다. Valid candidate만 atomic apply하며 제거된 credential의 session은 종료한다.
 
@@ -23,5 +23,5 @@ Non-loopback Public Relay는 TLS가 제공될 때만 허용한다.
 ## 결과
 
 - Client별 route isolation과 중단 없는 key rotation을 함께 지원한다.
-- Credential lifecycle은 external config가 소유한다.
+- 인증 정보 수명주기는 외부 설정이 소유한다.
 - Raw key를 log, state, Raft, config에 기록하지 않는다.
