@@ -142,6 +142,57 @@ func TestPipeTerminalWaitsForPayloadOutcomeResponse(t *testing.T) {
 	}
 }
 
+func TestListenerTerminalWaitsForPayloadOutcomeResponse(t *testing.T) {
+	stream := newGateRecordingRelayStream(false)
+	defer stream.cancel()
+	actor := newOutboundActor(stream, make(chan struct{}, maxGlobalPayloadSlots), time.Second)
+	defer actor.close()
+	pipeEndpoint := newStreamPipeEndpoint(actor, time.Second)
+	listener := newStreamListenerEndpoint(context.Background(), actor, pipeEndpoint, time.Second)
+	listener.attempts["attempt-1"] = &listenerAttempt{
+		phase:        listenerOpen,
+		pipeID:       "pipe-1",
+		decision:     make(chan bool, 1),
+		confirmation: make(chan struct{}, 1),
+		terminal:     make(chan struct{}),
+	}
+
+	if err := pipeEndpoint.beginOutcome(context.Background()); err != nil {
+		t.Fatalf("beginOutcome(): %v", err)
+	}
+	receipt := &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadReceived{
+		PipePayloadReceived: &relayv1.PipePayloadReceived{PipeId: "pipe-1", PayloadId: "payload-1"},
+	}}
+	if err := actor.send(context.Background(), receipt); err != nil {
+		t.Fatalf("send payload outcome: %v", err)
+	}
+	if got := receiveWithin(t, stream.sent, "payload outcome"); got.GetPipePayloadReceived() == nil {
+		t.Fatalf("first response = %#v, want payload outcome", got)
+	}
+
+	terminalResult := make(chan error, 1)
+	terminalParent, cancelTerminal := context.WithCancel(context.Background())
+	cancelTerminal()
+	go func() {
+		terminalResult <- listener.Terminate(terminalParent, localbinding.Termination{
+			AttemptID: "attempt-1",
+			PipeID:    "pipe-1",
+		})
+	}()
+	select {
+	case response := <-stream.sent:
+		t.Fatalf("listener terminal overtook payload outcome completion: %#v", response)
+	case <-time.After(50 * time.Millisecond):
+	}
+	pipeEndpoint.endOutcome()
+	if got := receiveWithin(t, stream.sent, "Listener terminal"); got.GetListenerTerminated() == nil {
+		t.Fatalf("second response = %#v, want Listener terminal", got)
+	}
+	if err := receiveWithin(t, terminalResult, "Listener terminal completion"); err != nil {
+		t.Fatalf("Terminate(): %v", err)
+	}
+}
+
 func TestConnectPayloadRejectionsAreStableAndOwnershipPrivate(t *testing.T) {
 	called := make(chan localbinding.PipePayload, 1)
 	closed := make(chan string, 2)

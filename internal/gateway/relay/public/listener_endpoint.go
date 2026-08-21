@@ -185,9 +185,16 @@ func (e *streamListenerEndpoint) Terminate(ctx context.Context, termination loca
 	close(attempt.terminal)
 	e.mu.Unlock()
 
-	err := e.outbound.send(ctx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerTerminated{
+	terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), e.terminalSendTimeout)
+	defer cancel()
+	if err := e.pipeEndpoint.beginOutcome(terminalCtx); err != nil {
+		e.outbound.fail(err)
+		return err
+	}
+	err := e.outbound.send(terminalCtx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_ListenerTerminated{
 		ListenerTerminated: &relayv1.ListenerTerminated{AttemptId: termination.AttemptID, PipeId: termination.PipeID},
 	}})
+	e.pipeEndpoint.endOutcome()
 	if err != nil {
 		// The opening manager treats endpoint termination as best-effort. Turn a
 		// bounded delivery failure into stream failure so session retirement, not
