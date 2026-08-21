@@ -18,7 +18,7 @@ import (
 type remoteEndpoint struct {
 	client         *Client
 	cancel         context.CancelCauseFunc
-	connection     *grpc.ClientConn
+	connection     *connectionLease
 	stream         grpc.BidiStreamingClient[gatewayv1.ForwardRequest, gatewayv1.ForwardResponse]
 	sender         *sendActor[*gatewayv1.ForwardRequest]
 	callerEndpoint localbinding.CallerEndpoint
@@ -44,7 +44,7 @@ type remoteEndpoint struct {
 func newRemoteEndpoint(
 	client *Client,
 	cancel context.CancelCauseFunc,
-	connection *grpc.ClientConn,
+	connection *connectionLease,
 	stream grpc.BidiStreamingClient[gatewayv1.ForwardRequest, gatewayv1.ForwardResponse],
 	sender *sendActor[*gatewayv1.ForwardRequest],
 	callerEndpoint localbinding.CallerEndpoint,
@@ -349,9 +349,9 @@ func peerPayloadError(failure gatewayv1.PipePayloadFailure) error {
 func (e *remoteEndpoint) cleanup(ctx context.Context) {
 	<-ctx.Done()
 	e.sender.stop(context.Cause(ctx))
-	_ = e.connection.Close()
 	e.workers.Wait()
 	<-e.sender.joined
+	e.connection.release()
 	close(e.done)
 	e.client.release()
 }

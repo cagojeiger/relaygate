@@ -1,77 +1,79 @@
-# TEST 001: Core Correctness Plan
+# TEST 001: Core correctness 계획
 
-## Evidence Rule
+## 근거 규칙
 
-Each test must define initial identity/state, exact event order or crash cut, observable result, and residual state cardinality. Passing by longer timeout, hidden retry/replay, or log text is not evidence.
+각 test는 initial identity/state, exact event order 또는 crash cut, observable result, residual state cardinality를 정의해야 한다. Timeout을 늘리거나 숨은 retry/replay 또는 log text만으로 통과하는 것은 근거가 아니다.
 
-`SPEC 004` is the canonical state table. This plan maps each required row family to representative automation or explicit missing evidence.
+`SPEC 004`가 canonical state table이며 아래 항목은 각 row family를 representative automation 또는 explicit missing evidence에 연결한다.
 
-## Mandatory Matrix
+## 필수 matrix
 
-| ID | Contract | Required oracle | Current representative automation |
+| ID | 계약 | 필수 oracle | 현재 대표 자동화 |
 | --- | --- | --- | --- |
-| `R01` | Controller same-store restart | Existing durable store reopens without bootstrap and preserves initialized/current FSM | `TestSameStoreRestartRestoresStateWithoutBootstrap`, `TestSnapshotRecoveryRestoresCurrentState` |
-| `R02` | Lost store replacement | Replacement uses fresh `NodeId`, catches up by `AddVoter`, then lost server can be removed | `TestAddCatchUpAndRemoveVoter`, `TestExistingStoreRejectsDifferentNodeID` |
-| `R03` | Quorum fail closed | No confirmed authority/admission without quorum | node/authority quorum tests and Compose fail-closed stage |
-| `R04` | Bootstrap is initial only | Empty store requires valid bootstrap voter manifest; same-store restart does not bootstrap | `TestValidateRequiresCohortManifestForInitialBootstrap`, bootstrap config tests |
-| `R05` | Runtime role boundary | `gateway` opens no Raft/store/control listener; `controller` owns Raft/control and no relay | runtime composition and config/admin tests; Compose verifies the Gateway-side closed controller ports |
-| `R06` | Local membership operator | Leader-only Unix-socket list/add/remove; duplicate Add and absent Remove converge without changing current membership; conflicts and limit reject | membership service/client tests and Compose operator stage |
-| `D01` | Atomic full snapshot | Invalid/conflict/over-cap snapshot has partial install 0 | `TestFSMReplaceSnapshotIsAtomicOnConflict`, `TestSnapshotConflictIsAtomicAndExactCAndVAreRequired` |
-| `D02` | Current-only cardinality | Bind/unbind churn leaves directory size equal to current live set | `TestFSMChurnDoesNotConsumeCapacityAndTrueDeleteReclaimsIt` |
-| `D03` | True delete/cascade | Withdraw/remove/replacement leaves no tombstone/history and deletes exact owned routes | FSM and authority stale/replacement tests |
-| `D04` | Exact stale fence | Old session declare/withdraw/snapshot cannot add/delete replacement owner state | `TestFSMRegisterReplacementCascadesRoutesAndFencesStaleABA`, `TestStaleGraceCleanupCannotDeleteReplacementInstance` |
-| `D05` | ACK-loss convergence | Session end clears `V`; reconnect full-snapshot replaces current state, or exact grace cleanup deletes unrevalidated `C`; no response replay | `TestEndSessionRetainsCAndReconnectCancelsGraceCleanup`, `TestControlKeepaliveBlackholeDeletesAndRedeclaresCurrentRoutes` |
-| `D06` | Maximum snapshot wire | 512 legal bindings fit; 513 rejects before state change | `TestSnapshotEnvelopeAcceptsMaximumLegalSetAndRejectsExcess` |
-| `A01` | Six-gate admission | 64 `A,L,Q,C,V,O` combinations admit only `111111` | `TestSixGateAdmissionComposition` |
-| `A02` | Authority call cancellation | Caller cancel/deadline affects only that call | authority manager call-scoped verification tests |
-| `A03` | Definitive leadership loss | Authority-local `V` clears and admissions fail closed | `TestAuthorityFailoverRetainsCommittedDirectoryButDropsV` |
-| `A04` | One confirmed admission boundary | One VerifyLeader+Barrier binds exact authority `C/V`; a changed authority ref rejects; steady Open does no full FSM copy | `TestAdmissionRejectsChangedAuthorityRef`, `TestSteadyStateConfirmAndAdmitOpenDoNotCopyFullState` |
-| `O01` | Open LP ordering | O -> offer -> accept/PipeId -> confirmation ACK -> caller activation | Opening/public relay integration tests |
-| `O02` | Accept/cancel/unbind races | First LP wins; late success does not revive; pre-O failure has no offer | `TestOpenAcceptVersusCancelBothOrders` and retirement tests |
-| `O03` | Unknown boundary | Post-LP response/hop loss has no retry/resume and may be `Unknown` | `TestX04ListenerAcceptThenConfirmationLossAndOwnerShutdownIsUnknown`, peer loss tests |
-| `O04` | Existing Pipe independence | Future authority/admission failure does not terminate accepted Pipe payload | `TestAcceptedPipeContinuesWhenFutureAdmissionIsUnavailable` |
-| `H01` | Forward provenance | Mismatched ingress/auth/binding/owner field rejects before forwarding | `TestOpenContextFromProtoRejectsEveryMismatchedProvenanceField` |
-| `H02` | Replay/expiry fence | One `AttemptId` has at most one O; expiry strict; no outcome/PipeId replay | `TestForwardedOwnerSingleUseExpiryAndFailedGuard` |
-| `H03` | One remote hop | One stream per remote Pipe; no redial/multiplex/resume | Peer tests and cross-Gateway Compose smoke |
-| `P01` | Payload boundary/FIFO | 1..60 KiB exact bytes, per-direction FIFO, no cross-direction order claim | Opening/public/peer/SDK payload tests |
-| `P02` | Bounded pressure | Full queue/timeout/write failure has no silent drop and releases slots | `TestX07BackpressureCancelAndParticipantCrashReleaseAllPayloadSlots` |
-| `P03` | Bounded terminal under payload pressure | Public multiplexed Relay control/terminal bypasses queued payload; a one-stream-per-Pipe peer hop instead times out and cancels the whole stream; all owned workers join | `TestOutboundActorPayloadPressureAndControlBypass`, peer lifecycle cancellation tests, and SDK close/send race tests |
-| `P04` | Receipt LP | Receiver emits receipt only after exact payload enters its bounded SDK receive queue; `Send` success requires that exact receipt | Public Relay plus Go/Rust SDK receipt tests |
-| `P05` | NotSent/Unknown timeout cut | Deadline before local transport handoff is `NotSent`; deadline/terminal after handoff and before receipt is `Unknown` | Deterministic blocked-writer and blocked-receipt tests |
-| `P06` | Exact receipt correlation | ACK/rejection requires current `PipeId + PayloadId`; malformed, foreign, wrong-phase, and conflicting correlation is protocol-fatal | Public/peer/Go/Rust strict decoding tests |
-| `P07` | Duplicate receipt/payload | Exact duplicate receipt is bounded NoOp; non-adjacent `A/B/A` payload replay is enqueued once and re-ACKed within bounded history; same ID with different bytes is protocol-fatal; a late exact result cannot revise `Unknown` | SDK receipt-history and fingerprint tests |
-| `P08` | Receipt pressure | Queue-full payload is never ACKed or silently dropped; exact rejection terminalizes only the owned Pipe | Public/peer/SDK backpressure tests |
-| `P09` | Terminal races | Receipt vs close, receipt vs deadline, rejection vs session end, and both payload directions have one absorbing result and release all waiters/slots | Race tests in public relay and both SDKs |
-| `P10` | Same/cross-Gateway parity | Same-Gateway and cross-Gateway paths return the same exact receipt only after destination SDK queue admission | Compose and peer integration tests |
-| `P11` | No durable delivery state | Receipt pending/history is bounded process memory; Controller FSM/snapshot/log contain no payload ID, payload, receipt, or replay state | FSM snapshot inspection and SDK capacity tests |
-| `K01` | Auth/reload | Invalid keeps old; valid removal swaps then retires local children | Auth/runtime reload tests |
-| `K02` | Strict namespace | Same endpoint/target under another `ClientId` never falls back | Auth/authority/routing tests |
-| `K03` | Observed-only C/V presence | Presence separates committed Gateway/route counts from revalidated/eligible leader-local counts and never claims completeness or cluster-wide revocation | Admin/authority tests |
-| `S01` | SDK parity | Go-Go, Go-Rust, Rust-Go, Rust-Rust exact Open/payload/close | SDK conformance Compose stage |
-| `S02` | Go SDK module isolation | `GOWORK=off` build/test imports no server/internal API | Go SDK module test/vet and import scan |
-| `S03` | SDK supervision | Fresh auth/current Listener rebind; outage Open=`NotReady`; old Pipe terminal/no replay | `TestManagedClientReconnectsAndRedeclaresCurrentListenerOnly`, `TestManagedClientUnbindDuringBackoffDoesNotRedeclare`, Rust managed tests |
-| `E01` | Bind/Unbind error scope | Invalid/capacity/conflict/unavailable returns exact operation-local failure and a later request succeeds on the same Relay stream; session/auth/protocol failures still end it | Public Relay and Go/Rust SDK binding-failure tests |
-| `E02` | Managed retry parity | Go/Rust both classify invalid argument, unauthenticated, permission denied, failed precondition, and protocol as permanent in connect/rebind/ready; transient transport enters bounded backoff | `TestManagedClientStopsOnWrappedProtocolFailureDuringRebind`, `wrapped_protocol_failure_during_rebind_stops_without_reconnect`, Go/Rust managed classification tests |
-| `E03` | Payload rejection scope | Every rejection terminalizes the SDK's exact Pipe; the server terminalizes only an exact owned Pipe and never mutates unknown/foreign state | Public Relay and Go/Rust SDK payload rejection tests |
-| `E04` | Strict response decoding | Every enum-valued response accepts only a known nonzero value; `UNSPECIFIED`, unknown, malformed, foreign, or history-conflicting correlation is session-fatal in both SDKs, while an exact bounded terminal replay is an idempotent no-op | `TestPipeOpenFailedStrictEnumDecoding`, `TestOpenRequestRejectedStrictEnumAndTypedOutcome`, `TestListenerDecisionRejectedStrictEnumDecoding`, `invalid_pipe_open_failed_enums_preserve_pending_open_until_protocol_termination`, `invalid_open_request_rejected_enums_preserve_pending_open_until_protocol_termination`, Rust exact listener-decision rejection tests |
-| `E05` | Open/close SDK parity | Duplicate-in-flight Open remains a distinct Rejected outcome; close `owned=false` remains a distinct NotOwned result while Go preserves `errors.Is(err, ErrPipeClosed)` | `TestPublicOpenOutcomeNumbersRemainCompatible`, `TestPipeCloseNotOwnedHasTypedBackwardCompatibleError`, Rust close tests |
+| `R01` | Controller same-store restart | 기존 store를 bootstrap 없이 reopen하고 initialized/current FSM 보존 | `TestSameStoreRestartRestoresStateWithoutBootstrap`, `TestSnapshotRecoveryRestoresCurrentState` |
+| `R02` | Lost store replacement | Fresh `NodeId`를 AddVoter/catch-up한 뒤 lost server 제거 | `TestAddCatchUpAndRemoveVoter`, `TestExistingStoreRejectsDifferentNodeID` |
+| `R03` | Quorum fail closed | Quorum 없이 confirmed authority/admission 없음 | Node/authority quorum test와 Compose stage |
+| `R04` | Bootstrap initial-only | Empty store는 valid voter manifest 필요, same-store restart는 bootstrap 없음 | Bootstrap config test |
+| `R05` | Runtime role boundary | Gateway에는 Raft/store/control listener가 없고 Controller에는 Relay가 없음 | Runtime/config/admin test와 Compose port 검증 |
+| `R06` | Local membership operator | Leader-only Unix socket list/add/remove, exact retry 수렴, conflict/limit 거부 | Membership test와 Compose operator stage |
+| `D01` | Atomic full snapshot | Invalid/conflict/over-cap snapshot partial install 0 | FSM/authority snapshot test |
+| `D02` | Current-only cardinality | Bind/unbind churn 뒤 directory size=current live set | `TestFSMChurnDoesNotConsumeCapacityAndTrueDeleteReclaimsIt` |
+| `D03` | True delete/cascade | Withdraw/remove/replacement 뒤 tombstone/history 없음 | FSM/authority stale/replacement test |
+| `D04` | Exact stale fence | Old session mutation이 replacement state 생성/삭제 불가 | FSM ABA와 stale grace cleanup test |
+| `D05` | ACK-loss convergence | Session end에서 `V` clear, reconnect snapshot 또는 grace cleanup으로 `C` 수렴, response replay 없음 | Control keepalive/reconnect test |
+| `D06` | Maximum snapshot wire | 512 binding 허용, 513은 state change 전 거부 | Maximum envelope test |
+| `A01` | Six-gate admission | 64개 `A,L,Q,C,V,O` 조합 중 `111111`만 admit | `TestSixGateAdmissionComposition` |
+| `A02` | Authority call cancellation | Caller cancel/deadline은 해당 call만 영향 | Authority call-scoped test |
+| `A03` | Definitive leadership loss | `V` clear, admission fail closed | Failover authority test |
+| `A04` | One confirmed boundary | VerifyLeader+Barrier 하나가 exact authority `C/V`를 묶고 steady Open은 full FSM copy 없음 | Admission ref/state-call test |
+| `O01` | Open LP ordering | O → offer → accept/PipeId → confirmation ACK → caller activation | Opening/public integration test |
+| `O02` | Accept/cancel/unbind race | First LP wins, late success revival 없음, pre-O failure offer 없음 | Both-order/retirement test |
+| `O03` | Unknown boundary | Post-LP response/hop loss는 retry/resume 없이 `Unknown` 가능 | Confirmation-loss/peer-loss test |
+| `O04` | Existing Pipe independence | Future authority/admission failure가 accepted Pipe payload를 종료하지 않음 | `TestAcceptedPipeContinuesWhenFutureAdmissionIsUnavailable` |
+| `H01` | Forward provenance | Mismatched ingress/auth/binding/owner field는 forwarding 전 거부 | OpenContext decoder test |
+| `H02` | Replay/expiry fence | `AttemptId`당 O 최대 하나, strict expiry, outcome/PipeId replay 없음 | Forwarded owner fence test |
+| `H03` | Remote stream isolation | Remote Pipe마다 stream 하나, stream failure는 sibling stream/shared connection을 종료하지 않음 | Peer lifecycle/connection pool test와 Compose smoke |
+| `H04` | Peer connection sharing | Same exact owner의 concurrent/serial Pipe가 ClientConn 하나를 공유; changed owner identity/address는 새 connection, old connection은 ref drain 뒤 close; idle cache는 bounded LRU | `TestGatewayRelaySharesOneConnectionAcrossOwnerPipes`, `TestGatewayRelayReplacesChangedOwnerIdentityAfterOldPipesDrain`, `TestGatewayRelayIdleConnectionCacheIsBounded` |
+| `P01` | Payload boundary/FIFO | 1..60 KiB exact bytes, per-direction FIFO, cross-direction order claim 없음 | Opening/public/peer/SDK payload test |
+| `P02` | Bounded pressure | Full queue/timeout/write failure에서 silent drop 없고 slot 반환 | X07 test |
+| `P03` | Pressure 중 bounded terminal | Public control/terminal lane은 payload 우회, peer blocked stream은 해당 Pipe만 cancel, worker join | Actor/peer/SDK race test |
+| `P04` | Receipt LP | Receiver queue admission 뒤에만 receipt, exact receipt 뒤에만 `Send` 성공 | Public + Go/Rust SDK receipt test |
+| `P05` | NotSent/Unknown cut | Handoff 전 deadline=`NotSent`, 이후 receipt 전=`Unknown` | Blocked writer/receipt test |
+| `P06` | Exact receipt correlation | Current `PipeId + PayloadId`만 ACK/rejection, malformed/foreign/wrong-phase/conflict는 fatal | Public/peer/SDK strict decode test |
+| `P07` | Duplicate receipt/payload | Exact duplicate는 bounded NoOp/re-ACK, same ID different bytes는 fatal, late result가 `Unknown` 수정 불가 | SDK history/fingerprint test |
+| `P08` | Receipt pressure | Queue-full payload는 ACK/drop 없이 reject하고 exact Pipe만 terminal | Public/peer/SDK pressure test |
+| `P09` | Terminal race | Receipt/close/deadline/session end 양순서가 absorbing result 하나와 slot drain | Public/SDK race test |
+| `P10` | Same/cross-Gateway parity | 두 path 모두 destination SDK queue admission 뒤 exact receipt | Compose/peer integration |
+| `P11` | No durable delivery state | Receipt pending/history는 bounded memory이고 FSM/log/snapshot에 없음 | FSM inspection/SDK capacity test |
+| `K01` | Auth/reload | Invalid는 old 유지, valid removal은 swap 뒤 local child retire | Auth/runtime reload test |
+| `K02` | Strict namespace | 다른 `ClientId`의 same endpoint/target fallback 없음 | Auth/authority/routing test |
+| `K03` | Observed-only C/V | Committed와 revalidated/eligible counter 분리, completeness/revocation claim 없음 | Admin/authority test |
+| `S01` | SDK parity | Go-Go/Go-Rust/Rust-Go/Rust-Rust exact Open/payload/close | SDK conformance Compose |
+| `S02` | Go SDK isolation | `GOWORK=off` build/test가 server/internal API import 없음 | SDK test/vet/import scan |
+| `S03` | SDK supervision | Fresh auth/current Listener rebind, outage Open=`NotReady`, old Pipe replay 없음 | Go/Rust managed test |
+| `E01` | Bind/Unbind error scope | Stable operation-local failure 뒤 같은 stream에서 다음 request 성공, session/protocol failure는 stream end | Public/SDK binding test |
+| `E02` | Managed retry parity | Permanent error는 Failed, transient transport만 bounded Backoff | Go/Rust classification test |
+| `E03` | Payload rejection scope | SDK exact Pipe terminal, server는 exact owned Pipe만 변경 | Public/Go/Rust rejection test |
+| `E04` | Strict response decode | Known nonzero enum만 허용, malformed/foreign/conflict는 session fatal, exact bounded replay는 NoOp | Go/Rust strict enum test |
+| `E05` | Open/close SDK parity | Duplicate-in-flight는 distinct Rejected, `owned=false`는 NotOwned이며 Go는 `ErrPipeClosed` 호환 | Go/Rust outcome test |
 
-## Cross-Failure Cuts
+## 복합 장애 cut
 
-| Interaction | Oracle |
+| 상호작용 | Oracle |
 | --- | --- |
-| Same-epoch leader failover x stale session x partial redeclare | `V` empty first; exact fresh revalidated route only; a changed confirmed authority ref cannot issue a context |
-| Same-store restart x snapshot compaction | Current FSM restored, no bootstrap |
-| Lost controller store x replacement | Old `NodeId` not reused; replacement catches up before old member removal |
-| Membership commit x response loss x retry | Exact Add/Remove retry returns one current configuration; identity/address conflict never aliases members |
-| Session end x mutation ACK loss x reconnect | `V` stays false; reconnect snapshot or grace cleanup converges `C`; no mutation response replay |
-| Credential removal x config skew x presence | Reloaded process retires only local state; presence does not prove cluster revocation |
-| Listener accept x confirmation loss x owner crash | Caller `Unknown`; no outcome/Pipe recovery |
-| Duplicate attempt x expiry x response loss | One O/offer max; no prior result replay |
-| Backpressure x cancel x participant crash | Bounded terminal, all waiters end, slots drain |
-| SDK session loss x Listener rebind x Open | New session/binding only; outage Open no queue; old Pipe/response/payload replay 0 |
+| Same-epoch failover × stale session × partial redeclare | 먼저 빈 `V`, fresh exact revalidated route만 가능, changed authority ref context issuance 불가 |
+| Same-store restart × snapshot compaction | Current FSM 복구, bootstrap 없음 |
+| Lost store × replacement | Old `NodeId` 재사용 금지, replacement catch-up 뒤 remove |
+| Membership commit × response loss × retry | Exact Add/Remove가 current config 반환, identity/address conflict 구분 |
+| Session end × mutation ACK loss × reconnect | `V=false`, snapshot/cleanup으로 `C` 수렴, response replay 없음 |
+| Credential removal × config skew × presence | Reload process local만 retire, presence는 cluster revocation 증명 안 함 |
+| Listener accept × confirmation loss × owner crash | Caller `Unknown`, outcome/Pipe recovery 없음 |
+| Duplicate attempt × expiry × response loss | O/offer 최대 하나, prior result replay 없음 |
+| Shared connection × sibling stream failure × owner replacement | Sibling 유지, new identity는 new connection, old는 last ref 뒤 close |
+| Backpressure × cancel × participant crash | Bounded terminal, waiter 종료, slot drain |
+| SDK session loss × Listener rebind × Open | New session/binding만, outage Open queue 없음, old state replay 0 |
 
-## Release Commands
+## Release command
 
 ```bash
 GOWORK=off go test -shuffle=on ./...
@@ -86,12 +88,12 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ./scripts/compose-smoke.sh
 ```
 
-## Missing External Evidence
+## 아직 없는 외부 근거
 
-These are not satisfied by local test pass:
+Local test pass로 다음 항목을 충족했다고 볼 수 없다.
 
-- Production PVC/storage-class and backup/restore evidence for controller volumes
-- Production operator runbook evidence for lost-store replacement with new `NodeId`
-- Disaster reset evidence: all old controller/control/gateway paths fenced before new epoch bootstrap
-- `ClockSkewBound < relay.open_timeout` evidence
-- Internal control/peer/Raft authentication or mTLS evidence
+- Controller volume의 production PVC/storage-class/backup/restore 근거
+- Fresh `NodeId` lost-store replacement production runbook
+- New epoch bootstrap 전 모든 old path fencing 근거
+- `ClockSkewBound < relay.open_timeout` 근거
+- Internal control/peer/Raft authentication 또는 mTLS 근거

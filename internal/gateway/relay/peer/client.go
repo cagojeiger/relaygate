@@ -12,7 +12,6 @@ import (
 	gatewayv1 "github.com/cagojeiger/relaygate/internal/gen/gateway/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const maxGatewayMessageBytes = 64 << 10
@@ -29,10 +28,15 @@ type Client struct {
 	ctx            context.Context //nolint:containedctx // The client owns one process-lifetime cancellation root.
 	cancel         context.CancelCauseFunc
 
-	mu         sync.Mutex
-	closed     bool
-	active     sync.WaitGroup
-	closedDone chan struct{}
+	mu                 sync.Mutex
+	closed             bool
+	connections        map[string]*pooledConnection
+	allConnections     map[*pooledConnection]struct{}
+	newConnection      func(string) (*grpc.ClientConn, error)
+	maxIdleConnections uint32
+	connectionSequence uint64
+	active             sync.WaitGroup
+	closedDone         chan struct{}
 }
 
 func NewClient(connectTimeout, openTimeout time.Duration, maxPipes uint32) (*Client, error) {
@@ -43,13 +47,18 @@ func NewClient(connectTimeout, openTimeout time.Duration, maxPipes uint32) (*Cli
 		return nil, fmt.Errorf("%w: maximum Pipes must be positive", ErrInvalid)
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
+	maxIdleConnections := min(maxPipes, maxIdlePeerConnections)
 	return &Client{
-		connectTimeout: connectTimeout,
-		openTimeout:    openTimeout,
-		slots:          make(chan struct{}, maxPipes),
-		ctx:            ctx,
-		cancel:         cancel,
-		closedDone:     make(chan struct{}),
+		connectTimeout:     connectTimeout,
+		openTimeout:        openTimeout,
+		slots:              make(chan struct{}, maxPipes),
+		ctx:                ctx,
+		cancel:             cancel,
+		connections:        make(map[string]*pooledConnection),
+		allConnections:     make(map[*pooledConnection]struct{}),
+		newConnection:      newPeerConnection,
+		maxIdleConnections: maxIdleConnections,
+		closedDone:         make(chan struct{}),
 	}, nil
 }
 
@@ -66,9 +75,9 @@ func (c *Client) Open(ctx context.Context, open routing.OpenContext, callerEndpo
 	if err := c.acquire(); err != nil {
 		return opening.RemoteResult{}, err
 	}
-	leaseOwned := true
+	slotOwned := true
 	defer func() {
-		if leaseOwned {
+		if slotOwned {
 			c.release()
 		}
 	}()
@@ -78,24 +87,20 @@ func (c *Client) Open(ctx context.Context, open routing.OpenContext, callerEndpo
 	defer cancelAttempt()
 	defer cancelTimeout()
 
-	dialCtx, cancelDial := context.WithTimeout(attemptCtx, c.connectTimeout)
-	connection, err := grpc.NewClient(
-		"passthrough:///"+open.OwnerRelayAddress,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDisableRetry(),
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(maxGatewayMessageBytes),
-			grpc.MaxCallSendMsgSize(maxGatewayMessageBytes),
-			grpc.WaitForReady(false),
-		),
-	)
+	lease, err := c.acquireConnection(open)
 	if err != nil {
-		cancelDial()
 		return opening.RemoteResult{}, fmt.Errorf("%w: dial owner gateway: %w", opening.ErrUnavailable, err)
 	}
+	connectionOwned := true
+	defer func() {
+		if connectionOwned {
+			lease.release()
+		}
+	}()
+	connection := lease.connection()
+	dialCtx, cancelDial := context.WithTimeout(attemptCtx, c.connectTimeout)
 	if err := waitForReady(dialCtx, connection); err != nil {
 		cancelDial()
-		_ = connection.Close()
 		return opening.RemoteResult{}, fmt.Errorf("%w: connect to owner gateway: %w", opening.ErrUnavailable, err)
 	}
 	cancelDial()
@@ -104,14 +109,12 @@ func (c *Client) Open(ctx context.Context, open routing.OpenContext, callerEndpo
 	stream, err := gatewayv1.NewGatewayRelayClient(connection).Forward(pipeCtx)
 	if err != nil {
 		cancelPipe(err)
-		_ = connection.Close()
 		return opening.RemoteResult{}, fmt.Errorf("%w: open owner gateway stream: %w", opening.ErrUnavailable, err)
 	}
 	sender := newSendActor(pipeCtx, stream.Send, func(cause error) { cancelPipe(cause) })
 	cleanupFailed := func(cause error) {
 		cancelPipe(cause)
 		sender.stop(cause)
-		_ = connection.Close()
 		<-sender.joined
 	}
 
@@ -150,8 +153,9 @@ func (c *Client) Open(ctx context.Context, open routing.OpenContext, callerEndpo
 		return opening.RemoteResult{}, fmt.Errorf("%w: owner returned a non-exact Open result", opening.ErrUnknown)
 	}
 
-	endpoint := newRemoteEndpoint(c, cancelPipe, connection, stream, sender, callerEndpoint, accepted.GetAttemptId(), accepted.GetPipeId(), binding)
-	leaseOwned = false
+	endpoint := newRemoteEndpoint(c, cancelPipe, lease, stream, sender, callerEndpoint, accepted.GetAttemptId(), accepted.GetPipeId(), binding)
+	connectionOwned = false
+	slotOwned = false
 	endpoint.start(pipeCtx)
 	return opening.RemoteResult{
 		AttemptID: accepted.GetAttemptId(),
@@ -209,6 +213,7 @@ func (c *Client) Close() {
 	c.cancel(ErrClosed)
 	c.mu.Unlock()
 	c.active.Wait()
+	c.closeConnections()
 	close(c.closedDone)
 }
 

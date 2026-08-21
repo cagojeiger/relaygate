@@ -1,4 +1,4 @@
-# RelayGate Echo
+# RelayGate Echo 예제
 
 이 로컬 예제는 persistent Raft controller 하나, durable store가 없는 Gateway 하나, Echo listener 두 개를 실행한다.
 
