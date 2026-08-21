@@ -112,6 +112,43 @@ func TestStreamPipeEndpointReceiptCorrelationIsExactAndBounded(t *testing.T) {
 	}
 }
 
+func TestPipeTerminalWaitsForPayloadOutcomeResponse(t *testing.T) {
+	stream := newGateRecordingRelayStream(false)
+	defer stream.cancel()
+	actor := newOutboundActor(stream, make(chan struct{}, maxGlobalPayloadSlots), time.Second)
+	defer actor.close()
+	endpoint := newStreamPipeEndpoint(actor, time.Second)
+	if err := endpoint.beginOutcome(context.Background()); err != nil {
+		t.Fatalf("beginOutcome(): %v", err)
+	}
+	receipt := &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadReceived{
+		PipePayloadReceived: &relayv1.PipePayloadReceived{PipeId: "pipe-1", PayloadId: "payload-1"},
+	}}
+	if err := actor.send(context.Background(), receipt); err != nil {
+		t.Fatalf("send payload outcome: %v", err)
+	}
+	if got := receiveWithin(t, stream.sent, "payload outcome"); got.GetPipePayloadReceived() == nil {
+		t.Fatalf("first response = %#v, want payload outcome", got)
+	}
+
+	terminalResult := make(chan error, 1)
+	go func() {
+		terminalResult <- endpoint.TerminatePipe(context.Background(), "pipe-1")
+	}()
+	select {
+	case response := <-stream.sent:
+		t.Fatalf("terminal overtook payload outcome completion: %#v", response)
+	case <-time.After(50 * time.Millisecond):
+	}
+	endpoint.endOutcome()
+	if got := receiveWithin(t, stream.sent, "Pipe terminal"); got.GetPipeTerminated() == nil {
+		t.Fatalf("second response = %#v, want Pipe terminal", got)
+	}
+	if err := receiveWithin(t, terminalResult, "Pipe terminal completion"); err != nil {
+		t.Fatalf("TerminatePipe(): %v", err)
+	}
+}
+
 func TestConnectPayloadRejectionsAreStableAndOwnershipPrivate(t *testing.T) {
 	called := make(chan localbinding.PipePayload, 1)
 	closed := make(chan string, 2)

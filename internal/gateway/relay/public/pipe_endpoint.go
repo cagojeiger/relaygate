@@ -15,6 +15,7 @@ import (
 type streamPipeEndpoint struct {
 	outbound            *outboundActor
 	terminalSendTimeout time.Duration
+	outcomeGate         chan struct{}
 
 	mu      sync.Mutex
 	pending map[payloadReceiptKey]pendingPayloadReceipt
@@ -46,7 +47,23 @@ func newStreamPipeEndpoint(outbound *outboundActor, terminalSendTimeout time.Dur
 	return &streamPipeEndpoint{
 		outbound: outbound, terminalSendTimeout: terminalSendTimeout,
 		pending: make(map[payloadReceiptKey]pendingPayloadReceipt), history: make(map[payloadReceiptKey]payloadReceiptOutcome),
+		outcomeGate: make(chan struct{}, 1),
 	}
+}
+
+func (e *streamPipeEndpoint) beginOutcome(ctx context.Context) error {
+	select {
+	case e.outcomeGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.outbound.done:
+		return e.outbound.err()
+	}
+}
+
+func (e *streamPipeEndpoint) endOutcome() {
+	<-e.outcomeGate
 }
 
 func (e *streamPipeEndpoint) DeliverPayload(ctx context.Context, payload localbinding.PipePayload) error {
@@ -215,9 +232,14 @@ func (e *streamPipeEndpoint) TerminatePipe(parent context.Context, pipeID string
 		return fmt.Errorf("%w: invalid Pipe terminal", localbinding.ErrEndpointUnavailable)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), e.terminalSendTimeout)
+	if err := e.beginOutcome(ctx); err != nil {
+		cancel()
+		return err
+	}
 	err := e.outbound.send(ctx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipeTerminated{
 		PipeTerminated: &relayv1.PipeTerminated{PipeId: pipeID},
 	}})
+	e.endOutcome()
 	cancel()
 	if err != nil {
 		e.outbound.fail(err)

@@ -6,7 +6,6 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
-	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	relayv1 "github.com/cagojeiger/relaygate/internal/gen/relay/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -38,7 +37,7 @@ type streamCoordinator struct {
 	cancelSend   context.CancelFunc
 	session      clientsession.Session
 	opener       Opener
-	pipeEndpoint localbinding.CallerEndpoint
+	pipeEndpoint *streamPipeEndpoint
 	outbound     *outboundActor
 	openSlots    chan struct{}
 	pipeWork     chan streamPipeWork
@@ -50,7 +49,7 @@ type streamCoordinator struct {
 	pipeDone chan struct{}
 }
 
-func newStreamCoordinator(ctx context.Context, session clientsession.Session, opener Opener, pipeEndpoint localbinding.CallerEndpoint, outbound *outboundActor, openSlots chan struct{}) *streamCoordinator {
+func newStreamCoordinator(ctx context.Context, session clientsession.Session, opener Opener, pipeEndpoint *streamPipeEndpoint, outbound *outboundActor, openSlots chan struct{}) *streamCoordinator {
 	sendCtx, cancelSend := context.WithCancel(ctx)
 	coordinator := &streamCoordinator{
 		ctx:          ctx,
@@ -106,20 +105,29 @@ func (c *streamCoordinator) runPipeWork() {
 		case <-c.sendCtx.Done():
 			return
 		case work := <-c.pipeWork:
-			var response *relayv1.ConnectResponse
 			switch {
 			case work.payload != nil:
-				response = work.service.relayPayload(c.sendCtx, c.session.Ref, work.payload)
+				if !c.runPayloadWork(work) {
+					return
+				}
+				continue
 			case work.closePipe != nil:
-				response = c.closePipe(work.closePipe)
-			}
-			if response != nil {
+				response := c.closePipe(work.closePipe)
 				if err := c.outbound.send(c.sendCtx, response); err != nil {
 					return
 				}
 			}
 		}
 	}
+}
+
+func (c *streamCoordinator) runPayloadWork(work streamPipeWork) bool {
+	if err := c.pipeEndpoint.beginOutcome(c.sendCtx); err != nil {
+		return false
+	}
+	defer c.pipeEndpoint.endOutcome()
+	response := work.service.relayPayload(c.sendCtx, c.session.Ref, work.payload)
+	return response == nil || c.outbound.send(c.sendCtx, response) == nil
 }
 
 func (c *streamCoordinator) startOpen(ctx context.Context, service *Service, request *relayv1.Open) *relayv1.ConnectResponse {

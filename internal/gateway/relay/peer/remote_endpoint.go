@@ -36,6 +36,7 @@ type remoteEndpoint struct {
 	closeOnce    sync.Once
 	closeDone    chan struct{}
 	closeErr     error
+	outcomeGate  chan struct{}
 
 	receipts peerReceiptState
 }
@@ -65,6 +66,7 @@ func newRemoteEndpoint(
 		done:           make(chan struct{}),
 		activateDone:   make(chan struct{}),
 		closeDone:      make(chan struct{}),
+		outcomeGate:    make(chan struct{}, 1),
 	}
 }
 
@@ -174,13 +176,17 @@ func (e *remoteEndpoint) Close(parent context.Context) error {
 		default:
 		}
 		ctx, cancel := context.WithTimeout(parent, e.timeout)
-		err := e.sender.send(ctx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_ClosePipe{
-			ClosePipe: &gatewayv1.ClosePipe{PipeId: e.pipeID},
-		}})
-		cancel()
+		err := e.beginOutcome(ctx)
 		if err == nil {
-			err = e.stream.CloseSend()
+			err = e.sender.send(ctx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_ClosePipe{
+				ClosePipe: &gatewayv1.ClosePipe{PipeId: e.pipeID},
+			}})
+			if err == nil {
+				err = e.stream.CloseSend()
+			}
+			e.endOutcome()
 		}
+		cancel()
 		if err != nil {
 			e.closeErr = err
 			e.cancel(err)
@@ -267,6 +273,9 @@ func (e *remoteEndpoint) deliver(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case payload := <-e.inbound:
+			if err := e.beginOutcome(ctx); err != nil {
+				return
+			}
 			deliveryCtx, cancel := context.WithTimeout(ctx, e.timeout)
 			err := e.callerEndpoint.DeliverPayload(deliveryCtx, payload)
 			cancel()
@@ -278,6 +287,7 @@ func (e *remoteEndpoint) deliver(ctx context.Context) {
 					},
 				}})
 				cancelReject()
+				e.endOutcome()
 				e.cancel(err)
 				return
 			}
@@ -286,12 +296,28 @@ func (e *remoteEndpoint) deliver(ctx context.Context) {
 				PipePayloadReceived: &gatewayv1.PipePayloadReceived{PipeId: e.pipeID, PayloadId: payload.PayloadID},
 			}})
 			cancelReceipt()
+			e.endOutcome()
 			if err != nil {
 				e.cancel(err)
 				return
 			}
 		}
 	}
+}
+
+func (e *remoteEndpoint) beginOutcome(ctx context.Context) error {
+	select {
+	case e.outcomeGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-e.done:
+		return ErrClosed
+	}
+}
+
+func (e *remoteEndpoint) endOutcome() {
+	<-e.outcomeGate
 }
 
 func peerPayloadFailure(err error) gatewayv1.PipePayloadFailure {

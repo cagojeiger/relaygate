@@ -201,6 +201,63 @@ func TestGatewayRelayRoundTripActivationPayloadAndClose(t *testing.T) {
 	}
 }
 
+func TestGatewayRelayCloseWaitsForDeliveredPayloadReceipt(t *testing.T) {
+	ownerEndpoint := make(chan localbinding.CallerEndpoint, 1)
+	ownerClosed := make(chan struct{}, 1)
+	owner := &testOwner{
+		open: func(_ context.Context, open routing.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
+			ownerEndpoint <- endpoint
+			return opening.Result{AttemptID: open.AttemptID, PipeID: "pipe-receipt-before-close", Binding: open.Binding}, nil
+		},
+		closePipe: func(clientsession.Ref, string) bool {
+			ownerClosed <- struct{}{}
+			return true
+		},
+	}
+	_, server := startGatewayRelay(t, owner, 1)
+	deliveryStarted := make(chan struct{})
+	releaseDelivery := make(chan struct{})
+	callerEndpoint := &testCallerEndpoint{deliver: func(context.Context, localbinding.PipePayload) error {
+		close(deliveryStarted)
+		<-releaseDelivery
+		return nil
+	}}
+	client := newTestClient(t, 1)
+	result, err := client.Open(context.Background(), validForwardedOpen(t, server.Address(), "attempt-receipt-before-close"), callerEndpoint)
+	if err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+	if err := result.Endpoint.Activate(context.Background()); err != nil {
+		t.Fatalf("Activate(): %v", err)
+	}
+
+	deliveryResult := make(chan error, 1)
+	go func() {
+		deliveryResult <- receive(t, ownerEndpoint).DeliverPayload(context.Background(), localbinding.PipePayload{
+			PipeID: result.PipeID, PayloadID: "payload-before-close", Data: []byte("delivered"),
+		})
+	}()
+	receive(t, deliveryStarted)
+	closeResult := make(chan error, 1)
+	go func() {
+		closeResult <- result.Endpoint.Close(context.Background())
+	}()
+	select {
+	case <-ownerClosed:
+		t.Fatal("owner observed Close before the delivered payload receipt")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseDelivery)
+	if err := receive(t, deliveryResult); err != nil {
+		t.Fatalf("owner DeliverPayload(): %v", err)
+	}
+	receive(t, ownerClosed)
+	if err := receive(t, closeResult); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+}
+
 func TestPeerReceiptStateRejectsConflictingOutcomeAndPayload(t *testing.T) {
 	var state peerReceiptState
 	payload := localbinding.PipePayload{PipeID: "pipe-1", PayloadID: "payload-1", Data: []byte("same")}
