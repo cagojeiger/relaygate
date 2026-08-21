@@ -2,7 +2,7 @@
 
 All notable RelayGate changes are documented here.
 
-## 0.1.0 - 2026-08-18
+## 0.1.0 - 2026-08-19
 
 - Split the Go runtime into durable `controller` and stateless `gateway` roles.
 - Persist only current Gateway sessions and exact routes in the embedded Raft FSM.
