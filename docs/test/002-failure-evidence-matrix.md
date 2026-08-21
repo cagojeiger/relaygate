@@ -29,8 +29,8 @@ This file records what current automation has executed and what remains external
 | Directory `C` | exact, absent, conflict, churn, max snapshot, cascade delete | `executed` | FSM/authority directory tests |
 | Open | all six gates, reject, cancel, deadline, ACK loss, Unknown | `executed` | 64-vector and opening manager race tests |
 | Remote hop | exact provenance, replay, expiry, and representative stream loss | `representative` | admission decoder, peer relay, forwarded-attempt tests; no arbitrary packet-loss/partition campaign |
-| Payload | both directions, bound, pressure, close, and in-process participant termination | `representative` | opening/public/peer/SDK payload tests; no OS process-kill payload crash cut |
-| Public error scope | Bind/Unbind stable failures stay operation-local; payload rejection ends only the exact Pipe; every unknown/unspecified enum and malformed/foreign correlation fails closed | `executed` | public Relay plus Go/Rust SDK strict-enum, error-scope, and terminal-order tests |
+| Payload receipt | both directions, exact queue-admission receipt, `NotSent`/`Rejected`/`Unknown`, duplicate fingerprint, pressure, and participant termination | `representative` | opening/public/peer and Go/Rust SDK receipt tests; no OS process-kill payload crash cut |
+| Public error scope | Bind/Unbind stable failures stay operation-local; payload receipt/rejection is exact and rejection ends only the owned Pipe; every unknown/unspecified enum and malformed/foreign/conflicting correlation fails closed | `executed` | public Relay plus Go/Rust SDK strict-enum, error-scope, receipt-replay, and terminal-order tests |
 | SDK retry state | Protocol failure in connect, rebind, or ready enters terminal Failed; only transient transport/availability enters Backoff | `executed` | Go wrapped rebind-protocol regression and Go/Rust managed classification tests |
 | Auth config | current, invalid candidate, removal, process skew | `executed` | auth/runtime/admin tests |
 | Runtime role | controller owns Raft/control; gateway owns relay and no Raft/store/control server | `representative` | runtime composition and config/admin tests; Compose verifies the Gateway-side closed controller ports |
@@ -53,6 +53,8 @@ This file records what current automation has executed and what remains external
 | Listener accept x ACK loss x owner shutdown | `TestX04ListenerAcceptThenConfirmationLossAndOwnerShutdownIsUnknown` | Caller `Unknown`, active 0 |
 | Replay x expiry x response loss | `TestForwardedOwnerSingleUseExpiryAndFailedGuard` | One O, no result replay |
 | Backpressure x cancel x crash | `TestX07BackpressureCancelAndParticipantCrashReleaseAllPayloadSlots` | Bounded terminal and slot drain |
+| Payload handoff x receipt loss x terminal | Go blocked-writer/receipt tests and Rust cancelled receipt-wait test | Pre-handoff is `NotSent`; post-handoff without an exact receipt is `Unknown`; late exact receipt is bounded NoOp |
+| Duplicate payload x queue pressure | public/peer receipt-state tests and Go/Rust SDK fingerprint tests | Exact bytes enqueue once and re-ACK; conflicting bytes fail closed; full queue rejects without silent drop |
 
 ## Runtime Evidence
 

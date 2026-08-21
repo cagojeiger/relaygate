@@ -142,14 +142,18 @@ func TestGatewayRelayTerminalCancelsBlockedInboundDeliveryAndJoins(t *testing.T)
 		t.Fatalf("Activate(): %v", err)
 	}
 	endpoint := receive(t, ownerEndpoint)
-	if err := endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, Data: []byte("blocked")}); err != nil {
-		t.Fatalf("owner DeliverPayload(): %v", err)
-	}
+	deliveryResult := make(chan error, 1)
+	go func() {
+		deliveryResult <- endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, PayloadID: "payload-blocked", Data: []byte("blocked")})
+	}()
 	receive(t, deliveryStarted)
 	if err := endpoint.TerminatePipe(context.Background(), result.PipeID); err != nil {
 		t.Fatalf("TerminatePipe(): %v", err)
 	}
 	receive(t, deliveryCanceled)
+	if err := receive(t, deliveryResult); err == nil {
+		t.Fatal("owner DeliverPayload succeeded without a receipt")
+	}
 	select {
 	case <-result.Endpoint.Done():
 	case <-time.After(testTimeout):
@@ -166,7 +170,7 @@ func TestGatewayRelayOwnerTerminalCancelsBlockedOwnerPayload(t *testing.T) {
 			ownerEndpoint <- endpoint
 			return opening.Result{AttemptID: open.AttemptID, PipeID: "pipe-owner-blocked", Binding: open.Binding}, nil
 		},
-		relayPayload: func(ctx context.Context, _ clientsession.Ref, _ string, _ []byte) error {
+		relayPayload: func(ctx context.Context, _ clientsession.Ref, _ string, _ string, _ []byte) error {
 			close(relayStarted)
 			<-ctx.Done()
 			close(relayCanceled)
@@ -183,14 +187,18 @@ func TestGatewayRelayOwnerTerminalCancelsBlockedOwnerPayload(t *testing.T) {
 		t.Fatalf("Activate(): %v", err)
 	}
 	endpoint := receive(t, ownerEndpoint)
-	if err := result.Endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, Data: []byte("blocked")}); err != nil {
-		t.Fatalf("DeliverPayload(): %v", err)
-	}
+	deliveryResult := make(chan error, 1)
+	go func() {
+		deliveryResult <- result.Endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, PayloadID: "payload-blocked", Data: []byte("blocked")})
+	}()
 	receive(t, relayStarted)
 	if err := endpoint.TerminatePipe(context.Background(), result.PipeID); err != nil {
 		t.Fatalf("TerminatePipe(): %v", err)
 	}
 	receive(t, relayCanceled)
+	if err := receive(t, deliveryResult); err == nil {
+		t.Fatal("DeliverPayload succeeded without a receipt")
+	}
 	select {
 	case <-result.Endpoint.Done():
 	case <-time.After(testTimeout):

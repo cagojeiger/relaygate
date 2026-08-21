@@ -146,15 +146,35 @@ func (s *Service) Forward(stream grpc.BidiStreamingServer[gatewayv1.ForwardReque
 				activated = true
 			case request.GetPipePayload() != nil:
 				payload := request.GetPipePayload()
-				if !activated || payload.GetPipeId() != result.PipeID || len(payload.GetPayload()) == 0 || len(payload.GetPayload()) > localbinding.MaxPayloadBytes {
+				if !activated || payload.GetPipeId() != result.PipeID || payload.GetPayloadId() == "" || len(payload.GetPayloadId()) > routing.MaxIdentityBytes || len(payload.GetPayload()) == 0 || len(payload.GetPayload()) > localbinding.MaxPayloadBytes {
 					return status.Error(codes.InvalidArgument, "invalid Gateway Pipe payload")
 				}
 				deliveryCtx, cancelDelivery := context.WithTimeout(pipeCtx, s.openTimeout)
-				err := s.owner.RelayPayload(deliveryCtx, caller, result.PipeID, append([]byte(nil), payload.GetPayload()...))
+				err := s.owner.RelayPayload(deliveryCtx, caller, result.PipeID, payload.GetPayloadId(), append([]byte(nil), payload.GetPayload()...))
 				cancelDelivery()
 				if err != nil {
+					_ = s.sendResponse(stream.Context(), outbound, &gatewayv1.ForwardResponse{Message: &gatewayv1.ForwardResponse_PipePayloadRejected{
+						PipePayloadRejected: &gatewayv1.PipePayloadRejected{
+							PipeId: result.PipeID, PayloadId: payload.GetPayloadId(), Failure: peerPayloadFailure(err),
+						},
+					}})
 					_ = callerEndpoint.TerminatePipe(stream.Context(), result.PipeID)
 					return nil
+				}
+				if err := s.sendResponse(stream.Context(), outbound, &gatewayv1.ForwardResponse{Message: &gatewayv1.ForwardResponse_PipePayloadReceived{
+					PipePayloadReceived: &gatewayv1.PipePayloadReceived{PipeId: result.PipeID, PayloadId: payload.GetPayloadId()},
+				}}); err != nil {
+					return err
+				}
+			case request.GetPipePayloadReceived() != nil:
+				receipt := request.GetPipePayloadReceived()
+				if !activated || receipt.GetPipeId() != result.PipeID || callerEndpoint.acknowledgePayload(receipt.GetPayloadId()) != nil {
+					return status.Error(codes.FailedPrecondition, "invalid Gateway payload receipt")
+				}
+			case request.GetPipePayloadRejected() != nil:
+				rejection := request.GetPipePayloadRejected()
+				if !activated || rejection.GetPipeId() != result.PipeID || callerEndpoint.rejectPayload(rejection.GetPayloadId(), rejection.GetFailure()) != nil {
+					return status.Error(codes.FailedPrecondition, "invalid Gateway payload rejection")
 				}
 			case request.GetClosePipe() != nil:
 				closeRequest := request.GetClosePipe()
@@ -332,6 +352,7 @@ type serverCallerEndpoint struct {
 	accepted     chan struct{}
 	acceptedOnce sync.Once
 	terminalOnce sync.Once
+	receipts     peerReceiptState
 }
 
 func newServerCallerEndpoint(outbound *sendActor[*gatewayv1.ForwardResponse], cancel context.CancelCauseFunc, timeout time.Duration) *serverCallerEndpoint {
@@ -356,7 +377,7 @@ func (e *serverCallerEndpoint) DeliverPayload(parent context.Context, payload lo
 	e.pipeMu.Lock()
 	pipeID := e.pipeID
 	e.pipeMu.Unlock()
-	if parent == nil || pipeID == "" || payload.PipeID != pipeID || len(payload.Data) == 0 || len(payload.Data) > localbinding.MaxPayloadBytes {
+	if parent == nil || pipeID == "" || payload.PipeID != pipeID || payload.PayloadID == "" || len(payload.PayloadID) > routing.MaxIdentityBytes || len(payload.Data) == 0 || len(payload.Data) > localbinding.MaxPayloadBytes {
 		return fmt.Errorf("%w: invalid remote caller payload", localbinding.ErrEndpointUnavailable)
 	}
 	ctx, cancel := context.WithTimeout(parent, e.timeout)
@@ -367,17 +388,53 @@ func (e *serverCallerEndpoint) DeliverPayload(parent context.Context, payload lo
 		e.cancel(ctx.Err())
 		return localbinding.ErrEndpointUnavailable
 	}
-	err := e.outbound.send(ctx, &gatewayv1.ForwardResponse{Message: &gatewayv1.ForwardResponse_PipePayload{
-		PipePayload: &gatewayv1.PipePayload{PipeId: pipeID, Payload: append([]byte(nil), payload.Data...)},
+	result, duplicate, err := e.receipts.begin(payload)
+	if duplicate || err != nil {
+		return err
+	}
+	err = e.outbound.send(ctx, &gatewayv1.ForwardResponse{Message: &gatewayv1.ForwardResponse_PipePayload{
+		PipePayload: &gatewayv1.PipePayload{PipeId: pipeID, PayloadId: payload.PayloadID, Payload: append([]byte(nil), payload.Data...)},
 	}})
 	if err != nil {
+		select {
+		case outcome := <-result:
+			return outcome
+		default:
+		}
+		e.receipts.retireUnknown(payload.PayloadID, result)
 		e.cancel(err)
 		if isSendContextError(err) {
 			return localbinding.ErrPayloadBackpressure
 		}
 		return localbinding.ErrEndpointUnavailable
 	}
-	return nil
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		select {
+		case outcome := <-result:
+			return outcome
+		default:
+		}
+		e.receipts.retireUnknown(payload.PayloadID, result)
+		e.cancel(ctx.Err())
+		return localbinding.ErrEndpointUnavailable
+	}
+}
+
+func (e *serverCallerEndpoint) acknowledgePayload(payloadID string) error {
+	if payloadID == "" || len(payloadID) > routing.MaxIdentityBytes {
+		return localbinding.ErrEndpointUnavailable
+	}
+	return e.receipts.acknowledge(payloadID)
+}
+
+func (e *serverCallerEndpoint) rejectPayload(payloadID string, failure gatewayv1.PipePayloadFailure) error {
+	if payloadID == "" || len(payloadID) > routing.MaxIdentityBytes {
+		return localbinding.ErrEndpointUnavailable
+	}
+	return e.receipts.reject(payloadID, failure)
 }
 
 func (e *serverCallerEndpoint) TerminatePipe(parent context.Context, pipeID string) error {

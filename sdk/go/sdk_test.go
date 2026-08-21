@@ -229,7 +229,7 @@ func TestListenerAcceptBarrierPayloadAndCloseOrdering(t *testing.T) {
 			return status.Error(codes.FailedPrecondition, "ListenerConfirmed required")
 		}
 		close(confirmed)
-		if err := stream.Send(pipePayload("pipe-1", []byte("before-ack"))); err != nil {
+		if err := stream.Send(pipePayload("pipe-1", "payload-before-ack", []byte("before-ack"))); err != nil {
 			return err
 		}
 		<-allowAcknowledgement
@@ -239,11 +239,25 @@ func TestListenerAcceptBarrierPayloadAndCloseOrdering(t *testing.T) {
 			return err
 		}
 		request, err = recvRequest(stream)
+		if err != nil || request.GetPipePayloadReceived().GetPayloadId() != "payload-before-ack" {
+			return status.Error(codes.FailedPrecondition, "pre-ack payload receipt required")
+		}
+		request, err = recvRequest(stream)
 		if err != nil || request.GetPipePayload() == nil {
 			return status.Error(codes.FailedPrecondition, "PipePayload required")
 		}
-		if err := stream.Send(pipePayload("pipe-1", request.GetPipePayload().GetPayload())); err != nil {
+		outbound := request.GetPipePayload()
+		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadReceived{
+			PipePayloadReceived: &relayv1.PipePayloadReceived{PipeId: "pipe-1", PayloadId: outbound.GetPayloadId()},
+		}}); err != nil {
 			return err
+		}
+		if err := stream.Send(pipePayload("pipe-1", "payload-echo", outbound.GetPayload())); err != nil {
+			return err
+		}
+		request, err = recvRequest(stream)
+		if err != nil || request.GetPipePayloadReceived().GetPayloadId() != "payload-echo" {
+			return status.Error(codes.FailedPrecondition, "echo payload receipt required")
 		}
 		request, err = recvRequest(stream)
 		if err != nil || request.GetClosePipe().GetPipeId() != "pipe-1" {
@@ -957,13 +971,30 @@ func TestPayloadQueuePressureClosesExactPipe(t *testing.T) {
 			return err
 		}
 		for index := 0; index <= pipePayloadQueueCapacity; index++ {
-			if err := stream.Send(pipePayload("pipe-pressure", []byte{byte(index + 1)})); err != nil {
+			if err := stream.Send(pipePayload("pipe-pressure", fmt.Sprintf("payload-pressure-%d", index), []byte{byte(index + 1)})); err != nil {
 				return err
 			}
 		}
-		request, err = recvRequest(stream)
-		if err != nil || request.GetClosePipe().GetPipeId() != "pipe-pressure" {
-			return status.Error(codes.FailedPrecondition, "exact ClosePipe required after pressure")
+		var rejected, closed bool
+		for index := 0; index < pipePayloadQueueCapacity+2; index++ {
+			request, err = recvRequest(stream)
+			if err != nil {
+				return err
+			}
+			if receipt := request.GetPipePayloadReceived(); receipt != nil {
+				continue
+			}
+			if rejection := request.GetPipePayloadRejected(); rejection != nil {
+				rejected = rejection.GetPayloadId() == fmt.Sprintf("payload-pressure-%d", pipePayloadQueueCapacity)
+				continue
+			}
+			if request.GetClosePipe().GetPipeId() == "pipe-pressure" {
+				closed = true
+				break
+			}
+		}
+		if !rejected || !closed {
+			return status.Error(codes.FailedPrecondition, "exact rejection and ClosePipe required after pressure")
 		}
 		close(closeObserved)
 		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipeCloseAcknowledged{PipeCloseAcknowledged: &relayv1.PipeCloseAcknowledged{PipeId: "pipe-pressure", Owned: true}}}); err != nil {
@@ -1003,6 +1034,7 @@ func TestPayloadRejectionTerminatesOnlyTheExactPipe(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			payloadSeen := make(chan struct{})
 			address := startScriptedRelay(t, func(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
 				if _, err := authenticateScript(stream); err != nil {
 					return err
@@ -1018,8 +1050,14 @@ func TestPayloadRejectionTerminatesOnlyTheExactPipe(t *testing.T) {
 				if err := stream.Send(pipeOpened(open, "attempt-rejected", "pipe-rejected")); err != nil {
 					return err
 				}
+				request, err = recvRequest(stream)
+				if err != nil || request.GetPipePayload() == nil {
+					return status.Error(codes.FailedPrecondition, "PipePayload required")
+				}
+				payload := request.GetPipePayload()
+				close(payloadSeen)
 				if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadRejected{
-					PipePayloadRejected: &relayv1.PipePayloadRejected{PipeId: "pipe-rejected", Failure: test.wire},
+					PipePayloadRejected: &relayv1.PipePayloadRejected{PipeId: "pipe-rejected", PayloadId: payload.GetPayloadId(), Failure: test.wire},
 				}}); err != nil {
 					return err
 				}
@@ -1030,6 +1068,13 @@ func TestPayloadRejectionTerminatesOnlyTheExactPipe(t *testing.T) {
 			pipe, err := client.Open(context.Background(), "/rejected", "worker")
 			if err != nil {
 				t.Fatalf("Open: %v", err)
+			}
+			sendResult := make(chan error, 1)
+			go func() { sendResult <- pipe.Send(context.Background(), []byte("rejected")) }()
+			<-payloadSeen
+			var deliveryErr *DeliveryError
+			if err := <-sendResult; !errors.As(err, &deliveryErr) || deliveryErr.Outcome != DeliveryRejected {
+				t.Fatalf("Send = %v, want DeliveryRejected", err)
 			}
 			<-pipe.Done()
 			var pipeErr *PipeError
@@ -1046,6 +1091,7 @@ func TestPayloadRejectionTerminatesOnlyTheExactPipe(t *testing.T) {
 }
 
 func TestPayloadRejectionAfterExactTerminalIsAnIdempotentNoop(t *testing.T) {
+	payloadSeen := make(chan struct{})
 	address := startScriptedRelay(t, func(stream grpc.BidiStreamingServer[relayv1.ConnectRequest, relayv1.ConnectResponse]) error {
 		if _, err := authenticateScript(stream); err != nil {
 			return err
@@ -1061,6 +1107,12 @@ func TestPayloadRejectionAfterExactTerminalIsAnIdempotentNoop(t *testing.T) {
 		if err := stream.Send(pipeOpened(open, "attempt-terminal-first", "pipe-terminal-first")); err != nil {
 			return err
 		}
+		request, err = recvRequest(stream)
+		if err != nil || request.GetPipePayload() == nil {
+			return status.Error(codes.FailedPrecondition, "PipePayload required")
+		}
+		payloadID := request.GetPipePayload().GetPayloadId()
+		close(payloadSeen)
 		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipeTerminated{
 			PipeTerminated: &relayv1.PipeTerminated{PipeId: "pipe-terminal-first"},
 		}}); err != nil {
@@ -1068,7 +1120,7 @@ func TestPayloadRejectionAfterExactTerminalIsAnIdempotentNoop(t *testing.T) {
 		}
 		if err := stream.Send(&relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadRejected{
 			PipePayloadRejected: &relayv1.PipePayloadRejected{
-				PipeId: "pipe-terminal-first", Failure: relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST,
+				PipeId: "pipe-terminal-first", PayloadId: payloadID, Failure: relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST,
 			},
 		}}); err != nil {
 			return err
@@ -1091,6 +1143,12 @@ func TestPayloadRejectionAfterExactTerminalIsAnIdempotentNoop(t *testing.T) {
 	pipe, err := client.Open(context.Background(), "/terminal-first", "worker")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+	}
+	sendResult := make(chan error, 1)
+	go func() { sendResult <- pipe.Send(context.Background(), []byte("terminal-race")) }()
+	<-payloadSeen
+	if err := <-sendResult; !errors.Is(err, ErrDeliveryUnknown) {
+		t.Fatalf("Send = %v, want ErrDeliveryUnknown", err)
 	}
 	<-pipe.Done()
 	if _, err := client.Bind(context.Background(), "/after-terminal", "worker"); err != nil {
@@ -1315,7 +1373,7 @@ func TestBlockedStreamSendCancellationFailsSessionBeforeReturn(t *testing.T) {
 	}
 }
 
-func TestPipeCloseDeadlineDoesNotWaitForBlockedPayloadSend(t *testing.T) {
+func TestPipeCloseDeadlineDoesNotCrossInFlightDelivery(t *testing.T) {
 	clientCtx, stop := context.WithCancelCause(context.Background())
 	stream := &blockingRelayClientStream{
 		ctx: clientCtx, started: make(chan struct{}), requests: make(chan *relayv1.ConnectRequest, 1),
@@ -1366,22 +1424,18 @@ func TestPipeCloseDeadlineDoesNotWaitForBlockedPayloadSend(t *testing.T) {
 
 	select {
 	case queued := <-client.sendQueue:
-		if queued.request.GetClosePipe().GetPipeId() != pipe.id {
-			t.Fatalf("queued request after payload = %T, want ClosePipe", queued.request.GetMessage())
-		}
-	default:
-		t.Fatal("ClosePipe was not queued behind the admitted payload")
-	}
-	if err := pipe.Send(context.Background(), []byte("after-close")); !errors.Is(err, ErrPipeClosed) {
-		t.Fatalf("Send after Close admission = %v, want ErrPipeClosed", err)
-	}
-	select {
-	case queued := <-client.sendQueue:
-		t.Fatalf("request reached outbound queue after Close admission: %T", queued.request.GetMessage())
+		t.Fatalf("Close crossed in-flight delivery: %T", queued.request.GetMessage())
 	default:
 	}
-	if err := <-sendResult; err == nil {
-		t.Fatal("blocked payload Send succeeded after the Client session closed")
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelSecond()
+	if err := pipe.Send(secondCtx, []byte("second-payload")); !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrDeliveryNotSent) {
+		t.Fatalf("second Send = %v, want NotSent deadline before admission", err)
+	}
+	client.stop(errors.New("test: end blocked delivery"))
+	<-client.Done()
+	if err := <-sendResult; !errors.Is(err, ErrDeliveryUnknown) {
+		t.Fatalf("blocked payload Send = %v, want ErrDeliveryUnknown", err)
 	}
 }
 
@@ -1390,7 +1444,7 @@ func TestForeignMessageFailsClosedAndBoundsAreFixed(t *testing.T) {
 		if _, err := authenticateScript(stream); err != nil {
 			return err
 		}
-		return stream.Send(pipePayload("foreign-pipe", []byte("payload")))
+		return stream.Send(pipePayload("foreign-pipe", "foreign-payload", []byte("payload")))
 	})
 	client := connectTestClient(t, address)
 	<-client.Done()
@@ -1472,8 +1526,8 @@ func listenerBound(id, endpoint, target string) *relayv1.ConnectResponse {
 	}}}}
 }
 
-func pipePayload(id string, payload []byte) *relayv1.ConnectResponse {
-	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayload{PipePayload: &relayv1.PipePayload{PipeId: id, Payload: payload}}}
+func pipePayload(pipeID, payloadID string, payload []byte) *relayv1.ConnectResponse {
+	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayload{PipePayload: &relayv1.PipePayload{PipeId: pipeID, PayloadId: payloadID, Payload: payload}}}
 }
 
 func pipeOpened(open *relayv1.Open, attemptID, pipeID string) *relayv1.ConnectResponse {

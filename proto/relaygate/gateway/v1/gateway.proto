@@ -19,6 +19,8 @@ message ForwardRequest {
     ActivatePipe activate_pipe = 2;
     PipePayload pipe_payload = 3;
     ClosePipe close_pipe = 4;
+    PipePayloadReceived pipe_payload_received = 5;
+    PipePayloadRejected pipe_payload_rejected = 6;
   }
 }
 
@@ -29,6 +31,8 @@ message ForwardResponse {
     ForwardUnknown unknown = 3;
     PipePayload pipe_payload = 4;
     PipeTerminal pipe_terminal = 5;
+    PipePayloadReceived pipe_payload_received = 6;
+    PipePayloadRejected pipe_payload_rejected = 7;
   }
 }
 
@@ -43,6 +47,26 @@ message ActivatePipe {
 message PipePayload {
   string pipe_id = 1;
   bytes payload = 2;
+  string payload_id = 3;
+}
+
+message PipePayloadReceived {
+  string pipe_id = 1;
+  string payload_id = 2;
+}
+
+enum PipePayloadFailure {
+  PIPE_PAYLOAD_FAILURE_UNSPECIFIED = 0;
+  PIPE_PAYLOAD_FAILURE_INVALID_REQUEST = 1;
+  PIPE_PAYLOAD_FAILURE_NOT_OWNED = 2;
+  PIPE_PAYLOAD_FAILURE_BACKPRESSURE = 3;
+  PIPE_PAYLOAD_FAILURE_UNAVAILABLE = 4;
+}
+
+message PipePayloadRejected {
+  string pipe_id = 1;
+  string payload_id = 2;
+  PipePayloadFailure failure = 3;
 }
 
 message ClosePipe {

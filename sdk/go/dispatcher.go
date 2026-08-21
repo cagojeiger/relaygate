@@ -51,6 +51,8 @@ func (c *Client) dispatch(response *relayv1.ConnectResponse) error {
 		return c.dispatchOpenCancelAcknowledged(response.GetOpenCancelAcknowledged())
 	case response.GetPipePayload() != nil:
 		return c.dispatchPipePayload(response.GetPipePayload())
+	case response.GetPipePayloadReceived() != nil:
+		return c.dispatchPipePayloadReceived(response.GetPipePayloadReceived())
 	case response.GetPipeTerminated() != nil:
 		return c.dispatchPipeTerminated(response.GetPipeTerminated())
 	case response.GetPipePayloadRejected() != nil:
@@ -517,7 +519,7 @@ func (c *Client) dispatchOpenCancelAcknowledged(message *relayv1.OpenCancelAckno
 }
 
 func (c *Client) dispatchPipePayload(message *relayv1.PipePayload) error {
-	if !validIdentity(message.GetPipeId()) || len(message.GetPayload()) == 0 || len(message.GetPayload()) > maxPayloadBytes {
+	if !validIdentity(message.GetPipeId()) || !validIdentity(message.GetPayloadId()) || len(message.GetPayload()) == 0 || len(message.GetPayload()) > maxPayloadBytes {
 		return protocolError("invalid PipePayload")
 	}
 	c.mu.Lock()
@@ -526,10 +528,52 @@ func (c *Client) dispatchPipePayload(message *relayv1.PipePayload) error {
 	if pipe == nil {
 		return protocolError("foreign PipePayload")
 	}
-	if !pipe.deliver(append([]byte(nil), message.GetPayload()...)) {
+	accepted, duplicate, conflict := pipe.deliver(message.GetPayloadId(), append([]byte(nil), message.GetPayload()...))
+	if conflict {
+		return protocolError("conflicting duplicate PipePayload")
+	}
+	if accepted != nil || duplicate {
+		if err := c.send(c.ctx, &relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_PipePayloadReceived{
+			PipePayloadReceived: &relayv1.PipePayloadReceived{PipeId: pipe.id, PayloadId: message.GetPayloadId()},
+		}}); err != nil {
+			return err
+		}
+		if accepted != nil {
+			close(accepted.acknowledged)
+		}
+		return nil
+	}
+	if err := c.send(c.ctx, &relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_PipePayloadRejected{
+		PipePayloadRejected: &relayv1.PipePayloadRejected{
+			PipeId: pipe.id, PayloadId: message.GetPayloadId(), Failure: relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE,
+		},
+	}}); err != nil {
+		return err
+	}
+	{
 		c.removePipe(pipe)
 		pipe.terminate(&PipeError{Failure: PipePayloadBackpressure})
 		go pipe.closeAfterTerminal()
+	}
+	return nil
+}
+
+func (c *Client) dispatchPipePayloadReceived(message *relayv1.PipePayloadReceived) error {
+	if !validIdentity(message.GetPipeId()) || !validIdentity(message.GetPayloadId()) {
+		return protocolError("invalid PipePayloadReceived")
+	}
+	c.mu.Lock()
+	pipe := c.pipes[message.GetPipeId()]
+	if pipe == nil {
+		pipe = c.pipeTombstones[message.GetPipeId()]
+	}
+	c.mu.Unlock()
+	if pipe == nil {
+		return protocolError("foreign PipePayloadReceived")
+	}
+	matched, _ := pipe.finishDelivery(message.GetPayloadId(), DeliveryReceived, PipePayloadFailure(0))
+	if !matched {
+		return protocolError("conflicting PipePayloadReceived")
 	}
 	return nil
 }
@@ -563,7 +607,7 @@ func (c *Client) dispatchPipeTerminated(message *relayv1.PipeTerminated) error {
 }
 
 func (c *Client) dispatchPipePayloadRejected(message *relayv1.PipePayloadRejected) error {
-	if !validIdentity(message.GetPipeId()) {
+	if !validIdentity(message.GetPipeId()) || !validIdentity(message.GetPayloadId()) {
 		return protocolError("invalid PipePayloadRejected")
 	}
 	failure, ok := payloadFailureFromProto(message.GetFailure())
@@ -572,18 +616,29 @@ func (c *Client) dispatchPipePayloadRejected(message *relayv1.PipePayloadRejecte
 	}
 	c.mu.Lock()
 	pipe := c.pipes[message.GetPipeId()]
+	var retired *Pipe
 	if pipe != nil {
 		delete(c.pipes, pipe.id)
 		c.addPipeTombstoneLocked(pipe)
-	} else if c.matchesPipeTombstoneLocked(message.GetPipeId()) {
-		c.mu.Unlock()
-		return nil
+	} else {
+		retired = c.pipeTombstones[message.GetPipeId()]
 	}
 	c.mu.Unlock()
 	if pipe == nil {
+		if retired != nil {
+			matched, _ := retired.finishDelivery(message.GetPayloadId(), DeliveryRejected, failure)
+			if matched {
+				return nil
+			}
+			return protocolError("conflicting retired PipePayloadRejected")
+		}
 		return protocolError("foreign PipePayloadRejected")
 	}
-	pipe.terminate(&PipeError{Failure: failure})
+	matched, _ := pipe.finishDelivery(message.GetPayloadId(), DeliveryRejected, failure)
+	if !matched {
+		return protocolError("conflicting PipePayloadRejected")
+	}
+	pipe.terminate(&DeliveryError{PayloadID: message.GetPayloadId(), Outcome: DeliveryRejected, Cause: &PipeError{Failure: failure}})
 	return nil
 }
 

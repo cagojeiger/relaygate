@@ -22,6 +22,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type PipePayloadFailure int32
+
+const (
+	PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNSPECIFIED     PipePayloadFailure = 0
+	PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST PipePayloadFailure = 1
+	PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED       PipePayloadFailure = 2
+	PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE    PipePayloadFailure = 3
+	PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE     PipePayloadFailure = 4
+)
+
+// Enum value maps for PipePayloadFailure.
+var (
+	PipePayloadFailure_name = map[int32]string{
+		0: "PIPE_PAYLOAD_FAILURE_UNSPECIFIED",
+		1: "PIPE_PAYLOAD_FAILURE_INVALID_REQUEST",
+		2: "PIPE_PAYLOAD_FAILURE_NOT_OWNED",
+		3: "PIPE_PAYLOAD_FAILURE_BACKPRESSURE",
+		4: "PIPE_PAYLOAD_FAILURE_UNAVAILABLE",
+	}
+	PipePayloadFailure_value = map[string]int32{
+		"PIPE_PAYLOAD_FAILURE_UNSPECIFIED":     0,
+		"PIPE_PAYLOAD_FAILURE_INVALID_REQUEST": 1,
+		"PIPE_PAYLOAD_FAILURE_NOT_OWNED":       2,
+		"PIPE_PAYLOAD_FAILURE_BACKPRESSURE":    3,
+		"PIPE_PAYLOAD_FAILURE_UNAVAILABLE":     4,
+	}
+)
+
+func (x PipePayloadFailure) Enum() *PipePayloadFailure {
+	p := new(PipePayloadFailure)
+	*p = x
+	return p
+}
+
+func (x PipePayloadFailure) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PipePayloadFailure) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_relaygate_gateway_v1_gateway_proto_enumTypes[0].Descriptor()
+}
+
+func (PipePayloadFailure) Type() protoreflect.EnumType {
+	return &file_proto_relaygate_gateway_v1_gateway_proto_enumTypes[0]
+}
+
+func (x PipePayloadFailure) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PipePayloadFailure.Descriptor instead.
+func (PipePayloadFailure) EnumDescriptor() ([]byte, []int) {
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{0}
+}
+
 type ForwardFailure int32
 
 const (
@@ -76,11 +131,11 @@ func (x ForwardFailure) String() string {
 }
 
 func (ForwardFailure) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_relaygate_gateway_v1_gateway_proto_enumTypes[0].Descriptor()
+	return file_proto_relaygate_gateway_v1_gateway_proto_enumTypes[1].Descriptor()
 }
 
 func (ForwardFailure) Type() protoreflect.EnumType {
-	return &file_proto_relaygate_gateway_v1_gateway_proto_enumTypes[0]
+	return &file_proto_relaygate_gateway_v1_gateway_proto_enumTypes[1]
 }
 
 func (x ForwardFailure) Number() protoreflect.EnumNumber {
@@ -89,7 +144,7 @@ func (x ForwardFailure) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ForwardFailure.Descriptor instead.
 func (ForwardFailure) EnumDescriptor() ([]byte, []int) {
-	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{0}
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{1}
 }
 
 type ForwardRequest struct {
@@ -100,6 +155,8 @@ type ForwardRequest struct {
 	//	*ForwardRequest_ActivatePipe
 	//	*ForwardRequest_PipePayload
 	//	*ForwardRequest_ClosePipe
+	//	*ForwardRequest_PipePayloadReceived
+	//	*ForwardRequest_PipePayloadRejected
 	Message       isForwardRequest_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -178,6 +235,24 @@ func (x *ForwardRequest) GetClosePipe() *ClosePipe {
 	return nil
 }
 
+func (x *ForwardRequest) GetPipePayloadReceived() *PipePayloadReceived {
+	if x != nil {
+		if x, ok := x.Message.(*ForwardRequest_PipePayloadReceived); ok {
+			return x.PipePayloadReceived
+		}
+	}
+	return nil
+}
+
+func (x *ForwardRequest) GetPipePayloadRejected() *PipePayloadRejected {
+	if x != nil {
+		if x, ok := x.Message.(*ForwardRequest_PipePayloadRejected); ok {
+			return x.PipePayloadRejected
+		}
+	}
+	return nil
+}
+
 type isForwardRequest_Message interface {
 	isForwardRequest_Message()
 }
@@ -198,6 +273,14 @@ type ForwardRequest_ClosePipe struct {
 	ClosePipe *ClosePipe `protobuf:"bytes,4,opt,name=close_pipe,json=closePipe,proto3,oneof"`
 }
 
+type ForwardRequest_PipePayloadReceived struct {
+	PipePayloadReceived *PipePayloadReceived `protobuf:"bytes,5,opt,name=pipe_payload_received,json=pipePayloadReceived,proto3,oneof"`
+}
+
+type ForwardRequest_PipePayloadRejected struct {
+	PipePayloadRejected *PipePayloadRejected `protobuf:"bytes,6,opt,name=pipe_payload_rejected,json=pipePayloadRejected,proto3,oneof"`
+}
+
 func (*ForwardRequest_ForwardOpen) isForwardRequest_Message() {}
 
 func (*ForwardRequest_ActivatePipe) isForwardRequest_Message() {}
@@ -205,6 +288,10 @@ func (*ForwardRequest_ActivatePipe) isForwardRequest_Message() {}
 func (*ForwardRequest_PipePayload) isForwardRequest_Message() {}
 
 func (*ForwardRequest_ClosePipe) isForwardRequest_Message() {}
+
+func (*ForwardRequest_PipePayloadReceived) isForwardRequest_Message() {}
+
+func (*ForwardRequest_PipePayloadRejected) isForwardRequest_Message() {}
 
 type ForwardResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -215,6 +302,8 @@ type ForwardResponse struct {
 	//	*ForwardResponse_Unknown
 	//	*ForwardResponse_PipePayload
 	//	*ForwardResponse_PipeTerminal
+	//	*ForwardResponse_PipePayloadReceived
+	//	*ForwardResponse_PipePayloadRejected
 	Message       isForwardResponse_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -302,6 +391,24 @@ func (x *ForwardResponse) GetPipeTerminal() *PipeTerminal {
 	return nil
 }
 
+func (x *ForwardResponse) GetPipePayloadReceived() *PipePayloadReceived {
+	if x != nil {
+		if x, ok := x.Message.(*ForwardResponse_PipePayloadReceived); ok {
+			return x.PipePayloadReceived
+		}
+	}
+	return nil
+}
+
+func (x *ForwardResponse) GetPipePayloadRejected() *PipePayloadRejected {
+	if x != nil {
+		if x, ok := x.Message.(*ForwardResponse_PipePayloadRejected); ok {
+			return x.PipePayloadRejected
+		}
+	}
+	return nil
+}
+
 type isForwardResponse_Message interface {
 	isForwardResponse_Message()
 }
@@ -326,6 +433,14 @@ type ForwardResponse_PipeTerminal struct {
 	PipeTerminal *PipeTerminal `protobuf:"bytes,5,opt,name=pipe_terminal,json=pipeTerminal,proto3,oneof"`
 }
 
+type ForwardResponse_PipePayloadReceived struct {
+	PipePayloadReceived *PipePayloadReceived `protobuf:"bytes,6,opt,name=pipe_payload_received,json=pipePayloadReceived,proto3,oneof"`
+}
+
+type ForwardResponse_PipePayloadRejected struct {
+	PipePayloadRejected *PipePayloadRejected `protobuf:"bytes,7,opt,name=pipe_payload_rejected,json=pipePayloadRejected,proto3,oneof"`
+}
+
 func (*ForwardResponse_Accepted) isForwardResponse_Message() {}
 
 func (*ForwardResponse_Failed) isForwardResponse_Message() {}
@@ -335,6 +450,10 @@ func (*ForwardResponse_Unknown) isForwardResponse_Message() {}
 func (*ForwardResponse_PipePayload) isForwardResponse_Message() {}
 
 func (*ForwardResponse_PipeTerminal) isForwardResponse_Message() {}
+
+func (*ForwardResponse_PipePayloadReceived) isForwardResponse_Message() {}
+
+func (*ForwardResponse_PipePayloadRejected) isForwardResponse_Message() {}
 
 type ForwardOpen struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -428,6 +547,7 @@ type PipePayload struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PipeId        string                 `protobuf:"bytes,1,opt,name=pipe_id,json=pipeId,proto3" json:"pipe_id,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	PayloadId     string                 `protobuf:"bytes,3,opt,name=payload_id,json=payloadId,proto3" json:"payload_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -476,6 +596,125 @@ func (x *PipePayload) GetPayload() []byte {
 	return nil
 }
 
+func (x *PipePayload) GetPayloadId() string {
+	if x != nil {
+		return x.PayloadId
+	}
+	return ""
+}
+
+type PipePayloadReceived struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PipeId        string                 `protobuf:"bytes,1,opt,name=pipe_id,json=pipeId,proto3" json:"pipe_id,omitempty"`
+	PayloadId     string                 `protobuf:"bytes,2,opt,name=payload_id,json=payloadId,proto3" json:"payload_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PipePayloadReceived) Reset() {
+	*x = PipePayloadReceived{}
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PipePayloadReceived) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PipePayloadReceived) ProtoMessage() {}
+
+func (x *PipePayloadReceived) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PipePayloadReceived.ProtoReflect.Descriptor instead.
+func (*PipePayloadReceived) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *PipePayloadReceived) GetPipeId() string {
+	if x != nil {
+		return x.PipeId
+	}
+	return ""
+}
+
+func (x *PipePayloadReceived) GetPayloadId() string {
+	if x != nil {
+		return x.PayloadId
+	}
+	return ""
+}
+
+type PipePayloadRejected struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PipeId        string                 `protobuf:"bytes,1,opt,name=pipe_id,json=pipeId,proto3" json:"pipe_id,omitempty"`
+	PayloadId     string                 `protobuf:"bytes,2,opt,name=payload_id,json=payloadId,proto3" json:"payload_id,omitempty"`
+	Failure       PipePayloadFailure     `protobuf:"varint,3,opt,name=failure,proto3,enum=relaygate.gateway.v1.PipePayloadFailure" json:"failure,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PipePayloadRejected) Reset() {
+	*x = PipePayloadRejected{}
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PipePayloadRejected) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PipePayloadRejected) ProtoMessage() {}
+
+func (x *PipePayloadRejected) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PipePayloadRejected.ProtoReflect.Descriptor instead.
+func (*PipePayloadRejected) Descriptor() ([]byte, []int) {
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *PipePayloadRejected) GetPipeId() string {
+	if x != nil {
+		return x.PipeId
+	}
+	return ""
+}
+
+func (x *PipePayloadRejected) GetPayloadId() string {
+	if x != nil {
+		return x.PayloadId
+	}
+	return ""
+}
+
+func (x *PipePayloadRejected) GetFailure() PipePayloadFailure {
+	if x != nil {
+		return x.Failure
+	}
+	return PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNSPECIFIED
+}
+
 type ClosePipe struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PipeId        string                 `protobuf:"bytes,1,opt,name=pipe_id,json=pipeId,proto3" json:"pipe_id,omitempty"`
@@ -485,7 +724,7 @@ type ClosePipe struct {
 
 func (x *ClosePipe) Reset() {
 	*x = ClosePipe{}
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[5]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -497,7 +736,7 @@ func (x *ClosePipe) String() string {
 func (*ClosePipe) ProtoMessage() {}
 
 func (x *ClosePipe) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[5]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -510,7 +749,7 @@ func (x *ClosePipe) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClosePipe.ProtoReflect.Descriptor instead.
 func (*ClosePipe) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{5}
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ClosePipe) GetPipeId() string {
@@ -531,7 +770,7 @@ type ForwardAccepted struct {
 
 func (x *ForwardAccepted) Reset() {
 	*x = ForwardAccepted{}
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[6]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -543,7 +782,7 @@ func (x *ForwardAccepted) String() string {
 func (*ForwardAccepted) ProtoMessage() {}
 
 func (x *ForwardAccepted) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[6]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -556,7 +795,7 @@ func (x *ForwardAccepted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardAccepted.ProtoReflect.Descriptor instead.
 func (*ForwardAccepted) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{6}
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ForwardAccepted) GetAttemptId() string {
@@ -590,7 +829,7 @@ type ForwardFailed struct {
 
 func (x *ForwardFailed) Reset() {
 	*x = ForwardFailed{}
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[7]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -602,7 +841,7 @@ func (x *ForwardFailed) String() string {
 func (*ForwardFailed) ProtoMessage() {}
 
 func (x *ForwardFailed) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[7]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -615,7 +854,7 @@ func (x *ForwardFailed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardFailed.ProtoReflect.Descriptor instead.
 func (*ForwardFailed) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{7}
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ForwardFailed) GetAttemptId() string {
@@ -641,7 +880,7 @@ type ForwardUnknown struct {
 
 func (x *ForwardUnknown) Reset() {
 	*x = ForwardUnknown{}
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[8]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -653,7 +892,7 @@ func (x *ForwardUnknown) String() string {
 func (*ForwardUnknown) ProtoMessage() {}
 
 func (x *ForwardUnknown) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[8]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -666,7 +905,7 @@ func (x *ForwardUnknown) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardUnknown.ProtoReflect.Descriptor instead.
 func (*ForwardUnknown) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{8}
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ForwardUnknown) GetAttemptId() string {
@@ -685,7 +924,7 @@ type PipeTerminal struct {
 
 func (x *PipeTerminal) Reset() {
 	*x = PipeTerminal{}
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[9]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -697,7 +936,7 @@ func (x *PipeTerminal) String() string {
 func (*PipeTerminal) ProtoMessage() {}
 
 func (x *PipeTerminal) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[9]
+	mi := &file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -710,7 +949,7 @@ func (x *PipeTerminal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipeTerminal.ProtoReflect.Descriptor instead.
 func (*PipeTerminal) Descriptor() ([]byte, []int) {
-	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{9}
+	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PipeTerminal) GetPipeId() string {
@@ -724,28 +963,43 @@ var File_proto_relaygate_gateway_v1_gateway_proto protoreflect.FileDescriptor
 
 const file_proto_relaygate_gateway_v1_gateway_proto_rawDesc = "" +
 	"\n" +
-	"(proto/relaygate/gateway/v1/gateway.proto\x12\x14relaygate.gateway.v1\x1a(proto/relaygate/control/v1/control.proto\"\xb8\x02\n" +
+	"(proto/relaygate/gateway/v1/gateway.proto\x12\x14relaygate.gateway.v1\x1a(proto/relaygate/control/v1/control.proto\"\xfa\x03\n" +
 	"\x0eForwardRequest\x12F\n" +
 	"\fforward_open\x18\x01 \x01(\v2!.relaygate.gateway.v1.ForwardOpenH\x00R\vforwardOpen\x12I\n" +
 	"\ractivate_pipe\x18\x02 \x01(\v2\".relaygate.gateway.v1.ActivatePipeH\x00R\factivatePipe\x12F\n" +
 	"\fpipe_payload\x18\x03 \x01(\v2!.relaygate.gateway.v1.PipePayloadH\x00R\vpipePayload\x12@\n" +
 	"\n" +
-	"close_pipe\x18\x04 \x01(\v2\x1f.relaygate.gateway.v1.ClosePipeH\x00R\tclosePipeB\t\n" +
-	"\amessage\"\xf5\x02\n" +
+	"close_pipe\x18\x04 \x01(\v2\x1f.relaygate.gateway.v1.ClosePipeH\x00R\tclosePipe\x12_\n" +
+	"\x15pipe_payload_received\x18\x05 \x01(\v2).relaygate.gateway.v1.PipePayloadReceivedH\x00R\x13pipePayloadReceived\x12_\n" +
+	"\x15pipe_payload_rejected\x18\x06 \x01(\v2).relaygate.gateway.v1.PipePayloadRejectedH\x00R\x13pipePayloadRejectedB\t\n" +
+	"\amessage\"\xb7\x04\n" +
 	"\x0fForwardResponse\x12C\n" +
 	"\baccepted\x18\x01 \x01(\v2%.relaygate.gateway.v1.ForwardAcceptedH\x00R\baccepted\x12=\n" +
 	"\x06failed\x18\x02 \x01(\v2#.relaygate.gateway.v1.ForwardFailedH\x00R\x06failed\x12@\n" +
 	"\aunknown\x18\x03 \x01(\v2$.relaygate.gateway.v1.ForwardUnknownH\x00R\aunknown\x12F\n" +
 	"\fpipe_payload\x18\x04 \x01(\v2!.relaygate.gateway.v1.PipePayloadH\x00R\vpipePayload\x12I\n" +
-	"\rpipe_terminal\x18\x05 \x01(\v2\".relaygate.gateway.v1.PipeTerminalH\x00R\fpipeTerminalB\t\n" +
+	"\rpipe_terminal\x18\x05 \x01(\v2\".relaygate.gateway.v1.PipeTerminalH\x00R\fpipeTerminal\x12_\n" +
+	"\x15pipe_payload_received\x18\x06 \x01(\v2).relaygate.gateway.v1.PipePayloadReceivedH\x00R\x13pipePayloadReceived\x12_\n" +
+	"\x15pipe_payload_rejected\x18\a \x01(\v2).relaygate.gateway.v1.PipePayloadRejectedH\x00R\x13pipePayloadRejectedB\t\n" +
 	"\amessage\"J\n" +
 	"\vForwardOpen\x12;\n" +
 	"\acontext\x18\x01 \x01(\v2!.relaygate.control.v1.OpenContextR\acontext\"'\n" +
 	"\fActivatePipe\x12\x17\n" +
-	"\apipe_id\x18\x01 \x01(\tR\x06pipeId\"@\n" +
+	"\apipe_id\x18\x01 \x01(\tR\x06pipeId\"_\n" +
 	"\vPipePayload\x12\x17\n" +
 	"\apipe_id\x18\x01 \x01(\tR\x06pipeId\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"$\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\x12\x1d\n" +
+	"\n" +
+	"payload_id\x18\x03 \x01(\tR\tpayloadId\"M\n" +
+	"\x13PipePayloadReceived\x12\x17\n" +
+	"\apipe_id\x18\x01 \x01(\tR\x06pipeId\x12\x1d\n" +
+	"\n" +
+	"payload_id\x18\x02 \x01(\tR\tpayloadId\"\x91\x01\n" +
+	"\x13PipePayloadRejected\x12\x17\n" +
+	"\apipe_id\x18\x01 \x01(\tR\x06pipeId\x12\x1d\n" +
+	"\n" +
+	"payload_id\x18\x02 \x01(\tR\tpayloadId\x12B\n" +
+	"\afailure\x18\x03 \x01(\x0e2(.relaygate.gateway.v1.PipePayloadFailureR\afailure\"$\n" +
 	"\tClosePipe\x12\x17\n" +
 	"\apipe_id\x18\x01 \x01(\tR\x06pipeId\"\x86\x01\n" +
 	"\x0fForwardAccepted\x12\x1d\n" +
@@ -761,7 +1015,13 @@ const file_proto_relaygate_gateway_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"attempt_id\x18\x01 \x01(\tR\tattemptId\"'\n" +
 	"\fPipeTerminal\x12\x17\n" +
-	"\apipe_id\x18\x01 \x01(\tR\x06pipeId*\xfe\x02\n" +
+	"\apipe_id\x18\x01 \x01(\tR\x06pipeId*\xd5\x01\n" +
+	"\x12PipePayloadFailure\x12$\n" +
+	" PIPE_PAYLOAD_FAILURE_UNSPECIFIED\x10\x00\x12(\n" +
+	"$PIPE_PAYLOAD_FAILURE_INVALID_REQUEST\x10\x01\x12\"\n" +
+	"\x1ePIPE_PAYLOAD_FAILURE_NOT_OWNED\x10\x02\x12%\n" +
+	"!PIPE_PAYLOAD_FAILURE_BACKPRESSURE\x10\x03\x12$\n" +
+	" PIPE_PAYLOAD_FAILURE_UNAVAILABLE\x10\x04*\xfe\x02\n" +
 	"\x0eForwardFailure\x12\x1f\n" +
 	"\x1bFORWARD_FAILURE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fFORWARD_FAILURE_INVALID_REQUEST\x10\x01\x12$\n" +
@@ -788,43 +1048,51 @@ func file_proto_relaygate_gateway_v1_gateway_proto_rawDescGZIP() []byte {
 	return file_proto_relaygate_gateway_v1_gateway_proto_rawDescData
 }
 
-var file_proto_relaygate_gateway_v1_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_relaygate_gateway_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_proto_relaygate_gateway_v1_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_proto_relaygate_gateway_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_proto_relaygate_gateway_v1_gateway_proto_goTypes = []any{
-	(ForwardFailure)(0),     // 0: relaygate.gateway.v1.ForwardFailure
-	(*ForwardRequest)(nil),  // 1: relaygate.gateway.v1.ForwardRequest
-	(*ForwardResponse)(nil), // 2: relaygate.gateway.v1.ForwardResponse
-	(*ForwardOpen)(nil),     // 3: relaygate.gateway.v1.ForwardOpen
-	(*ActivatePipe)(nil),    // 4: relaygate.gateway.v1.ActivatePipe
-	(*PipePayload)(nil),     // 5: relaygate.gateway.v1.PipePayload
-	(*ClosePipe)(nil),       // 6: relaygate.gateway.v1.ClosePipe
-	(*ForwardAccepted)(nil), // 7: relaygate.gateway.v1.ForwardAccepted
-	(*ForwardFailed)(nil),   // 8: relaygate.gateway.v1.ForwardFailed
-	(*ForwardUnknown)(nil),  // 9: relaygate.gateway.v1.ForwardUnknown
-	(*PipeTerminal)(nil),    // 10: relaygate.gateway.v1.PipeTerminal
-	(*v1.OpenContext)(nil),  // 11: relaygate.control.v1.OpenContext
-	(*v1.LiveBinding)(nil),  // 12: relaygate.control.v1.LiveBinding
+	(PipePayloadFailure)(0),     // 0: relaygate.gateway.v1.PipePayloadFailure
+	(ForwardFailure)(0),         // 1: relaygate.gateway.v1.ForwardFailure
+	(*ForwardRequest)(nil),      // 2: relaygate.gateway.v1.ForwardRequest
+	(*ForwardResponse)(nil),     // 3: relaygate.gateway.v1.ForwardResponse
+	(*ForwardOpen)(nil),         // 4: relaygate.gateway.v1.ForwardOpen
+	(*ActivatePipe)(nil),        // 5: relaygate.gateway.v1.ActivatePipe
+	(*PipePayload)(nil),         // 6: relaygate.gateway.v1.PipePayload
+	(*PipePayloadReceived)(nil), // 7: relaygate.gateway.v1.PipePayloadReceived
+	(*PipePayloadRejected)(nil), // 8: relaygate.gateway.v1.PipePayloadRejected
+	(*ClosePipe)(nil),           // 9: relaygate.gateway.v1.ClosePipe
+	(*ForwardAccepted)(nil),     // 10: relaygate.gateway.v1.ForwardAccepted
+	(*ForwardFailed)(nil),       // 11: relaygate.gateway.v1.ForwardFailed
+	(*ForwardUnknown)(nil),      // 12: relaygate.gateway.v1.ForwardUnknown
+	(*PipeTerminal)(nil),        // 13: relaygate.gateway.v1.PipeTerminal
+	(*v1.OpenContext)(nil),      // 14: relaygate.control.v1.OpenContext
+	(*v1.LiveBinding)(nil),      // 15: relaygate.control.v1.LiveBinding
 }
 var file_proto_relaygate_gateway_v1_gateway_proto_depIdxs = []int32{
-	3,  // 0: relaygate.gateway.v1.ForwardRequest.forward_open:type_name -> relaygate.gateway.v1.ForwardOpen
-	4,  // 1: relaygate.gateway.v1.ForwardRequest.activate_pipe:type_name -> relaygate.gateway.v1.ActivatePipe
-	5,  // 2: relaygate.gateway.v1.ForwardRequest.pipe_payload:type_name -> relaygate.gateway.v1.PipePayload
-	6,  // 3: relaygate.gateway.v1.ForwardRequest.close_pipe:type_name -> relaygate.gateway.v1.ClosePipe
-	7,  // 4: relaygate.gateway.v1.ForwardResponse.accepted:type_name -> relaygate.gateway.v1.ForwardAccepted
-	8,  // 5: relaygate.gateway.v1.ForwardResponse.failed:type_name -> relaygate.gateway.v1.ForwardFailed
-	9,  // 6: relaygate.gateway.v1.ForwardResponse.unknown:type_name -> relaygate.gateway.v1.ForwardUnknown
-	5,  // 7: relaygate.gateway.v1.ForwardResponse.pipe_payload:type_name -> relaygate.gateway.v1.PipePayload
-	10, // 8: relaygate.gateway.v1.ForwardResponse.pipe_terminal:type_name -> relaygate.gateway.v1.PipeTerminal
-	11, // 9: relaygate.gateway.v1.ForwardOpen.context:type_name -> relaygate.control.v1.OpenContext
-	12, // 10: relaygate.gateway.v1.ForwardAccepted.binding:type_name -> relaygate.control.v1.LiveBinding
-	0,  // 11: relaygate.gateway.v1.ForwardFailed.failure:type_name -> relaygate.gateway.v1.ForwardFailure
-	1,  // 12: relaygate.gateway.v1.GatewayRelay.Forward:input_type -> relaygate.gateway.v1.ForwardRequest
-	2,  // 13: relaygate.gateway.v1.GatewayRelay.Forward:output_type -> relaygate.gateway.v1.ForwardResponse
-	13, // [13:14] is the sub-list for method output_type
-	12, // [12:13] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	4,  // 0: relaygate.gateway.v1.ForwardRequest.forward_open:type_name -> relaygate.gateway.v1.ForwardOpen
+	5,  // 1: relaygate.gateway.v1.ForwardRequest.activate_pipe:type_name -> relaygate.gateway.v1.ActivatePipe
+	6,  // 2: relaygate.gateway.v1.ForwardRequest.pipe_payload:type_name -> relaygate.gateway.v1.PipePayload
+	9,  // 3: relaygate.gateway.v1.ForwardRequest.close_pipe:type_name -> relaygate.gateway.v1.ClosePipe
+	7,  // 4: relaygate.gateway.v1.ForwardRequest.pipe_payload_received:type_name -> relaygate.gateway.v1.PipePayloadReceived
+	8,  // 5: relaygate.gateway.v1.ForwardRequest.pipe_payload_rejected:type_name -> relaygate.gateway.v1.PipePayloadRejected
+	10, // 6: relaygate.gateway.v1.ForwardResponse.accepted:type_name -> relaygate.gateway.v1.ForwardAccepted
+	11, // 7: relaygate.gateway.v1.ForwardResponse.failed:type_name -> relaygate.gateway.v1.ForwardFailed
+	12, // 8: relaygate.gateway.v1.ForwardResponse.unknown:type_name -> relaygate.gateway.v1.ForwardUnknown
+	6,  // 9: relaygate.gateway.v1.ForwardResponse.pipe_payload:type_name -> relaygate.gateway.v1.PipePayload
+	13, // 10: relaygate.gateway.v1.ForwardResponse.pipe_terminal:type_name -> relaygate.gateway.v1.PipeTerminal
+	7,  // 11: relaygate.gateway.v1.ForwardResponse.pipe_payload_received:type_name -> relaygate.gateway.v1.PipePayloadReceived
+	8,  // 12: relaygate.gateway.v1.ForwardResponse.pipe_payload_rejected:type_name -> relaygate.gateway.v1.PipePayloadRejected
+	14, // 13: relaygate.gateway.v1.ForwardOpen.context:type_name -> relaygate.control.v1.OpenContext
+	0,  // 14: relaygate.gateway.v1.PipePayloadRejected.failure:type_name -> relaygate.gateway.v1.PipePayloadFailure
+	15, // 15: relaygate.gateway.v1.ForwardAccepted.binding:type_name -> relaygate.control.v1.LiveBinding
+	1,  // 16: relaygate.gateway.v1.ForwardFailed.failure:type_name -> relaygate.gateway.v1.ForwardFailure
+	2,  // 17: relaygate.gateway.v1.GatewayRelay.Forward:input_type -> relaygate.gateway.v1.ForwardRequest
+	3,  // 18: relaygate.gateway.v1.GatewayRelay.Forward:output_type -> relaygate.gateway.v1.ForwardResponse
+	18, // [18:19] is the sub-list for method output_type
+	17, // [17:18] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_proto_relaygate_gateway_v1_gateway_proto_init() }
@@ -837,6 +1105,8 @@ func file_proto_relaygate_gateway_v1_gateway_proto_init() {
 		(*ForwardRequest_ActivatePipe)(nil),
 		(*ForwardRequest_PipePayload)(nil),
 		(*ForwardRequest_ClosePipe)(nil),
+		(*ForwardRequest_PipePayloadReceived)(nil),
+		(*ForwardRequest_PipePayloadRejected)(nil),
 	}
 	file_proto_relaygate_gateway_v1_gateway_proto_msgTypes[1].OneofWrappers = []any{
 		(*ForwardResponse_Accepted)(nil),
@@ -844,14 +1114,16 @@ func file_proto_relaygate_gateway_v1_gateway_proto_init() {
 		(*ForwardResponse_Unknown)(nil),
 		(*ForwardResponse_PipePayload)(nil),
 		(*ForwardResponse_PipeTerminal)(nil),
+		(*ForwardResponse_PipePayloadReceived)(nil),
+		(*ForwardResponse_PipePayloadRejected)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_relaygate_gateway_v1_gateway_proto_rawDesc), len(file_proto_relaygate_gateway_v1_gateway_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   10,
+			NumEnums:      2,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

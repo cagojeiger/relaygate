@@ -8,7 +8,11 @@ import (
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	relayv1 "github.com/cagojeiger/relaygate/internal/gen/relay/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+const streamPipeWorkQueueCapacity = 32
 
 type openWorker struct {
 	cancel            context.CancelFunc
@@ -25,8 +29,9 @@ type streamPipeWork struct {
 // streamCoordinator keeps blocking Open and ordered Pipe work off the Connect
 // receive loop. Its Open worker table is the session-local request_id namespace;
 // the Service-owned slot channel is the process-wide Open goroutine bound.
-// One unbuffered Pipe worker per authenticated stream preserves request FIFO and
-// backpressure while leaving the receive loop free to observe outbound failure.
+// One bounded Pipe worker per authenticated stream preserves request FIFO. The
+// receive loop never waits for Pipe work, so delivery receipts cannot be trapped
+// behind a payload whose end-to-end receipt is still pending.
 type streamCoordinator struct {
 	ctx          context.Context //nolint:containedctx // Coordinator owns the stream-root context for worker cancellation.
 	sendCtx      context.Context //nolint:containedctx // Terminal Open responses use a coordinator-owned send context after Open cancellation.
@@ -57,7 +62,7 @@ func newStreamCoordinator(ctx context.Context, session clientsession.Session, op
 		outbound:     outbound,
 		openSlots:    openSlots,
 		workers:      make(map[string]*openWorker),
-		pipeWork:     make(chan streamPipeWork),
+		pipeWork:     make(chan streamPipeWork, streamPipeWorkQueueCapacity),
 		pipeDone:     make(chan struct{}),
 	}
 	go coordinator.runPipeWork()
@@ -70,8 +75,9 @@ func (c *streamCoordinator) enqueuePipeWork(service *Service, request *relayv1.C
 	case request.GetPipePayload() != nil:
 		payload := request.GetPipePayload()
 		work.payload = &relayv1.PipePayload{
-			PipeId:  payload.GetPipeId(),
-			Payload: append([]byte(nil), payload.GetPayload()...),
+			PipeId:    payload.GetPipeId(),
+			PayloadId: payload.GetPayloadId(),
+			Payload:   append([]byte(nil), payload.GetPayload()...),
 		}
 	case request.GetClosePipe() != nil:
 		work.closePipe = &relayv1.ClosePipe{PipeId: request.GetClosePipe().GetPipeId()}
@@ -88,6 +94,8 @@ func (c *streamCoordinator) enqueuePipeWork(service *Service, request *relayv1.C
 		return c.sendCtx.Err()
 	case <-c.outbound.done:
 		return c.outbound.err()
+	default:
+		return status.Error(codes.ResourceExhausted, "Pipe work capacity reached")
 	}
 }
 

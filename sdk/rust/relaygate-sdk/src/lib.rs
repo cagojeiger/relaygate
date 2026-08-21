@@ -23,8 +23,9 @@ mod wire {
 pub use client::{Client, Session};
 pub use config::Config;
 pub use error::{
-    AcceptError, BindError, CloseError, ConnectError, ManagedError, OpenError, OpenFailure,
-    PipeError, RejectError, SessionError, UnbindError,
+    AcceptError, BindError, CloseError, ConnectError, DeliveryError, DeliveryFailure,
+    DeliveryOutcome, ManagedError, OpenError, OpenFailure, PipeError, RejectError, SessionError,
+    UnbindError,
 };
 pub use listener::{Listener, Offer, OfferMetadata};
 pub use managed::{ManagedClient, ManagedListener, ManagedState};

@@ -55,7 +55,7 @@ func TestGatewayRelayRejectsOversizedPayloadBeforeOwner(t *testing.T) {
 		open: func(_ context.Context, open authority.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
 			return opening.Result{AttemptID: open.AttemptID, PipeID: "pipe-limit", Binding: open.Binding}, nil
 		},
-		relayPayload: func(context.Context, clientsession.Ref, string, []byte) error {
+		relayPayload: func(_ context.Context, _ clientsession.Ref, _ string, _ string, _ []byte) error {
 			relayed.Add(1)
 			return nil
 		},
@@ -70,8 +70,9 @@ func TestGatewayRelayRejectsOversizedPayloadBeforeOwner(t *testing.T) {
 		t.Fatalf("Activate(): %v", err)
 	}
 	err = result.Endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{
-		PipeID: result.PipeID,
-		Data:   make([]byte, localbinding.MaxPayloadBytes+1),
+		PipeID:    result.PipeID,
+		PayloadID: "payload-oversized",
+		Data:      make([]byte, localbinding.MaxPayloadBytes+1),
 	})
 	if err == nil {
 		t.Fatal("oversized DeliverPayload succeeded")

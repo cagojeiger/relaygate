@@ -36,6 +36,14 @@ Each test must define initial identity/state, exact event order or crash cut, ob
 | `P01` | Payload boundary/FIFO | 1..60 KiB exact bytes, per-direction FIFO, no cross-direction order claim | Opening/public/peer/SDK payload tests |
 | `P02` | Bounded pressure | Full queue/timeout/write failure has no silent drop and releases slots | `TestX07BackpressureCancelAndParticipantCrashReleaseAllPayloadSlots` |
 | `P03` | Bounded terminal under payload pressure | Public multiplexed Relay control/terminal bypasses queued payload; a one-stream-per-Pipe peer hop instead times out and cancels the whole stream; all owned workers join | `TestOutboundActorPayloadPressureAndControlBypass`, peer lifecycle cancellation tests, and SDK close/send race tests |
+| `P04` | Receipt LP | Receiver emits receipt only after exact payload enters its bounded SDK receive queue; `Send` success requires that exact receipt | Public Relay plus Go/Rust SDK receipt tests |
+| `P05` | NotSent/Unknown timeout cut | Deadline before local transport handoff is `NotSent`; deadline/terminal after handoff and before receipt is `Unknown` | Deterministic blocked-writer and blocked-receipt tests |
+| `P06` | Exact receipt correlation | ACK/rejection requires current `PipeId + PayloadId`; malformed, foreign, wrong-phase, and conflicting correlation is protocol-fatal | Public/peer/Go/Rust strict decoding tests |
+| `P07` | Duplicate receipt/payload | Exact duplicate receipt is bounded NoOp; non-adjacent `A/B/A` payload replay is enqueued once and re-ACKed within bounded history; same ID with different bytes is protocol-fatal; a late exact result cannot revise `Unknown` | SDK receipt-history and fingerprint tests |
+| `P08` | Receipt pressure | Queue-full payload is never ACKed or silently dropped; exact rejection terminalizes only the owned Pipe | Public/peer/SDK backpressure tests |
+| `P09` | Terminal races | Receipt vs close, receipt vs deadline, rejection vs session end, and both payload directions have one absorbing result and release all waiters/slots | Race tests in public relay and both SDKs |
+| `P10` | Same/cross-Gateway parity | Same-Gateway and cross-Gateway paths return the same exact receipt only after destination SDK queue admission | Compose and peer integration tests |
+| `P11` | No durable delivery state | Receipt pending/history is bounded process memory; Controller FSM/snapshot/log contain no payload ID, payload, receipt, or replay state | FSM snapshot inspection and SDK capacity tests |
 | `K01` | Auth/reload | Invalid keeps old; valid removal swaps then retires local children | Auth/runtime reload tests |
 | `K02` | Strict namespace | Same endpoint/target under another `ClientId` never falls back | Auth/authority/routing tests |
 | `K03` | Observed-only C/V presence | Presence separates committed Gateway/route counts from revalidated/eligible leader-local counts and never claims completeness or cluster-wide revocation | Admin/authority tests |

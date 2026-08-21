@@ -98,7 +98,7 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 	}
 	requireListenerConfirmationAcknowledged(t, listener, established.GetAttemptId(), established.GetPipeId())
 	preActivationPayload := []byte{0x00, 0x01, 0xfe, 0xff}
-	sendPipePayload(t, listener, established.GetPipeId(), preActivationPayload)
+	preActivationID := sendPipePayload(t, listener, established.GetPipeId(), preActivationPayload)
 	openedResponse, err := caller.Recv()
 	if err != nil {
 		t.Fatalf("Recv(PipeOpened): %v", err)
@@ -108,32 +108,42 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 		t.Fatalf("PipeOpened = %#v", opened)
 	}
 	requirePipePayload(t, caller, established.GetPipeId(), preActivationPayload)
+	requirePayloadReceived(t, listener, established.GetPipeId(), preActivationID)
 
 	callerFrames := [][]byte{
 		[]byte("caller-frame-one"),
 		{0x00, 0x7f, 0x80, 0xff},
 	}
+	callerPayloadIDs := make([]string, 0, len(callerFrames))
 	for _, payload := range callerFrames {
-		sendPipePayload(t, caller, established.GetPipeId(), payload)
+		callerPayloadIDs = append(callerPayloadIDs, sendPipePayload(t, caller, established.GetPipeId(), payload))
 	}
 	for _, payload := range callerFrames {
 		requirePipePayload(t, listener, established.GetPipeId(), payload)
+	}
+	for _, payloadID := range callerPayloadIDs {
+		requirePayloadReceived(t, caller, established.GetPipeId(), payloadID)
 	}
 
 	listenerFrames := [][]byte{
 		[]byte("listener-frame-one"),
 		{0xff, 0x80, 0x7f, 0x00},
 	}
+	listenerPayloadIDs := make([]string, 0, len(listenerFrames))
 	for _, payload := range listenerFrames {
-		sendPipePayload(t, listener, established.GetPipeId(), payload)
+		listenerPayloadIDs = append(listenerPayloadIDs, sendPipePayload(t, listener, established.GetPipeId(), payload))
 	}
 	for _, payload := range listenerFrames {
 		requirePipePayload(t, caller, established.GetPipeId(), payload)
 	}
+	for _, payloadID := range listenerPayloadIDs {
+		requirePayloadReceived(t, listener, established.GetPipeId(), payloadID)
+	}
 
 	maximumPayload := bytes.Repeat([]byte{0xa5}, localbinding.MaxPayloadBytes)
-	sendPipePayload(t, caller, established.GetPipeId(), maximumPayload)
+	maximumPayloadID := sendPipePayload(t, caller, established.GetPipeId(), maximumPayload)
 	requirePipePayload(t, listener, established.GetPipeId(), maximumPayload)
+	requirePayloadReceived(t, caller, established.GetPipeId(), maximumPayloadID)
 	sendPipePayload(t, caller, established.GetPipeId(), append(maximumPayload, 0x5a))
 	var rejected, callerTerminated bool
 	for range 2 {
@@ -197,17 +207,20 @@ func TestExactSameGatewayOpenAcrossRealBindingOpeningAndRelayLayers(t *testing.T
 
 func sendPipePayload(t *testing.T, stream interface {
 	Send(*relayv1.ConnectRequest) error
-}, pipeID string, payload []byte) {
+}, pipeID string, payload []byte) string {
 	t.Helper()
+	payloadID := fmt.Sprintf("payload-%d", integrationPayloadSequence.Add(1))
 	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_PipePayload{
-		PipePayload: &relayv1.PipePayload{PipeId: pipeID, Payload: payload},
+		PipePayload: &relayv1.PipePayload{PipeId: pipeID, PayloadId: payloadID, Payload: payload},
 	}}); err != nil {
 		t.Fatalf("Send(PipePayload): %v", err)
 	}
+	return payloadID
 }
 
 func requirePipePayload(t *testing.T, stream interface {
 	Recv() (*relayv1.ConnectResponse, error)
+	Send(*relayv1.ConnectRequest) error
 }, pipeID string, want []byte) {
 	t.Helper()
 	response, err := stream.Recv()
@@ -218,7 +231,28 @@ func requirePipePayload(t *testing.T, stream interface {
 	if payload.GetPipeId() != pipeID || !bytes.Equal(payload.GetPayload(), want) {
 		t.Fatalf("PipePayload = %#v, want pipe %q and %d exact bytes", payload, pipeID, len(want))
 	}
+	if err := stream.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_PipePayloadReceived{
+		PipePayloadReceived: &relayv1.PipePayloadReceived{PipeId: pipeID, PayloadId: payload.GetPayloadId()},
+	}}); err != nil {
+		t.Fatalf("Send(PipePayloadReceived): %v", err)
+	}
 }
+
+func requirePayloadReceived(t *testing.T, stream interface {
+	Recv() (*relayv1.ConnectResponse, error)
+}, pipeID, payloadID string) {
+	t.Helper()
+	response, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv(PipePayloadReceived): %v", err)
+	}
+	receipt := response.GetPipePayloadReceived()
+	if receipt.GetPipeId() != pipeID || receipt.GetPayloadId() != payloadID {
+		t.Fatalf("PipePayloadReceived = %#v, want pipe %q payload %q", receipt, pipeID, payloadID)
+	}
+}
+
+var integrationPayloadSequence atomic.Uint64
 
 type openIntegrationCommitter struct {
 	mu   sync.Mutex

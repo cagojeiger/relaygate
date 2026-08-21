@@ -3,7 +3,9 @@ package relaygrpc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -15,7 +17,9 @@ import (
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
 	relayv1 "github.com/cagojeiger/relaygate/internal/gen/relay/v1"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 const payloadTestTimeout = 100 * time.Millisecond
@@ -53,13 +57,68 @@ func TestNewServiceCapsProcessPayloadSlots(t *testing.T) {
 	}
 }
 
+func TestStreamPipeEndpointReceiptCorrelationIsExactAndBounded(t *testing.T) {
+	endpoint := &streamPipeEndpoint{
+		pending: make(map[payloadReceiptKey]pendingPayloadReceipt),
+		history: make(map[payloadReceiptKey]payloadReceiptOutcome),
+	}
+	key := payloadReceiptKey{pipeID: "pipe-1", payloadID: "payload-1"}
+	result := make(chan error, 1)
+	fingerprint := sha256.Sum256([]byte("same"))
+	endpoint.pending[key] = pendingPayloadReceipt{result: result, hash: fingerprint}
+	if err := endpoint.acknowledge(key.pipeID, key.payloadID); err != nil {
+		t.Fatalf("acknowledge: %v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("receipt result: %v", err)
+	}
+	if err := endpoint.acknowledge(key.pipeID, key.payloadID); err != nil {
+		t.Fatalf("exact receipt replay: %v", err)
+	}
+	if err := endpoint.reject(key.pipeID, key.payloadID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE); err == nil {
+		t.Fatal("conflicting rejection replay succeeded")
+	}
+	if err := endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{
+		PipeID: key.pipeID, PayloadID: key.payloadID, Data: []byte("same"),
+	}); err != nil {
+		t.Fatalf("exact payload replay: %v", err)
+	}
+	if err := endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{
+		PipeID: key.pipeID, PayloadID: key.payloadID, Data: []byte("different"),
+	}); err == nil {
+		t.Fatal("conflicting payload replay succeeded")
+	}
+	unknownKey := payloadReceiptKey{pipeID: "pipe-unknown", payloadID: "payload-unknown"}
+	endpoint.rememberLocked(unknownKey, payloadReceiptOutcome{unknown: true, hash: fingerprint})
+	if err := endpoint.acknowledge(unknownKey.pipeID, unknownKey.payloadID); err != nil {
+		t.Fatalf("late receipt after Unknown: %v", err)
+	}
+	if outcome := endpoint.history[unknownKey]; !outcome.unknown || outcome.received {
+		t.Fatalf("late receipt changed Unknown outcome: %#v", outcome)
+	}
+	if err := endpoint.reject(unknownKey.pipeID, unknownKey.payloadID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE); err != nil {
+		t.Fatalf("late rejection after Unknown: %v", err)
+	}
+	if outcome := endpoint.history[unknownKey]; !outcome.unknown || outcome.failure != relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNSPECIFIED {
+		t.Fatalf("late rejection changed Unknown outcome: %#v", outcome)
+	}
+
+	for index := 0; index <= maxPayloadReceiptHistory; index++ {
+		entry := payloadReceiptKey{pipeID: "pipe-bounded", payloadID: fmt.Sprintf("payload-%d", index)}
+		endpoint.rememberLocked(entry, payloadReceiptOutcome{received: true})
+	}
+	if len(endpoint.history) != maxPayloadReceiptHistory || len(endpoint.order) != maxPayloadReceiptHistory {
+		t.Fatalf("receipt history = %d/%d, want %d", len(endpoint.history), len(endpoint.order), maxPayloadReceiptHistory)
+	}
+}
+
 func TestConnectPayloadRejectionsAreStableAndOwnershipPrivate(t *testing.T) {
 	called := make(chan localbinding.PipePayload, 1)
 	closed := make(chan string, 2)
 	opener := &testOpener{relayPayload: func(_ context.Context, _ clientsession.Ref, pipeID string, payload []byte) error {
 		switch pipeID {
 		case "owned":
-			called <- localbinding.PipePayload{PipeID: pipeID, Data: append([]byte(nil), payload...)}
+			called <- localbinding.PipePayload{PipeID: pipeID, PayloadID: "payload-test", Data: append([]byte(nil), payload...)}
 			return nil
 		case "backpressure":
 			return opening.ErrPayloadBackpressure
@@ -81,13 +140,13 @@ func TestConnectPayloadRejectionsAreStableAndOwnershipPrivate(t *testing.T) {
 
 	assertRejected := func(pipeID string, payload []byte, want relayv1.PipePayloadFailure) {
 		t.Helper()
-		sendPipePayload(t, stream, pipeID, payload)
+		payloadID := sendPipePayload(t, stream, pipeID, payload)
 		response, err := stream.Recv()
 		if err != nil {
 			t.Fatalf("Recv(PipePayloadRejected): %v", err)
 		}
 		rejected := response.GetPipePayloadRejected()
-		if rejected.GetPipeId() != pipeID || rejected.GetFailure() != want {
+		if rejected.GetPipeId() != pipeID || rejected.GetPayloadId() != payloadID || rejected.GetFailure() != want {
 			t.Fatalf("PipePayloadRejected = %#v, want pipe %q failure %s", rejected, pipeID, want)
 		}
 	}
@@ -98,9 +157,12 @@ func TestConnectPayloadRejectionsAreStableAndOwnershipPrivate(t *testing.T) {
 	assertRejected("backpressure", []byte("x"), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE)
 	assertRejected("unavailable", []byte("x"), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE)
 	want := bytes.Repeat([]byte{0x6d}, localbinding.MaxPayloadBytes)
-	sendPipePayload(t, stream, "owned", want)
+	ownedPayloadID := sendPipePayload(t, stream, "owned", want)
 	if got := receiveWithin(t, called, "maximum legal RelayPayload call"); got.PipeID != "owned" || !bytes.Equal(got.Data, want) {
 		t.Fatalf("RelayPayload call = pipe %q, %d bytes", got.PipeID, len(got.Data))
+	}
+	if response, err := stream.Recv(); err != nil || response.GetPipePayloadReceived().GetPayloadId() != ownedPayloadID {
+		t.Fatalf("Recv(PipePayloadReceived) = %#v, %v", response, err)
 	}
 	assertRejected("owned", make([]byte, localbinding.MaxPayloadBytes+1), relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
 	if got := receiveWithin(t, closed, "owned invalid payload close"); got != "owned" {
@@ -156,12 +218,15 @@ func TestConnectOrdersCloseAfterBlockingPayload(t *testing.T) {
 	}
 	close(release)
 	receiveWithin(t, closeCalled, "ClosePipe after RelayPayload release")
+	if response, err := stream.Recv(); err != nil || response.GetPipePayloadReceived() == nil {
+		t.Fatalf("Recv(PipePayloadReceived) = %#v, %v", response, err)
+	}
 	if response, err := stream.Recv(); err != nil || !response.GetPipeCloseAcknowledged().GetOwned() {
 		t.Fatalf("Recv(PipeCloseAcknowledged) = %#v, %v", response, err)
 	}
 }
 
-func TestStreamCoordinatorBlockedPipeWorkDoesNotMaskOutboundFailure(t *testing.T) {
+func TestStreamCoordinatorPipeWorkPressureFailsClosedWithoutBlockingReceive(t *testing.T) {
 	started := make(chan struct{})
 	opener := &testOpener{relayPayload: func(ctx context.Context, _ clientsession.Ref, _ string, _ []byte) error {
 		close(started)
@@ -183,29 +248,29 @@ func TestStreamCoordinatorBlockedPipeWorkDoesNotMaskOutboundFailure(t *testing.T
 	defer coordinator.close()
 
 	first := &relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_PipePayload{
-		PipePayload: &relayv1.PipePayload{PipeId: "pipe-1", Payload: []byte("blocked")},
+		PipePayload: &relayv1.PipePayload{PipeId: "pipe-1", PayloadId: "payload-blocked", Payload: []byte("blocked")},
 	}}
 	if err := coordinator.enqueuePipeWork(service, first); err != nil {
 		t.Fatalf("enqueuePipeWork(first): %v", err)
 	}
 	receiveWithin(t, started, "blocked Pipe worker")
 
-	secondResult := make(chan error, 1)
-	go func() {
-		secondResult <- coordinator.enqueuePipeWork(service, &relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ClosePipe{
+	for index := 0; index < streamPipeWorkQueueCapacity; index++ {
+		if err := coordinator.enqueuePipeWork(service, &relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ClosePipe{
 			ClosePipe: &relayv1.ClosePipe{PipeId: "pipe-1"},
-		}})
-	}()
-	select {
-	case err := <-secondResult:
-		t.Fatalf("second Pipe work returned before failure: %v", err)
-	case <-time.After(20 * time.Millisecond):
+		}}); err != nil {
+			t.Fatalf("enqueuePipeWork(%d): %v", index, err)
+		}
 	}
-
-	want := errors.New("outbound stream failed")
-	actor.fail(want)
-	if err := receiveWithin(t, secondResult, "blocked enqueue outbound failure"); !errors.Is(err, want) {
-		t.Fatalf("enqueuePipeWork() = %v, want %v", err, want)
+	startedAt := time.Now()
+	err := coordinator.enqueuePipeWork(service, &relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ClosePipe{
+		ClosePipe: &relayv1.ClosePipe{PipeId: "pipe-1"},
+	}})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("overflow enqueuePipeWork() = %v, want ResourceExhausted", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("overflow enqueue blocked receive loop for %v", elapsed)
 	}
 }
 
@@ -231,7 +296,7 @@ func TestStreamCoordinatorCloseCancelsPipeWorkerWithoutTransportJoinCycle(t *tes
 	)
 
 	request := &relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_PipePayload{
-		PipePayload: &relayv1.PipePayload{PipeId: "pipe-1", Payload: []byte("blocked")},
+		PipePayload: &relayv1.PipePayload{PipeId: "pipe-1", PayloadId: "payload-blocked", Payload: []byte("blocked")},
 	}}
 	if err := coordinator.enqueuePipeWork(service, request); err != nil {
 		t.Fatalf("enqueuePipeWork(): %v", err)
@@ -644,7 +709,7 @@ func TestBlockedPipeOpenedTerminalFallbackRetiresSession(t *testing.T) {
 
 func payloadResponse(pipeID string, payload []byte) *relayv1.ConnectResponse {
 	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayload{
-		PipePayload: &relayv1.PipePayload{PipeId: pipeID, Payload: payload},
+		PipePayload: &relayv1.PipePayload{PipeId: pipeID, PayloadId: "payload-test", Payload: payload},
 	}}
 }
 

@@ -324,6 +324,8 @@ type remoteEndpoint struct {
 	closeOnce    sync.Once
 	closeDone    chan struct{}
 	closeErr     error
+
+	receipts peerReceiptState
 }
 
 func newRemoteEndpoint(
@@ -362,22 +364,66 @@ func (e *remoteEndpoint) start(ctx context.Context) {
 }
 
 func (e *remoteEndpoint) DeliverPayload(parent context.Context, payload localbinding.PipePayload) error {
-	if parent == nil || payload.PipeID != e.pipeID || len(payload.Data) == 0 || len(payload.Data) > localbinding.MaxPayloadBytes {
+	if parent == nil || payload.PipeID != e.pipeID || payload.PayloadID == "" || len(payload.PayloadID) > routing.MaxIdentityBytes || len(payload.Data) == 0 || len(payload.Data) > localbinding.MaxPayloadBytes {
 		return fmt.Errorf("%w: invalid remote Pipe payload", localbinding.ErrEndpointUnavailable)
 	}
 	ctx, cancel := context.WithTimeout(parent, e.timeout)
 	defer cancel()
-	err := e.sender.send(ctx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_PipePayload{
-		PipePayload: &gatewayv1.PipePayload{PipeId: e.pipeID, Payload: append([]byte(nil), payload.Data...)},
+	result, duplicate, err := e.receipts.begin(payload)
+	if duplicate || err != nil {
+		return err
+	}
+	err = e.sender.send(ctx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_PipePayload{
+		PipePayload: &gatewayv1.PipePayload{PipeId: e.pipeID, PayloadId: payload.PayloadID, Payload: append([]byte(nil), payload.Data...)},
 	}})
 	if err != nil {
+		select {
+		case outcome := <-result:
+			return outcome
+		default:
+		}
+		e.receipts.retireUnknown(payload.PayloadID, result)
 		e.cancel(err)
 		if isSendContextError(err) {
 			return localbinding.ErrPayloadBackpressure
 		}
 		return localbinding.ErrEndpointUnavailable
 	}
-	return nil
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		select {
+		case outcome := <-result:
+			return outcome
+		default:
+		}
+		e.receipts.retireUnknown(payload.PayloadID, result)
+		e.cancel(ctx.Err())
+		return localbinding.ErrEndpointUnavailable
+	case <-e.done:
+		select {
+		case outcome := <-result:
+			return outcome
+		default:
+		}
+		e.receipts.retireUnknown(payload.PayloadID, result)
+		return localbinding.ErrEndpointUnavailable
+	}
+}
+
+func (e *remoteEndpoint) acknowledgePayload(payloadID string) error {
+	if payloadID == "" || len(payloadID) > routing.MaxIdentityBytes {
+		return localbinding.ErrEndpointUnavailable
+	}
+	return e.receipts.acknowledge(payloadID)
+}
+
+func (e *remoteEndpoint) rejectPayload(payloadID string, failure gatewayv1.PipePayloadFailure) error {
+	if payloadID == "" || len(payloadID) > routing.MaxIdentityBytes {
+		return localbinding.ErrEndpointUnavailable
+	}
+	return e.receipts.reject(payloadID, failure)
 }
 
 func (e *remoteEndpoint) Activate(parent context.Context) error {
@@ -466,15 +512,29 @@ func (e *remoteEndpoint) receive() {
 			return
 		}
 		if payload := response.GetPipePayload(); payload != nil {
-			if payload.GetPipeId() != e.pipeID || len(payload.GetPayload()) == 0 || len(payload.GetPayload()) > localbinding.MaxPayloadBytes {
+			if payload.GetPipeId() != e.pipeID || payload.GetPayloadId() == "" || len(payload.GetPayloadId()) > routing.MaxIdentityBytes || len(payload.GetPayload()) == 0 || len(payload.GetPayload()) > localbinding.MaxPayloadBytes {
 				e.cancel(opening.ErrUnavailable)
 				return
 			}
-			item := localbinding.PipePayload{PipeID: e.pipeID, Data: append([]byte(nil), payload.GetPayload()...)}
+			item := localbinding.PipePayload{PipeID: e.pipeID, PayloadID: payload.GetPayloadId(), Data: append([]byte(nil), payload.GetPayload()...)}
 			select {
 			case e.inbound <- item:
 			default:
 				e.cancel(ErrBackpressure)
+				return
+			}
+			continue
+		}
+		if receipt := response.GetPipePayloadReceived(); receipt != nil {
+			if receipt.GetPipeId() != e.pipeID || e.acknowledgePayload(receipt.GetPayloadId()) != nil {
+				e.cancel(opening.ErrUnavailable)
+				return
+			}
+			continue
+		}
+		if rejection := response.GetPipePayloadRejected(); rejection != nil {
+			if rejection.GetPipeId() != e.pipeID || e.rejectPayload(rejection.GetPayloadId(), rejection.GetFailure()) != nil {
+				e.cancel(opening.ErrUnavailable)
 				return
 			}
 			continue
@@ -499,10 +559,52 @@ func (e *remoteEndpoint) deliver(ctx context.Context) {
 			err := e.callerEndpoint.DeliverPayload(deliveryCtx, payload)
 			cancel()
 			if err != nil {
+				rejectCtx, cancelReject := context.WithTimeout(context.WithoutCancel(ctx), e.timeout)
+				_ = e.sender.send(rejectCtx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_PipePayloadRejected{
+					PipePayloadRejected: &gatewayv1.PipePayloadRejected{
+						PipeId: e.pipeID, PayloadId: payload.PayloadID, Failure: peerPayloadFailure(err),
+					},
+				}})
+				cancelReject()
+				e.cancel(err)
+				return
+			}
+			receiptCtx, cancelReceipt := context.WithTimeout(ctx, e.timeout)
+			err = e.sender.send(receiptCtx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_PipePayloadReceived{
+				PipePayloadReceived: &gatewayv1.PipePayloadReceived{PipeId: e.pipeID, PayloadId: payload.PayloadID},
+			}})
+			cancelReceipt()
+			if err != nil {
 				e.cancel(err)
 				return
 			}
 		}
+	}
+}
+
+func peerPayloadFailure(err error) gatewayv1.PipePayloadFailure {
+	switch {
+	case errors.Is(err, localbinding.ErrPayloadBackpressure), errors.Is(err, opening.ErrPayloadBackpressure):
+		return gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE
+	case errors.Is(err, opening.ErrPipeNotOwned):
+		return gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED
+	case errors.Is(err, opening.ErrPayloadInvalid):
+		return gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST
+	default:
+		return gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE
+	}
+}
+
+func peerPayloadError(failure gatewayv1.PipePayloadFailure) error {
+	switch failure {
+	case gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE:
+		return localbinding.ErrPayloadBackpressure
+	case gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST,
+		gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED,
+		gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE:
+		return localbinding.ErrEndpointUnavailable
+	default:
+		return nil
 	}
 }
 

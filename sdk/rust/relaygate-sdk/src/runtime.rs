@@ -8,10 +8,11 @@ use std::{
 };
 
 use crate::{
-    AcceptError, BindError, CloseError, Listener, Offer, OfferMetadata, OpenError, OpenFailure,
-    Pipe, PipeError, Session, SessionError, UnbindError,
+    AcceptError, BindError, CloseError, DeliveryError, DeliveryFailure, Listener, Offer,
+    OfferMetadata, OpenError, OpenFailure, Pipe, PipeError, Session, SessionError, UnbindError,
     wire::{self, connect_request, connect_response},
 };
+use ring::digest::{SHA256, digest};
 use tokio::{
     runtime::Handle,
     sync::{Mutex, mpsc, oneshot, watch},
@@ -28,6 +29,7 @@ pub(crate) const MAX_LISTENERS: usize = 512;
 const MAX_OFFERS: usize = 1_024;
 pub(crate) const MAX_OPEN_REQUESTS: usize = 1_024;
 const MAX_PIPES: usize = 1_024;
+const MAX_RECEIVED_PAYLOADS: usize = 1_024;
 pub(crate) const MAX_IDENTITY_BYTES: usize = 128;
 pub(crate) const MAX_ENDPOINT_BYTES: usize = 1_024;
 pub(crate) const MAX_PAYLOAD_BYTES: usize = 60 << 10;
@@ -67,6 +69,42 @@ enum OfferTerminal {
     DecisionRejected { failure: i32 },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DeliveryTerminal {
+    Received,
+    NotSent,
+    Rejected(DeliveryFailure),
+    Unknown,
+}
+
+struct PendingDelivery {
+    payload_id: String,
+    response: oneshot::Sender<Result<(), DeliveryError>>,
+}
+
+#[derive(Default)]
+struct PipeDeliveryState {
+    pending: Option<PendingDelivery>,
+    last: Option<(String, DeliveryTerminal)>,
+}
+
+enum IncomingPayload {
+    Accepted {
+        permit: mpsc::OwnedPermit<Vec<u8>>,
+        payload: Vec<u8>,
+    },
+    Duplicate,
+    Full,
+    Conflict,
+    Terminal,
+}
+
+#[derive(Default)]
+struct ReceivedPayloadHistory {
+    fingerprints: HashMap<String, [u8; 32]>,
+    order: VecDeque<String>,
+}
+
 pub(crate) struct Shared {
     pub(crate) outbound: mpsc::Sender<wire::ConnectRequest>,
     pub(crate) session: Session,
@@ -85,6 +123,7 @@ pub(crate) struct Shared {
     close_history: StdMutex<VecDeque<(String, bool)>>,
     cancel_history: StdMutex<VecDeque<(String, Option<bool>)>>,
     pipe_history: StdMutex<VecDeque<(String, String)>>,
+    delivery_history: StdMutex<VecDeque<(String, String, DeliveryTerminal)>>,
     pipe_slots: AtomicUsize,
     pub(crate) dispatcher: StdMutex<Option<JoinHandle<()>>>,
 }
@@ -110,6 +149,7 @@ impl Shared {
             close_history: StdMutex::new(VecDeque::new()),
             cancel_history: StdMutex::new(VecDeque::new()),
             pipe_history: StdMutex::new(VecDeque::new()),
+            delivery_history: StdMutex::new(VecDeque::new()),
             pipe_slots: AtomicUsize::new(0),
             dispatcher: StdMutex::new(None),
         }
@@ -153,16 +193,26 @@ impl Shared {
     }
 
     pub(crate) fn send_background(self: &Arc<Self>, message: wire::ConnectRequest) {
+        let _ = self.try_send_background(message);
+    }
+
+    fn try_send_background(
+        self: &Arc<Self>,
+        message: wire::ConnectRequest,
+    ) -> Result<(), SessionError> {
         if self.terminal().is_some() {
-            return;
+            return Err(self.terminal_or_transport());
         }
         if let Err(error) = self.outbound.try_send(message) {
             let detail = match error {
                 mpsc::error::TrySendError::Full(_) => "outbound control queue exhausted",
                 mpsc::error::TrySendError::Closed(_) => "request stream ended",
             };
-            self.terminate(SessionError::Transport(detail.into()));
+            let error = SessionError::Transport(detail.into());
+            self.terminate(error.clone());
+            return Err(error);
         }
+        Ok(())
     }
 
     fn spawn_task(
@@ -221,6 +271,9 @@ impl Shared {
             for (_, pipe) in self.pipes.lock().expect("pipes lock poisoned").drain() {
                 pipe.release_slot(self);
                 pipe.terminate(PipeError::Session(error.clone()));
+                if let Some((payload_id, terminal)) = pipe.last_delivery() {
+                    self.remember_delivery(pipe.pipe_id.clone(), payload_id, terminal);
+                }
             }
             for (_, close) in self.closes.lock().expect("closes lock poisoned").drain() {
                 let _ = close.send(Err(CloseError::Session(error.clone())));
@@ -492,6 +545,64 @@ impl Shared {
         history.push_back((pipe_id, attempt_id));
     }
 
+    fn remember_delivery(&self, pipe_id: String, payload_id: String, terminal: DeliveryTerminal) {
+        let mut history = self
+            .delivery_history
+            .lock()
+            .expect("delivery history lock poisoned");
+        if let Some(index) = history
+            .iter()
+            .position(|(known_pipe, _, _)| known_pipe == &pipe_id)
+        {
+            history.remove(index);
+        }
+        if history.len() == MAX_PIPES {
+            history.pop_front();
+        }
+        history.push_back((pipe_id, payload_id, terminal));
+    }
+
+    fn complete_delivery(
+        &self,
+        pipe_id: &str,
+        payload_id: &str,
+        terminal: DeliveryTerminal,
+    ) -> Result<(), SessionError> {
+        let pipe = self
+            .pipes
+            .lock()
+            .expect("pipes lock poisoned")
+            .get(pipe_id)
+            .cloned();
+        if let Some(pipe) = pipe {
+            return pipe.finish_delivery(payload_id, terminal);
+        }
+        let mut history = self
+            .delivery_history
+            .lock()
+            .expect("delivery history lock poisoned");
+        let Some((_, known_payload, known_terminal)) = history
+            .iter_mut()
+            .find(|(known_pipe, _, _)| known_pipe == pipe_id)
+        else {
+            return Err(SessionError::Protocol("foreign payload delivery outcome"));
+        };
+        if known_payload != payload_id {
+            return Err(SessionError::Protocol(
+                "payload delivery outcome identity conflict",
+            ));
+        }
+        if *known_terminal == terminal {
+            return Ok(());
+        }
+        if *known_terminal == DeliveryTerminal::Unknown {
+            return Ok(());
+        }
+        Err(SessionError::Protocol(
+            "conflicting payload delivery outcome",
+        ))
+    }
+
     pub(crate) fn remove_open(&self, request_id: &str) -> Option<Arc<PendingOpen>> {
         self.opens
             .lock()
@@ -563,6 +674,8 @@ impl Shared {
             closing: AtomicBool::new(false),
             enqueue_gate: Mutex::new(()),
             slot_released: AtomicBool::new(false),
+            delivery: StdMutex::new(PipeDeliveryState::default()),
+            received: StdMutex::new(ReceivedPayloadHistory::default()),
         });
         {
             let mut pipes = self.pipes.lock().expect("pipes lock poisoned");
@@ -610,6 +723,9 @@ impl Shared {
             self.remember_pipe(pipe.pipe_id.clone(), pipe.attempt_id.clone());
             pipe.release_slot(self);
             pipe.terminate(error);
+            if let Some((payload_id, terminal)) = pipe.last_delivery() {
+                self.remember_delivery(pipe.pipe_id.clone(), payload_id, terminal);
+            }
             true
         } else {
             false
@@ -958,10 +1074,122 @@ pub(crate) struct PipeState {
     pub(crate) closing: AtomicBool,
     pub(crate) enqueue_gate: Mutex<()>,
     slot_released: AtomicBool,
+    delivery: StdMutex<PipeDeliveryState>,
+    received: StdMutex<ReceivedPayloadHistory>,
 }
 
 impl PipeState {
+    pub(crate) fn begin_delivery(
+        &self,
+        payload_id: String,
+    ) -> Result<oneshot::Receiver<Result<(), DeliveryError>>, SessionError> {
+        let (response, receiver) = oneshot::channel();
+        let mut delivery = self.delivery.lock().expect("delivery lock poisoned");
+        if delivery.pending.is_some() {
+            return Err(SessionError::Protocol(
+                "multiple payload deliveries were admitted for one Pipe",
+            ));
+        }
+        delivery.pending = Some(PendingDelivery {
+            payload_id,
+            response,
+        });
+        Ok(receiver)
+    }
+
+    pub(crate) fn finish_delivery(
+        &self,
+        payload_id: &str,
+        terminal: DeliveryTerminal,
+    ) -> Result<(), SessionError> {
+        let mut delivery = self.delivery.lock().expect("delivery lock poisoned");
+        if let Some(pending) = delivery.pending.take() {
+            if pending.payload_id != payload_id {
+                delivery.pending = Some(pending);
+                return Err(SessionError::Protocol(
+                    "payload delivery outcome identity conflict",
+                ));
+            }
+            let result = delivery_result(payload_id, &terminal);
+            delivery.last = Some((payload_id.to_owned(), terminal));
+            let _ = pending.response.send(result);
+            return Ok(());
+        }
+        let Some((known_payload, known_terminal)) = delivery.last.as_mut() else {
+            return Err(SessionError::Protocol("foreign payload delivery outcome"));
+        };
+        if known_payload != payload_id {
+            return Err(SessionError::Protocol(
+                "payload delivery outcome identity conflict",
+            ));
+        }
+        if *known_terminal == terminal {
+            return Ok(());
+        }
+        if *known_terminal == DeliveryTerminal::Unknown {
+            return Ok(());
+        }
+        Err(SessionError::Protocol(
+            "conflicting payload delivery outcome",
+        ))
+    }
+
+    fn last_delivery(&self) -> Option<(String, DeliveryTerminal)> {
+        self.delivery
+            .lock()
+            .expect("delivery lock poisoned")
+            .last
+            .clone()
+    }
+
+    fn deliver(&self, payload_id: String, payload: Vec<u8>) -> IncomingPayload {
+        let mut fingerprint = [0_u8; 32];
+        fingerprint.copy_from_slice(digest(&SHA256, &payload).as_ref());
+        let mut received = self
+            .received
+            .lock()
+            .expect("received payload lock poisoned");
+        if let Some(known_fingerprint) = received.fingerprints.get(&payload_id) {
+            return if known_fingerprint == &fingerprint {
+                IncomingPayload::Duplicate
+            } else {
+                IncomingPayload::Conflict
+            };
+        }
+        if self.terminal.borrow().is_some() {
+            return IncomingPayload::Terminal;
+        }
+        match self.payload_tx.clone().try_reserve_owned() {
+            Ok(permit) => {
+                if received.order.len() == MAX_RECEIVED_PAYLOADS
+                    && let Some(oldest) = received.order.pop_front()
+                {
+                    received.fingerprints.remove(&oldest);
+                }
+                received.order.push_back(payload_id.clone());
+                received.fingerprints.insert(payload_id, fingerprint);
+                IncomingPayload::Accepted { permit, payload }
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => IncomingPayload::Full,
+            Err(mpsc::error::TrySendError::Closed(_)) => IncomingPayload::Terminal,
+        }
+    }
+
     fn terminate(&self, error: PipeError) {
+        {
+            let mut delivery = self.delivery.lock().expect("delivery lock poisoned");
+            if let Some(pending) = delivery.pending.take() {
+                let payload_id = pending.payload_id;
+                delivery.last = Some((payload_id.clone(), DeliveryTerminal::Unknown));
+                let session = match &error {
+                    PipeError::Session(error) => Some(error.clone()),
+                    _ => None,
+                };
+                let _ = pending
+                    .response
+                    .send(Err(DeliveryError::unknown(payload_id, session)));
+            }
+        }
         self.terminal.send_if_modified(|terminal| {
             if terminal.is_none() {
                 *terminal = Some(error);
@@ -976,6 +1204,19 @@ impl PipeState {
         if !self.slot_released.swap(true, Ordering::AcqRel) {
             shared.release_pipe_slot();
         }
+    }
+}
+
+fn delivery_result(payload_id: &str, terminal: &DeliveryTerminal) -> Result<(), DeliveryError> {
+    match terminal {
+        DeliveryTerminal::Received => Ok(()),
+        DeliveryTerminal::NotSent => {
+            Err(DeliveryError::not_sent(Some(payload_id.to_owned()), None))
+        }
+        DeliveryTerminal::Rejected(failure) => {
+            Err(DeliveryError::rejected(payload_id.to_owned(), *failure))
+        }
+        DeliveryTerminal::Unknown => Err(DeliveryError::unknown(payload_id.to_owned(), None)),
     }
 }
 
@@ -1057,6 +1298,9 @@ pub(crate) async fn dispatch_response(
             open_request_rejected(shared, rejected)?;
         }
         connect_response::Message::PipePayload(payload) => pipe_payload(shared, payload)?,
+        connect_response::Message::PipePayloadReceived(received) => {
+            pipe_payload_received(shared, received)?;
+        }
         connect_response::Message::PipeTerminated(terminated) => {
             pipe_terminated(shared, terminated)?;
         }
@@ -1949,6 +2193,7 @@ fn pipe_terminated(
 
 fn pipe_payload(shared: &Arc<Shared>, payload: wire::PipePayload) -> Result<(), SessionError> {
     if !valid_text(&payload.pipe_id, MAX_IDENTITY_BYTES)
+        || !valid_text(&payload.payload_id, MAX_IDENTITY_BYTES)
         || payload.payload.is_empty()
         || payload.payload.len() > MAX_PAYLOAD_BYTES
     {
@@ -1963,44 +2208,116 @@ fn pipe_payload(shared: &Arc<Shared>, payload: wire::PipePayload) -> Result<(), 
     let Some(pipe) = pipe else {
         return Err(SessionError::Protocol("foreign PipePayload"));
     };
-    if pipe.payload_tx.try_send(payload.payload).is_err() {
-        shared.terminalize_pipe(&payload.pipe_id, PipeError::Backpressure);
-        shared.send_background(request(connect_request::Message::ClosePipe(
-            wire::ClosePipe {
-                pipe_id: payload.pipe_id,
-            },
-        )));
+    let pipe_id = payload.pipe_id;
+    let payload_id = payload.payload_id;
+    match pipe.deliver(payload_id.clone(), payload.payload) {
+        IncomingPayload::Accepted {
+            permit,
+            payload: bytes,
+        } => {
+            shared.try_send_background(request(connect_request::Message::PipePayloadReceived(
+                wire::PipePayloadReceived {
+                    pipe_id: pipe_id.clone(),
+                    payload_id: payload_id.clone(),
+                },
+            )))?;
+            permit.send(bytes);
+        }
+        IncomingPayload::Duplicate => {
+            shared.try_send_background(request(connect_request::Message::PipePayloadReceived(
+                wire::PipePayloadReceived {
+                    pipe_id,
+                    payload_id,
+                },
+            )))?;
+        }
+        IncomingPayload::Full => {
+            shared.send_background(request(connect_request::Message::PipePayloadRejected(
+                wire::PipePayloadRejected {
+                    pipe_id: pipe_id.clone(),
+                    failure: wire::PipePayloadFailure::Backpressure.into(),
+                    payload_id,
+                },
+            )));
+            shared.terminalize_pipe(&pipe_id, PipeError::Backpressure);
+            shared.send_background(request(connect_request::Message::ClosePipe(
+                wire::ClosePipe { pipe_id },
+            )));
+        }
+        IncomingPayload::Conflict => {
+            return Err(SessionError::Protocol(
+                "PipePayload reused PayloadId with different bytes",
+            ));
+        }
+        IncomingPayload::Terminal => {
+            return Err(SessionError::Protocol("PipePayload targeted terminal Pipe"));
+        }
     }
     Ok(())
+}
+
+fn pipe_payload_received(
+    shared: &Arc<Shared>,
+    received: wire::PipePayloadReceived,
+) -> Result<(), SessionError> {
+    if !valid_text(&received.pipe_id, MAX_IDENTITY_BYTES)
+        || !valid_text(&received.payload_id, MAX_IDENTITY_BYTES)
+    {
+        return Err(SessionError::Protocol(
+            "PipePayloadReceived contained invalid identity",
+        ));
+    }
+    shared.complete_delivery(
+        &received.pipe_id,
+        &received.payload_id,
+        DeliveryTerminal::Received,
+    )
 }
 
 fn pipe_payload_rejected(
     shared: &Arc<Shared>,
     rejected: wire::PipePayloadRejected,
 ) -> Result<(), SessionError> {
-    if !valid_text(&rejected.pipe_id, MAX_IDENTITY_BYTES) {
+    if !valid_text(&rejected.pipe_id, MAX_IDENTITY_BYTES)
+        || !valid_text(&rejected.payload_id, MAX_IDENTITY_BYTES)
+    {
         return Err(SessionError::Protocol(
             "PipePayloadRejected contained invalid identity",
         ));
     }
-    let error = match wire::PipePayloadFailure::try_from(rejected.failure).ok() {
-        Some(wire::PipePayloadFailure::InvalidRequest) => PipeError::InvalidPayload,
-        Some(wire::PipePayloadFailure::NotOwned) => PipeError::NotOwned,
-        Some(wire::PipePayloadFailure::Backpressure) => PipeError::Backpressure,
-        Some(wire::PipePayloadFailure::Unavailable) => PipeError::Unavailable,
+    let (failure, error) = match wire::PipePayloadFailure::try_from(rejected.failure).ok() {
+        Some(wire::PipePayloadFailure::InvalidRequest) => {
+            (DeliveryFailure::InvalidRequest, PipeError::InvalidPayload)
+        }
+        Some(wire::PipePayloadFailure::NotOwned) => {
+            (DeliveryFailure::NotOwned, PipeError::NotOwned)
+        }
+        Some(wire::PipePayloadFailure::Backpressure) => {
+            (DeliveryFailure::Backpressure, PipeError::Backpressure)
+        }
+        Some(wire::PipePayloadFailure::Unavailable) => {
+            (DeliveryFailure::Unavailable, PipeError::Unavailable)
+        }
         Some(wire::PipePayloadFailure::Unspecified) | None => {
             return Err(SessionError::Protocol(
                 "PipePayloadRejected contained invalid failure",
             ));
         }
     };
-    if shared.terminalize_pipe(&rejected.pipe_id, error)
-        || shared.pipe_was_retired(&rejected.pipe_id)
+    shared.complete_delivery(
+        &rejected.pipe_id,
+        &rejected.payload_id,
+        DeliveryTerminal::Rejected(failure),
+    )?;
+    if shared
+        .pipes
+        .lock()
+        .expect("pipes lock poisoned")
+        .contains_key(&rejected.pipe_id)
     {
-        Ok(())
-    } else {
-        Err(SessionError::Protocol("foreign PipePayloadRejected"))
+        shared.terminalize_pipe(&rejected.pipe_id, error);
     }
+    Ok(())
 }
 
 pub(crate) async fn wait_for_established(

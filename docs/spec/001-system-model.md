@@ -120,7 +120,9 @@ Only `111111` creates a Listener offer. Context issuance is not a reservation or
 - Listener accept is the Open linearization point and mints `PipeId`.
 - Post-linearization response or hop loss can produce caller `Unknown`.
 - Remote owner uses one dedicated internal bidirectional stream per Pipe; no redial, retry, multiplexed resume, or payload replay.
-- Payload is opaque, bounded, per-direction FIFO. `Send` success is not peer application ACK.
+- Payload is opaque, bounded, per-direction FIFO, and carries an exact `PayloadId`. `Send` succeeds only after the peer SDK
+  admits the payload to its bounded receive queue and the exact receipt returns. This is not peer application processing or
+  durable commit. Pre-handoff failure is `NotSent`; exact refusal is `Rejected`; post-handoff receipt loss is `Unknown`.
 - A multiplexed public Relay stream has separate bounded control/terminal and payload lanes; ready control/terminal work bypasses queued payload pressure.
 - A one-stream-per-Pipe peer hop serializes sends through one bounded lane. Send timeout or cancellation terminalizes the Pipe and cancels the stream; no priority bypass inside a blocked gRPC write, silent drop, retry, or replay is provided.
 - `ManagedClient` reconnects only sessions and current Listener declarations. It rejects Open while not ready and never replays Open/Pipe/payload state.
@@ -137,3 +139,5 @@ Only `111111` creates a Listener offer. Context issuance is not a reservation or
 4. New Open requires all six gates; accepted Pipes are not terminated solely because future authority/quorum admission fails.
 5. Capacity excess rejects new work and does not evict existing live state.
 6. Session reconnect can fresh-bind current Listeners only. Open retry, response replay, Pipe resume/attach, and payload replay do not exist.
+7. Payload receipt state is Pipe-local bounded memory. It never enters Controller Raft and never turns an unobserved receipt
+   into stable success or failure.

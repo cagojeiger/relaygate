@@ -255,3 +255,56 @@ func (e *PipeError) Error() string {
 	}
 	return fmt.Sprintf("relaygate: Pipe payload rejected (%d)", e.Failure)
 }
+
+// DeliveryOutcome is the sender-observed terminal state of one exact payload.
+type DeliveryOutcome uint8
+
+const (
+	DeliveryReceived DeliveryOutcome = iota + 1
+	DeliveryNotSent
+	DeliveryRejected
+	DeliveryUnknown
+)
+
+var (
+	ErrDeliveryNotSent  = errors.New("relaygate: payload was not sent")
+	ErrDeliveryRejected = errors.New("relaygate: payload was rejected")
+	ErrDeliveryUnknown  = errors.New("relaygate: payload delivery is unknown")
+)
+
+// DeliveryError preserves the retry-relevant outcome for one Send.
+type DeliveryError struct {
+	PayloadID string
+	Outcome   DeliveryOutcome
+	Cause     error
+}
+
+func (e *DeliveryError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("relaygate: payload %s ended with delivery outcome %d: %v", e.PayloadID, e.Outcome, e.Cause)
+}
+
+func (e *DeliveryError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *DeliveryError) Is(target error) bool {
+	if e == nil {
+		return false
+	}
+	switch target {
+	case ErrDeliveryNotSent:
+		return e.Outcome == DeliveryNotSent
+	case ErrDeliveryRejected:
+		return e.Outcome == DeliveryRejected
+	case ErrDeliveryUnknown:
+		return e.Outcome == DeliveryUnknown
+	default:
+		return errors.Is(e.Cause, target)
+	}
+}

@@ -781,7 +781,7 @@ func TestAcceptedPipeContinuesWhenFutureAdmissionIsUnavailable(t *testing.T) {
 	if h.manager.ActiveCount() != 1 {
 		t.Fatalf("failed future admission changed accepted Pipe count to %d", h.manager.ActiveCount())
 	}
-	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("still-live")); err != nil {
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", []byte("still-live")); err != nil {
 		t.Fatalf("RelayPayload(existing Pipe): %v", err)
 	}
 	payload := receivePayload(t, listenerEndpoint)
@@ -819,18 +819,18 @@ func TestRelayPayloadRoutesBothDirectionsWithPerDirectionFIFO(t *testing.T) {
 
 	firstResult := make(chan error, 1)
 	go func() {
-		firstResult <- h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("caller-1"))
+		firstResult <- h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", []byte("caller-1"))
 	}()
 	first := receivePayload(t, listenerEndpoint)
 	<-firstEntered
 
 	secondResult := make(chan error, 1)
 	go func() {
-		secondResult <- h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("caller-2"))
+		secondResult <- h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", []byte("caller-2"))
 	}()
 	reverseResult := make(chan error, 1)
 	go func() {
-		reverseResult <- h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, []byte("listener-1"))
+		reverseResult <- h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, "payload-id", []byte("listener-1"))
 	}()
 	reverse := receivePayload(t, callerEndpoint)
 	assertNoPayload(t, listenerEndpoint, 20*time.Millisecond)
@@ -869,7 +869,7 @@ func TestRelayPayloadWaitsForExactCallerActivation(t *testing.T) {
 	relayed := make(chan error, 1)
 	go func() {
 		close(started)
-		relayed <- h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, []byte("early"))
+		relayed <- h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, "payload-id", []byte("early"))
 	}()
 	<-started
 	assertNoPayload(t, callerEndpoint, 20*time.Millisecond)
@@ -910,7 +910,7 @@ func TestRelayPayloadActivationWaitIsBoundedAndTerminalizesPipe(t *testing.T) {
 		t.Fatalf("OpenPipe(): %v", err)
 	}
 	started := time.Now()
-	if err := h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, []byte("early")); !errors.Is(err, ErrUnavailable) {
+	if err := h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, "payload-id", []byte("early")); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("pre-activation RelayPayload() = %v, want ErrUnavailable", err)
 	}
 	if elapsed := time.Since(started); elapsed < h.manager.config.OpenTimeout || elapsed > time.Second {
@@ -926,7 +926,7 @@ func TestRelayPayloadActivationWaitIsBoundedAndTerminalizesPipe(t *testing.T) {
 	if h.manager.ActivatePipe(h.caller.Ref, result.PipeID) {
 		t.Fatal("ActivatePipe() revived terminal Pipe")
 	}
-	if err := h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, []byte("late")); !errors.Is(err, ErrPipeNotOwned) {
+	if err := h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, "payload-id", []byte("late")); !errors.Is(err, ErrPipeNotOwned) {
 		t.Fatalf("terminal RelayPayload() = %v, want ErrPipeNotOwned", err)
 	}
 }
@@ -946,10 +946,10 @@ func TestRelayPayloadRejectsForeignUnknownAndTerminalWithoutMutation(t *testing.
 	}
 	foreign := h.caller.Ref
 	foreign.APIKeyID = "foreign-key"
-	if err := h.manager.RelayPayload(context.Background(), foreign, result.PipeID, []byte("foreign")); !errors.Is(err, ErrPipeNotOwned) {
+	if err := h.manager.RelayPayload(context.Background(), foreign, result.PipeID, "payload-id", []byte("foreign")); !errors.Is(err, ErrPipeNotOwned) {
 		t.Fatalf("foreign RelayPayload() = %v, want ErrPipeNotOwned", err)
 	}
-	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, "unknown-pipe", []byte("unknown")); !errors.Is(err, ErrPipeNotOwned) {
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, "unknown-pipe", "payload-id", []byte("unknown")); !errors.Is(err, ErrPipeNotOwned) {
 		t.Fatalf("unknown RelayPayload() = %v, want ErrPipeNotOwned", err)
 	}
 	if h.manager.ActiveCount() != 1 {
@@ -960,7 +960,7 @@ func TestRelayPayloadRejectsForeignUnknownAndTerminalWithoutMutation(t *testing.
 	if !h.manager.ClosePipe(h.caller.Ref, result.PipeID) {
 		t.Fatal("ClosePipe() rejected exact caller")
 	}
-	if err := h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, []byte("terminal")); !errors.Is(err, ErrPipeNotOwned) {
+	if err := h.manager.RelayPayload(context.Background(), h.listener.Ref, result.PipeID, "payload-id", []byte("terminal")); !errors.Is(err, ErrPipeNotOwned) {
 		t.Fatalf("terminal RelayPayload() = %v, want ErrPipeNotOwned", err)
 	}
 	if h.manager.ActivatePipe(h.caller.Ref, result.PipeID) {
@@ -982,20 +982,20 @@ func TestRelayPayloadSizeBoundariesAndCopy(t *testing.T) {
 	if !h.manager.ActivatePipe(h.caller.Ref, result.PipeID) {
 		t.Fatal("ActivatePipe() rejected exact caller")
 	}
-	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, nil); !errors.Is(err, ErrPayloadInvalid) {
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", nil); !errors.Is(err, ErrPayloadInvalid) {
 		t.Fatalf("empty RelayPayload() = %v, want ErrPayloadInvalid", err)
 	}
-	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, make([]byte, localbinding.MaxPayloadBytes+1)); !errors.Is(err, ErrPayloadInvalid) {
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", make([]byte, localbinding.MaxPayloadBytes+1)); !errors.Is(err, ErrPayloadInvalid) {
 		t.Fatalf("oversized RelayPayload() = %v, want ErrPayloadInvalid", err)
 	}
 	var nilContext context.Context
-	if err := h.manager.RelayPayload(nilContext, h.caller.Ref, result.PipeID, []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
+	if err := h.manager.RelayPayload(nilContext, h.caller.Ref, result.PipeID, "payload-id", []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
 		t.Fatalf("nil-context RelayPayload() = %v, want ErrPayloadInvalid", err)
 	}
-	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, "", []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, "", "payload-id", []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
 		t.Fatalf("empty-PipeID RelayPayload() = %v, want ErrPayloadInvalid", err)
 	}
-	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, strings.Repeat("p", routing.MaxIdentityBytes+1), []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, strings.Repeat("p", routing.MaxIdentityBytes+1), "payload-id", []byte{1}); !errors.Is(err, ErrPayloadInvalid) {
 		t.Fatalf("oversized-PipeID RelayPayload() = %v, want ErrPayloadInvalid", err)
 	}
 	if h.manager.ActiveCount() != 1 {
@@ -1006,7 +1006,7 @@ func TestRelayPayloadSizeBoundariesAndCopy(t *testing.T) {
 	maximum := make([]byte, localbinding.MaxPayloadBytes)
 	maximum[0] = 'a'
 	maximum[len(maximum)-1] = 'z'
-	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, maximum); err != nil {
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", maximum); err != nil {
 		t.Fatalf("maximum RelayPayload(): %v", err)
 	}
 	maximum[0] = 'x'
@@ -1040,7 +1040,7 @@ func TestPayloadDeliveryFailureTerminalizesOnceAndNotifiesBothEndpoints(t *testi
 			if !h.manager.ActivatePipe(h.caller.Ref, result.PipeID) {
 				t.Fatal("ActivatePipe() rejected exact caller")
 			}
-			if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("payload")); !errors.Is(err, test.wantStable) {
+			if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", []byte("payload")); !errors.Is(err, test.wantStable) {
 				t.Fatalf("RelayPayload() = %v, want %v", err, test.wantStable)
 			}
 			if snapshot, ok := h.manager.Inspect(result.AttemptID); !ok || snapshot.State != StateTerminal || !errors.Is(snapshot.Err, ErrUnknown) || !errors.Is(snapshot.Err, test.wantStable) {
@@ -1055,7 +1055,7 @@ func TestPayloadDeliveryFailureTerminalizesOnceAndNotifiesBothEndpoints(t *testi
 			if pipeID := receivePipeTermination(t, callerEndpoint); pipeID != result.PipeID {
 				t.Fatalf("caller termination = %q, want %q", pipeID, result.PipeID)
 			}
-			if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("again")); !errors.Is(err, ErrPipeNotOwned) {
+			if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", []byte("again")); !errors.Is(err, ErrPipeNotOwned) {
 				t.Fatalf("terminal RelayPayload() = %v, want ErrPipeNotOwned", err)
 			}
 			if !h.manager.ClosePipe(h.caller.Ref, result.PipeID) {
@@ -1089,7 +1089,7 @@ func TestClosePipeCancelsInFlightPayloadAndBypassesDelivery(t *testing.T) {
 	}
 	relayed := make(chan error, 1)
 	go func() {
-		relayed <- h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("blocked"))
+		relayed <- h.manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", []byte("blocked"))
 	}()
 	waitClosed(t, deliveryStarted, "payload delivery did not start")
 	if !h.manager.ClosePipe(h.caller.Ref, result.PipeID) {
@@ -1176,7 +1176,7 @@ func TestTerminalPreActivationPayloadIsNotReplayedIntoNewPipe(t *testing.T) {
 	oldResult := make(chan error, 1)
 	go func() {
 		close(started)
-		oldResult <- h.manager.RelayPayload(context.Background(), h.caller.Ref, first.PipeID, []byte("old"))
+		oldResult <- h.manager.RelayPayload(context.Background(), h.caller.Ref, first.PipeID, "payload-id", []byte("old"))
 	}()
 	<-started
 	if !h.manager.ClosePipe(h.caller.Ref, first.PipeID) {
@@ -1207,7 +1207,7 @@ func TestTerminalPreActivationPayloadIsNotReplayedIntoNewPipe(t *testing.T) {
 		t.Fatal("ActivatePipe(second) rejected exact caller")
 	}
 	assertNoPayload(t, listenerEndpoint, 20*time.Millisecond)
-	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, second.PipeID, []byte("new")); err != nil {
+	if err := h.manager.RelayPayload(context.Background(), h.caller.Ref, second.PipeID, "payload-id", []byte("new")); err != nil {
 		t.Fatalf("new RelayPayload(): %v", err)
 	}
 	payload := receivePayload(t, listenerEndpoint)
@@ -1398,7 +1398,7 @@ func TestRemoteIngressActivationPayloadAndClose(t *testing.T) {
 	if h.store.callCount() != 0 || remoteOpener.callCount() != 1 {
 		t.Fatalf("remote dispatch calls: local reserve=%d remote=%d", h.store.callCount(), remoteOpener.callCount())
 	}
-	if err := manager.RelayPayload(context.Background(), clientsession.Ref{}, result.PipeID, []byte("forged")); !errors.Is(err, ErrPipeNotOwned) {
+	if err := manager.RelayPayload(context.Background(), clientsession.Ref{}, result.PipeID, "payload-id", []byte("forged")); !errors.Is(err, ErrPipeNotOwned) {
 		t.Fatalf("RelayPayload(zero remote sender) = %v, want ErrPipeNotOwned", err)
 	}
 	assertNoPayload(t, remote.scriptedEndpoint, 20*time.Millisecond)
@@ -1406,7 +1406,7 @@ func TestRemoteIngressActivationPayloadAndClose(t *testing.T) {
 	if !activated || remote.activationCount() != 1 {
 		t.Fatalf("remote activation = ok/count %v/%d", activated, remote.activationCount())
 	}
-	if err := manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, []byte("across-gateways")); err != nil {
+	if err := manager.RelayPayload(context.Background(), h.caller.Ref, result.PipeID, "payload-id", []byte("across-gateways")); err != nil {
 		t.Fatalf("RelayPayload(remote): %v", err)
 	}
 	payload := receivePayload(t, remote.scriptedEndpoint)

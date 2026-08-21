@@ -2,6 +2,7 @@ package relaygrpc
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -33,7 +34,7 @@ type BindingManager interface {
 type Opener interface {
 	OpenPipe(context.Context, clientsession.Session, localbinding.CallerEndpoint, string, string) (opening.Result, error)
 	ActivatePipe(clientsession.Ref, string) bool
-	RelayPayload(context.Context, clientsession.Ref, string, []byte) error
+	RelayPayload(context.Context, clientsession.Ref, string, string, []byte) error
 	ClosePipe(clientsession.Ref, string) bool
 	RetireSession(clientsession.Ref) int
 }
@@ -85,6 +86,7 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest
 	outbound := newOutboundActor(stream, s.payloadSlots, s.terminalSendTimeout)
 	defer outbound.close()
 	pipeEndpoint := newStreamPipeEndpoint(outbound, s.terminalSendTimeout)
+	defer pipeEndpoint.close()
 	listener := newStreamListenerEndpoint(stream.Context(), outbound, pipeEndpoint, s.terminalSendTimeout)
 	defer listener.close()
 
@@ -144,6 +146,18 @@ func (s *Service) Connect(stream grpc.BidiStreamingServer[relayv1.ConnectRequest
 			}
 			if item.err != nil {
 				return item.err
+			}
+			if receipt := item.request.GetPipePayloadReceived(); receipt != nil {
+				if err := pipeEndpoint.acknowledge(receipt.GetPipeId(), receipt.GetPayloadId()); err != nil {
+					return status.Error(codes.FailedPrecondition, "invalid payload receipt")
+				}
+				continue
+			}
+			if rejection := item.request.GetPipePayloadRejected(); rejection != nil {
+				if err := pipeEndpoint.reject(rejection.GetPipeId(), rejection.GetPayloadId(), rejection.GetFailure()); err != nil {
+					return status.Error(codes.FailedPrecondition, "invalid payload rejection")
+				}
+				continue
 			}
 			if item.request.GetPipePayload() != nil || item.request.GetClosePipe() != nil {
 				if err := coordinator.enqueuePipeWork(s, item.request); err != nil {
@@ -335,20 +349,23 @@ func (s *Service) open(ctx context.Context, session clientsession.Session, calle
 
 func (s *Service) relayPayload(ctx context.Context, sender clientsession.Ref, request *relayv1.PipePayload) *relayv1.ConnectResponse {
 	pipeID := safeWireValue(request.GetPipeId(), routing.MaxIdentityBytes)
+	payloadID := safeWireValue(request.GetPayloadId(), routing.MaxIdentityBytes)
 	payload := request.GetPayload()
-	if pipeID == "" {
-		return pipePayloadRejected(pipeID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
+	if pipeID == "" || payloadID == "" {
+		return pipePayloadRejected(pipeID, payloadID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
 	}
 	if len(payload) == 0 || len(payload) > localbinding.MaxPayloadBytes {
 		// ClosePipe changes state only for the exact participant. Unknown and
 		// foreign IDs are intentionally indistinguishable and remain untouched.
 		s.opener.ClosePipe(sender, pipeID)
-		return pipePayloadRejected(pipeID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
+		return pipePayloadRejected(pipeID, payloadID, relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST)
 	}
-	if err := s.opener.RelayPayload(ctx, sender, pipeID, payload); err != nil {
-		return pipePayloadRejected(pipeID, payloadFailure(err))
+	if err := s.opener.RelayPayload(ctx, sender, pipeID, payloadID, payload); err != nil {
+		return pipePayloadRejected(pipeID, payloadID, payloadFailure(err))
 	}
-	return nil
+	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadReceived{
+		PipePayloadReceived: &relayv1.PipePayloadReceived{PipeId: pipeID, PayloadId: payloadID},
+	}}
 }
 
 func payloadFailure(err error) relayv1.PipePayloadFailure {
@@ -364,9 +381,9 @@ func payloadFailure(err error) relayv1.PipePayloadFailure {
 	}
 }
 
-func pipePayloadRejected(pipeID string, failure relayv1.PipePayloadFailure) *relayv1.ConnectResponse {
+func pipePayloadRejected(pipeID, payloadID string, failure relayv1.PipePayloadFailure) *relayv1.ConnectResponse {
 	return &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayloadRejected{
-		PipePayloadRejected: &relayv1.PipePayloadRejected{PipeId: pipeID, Failure: failure},
+		PipePayloadRejected: &relayv1.PipePayloadRejected{PipeId: pipeID, PayloadId: payloadID, Failure: failure},
 	}}
 }
 
@@ -779,21 +796,199 @@ func (a *outboundActor) releasePayloadSlot() {
 type streamPipeEndpoint struct {
 	outbound            *outboundActor
 	terminalSendTimeout time.Duration
+
+	mu      sync.Mutex
+	pending map[payloadReceiptKey]pendingPayloadReceipt
+	history map[payloadReceiptKey]payloadReceiptOutcome
+	order   []payloadReceiptKey
+	closed  bool
 }
 
+type payloadReceiptKey struct {
+	pipeID    string
+	payloadID string
+}
+
+type payloadReceiptOutcome struct {
+	received bool
+	failure  relayv1.PipePayloadFailure
+	unknown  bool
+	hash     [sha256.Size]byte
+}
+
+type pendingPayloadReceipt struct {
+	result chan error
+	hash   [sha256.Size]byte
+}
+
+const maxPayloadReceiptHistory = 1024
+
 func newStreamPipeEndpoint(outbound *outboundActor, terminalSendTimeout time.Duration) *streamPipeEndpoint {
-	return &streamPipeEndpoint{outbound: outbound, terminalSendTimeout: terminalSendTimeout}
+	return &streamPipeEndpoint{
+		outbound: outbound, terminalSendTimeout: terminalSendTimeout,
+		pending: make(map[payloadReceiptKey]pendingPayloadReceipt), history: make(map[payloadReceiptKey]payloadReceiptOutcome),
+	}
 }
 
 func (e *streamPipeEndpoint) DeliverPayload(ctx context.Context, payload localbinding.PipePayload) error {
 	if ctx == nil || payload.PipeID == "" || len(payload.PipeID) > routing.MaxIdentityBytes ||
+		payload.PayloadID == "" || len(payload.PayloadID) > routing.MaxIdentityBytes ||
 		len(payload.Data) == 0 || len(payload.Data) > localbinding.MaxPayloadBytes {
 		return fmt.Errorf("%w: invalid Pipe payload", localbinding.ErrEndpointUnavailable)
 	}
+	key := payloadReceiptKey{pipeID: payload.PipeID, payloadID: payload.PayloadID}
+	fingerprint := sha256.Sum256(payload.Data)
+	result := make(chan error, 1)
+	e.mu.Lock()
+	if e.closed || len(e.pending) >= maxPayloadReceiptHistory {
+		e.mu.Unlock()
+		return localbinding.ErrEndpointUnavailable
+	}
+	if pending, exists := e.pending[key]; exists {
+		e.mu.Unlock()
+		if pending.hash != fingerprint {
+			return fmt.Errorf("%w: conflicting duplicate payload", localbinding.ErrEndpointUnavailable)
+		}
+		return fmt.Errorf("%w: duplicate pending payload", localbinding.ErrEndpointUnavailable)
+	}
+	if outcome, exists := e.history[key]; exists {
+		e.mu.Unlock()
+		if outcome.hash != fingerprint {
+			return fmt.Errorf("%w: conflicting duplicate payload", localbinding.ErrEndpointUnavailable)
+		}
+		if outcome.received {
+			return nil
+		}
+		return fmt.Errorf("%w: payload outcome already retired", localbinding.ErrEndpointUnavailable)
+	}
+	e.pending[key] = pendingPayloadReceipt{result: result, hash: fingerprint}
+	e.mu.Unlock()
+	removePending := func(outcome *payloadReceiptOutcome) {
+		e.mu.Lock()
+		if pending, exists := e.pending[key]; exists && pending.result == result {
+			delete(e.pending, key)
+			if outcome != nil {
+				outcome.hash = fingerprint
+				e.rememberLocked(key, *outcome)
+			}
+		}
+		e.mu.Unlock()
+	}
 	data := append([]byte(nil), payload.Data...)
-	return e.outbound.sendPayload(ctx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayload{
-		PipePayload: &relayv1.PipePayload{PipeId: payload.PipeID, Payload: data},
-	}})
+	if err := e.outbound.sendPayload(ctx, &relayv1.ConnectResponse{Message: &relayv1.ConnectResponse_PipePayload{
+		PipePayload: &relayv1.PipePayload{PipeId: payload.PipeID, PayloadId: payload.PayloadID, Payload: data},
+	}}); err != nil {
+		select {
+		case outcome := <-result:
+			return outcome
+		default:
+		}
+		removePending(nil)
+		return err
+	}
+	wait, cancel := context.WithTimeout(ctx, e.terminalSendTimeout)
+	defer cancel()
+	select {
+	case err := <-result:
+		return err
+	case <-wait.Done():
+		select {
+		case outcome := <-result:
+			return outcome
+		default:
+		}
+		removePending(&payloadReceiptOutcome{unknown: true})
+		return localbinding.ErrEndpointUnavailable
+	case <-e.outbound.done:
+		select {
+		case outcome := <-result:
+			return outcome
+		default:
+		}
+		removePending(&payloadReceiptOutcome{unknown: true})
+		return localbinding.ErrEndpointUnavailable
+	}
+}
+
+func (e *streamPipeEndpoint) acknowledge(pipeID, payloadID string) error {
+	if pipeID == "" || payloadID == "" || len(pipeID) > routing.MaxIdentityBytes || len(payloadID) > routing.MaxIdentityBytes {
+		return localbinding.ErrEndpointUnavailable
+	}
+	key := payloadReceiptKey{pipeID: pipeID, payloadID: payloadID}
+	e.mu.Lock()
+	if pending, exists := e.pending[key]; exists {
+		delete(e.pending, key)
+		e.rememberLocked(key, payloadReceiptOutcome{received: true, hash: pending.hash})
+		e.mu.Unlock()
+		pending.result <- nil
+		return nil
+	}
+	outcome, remembered := e.history[key]
+	e.mu.Unlock()
+	if remembered && (outcome.received || outcome.unknown) {
+		return nil
+	}
+	return localbinding.ErrEndpointUnavailable
+}
+
+func (e *streamPipeEndpoint) reject(pipeID, payloadID string, failure relayv1.PipePayloadFailure) error {
+	if pipeID == "" || payloadID == "" || len(pipeID) > routing.MaxIdentityBytes || len(payloadID) > routing.MaxIdentityBytes {
+		return localbinding.ErrEndpointUnavailable
+	}
+	var rejection error
+	switch failure {
+	case relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE:
+		rejection = localbinding.ErrPayloadBackpressure
+	case relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_INVALID_REQUEST,
+		relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_NOT_OWNED,
+		relayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_UNAVAILABLE:
+		rejection = localbinding.ErrEndpointUnavailable
+	default:
+		return localbinding.ErrEndpointUnavailable
+	}
+	key := payloadReceiptKey{pipeID: pipeID, payloadID: payloadID}
+	e.mu.Lock()
+	if pending, exists := e.pending[key]; exists {
+		delete(e.pending, key)
+		e.rememberLocked(key, payloadReceiptOutcome{failure: failure, hash: pending.hash})
+		e.mu.Unlock()
+		pending.result <- rejection
+		return nil
+	}
+	outcome, remembered := e.history[key]
+	e.mu.Unlock()
+	if remembered && (outcome.unknown || (!outcome.received && outcome.failure == failure)) {
+		return nil
+	}
+	return localbinding.ErrEndpointUnavailable
+}
+
+func (e *streamPipeEndpoint) rememberLocked(key payloadReceiptKey, outcome payloadReceiptOutcome) {
+	if _, exists := e.history[key]; exists {
+		return
+	}
+	e.history[key] = outcome
+	e.order = append(e.order, key)
+	if len(e.order) > maxPayloadReceiptHistory {
+		oldest := e.order[0]
+		e.order = e.order[1:]
+		delete(e.history, oldest)
+	}
+}
+
+func (e *streamPipeEndpoint) close() {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
+	e.closed = true
+	pending := e.pending
+	e.pending = make(map[payloadReceiptKey]pendingPayloadReceipt)
+	e.mu.Unlock()
+	for _, pending := range pending {
+		pending.result <- localbinding.ErrEndpointUnavailable
+	}
 }
 
 func (e *streamPipeEndpoint) TerminatePipe(parent context.Context, pipeID string) error {

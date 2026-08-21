@@ -13,9 +13,10 @@ The public API exposes `Client`, `ManagedClient`, `Listener`, `Offer`, and `Pipe
 and fresh-Binds only current `ManagedListener` declarations. It never queues or retries Open/Pipe/payload work across a
 session boundary; `Close` cancels and joins the supervisor.
 
-Bind and Unbind rejections are typed, operation-local errors and leave the authenticated session usable. A
-`PipePayloadRejected` response is terminal for that exact Pipe because payload frames have no acknowledgement ID; it does
-not terminate the Client. Managed reconnect treats invalid arguments, authentication, permission, failed preconditions,
+Bind and Unbind rejections are typed, operation-local errors and leave the authenticated session usable. `Pipe.Send`
+returns nil only after the remote SDK admits the exact `PayloadId` to its bounded receive queue. `DeliveryError` separates
+`NotSent`, `Rejected`, and post-handoff `Unknown`; a rejection terminalizes only that exact Pipe and does not terminate the
+Client. This receipt does not prove application processing or durable commit. Managed reconnect treats invalid arguments, authentication, permission, failed preconditions,
 and protocol violations in connect, rebind, or ready state as permanent, while transient transport and availability
 failures enter bounded backoff. Unknown or `UNSPECIFIED` response codes and foreign correlations are protocol-fatal.
 `ErrOpenDuplicateInFlight` preserves the distinct rejected-Open result. `ErrPipeNotOwned` identifies a non-owned close and

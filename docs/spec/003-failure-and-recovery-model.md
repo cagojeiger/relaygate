@@ -52,7 +52,9 @@ Timeout is failure suspicion, not death proof. False positives may reduce availa
 | Expiry vs O | O before strict expiry | Attempt continues; expiry does not close opened Pipe |
 | Expiry vs O | `now >= ExpiresAt` | No reservation/offer/Pipe |
 | Duplicate ForwardOpen vs original | First successful O | One reservation max; no outcome/PipeId replay |
-| Public ACK vs payload | ACK write | Listener-to-caller payload released only after ACK |
+| Public Open ACK vs payload | Open ACK write | Listener-to-caller payload released only after Open ACK |
+| Payload queue admission vs receipt | Queue admission first | Exact receipt; sender may complete `Received` |
+| Payload queue admission vs receipt | Receipt cannot be observed | Sender remains `InFlight` and later becomes `Unknown` on deadline/terminal |
 | Backpressure vs close/crash | First terminal | Bounded stop; no silent drop |
 
 ## Error Boundaries
@@ -61,14 +63,14 @@ Timeout is failure suspicion, not death proof. False positives may reduce availa
 | --- | --- | --- |
 | `Rejected` | The current request/frame cannot be accepted or applied | Operation-local to the named request/resource unless authentication/session/protocol integrity is invalid |
 | `Failed` | The named operation ended with a stable outcome; Open `Failed` is before the Listener-accept LP | A new logical operation may be attempted; never replay the old attempt |
-| `Unknown` | Open may have crossed the LP but its result was lost | Never retry/resume the same logical operation or Pipe |
+| `Unknown` | Open or payload delivery may have crossed its LP but the exact result/receipt was lost | Never report stable failure; no automatic retry/resume/replay |
 | `Acknowledged` | The exact correlated operation was applied/observed | Duplicate exact ACK is a bounded NoOp; conflicting ACK is protocol-fatal |
 | `Terminated` | The exact participant-local resource reached its absorbing terminal state | No revival, resume, or payload replay |
 
 Bind/Unbind validation, capacity, conflict, and control-unavailable outcomes are operation-local. Authentication failure,
-session end, malformed protocol state, and stream transport failure are session-fatal. Any `PipePayloadRejected` terminalizes
-the SDK's exact Pipe view because payload writes have no application ACK or frame correlation. The server terminalizes only
-an exact owned Pipe; unknown or foreign ownership cannot mutate server state.
+session end, malformed protocol state, and stream transport failure are session-fatal. Every payload receipt or rejection is
+correlated by exact `PipeId + PayloadId`. Any `PipePayloadRejected` terminalizes the SDK's exact Pipe view. The server
+terminalizes only an exact owned Pipe; unknown or foreign ownership cannot mutate server state.
 
 ## Crash Cuts
 
@@ -82,7 +84,7 @@ an exact owned Pipe; unknown or foreign ownership cannot mutate server state.
 | Gateway control | disconnect before/after FullSnapshot ACK | Existing `LiveB` remains local but `V` is false until fresh exact revalidation; unacknowledged `RegisteringB` fails and is not replayed |
 | Failover | before O / after O / after `V` clear / partial redeclare | Before O stale; after O may continue; fresh exact route only after revalidation |
 | Open | O / offer / accept+PipeId / response / public ACK | Pre-LP stable failure; post-LP can be `Unknown`; no replay |
-| Payload | activation / enqueue / write / pressure / hop loss | FIFO per direction and no silent drop/replay; public queued control/terminal has priority, while a blocked peer send times out and cancels its dedicated Pipe stream |
+| Payload | prepare / local transport handoff / peer queue admission / receipt / pressure / hop loss | Pre-handoff=`NotSent`; exact refusal=`Rejected`; exact receipt=`Received`; post-handoff receipt loss=`Unknown`; FIFO and no silent drop/replay |
 | Disaster reset | before/after external fence | No reset without fence; new epoch is a separate machine |
 
 ## Recovery Levels

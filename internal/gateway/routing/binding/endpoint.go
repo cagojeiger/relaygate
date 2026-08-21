@@ -24,8 +24,9 @@ const MaxPayloadBytes = 60 << 10
 
 // PipePayload is one opaque, volatile payload for an exact live Pipe.
 type PipePayload struct {
-	PipeID string
-	Data   []byte
+	PipeID    string
+	PayloadID string
+	Data      []byte
 }
 
 // PayloadEndpoint is the protocol-neutral payload delivery boundary.

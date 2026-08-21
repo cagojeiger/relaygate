@@ -20,6 +20,8 @@ message ConnectRequest {
     CancelOpen cancel_open = 8;
     ClosePipe close_pipe = 9;
     PipePayload pipe_payload = 10;
+    PipePayloadReceived pipe_payload_received = 11;
+    PipePayloadRejected pipe_payload_rejected = 12;
   }
 }
 
@@ -44,6 +46,7 @@ message ConnectResponse {
     ListenerConfirmationAcknowledged listener_confirmation_acknowledged = 17;
     ListenerBindFailed listener_bind_failed = 18;
     ListenerUnbindFailed listener_unbind_failed = 19;
+    PipePayloadReceived pipe_payload_received = 20;
   }
 }
 
@@ -218,6 +221,12 @@ message ListenerDecisionRejected {
 message PipePayload {
   string pipe_id = 1;
   bytes payload = 2;
+  string payload_id = 3;
+}
+
+message PipePayloadReceived {
+  string pipe_id = 1;
+  string payload_id = 2;
 }
 
 message PipeTerminated {
@@ -235,6 +244,7 @@ enum PipePayloadFailure {
 message PipePayloadRejected {
   string pipe_id = 1;
   PipePayloadFailure failure = 2;
+  string payload_id = 3;
 }
 
 message ListenerConfirmationAcknowledged {

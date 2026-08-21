@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	relayv1 "github.com/cagojeiger/relaygate/sdk/go/internal/gen/relay/v1"
@@ -28,6 +29,7 @@ const (
 	maxPendingOffers         = 1024
 	maxPendingOpens          = 1024
 	maxPipes                 = 1024
+	maxReceivedPayloads      = 1024
 	maxIdentityBytes         = 128
 	maxEndpointBytes         = 1024
 	maxPayloadBytes          = 60 * 1024
@@ -130,7 +132,15 @@ type sendCommand struct {
 	ctx     context.Context //nolint:containedctx // The queued command preserves the exact caller deadline.
 	request *relayv1.ConnectRequest
 	result  chan error
+	state   *atomic.Uint32
 }
+
+const (
+	sendQueued uint32 = iota + 1
+	sendWriting
+	sendCompleted
+	sendCanceled
+)
 
 type sendUncertainError struct{ cause error }
 
@@ -349,7 +359,9 @@ func (c *Client) enqueue(ctx context.Context, request *relayv1.ConnectRequest) (
 		return sendCommand{}, c.terminalError()
 	default:
 	}
-	command := sendCommand{ctx: ctx, request: request, result: make(chan error, 1)}
+	state := &atomic.Uint32{}
+	state.Store(sendQueued)
+	command := sendCommand{ctx: ctx, request: request, result: make(chan error, 1), state: state}
 	select {
 	case c.sendQueue <- command:
 		return command, nil
@@ -361,18 +373,26 @@ func (c *Client) enqueue(ctx context.Context, request *relayv1.ConnectRequest) (
 }
 
 func (c *Client) awaitSend(ctx context.Context, command sendCommand) error {
-	select {
-	case err := <-command.result:
-		if err != nil {
-			return &sendUncertainError{cause: err}
+	for {
+		select {
+		case err := <-command.result:
+			if err != nil {
+				return &sendUncertainError{cause: err}
+			}
+			return nil
+		case <-ctx.Done():
+			if command.state.CompareAndSwap(sendQueued, sendCanceled) {
+				return ctx.Err()
+			}
+			if command.state.Load() == sendCanceled {
+				return ctx.Err()
+			}
+			c.stop(ctx.Err())
+			<-c.done
+			return &sendUncertainError{cause: ctx.Err()}
+		case <-c.done:
+			return &sendUncertainError{cause: c.terminalError()}
 		}
-		return nil
-	case <-ctx.Done():
-		c.stop(ctx.Err())
-		<-c.done
-		return &sendUncertainError{cause: ctx.Err()}
-	case <-c.done:
-		return &sendUncertainError{cause: c.terminalError()}
 	}
 }
 
@@ -383,11 +403,19 @@ func (c *Client) runSender() {
 		case <-c.ctx.Done():
 			return
 		case command := <-c.sendQueue:
+			if !command.state.CompareAndSwap(sendQueued, sendWriting) {
+				if command.state.Load() == sendCanceled {
+					command.result <- command.ctx.Err()
+				}
+				continue
+			}
 			if err := command.ctx.Err(); err != nil {
+				command.state.Store(sendCompleted)
 				command.result <- err
 				continue
 			}
 			err := c.stream.Send(command.request)
+			command.state.Store(sendCompleted)
 			command.result <- err
 			if err != nil {
 				c.stop(err)

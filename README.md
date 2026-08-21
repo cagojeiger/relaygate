@@ -88,7 +88,8 @@ Production controllers need durable volumes/PVCs. The local Compose file uses na
 - Public Go/Rust SDKs share only `relay.proto`; server, control, and Raft types stay private.
 - Open admission requires active client session, current authority, quorum, exact directory route, revalidated owner session, and owner reservation.
 - A remote Pipe uses one internal peer gRPC stream. There is no internal redial, retry, resume, or payload replay.
-- `Send` success means local bounded queue/stream write success, not peer application ACK.
+- `Send` success means the peer SDK admitted the exact `PayloadId` to its bounded receive queue and the correlated receipt
+  returned. It does not mean peer application processing or durable commit; receipt loss after local transport handoff is `Unknown`.
 - On each multiplexed public Relay stream, separate bounded control/terminal and payload lanes let control and terminal work bypass queued payload pressure.
 - The one-stream-per-Pipe peer hop serializes sends through one bounded lane. A blocked send that reaches its timeout or cancellation fails the Pipe and cancels the stream; it does not silently drop, retry, or replay the frame.
 - `ManagedClient` may reconnect a session and fresh-bind current Listeners. It does not queue Opens, replay outcomes, resume Pipes, or replay payload.

@@ -518,7 +518,7 @@ func (o *testOpener) ActivatePipe(session clientsession.Ref, pipeID string) bool
 	return o.activatePipe(session, pipeID)
 }
 
-func (o *testOpener) RelayPayload(ctx context.Context, session clientsession.Ref, pipeID string, payload []byte) error {
+func (o *testOpener) RelayPayload(ctx context.Context, session clientsession.Ref, pipeID, payloadID string, payload []byte) error {
 	if o.relayPayload == nil {
 		return opening.ErrPipeNotOwned
 	}

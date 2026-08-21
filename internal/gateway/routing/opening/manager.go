@@ -1063,7 +1063,7 @@ func (m *Manager) waitRemoteActivation(e *entry, finished <-chan struct{}) bool 
 // RelayPayload delivers one opaque payload to the opposite exact participant.
 // Calls in each direction are serialized independently and remain gated until
 // the caller-facing PipeOpened message has been written successfully.
-func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pipeID string, data []byte) error { //nolint:contextcheck // Accepted Pipe lifetime is entry-owned and intentionally outlives a payload call.
+func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pipeID, payloadID string, data []byte) error { //nolint:contextcheck // Accepted Pipe lifetime is entry-owned and intentionally outlives a payload call.
 	if ctx == nil {
 		return fmt.Errorf("%w: context is required", ErrPayloadInvalid)
 	}
@@ -1072,6 +1072,9 @@ func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pi
 	}
 	if pipeID == "" || len(pipeID) > routing.MaxIdentityBytes {
 		return fmt.Errorf("%w: PipeID must be 1..%d bytes", ErrPayloadInvalid, routing.MaxIdentityBytes)
+	}
+	if payloadID == "" || len(payloadID) > routing.MaxIdentityBytes {
+		return fmt.Errorf("%w: PayloadID must be 1..%d bytes", ErrPayloadInvalid, routing.MaxIdentityBytes)
 	}
 	if sender.ClientSessionID == "" || sender.ClientID == "" || sender.APIKeyID == "" || sender.AuthRevision == "" {
 		return ErrPipeNotOwned
@@ -1154,7 +1157,7 @@ func (m *Manager) RelayPayload(ctx context.Context, sender clientsession.Ref, pi
 	stopPipeCancellation := context.AfterFunc(pipeCtx, func() { //nolint:contextcheck // Bridge entry-owned Pipe cancellation into this delivery call.
 		cancelDelivery(context.Cause(pipeCtx))
 	})
-	err := destination.DeliverPayload(deliveryCtx, localbinding.PipePayload{PipeID: pipeID, Data: payload})
+	err := destination.DeliverPayload(deliveryCtx, localbinding.PipePayload{PipeID: pipeID, PayloadID: payloadID, Data: payload})
 	stopPipeCancellation()
 	cancelDelivery(nil)
 	if err == nil {

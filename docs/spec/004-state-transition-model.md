@@ -12,9 +12,9 @@ Every state/event input has exactly one result.
 This is semantic closure, not a claim that one test enumerates the full Cartesian product.
 
 `Rejected` is a stable request/frame refusal, `Failed` is a stable operation failure (and is pre-LP for Open), `Unknown`
-means the Open LP may have happened, `Acknowledged` is an exact correlated apply barrier, and `Terminated` is an absorbing
-resource end. Public operation-local failures use response messages; authentication/session/protocol/transport failures
-end the gRPC stream.
+means an operation LP may have happened but its exact result was lost, `Acknowledged` is an exact correlated apply barrier,
+and `Terminated` is an absorbing resource end. Public operation-local failures use response messages;
+authentication/session/protocol/transport failures end the gRPC stream.
 An unrecognized, malformed, foreign, or conflicting public response is a protocol failure, not an operation-local `Rejected` result.
 
 ## Ownership
@@ -30,6 +30,8 @@ An unrecognized, malformed, foreign, or conflicting public response is a protoco
 | Ingress/Caller/ListenerPipe | Exact participant Gateway/SDK | process memory | first local terminal |
 | RemoteHop | Ingress + owner segment | process memory | stream/hop/participant end |
 | FlowControl | Each stream/segment | process memory | bound/write/terminal |
+| SenderDelivery | Sending SDK, one per `PipeId + PayloadId` | bounded process memory | receipt/rejection/deadline/Pipe/session end |
+| ReceiverReceipt | Receiving SDK, bounded per Pipe | bounded process memory | Pipe/session end or bounded history eviction |
 | SDK Supervisor | Go/Rust `ManagedClient` | process memory | close/permanent connect failure |
 
 `C` contains only `ClusterEpoch`, capacity limits, current `GatewaySession`, and exact current route rows. `V` contains only current leader observations: control sessions, revalidation, owner relay address, and current binding mirror.
@@ -150,6 +152,40 @@ The multiplexed public Relay stream uses separate bounded lanes so ready control
 A one-stream-per-Pipe peer hop instead serializes sends; blocked send timeout or cancellation fails that Pipe and cancels the
 stream. Shutdown cancels and joins owned workers; neither path replays queued or inflight payload on a new Pipe.
 
+## Payload Delivery Receipt
+
+The delivery LP is successful admission of one exact payload to the peer SDK's bounded receive queue. It is not application
+read, processing, or durable commit. Each direction admits at most one SDK `Send` per Pipe at a time; transport actors may
+pipeline unrelated Pipes.
+
+### SenderDelivery
+
+| From | Event + guard | To | Effect |
+| --- | --- | --- | --- |
+| `PreparedD` | invalid payload, terminal Pipe, caller deadline, or local admission failure before authenticated-stream handoff | `NotSentD` | Stable no-delivery result; safe to start a new logical send |
+| `PreparedD` | exact payload accepted by the local authenticated-stream handoff | `InFlightD` | Wait for exact receipt/rejection; no automatic retry |
+| `InFlightD` | exact `PipePayloadReceived(PipeId, PayloadId)` | `ReceivedD` | Complete `Send` successfully |
+| `InFlightD` | exact `PipePayloadRejected(PipeId, PayloadId, failure)` | `RejectedD` | Complete with stable rejection and terminalize exact Pipe |
+| `InFlightD` | caller receipt deadline, Pipe/session/transport end before exact receipt | `UnknownD` | Delivery may have crossed the peer queue-admission LP |
+| `UnknownD` | late exact receipt or rejection for the same `PipeId + PayloadId` | `UnknownD` | Bounded NoOp; never revise the caller-visible result |
+| any terminal D | exact duplicate same terminal | same | Bounded NoOp |
+| any state | malformed, foreign, wrong-phase, or conflicting correlation | session terminal | Protocol failure |
+
+`ReceivedD`, `NotSentD`, `RejectedD`, and `UnknownD` are absorbing. Timeout is a cause, not an outcome: timeout before the
+local handoff boundary is `NotSentD`; timeout after it is `UnknownD`.
+
+### ReceiverReceipt
+
+| From | Event + guard | To | Effect |
+| --- | --- | --- | --- |
+| `AbsentR` | valid exact payload and receive queue capacity | `QueuedR` | Enqueue once, record bounded fingerprint, send exact receipt |
+| `AbsentR` | invalid payload or no receive capacity | `RejectedR` | Do not enqueue; send exact rejection and terminalize exact Pipe |
+| `QueuedR` | exact duplicate `PipeId + PayloadId + fingerprint` | `QueuedR` | Do not enqueue again; resend exact receipt |
+| `QueuedR/RejectedR` | same identity with conflicting payload/failure | session terminal | Protocol failure |
+| any R | Pipe/session end | terminal/evicted | Never replay receipt state into another Pipe/session |
+
+Controller Raft, route state `C`, and authority mirror `V` do not own PayloadDelivery state.
+
 ## SDK Session Supervisor
 
 | From | Event + guard | To | Effect |
@@ -173,7 +209,7 @@ Logical Listener drop/unbind removes its declaration before current-session clea
 | Bind/Unbind | invalid request, capacity, conflict, control unavailable | session ended/revoked, context/stream end, internal protocol failure |
 | Open/cancel | `PipeOpenFailed`, `PipeOpenUnknown`, exact duplicate-in-flight `OpenRequestRejected`, exact cancel ACK | malformed/unknown failure code, stream state, or transport failure |
 | Listener decision | `ListenerDecisionRejected`, exact confirmation ACK | malformed/conflicting correlated response |
-| Payload/close | payload rejection and exact close ACK/terminal; `owned=false` is an explicit NotOwned terminal result | malformed/conflicting correlated response or transport failure |
+| Payload/close | exact payload receipt/rejection and exact close ACK/terminal; `owned=false` is an explicit NotOwned terminal result | malformed/foreign/wrong-phase/conflicting correlation or transport failure |
 
 Go and Rust managed supervisors retry only transient transport/availability failures. Invalid configuration, authentication,
 permission, failed precondition, and protocol errors enter `FailedM`. No supervisor retry replays Open/Pipe/payload state.
