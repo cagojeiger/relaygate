@@ -1,4 +1,4 @@
-package authority
+package routing
 
 import (
 	"errors"
@@ -6,8 +6,6 @@ import (
 	"net"
 	"sync/atomic"
 	"time"
-
-	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 )
 
 const MaxRelayAddressBytes = 1024
@@ -37,7 +35,7 @@ type OpenContext struct {
 	AuthorityID              string
 	AttemptID                string
 	Auth                     AuthContext
-	Binding                  routing.LiveBinding
+	Binding                  LiveBinding
 	OwnerControlSessionID    string
 	IngressGatewayID         string
 	IngressGatewayInstanceID string
@@ -60,13 +58,10 @@ type attemptToken struct {
 	consumed atomic.Bool
 }
 
-// newOpenContext constructs the validated core of an Open context. Callers use
-// NewForwardedOpenContext so an expiry and both hop identities are always
-// present, including when the selected owner is the local Gateway.
 func newOpenContext(
 	clusterEpoch, authorityID, attemptID string,
 	auth AuthContext,
-	binding routing.LiveBinding,
+	binding LiveBinding,
 	ownerControlSessionID string,
 ) (OpenContext, error) {
 	for _, identity := range []struct {
@@ -78,7 +73,7 @@ func newOpenContext(
 		{field: "attempt_id", value: attemptID},
 		{field: "owner_control_session_id", value: ownerControlSessionID},
 	} {
-		if err := routing.ValidateIdentity(identity.field, identity.value); err != nil {
+		if err := ValidateIdentity(identity.field, identity.value); err != nil {
 			return OpenContext{}, fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 		}
 	}
@@ -105,7 +100,7 @@ func newOpenContext(
 func NewForwardedOpenContext(
 	clusterEpoch, authorityID, attemptID string,
 	auth AuthContext,
-	binding routing.LiveBinding,
+	binding LiveBinding,
 	forwarding ForwardingContext,
 ) (OpenContext, error) {
 	open, err := newOpenContext(clusterEpoch, authorityID, attemptID, auth, binding, forwarding.OwnerControlSessionID)
@@ -120,7 +115,7 @@ func NewForwardedOpenContext(
 		{field: "ingress_gateway_instance_id", value: forwarding.IngressGatewayInstanceID},
 		{field: "ingress_control_session_id", value: forwarding.IngressControlSessionID},
 	} {
-		if err := routing.ValidateIdentity(identity.field, identity.value); err != nil {
+		if err := ValidateIdentity(identity.field, identity.value); err != nil {
 			return OpenContext{}, fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 		}
 	}
@@ -176,7 +171,7 @@ func (a AuthContext) Validate() error {
 		{field: "api_key_id", value: a.APIKeyID},
 		{field: "auth_revision", value: a.AuthRevision},
 	} {
-		if err := routing.ValidateIdentity(identity.field, identity.value); err != nil {
+		if err := ValidateIdentity(identity.field, identity.value); err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 		}
 	}
@@ -185,13 +180,13 @@ func (a AuthContext) Validate() error {
 
 // ExactBindingKey derives the only BindingKey eligible for this request. It
 // performs no wildcard selection or cross-client fallback.
-func ExactBindingKey(auth AuthContext, endpoint, targetID string) (routing.BindingKey, error) {
+func ExactBindingKey(auth AuthContext, endpoint, targetID string) (BindingKey, error) {
 	if err := auth.Validate(); err != nil {
-		return routing.BindingKey{}, err
+		return BindingKey{}, err
 	}
-	key := routing.BindingKey{ClientID: auth.ClientID, EndpointPattern: endpoint, TargetID: targetID}
+	key := BindingKey{ClientID: auth.ClientID, EndpointPattern: endpoint, TargetID: targetID}
 	if err := key.Validate(); err != nil {
-		return routing.BindingKey{}, fmt.Errorf("%w: %w", ErrInvalidOpen, err)
+		return BindingKey{}, fmt.Errorf("%w: %w", ErrInvalidOpen, err)
 	}
 	return key, nil
 }

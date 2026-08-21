@@ -13,6 +13,7 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/control/client"
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/raft/node"
 )
 
@@ -27,7 +28,7 @@ func TestTrustedLocalHealthStatusAndMetricsAreReadOnly(t *testing.T) {
 	}}
 	registry := prometheus.NewRegistry()
 	presenceProvider := staticPresenceProvider{
-		ref: authority.Ref{ClusterEpoch: "epoch-1", AuthorityID: "authority-1"},
+		ref: controlmodel.AuthorityRef{ClusterEpoch: "epoch-1", AuthorityID: "authority-1"},
 		presence: authority.Presence{
 			State:               authority.PresenceCurrent,
 			CommittedGateways:   1,
@@ -129,7 +130,7 @@ func TestStatusFailsClosedWhenAuthorityCannotBeConfirmed(t *testing.T) {
 			Ready:        true,
 		}},
 		Presence: staticPresenceProvider{
-			ref: authority.Ref{ClusterEpoch: "epoch-1", AuthorityID: "stale-authority"},
+			ref: controlmodel.AuthorityRef{ClusterEpoch: "epoch-1", AuthorityID: "stale-authority"},
 			presence: authority.Presence{
 				State:               authority.PresenceCurrent,
 				CommittedGateways:   1,
@@ -257,7 +258,7 @@ func (p staticGatewayStatusProvider) Status() gatewaycontrol.Status {
 }
 
 type staticPresenceProvider struct {
-	ref      authority.Ref
+	ref      controlmodel.AuthorityRef
 	presence authority.Presence
 	err      error
 }
@@ -268,6 +269,6 @@ func (p staticAuthRevisionProvider) Revision() string {
 	return string(p)
 }
 
-func (p staticPresenceProvider) Observe(context.Context) (authority.Ref, authority.Presence, error) {
+func (p staticPresenceProvider) Observe(context.Context) (controlmodel.AuthorityRef, authority.Presence, error) {
 	return p.ref, p.presence, p.err
 }

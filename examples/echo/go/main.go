@@ -131,10 +131,10 @@ func valueOrDefault(value, fallback string) string {
 	return value
 }
 
-func connect(parent context.Context, configuration settings) (*relaygate.Client, error) {
+func connect(parent context.Context, configuration settings) (*relaygate.ManagedClient, error) {
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
-	client, err := relaygate.Connect(ctx, relaygate.NewConfig(
+	client, err := relaygate.ConnectManaged(ctx, relaygate.NewConfig(
 		configuration.address,
 		configuration.clientID,
 		configuration.apiKeyID,
@@ -280,7 +280,7 @@ func send(ctx context.Context, configuration settings, target string, message []
 	return nil
 }
 
-func closeClient(client *relaygate.Client) error {
+func closeClient(client *relaygate.ManagedClient) error {
 	if client == nil {
 		return nil
 	}

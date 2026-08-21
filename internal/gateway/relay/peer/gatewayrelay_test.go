@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
@@ -22,13 +21,13 @@ import (
 const testTimeout = 2 * time.Second
 
 type testOwner struct {
-	open         func(context.Context, authority.OpenContext, localbinding.CallerEndpoint) (opening.Result, error)
+	open         func(context.Context, routing.OpenContext, localbinding.CallerEndpoint) (opening.Result, error)
 	activate     func(clientsession.Ref, string) bool
-	relayPayload func(context.Context, clientsession.Ref, string, []byte) error
+	relayPayload func(context.Context, clientsession.Ref, string, string, []byte) error
 	closePipe    func(clientsession.Ref, string) bool
 }
 
-func (o *testOwner) OpenForwarded(ctx context.Context, open authority.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
+func (o *testOwner) OpenForwarded(ctx context.Context, open routing.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
 	if o.open != nil {
 		return o.open(ctx, open, endpoint)
 	}
@@ -39,9 +38,9 @@ func (o *testOwner) ActivatePipe(caller clientsession.Ref, pipeID string) bool {
 	return o.activate == nil || o.activate(caller, pipeID)
 }
 
-func (o *testOwner) RelayPayload(ctx context.Context, caller clientsession.Ref, pipeID string, payload []byte) error {
+func (o *testOwner) RelayPayload(ctx context.Context, caller clientsession.Ref, pipeID, payloadID string, payload []byte) error {
 	if o.relayPayload != nil {
-		return o.relayPayload(ctx, caller, pipeID, payload)
+		return o.relayPayload(ctx, caller, pipeID, payloadID, payload)
 	}
 	return nil
 }
@@ -107,7 +106,7 @@ func TestGatewayRelayRoundTripActivationPayloadAndClose(t *testing.T) {
 	service, server := startGatewayRelay(t, owner, 4)
 	_ = service
 	open := validForwardedOpen(t, server.Address(), "attempt-round-trip")
-	owner.open = func(ctx context.Context, got authority.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
+	owner.open = func(ctx context.Context, got routing.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
 		assertSameOpenContext(t, got, open)
 		ownerEndpoint <- endpoint
 		ownerLifetime <- ctx
@@ -120,11 +119,11 @@ func TestGatewayRelayRoundTripActivationPayloadAndClose(t *testing.T) {
 		activated <- caller
 		return true
 	}
-	owner.relayPayload = func(_ context.Context, caller clientsession.Ref, pipeID string, payload []byte) error {
+	owner.relayPayload = func(_ context.Context, caller clientsession.Ref, pipeID, payloadID string, payload []byte) error {
 		if caller != callerRef(open.Auth) || pipeID != "pipe-round-trip" {
 			t.Errorf("RelayPayload caller/pipe = %#v/%q", caller, pipeID)
 		}
-		ingressPayload <- localbinding.PipePayload{PipeID: pipeID, Data: append([]byte(nil), payload...)}
+		ingressPayload <- localbinding.PipePayload{PipeID: pipeID, PayloadID: payloadID, Data: append([]byte(nil), payload...)}
 		return nil
 	}
 	owner.closePipe = func(caller clientsession.Ref, pipeID string) bool {
@@ -166,7 +165,7 @@ func TestGatewayRelayRoundTripActivationPayloadAndClose(t *testing.T) {
 	}
 
 	fromIngress := []byte("ingress-to-owner")
-	if err := result.Endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, Data: fromIngress}); err != nil {
+	if err := result.Endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, PayloadID: "payload-ingress", Data: fromIngress}); err != nil {
 		t.Fatalf("DeliverPayload(ingress): %v", err)
 	}
 	if got := receive(t, ingressPayload); !bytes.Equal(got.Data, fromIngress) {
@@ -174,7 +173,7 @@ func TestGatewayRelayRoundTripActivationPayloadAndClose(t *testing.T) {
 	}
 
 	fromOwner := []byte("owner-to-ingress")
-	if err := receive(t, ownerEndpoint).DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, Data: fromOwner}); err != nil {
+	if err := receive(t, ownerEndpoint).DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, PayloadID: "payload-owner", Data: fromOwner}); err != nil {
 		t.Fatalf("DeliverPayload(owner): %v", err)
 	}
 	if got := receive(t, ownerPayload); !bytes.Equal(got.Data, fromOwner) {
@@ -199,6 +198,108 @@ func TestGatewayRelayRoundTripActivationPayloadAndClose(t *testing.T) {
 	case <-lifetime.Done():
 	case <-time.After(testTimeout):
 		t.Fatal("owner Pipe lifetime did not end after Close")
+	}
+}
+
+func TestGatewayRelayCloseWaitsForDeliveredPayloadReceipt(t *testing.T) {
+	ownerEndpoint := make(chan localbinding.CallerEndpoint, 1)
+	ownerClosed := make(chan struct{}, 1)
+	owner := &testOwner{
+		open: func(_ context.Context, open routing.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
+			ownerEndpoint <- endpoint
+			return opening.Result{AttemptID: open.AttemptID, PipeID: "pipe-receipt-before-close", Binding: open.Binding}, nil
+		},
+		closePipe: func(clientsession.Ref, string) bool {
+			ownerClosed <- struct{}{}
+			return true
+		},
+	}
+	_, server := startGatewayRelay(t, owner, 1)
+	deliveryStarted := make(chan struct{})
+	releaseDelivery := make(chan struct{})
+	callerEndpoint := &testCallerEndpoint{deliver: func(context.Context, localbinding.PipePayload) error {
+		close(deliveryStarted)
+		<-releaseDelivery
+		return nil
+	}}
+	client := newTestClient(t, 1)
+	result, err := client.Open(context.Background(), validForwardedOpen(t, server.Address(), "attempt-receipt-before-close"), callerEndpoint)
+	if err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+	if err := result.Endpoint.Activate(context.Background()); err != nil {
+		t.Fatalf("Activate(): %v", err)
+	}
+
+	deliveryResult := make(chan error, 1)
+	go func() {
+		deliveryResult <- receive(t, ownerEndpoint).DeliverPayload(context.Background(), localbinding.PipePayload{
+			PipeID: result.PipeID, PayloadID: "payload-before-close", Data: []byte("delivered"),
+		})
+	}()
+	receive(t, deliveryStarted)
+	closeResult := make(chan error, 1)
+	go func() {
+		closeResult <- result.Endpoint.Close(context.Background())
+	}()
+	select {
+	case <-ownerClosed:
+		t.Fatal("owner observed Close before the delivered payload receipt")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseDelivery)
+	if err := receive(t, deliveryResult); err != nil {
+		t.Fatalf("owner DeliverPayload(): %v", err)
+	}
+	receive(t, ownerClosed)
+	if err := receive(t, closeResult); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+}
+
+func TestPeerReceiptStateRejectsConflictingOutcomeAndPayload(t *testing.T) {
+	var state peerReceiptState
+	payload := localbinding.PipePayload{PipeID: "pipe-1", PayloadID: "payload-1", Data: []byte("same")}
+	result, duplicate, err := state.begin(payload)
+	if err != nil || duplicate {
+		t.Fatalf("begin = duplicate %t, err %v", duplicate, err)
+	}
+	if err := state.acknowledge(payload.PayloadID); err != nil {
+		t.Fatalf("acknowledge: %v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("receipt result: %v", err)
+	}
+	if _, duplicate, err := state.begin(payload); err != nil || !duplicate {
+		t.Fatalf("exact payload replay = duplicate %t, err %v", duplicate, err)
+	}
+	conflicting := payload
+	conflicting.Data = []byte("different")
+	if _, _, err := state.begin(conflicting); err == nil {
+		t.Fatal("conflicting payload replay succeeded")
+	}
+	if err := state.reject(payload.PayloadID, gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE); err == nil {
+		t.Fatal("conflicting rejection after receipt succeeded")
+	}
+
+	var unknown peerReceiptState
+	result, duplicate, err = unknown.begin(payload)
+	if err != nil || duplicate {
+		t.Fatalf("unknown begin = duplicate %t, err %v", duplicate, err)
+	}
+	unknown.retireUnknown(payload.PayloadID, result)
+	if err := unknown.acknowledge(payload.PayloadID); err != nil {
+		t.Fatalf("late receipt after Unknown: %v", err)
+	}
+	if unknown.lastOutcome != peerReceiptUnknown {
+		t.Fatalf("late receipt changed Unknown to %v", unknown.lastOutcome)
+	}
+	if err := unknown.reject(payload.PayloadID, gatewayv1.PipePayloadFailure_PIPE_PAYLOAD_FAILURE_BACKPRESSURE); err != nil {
+		t.Fatalf("late rejection after Unknown: %v", err)
+	}
+	if unknown.lastOutcome != peerReceiptUnknown {
+		t.Fatalf("late rejection changed Unknown to %v", unknown.lastOutcome)
 	}
 }
 
@@ -268,9 +369,9 @@ func newTestClient(t *testing.T, maxPipes uint32) *Client {
 	return client
 }
 
-func validForwardedOpen(t *testing.T, address, attemptID string) authority.OpenContext {
+func validForwardedOpen(t *testing.T, address, attemptID string) routing.OpenContext {
 	t.Helper()
-	auth := authority.AuthContext{
+	auth := routing.AuthContext{
 		ClientSessionID: "caller-session",
 		ClientID:        "client-a",
 		APIKeyID:        "key-a",
@@ -288,13 +389,13 @@ func validForwardedOpen(t *testing.T, address, attemptID string) authority.OpenC
 			ListenerBindingID: "listener-binding",
 		},
 	}
-	open, err := authority.NewForwardedOpenContext(
+	open, err := routing.NewForwardedOpenContext(
 		"epoch-a",
 		"authority-a",
 		attemptID,
 		auth,
 		binding,
-		authority.ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID:         "gateway-ingress",
 			IngressGatewayInstanceID: "ingress-instance",
 			IngressControlSessionID:  "control-session",
@@ -309,7 +410,7 @@ func validForwardedOpen(t *testing.T, address, attemptID string) authority.OpenC
 	return open
 }
 
-func assertSameOpenContext(t *testing.T, got, want authority.OpenContext) {
+func assertSameOpenContext(t *testing.T, got, want routing.OpenContext) {
 	t.Helper()
 	if got.ClusterEpoch != want.ClusterEpoch || got.AuthorityID != want.AuthorityID || got.AttemptID != want.AttemptID ||
 		got.Auth != want.Auth || !sameBinding(got.Binding, want.Binding) ||

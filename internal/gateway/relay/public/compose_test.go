@@ -1,7 +1,6 @@
 package relaygrpc
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -260,24 +259,14 @@ func runComposeRelaySmoke(t *testing.T, callerAddress, listenerAddress string) {
 	}
 
 	callerPayload := []byte{0x00, 0x01, 0xfe, 0xff}
-	sendPipePayload(t, caller, opened.GetPipeId(), callerPayload)
-	listenerPayloadResponse, err := listener.Recv()
-	if err != nil {
-		t.Fatalf("Recv(caller-to-listener PipePayload): %v", err)
-	}
-	if payload := listenerPayloadResponse.GetPipePayload(); payload.GetPipeId() != opened.GetPipeId() || !bytes.Equal(payload.GetPayload(), callerPayload) {
-		t.Fatalf("caller-to-listener PipePayload = %#v", payload)
-	}
+	callerPayloadID := sendPipePayload(t, caller, opened.GetPipeId(), callerPayload)
+	requirePipePayload(t, listener, opened.GetPipeId(), callerPayload)
+	requirePayloadReceived(t, caller, opened.GetPipeId(), callerPayloadID)
 
 	listenerPayload := []byte("listener-to-caller")
-	sendPipePayload(t, listener, opened.GetPipeId(), listenerPayload)
-	callerPayloadResponse, err := caller.Recv()
-	if err != nil {
-		t.Fatalf("Recv(listener-to-caller PipePayload): %v", err)
-	}
-	if payload := callerPayloadResponse.GetPipePayload(); payload.GetPipeId() != opened.GetPipeId() || !bytes.Equal(payload.GetPayload(), listenerPayload) {
-		t.Fatalf("listener-to-caller PipePayload = %#v", payload)
-	}
+	listenerPayloadID := sendPipePayload(t, listener, opened.GetPipeId(), listenerPayload)
+	requirePipePayload(t, caller, opened.GetPipeId(), listenerPayload)
+	requirePayloadReceived(t, listener, opened.GetPipeId(), listenerPayloadID)
 
 	if err := caller.Send(&relayv1.ConnectRequest{Message: &relayv1.ConnectRequest_ClosePipe{
 		ClosePipe: &relayv1.ClosePipe{PipeId: opened.GetPipeId()},

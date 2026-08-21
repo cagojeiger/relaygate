@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 )
 
@@ -75,7 +75,7 @@ func mustManager(t *testing.T, max uint32, committer Committer, sessions Session
 
 type testCommitter struct {
 	mu         sync.Mutex
-	current    authority.SessionRef
+	current    controlmodel.SessionRef
 	ok         bool
 	declareErr error
 	declared   []routing.LiveBinding
@@ -104,7 +104,7 @@ func (c *testCommitter) Withdraw(_ context.Context, binding routing.LiveBinding)
 	c.mu.Unlock()
 	return nil
 }
-func (c *testCommitter) CurrentSession() (authority.SessionRef, bool) {
+func (c *testCommitter) CurrentSession() (controlmodel.SessionRef, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.current, c.ok || c.current.ControlSessionID != ""
@@ -137,8 +137,8 @@ func testSession(id, clientID, keyID string) clientsession.Session {
 	return clientsession.Session{Ref: clientsession.Ref{ClientSessionID: id, ClientID: clientID, APIKeyID: keyID, AuthRevision: "revision-1"}, Done: make(chan struct{})}
 }
 
-func testControlSession() authority.SessionRef {
-	return authority.SessionRef{ClusterEpoch: "epoch-1", AuthorityID: "authority-1", ControlSessionID: "owner-session", GatewayID: "gateway-1", GatewayInstanceID: "instance-1"}
+func testControlSession() controlmodel.SessionRef {
+	return controlmodel.SessionRef{ClusterEpoch: "epoch-1", AuthorityID: "authority-1", ControlSessionID: "owner-session", GatewayID: "gateway-1", GatewayInstanceID: "instance-1"}
 }
 
 func waitFor(t *testing.T, condition func() bool) {

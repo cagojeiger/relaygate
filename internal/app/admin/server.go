@@ -14,6 +14,7 @@ import (
 
 	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/control/client"
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/raft/node"
 )
 
@@ -38,7 +39,7 @@ type GatewayStatusProvider interface {
 }
 
 type PresenceProvider interface {
-	Observe(context.Context) (authority.Ref, authority.Presence, error)
+	Observe(context.Context) (controlmodel.AuthorityRef, authority.Presence, error)
 }
 
 type AuthRevisionProvider interface {

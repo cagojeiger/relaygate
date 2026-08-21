@@ -1,5 +1,96 @@
 use thiserror::Error;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeliveryOutcome {
+    Received,
+    NotSent,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeliveryFailure {
+    InvalidRequest,
+    NotOwned,
+    Backpressure,
+    Unavailable,
+}
+
+/// The retry-relevant result of one exact Payload delivery attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliveryError {
+    pub(crate) payload_id: Option<String>,
+    pub(crate) outcome: DeliveryOutcome,
+    pub(crate) failure: Option<DeliveryFailure>,
+    pub(crate) session: Option<SessionError>,
+}
+
+impl DeliveryError {
+    pub fn payload_id(&self) -> Option<&str> {
+        self.payload_id.as_deref()
+    }
+
+    pub fn outcome(&self) -> DeliveryOutcome {
+        self.outcome
+    }
+
+    pub fn failure(&self) -> Option<DeliveryFailure> {
+        self.failure
+    }
+
+    pub fn session_error(&self) -> Option<&SessionError> {
+        self.session.as_ref()
+    }
+
+    pub(crate) fn not_sent(payload_id: Option<String>, session: Option<SessionError>) -> Self {
+        Self {
+            payload_id,
+            outcome: DeliveryOutcome::NotSent,
+            failure: None,
+            session,
+        }
+    }
+
+    pub(crate) fn rejected(payload_id: String, failure: DeliveryFailure) -> Self {
+        Self {
+            payload_id: Some(payload_id),
+            outcome: DeliveryOutcome::Rejected,
+            failure: Some(failure),
+            session: None,
+        }
+    }
+
+    pub(crate) fn unknown(payload_id: String, session: Option<SessionError>) -> Self {
+        Self {
+            payload_id: Some(payload_id),
+            outcome: DeliveryOutcome::Unknown,
+            failure: None,
+            session,
+        }
+    }
+}
+
+impl std::fmt::Display for DeliveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "payload {} ended with delivery outcome {:?}",
+            self.payload_id.as_deref().unwrap_or("<not-created>"),
+            self.outcome
+        )
+    }
+}
+
+impl std::error::Error for DeliveryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.session
+            .as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+    }
+}
+
 /// A terminal authenticated-session failure.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]

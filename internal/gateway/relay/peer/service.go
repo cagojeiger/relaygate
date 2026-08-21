@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
@@ -146,15 +145,35 @@ func (s *Service) Forward(stream grpc.BidiStreamingServer[gatewayv1.ForwardReque
 				activated = true
 			case request.GetPipePayload() != nil:
 				payload := request.GetPipePayload()
-				if !activated || payload.GetPipeId() != result.PipeID || len(payload.GetPayload()) == 0 || len(payload.GetPayload()) > localbinding.MaxPayloadBytes {
+				if !activated || payload.GetPipeId() != result.PipeID || payload.GetPayloadId() == "" || len(payload.GetPayloadId()) > routing.MaxIdentityBytes || len(payload.GetPayload()) == 0 || len(payload.GetPayload()) > localbinding.MaxPayloadBytes {
 					return status.Error(codes.InvalidArgument, "invalid Gateway Pipe payload")
 				}
 				deliveryCtx, cancelDelivery := context.WithTimeout(pipeCtx, s.openTimeout)
-				err := s.owner.RelayPayload(deliveryCtx, caller, result.PipeID, append([]byte(nil), payload.GetPayload()...))
+				err := s.owner.RelayPayload(deliveryCtx, caller, result.PipeID, payload.GetPayloadId(), append([]byte(nil), payload.GetPayload()...))
 				cancelDelivery()
 				if err != nil {
+					_ = s.sendResponse(stream.Context(), outbound, &gatewayv1.ForwardResponse{Message: &gatewayv1.ForwardResponse_PipePayloadRejected{
+						PipePayloadRejected: &gatewayv1.PipePayloadRejected{
+							PipeId: result.PipeID, PayloadId: payload.GetPayloadId(), Failure: peerPayloadFailure(err),
+						},
+					}})
 					_ = callerEndpoint.TerminatePipe(stream.Context(), result.PipeID)
 					return nil
+				}
+				if err := s.sendResponse(stream.Context(), outbound, &gatewayv1.ForwardResponse{Message: &gatewayv1.ForwardResponse_PipePayloadReceived{
+					PipePayloadReceived: &gatewayv1.PipePayloadReceived{PipeId: result.PipeID, PayloadId: payload.GetPayloadId()},
+				}}); err != nil {
+					return err
+				}
+			case request.GetPipePayloadReceived() != nil:
+				receipt := request.GetPipePayloadReceived()
+				if !activated || receipt.GetPipeId() != result.PipeID || callerEndpoint.acknowledgePayload(receipt.GetPayloadId()) != nil {
+					return status.Error(codes.FailedPrecondition, "invalid Gateway payload receipt")
+				}
+			case request.GetPipePayloadRejected() != nil:
+				rejection := request.GetPipePayloadRejected()
+				if !activated || rejection.GetPipeId() != result.PipeID || callerEndpoint.rejectPayload(rejection.GetPayloadId(), rejection.GetFailure()) != nil {
+					return status.Error(codes.FailedPrecondition, "invalid Gateway payload rejection")
 				}
 			case request.GetClosePipe() != nil:
 				closeRequest := request.GetClosePipe()
@@ -278,7 +297,7 @@ func failureToProto(err error) gatewayv1.ForwardFailure {
 	}
 }
 
-func callerRef(auth authority.AuthContext) clientsession.Ref {
+func callerRef(auth routing.AuthContext) clientsession.Ref {
 	return clientsession.Ref{
 		ClientSessionID: auth.ClientSessionID,
 		ClientID:        auth.ClientID,
@@ -287,7 +306,7 @@ func callerRef(auth authority.AuthContext) clientsession.Ref {
 	}
 }
 
-func validOwnerResult(open authority.OpenContext, result opening.Result) bool {
+func validOwnerResult(open routing.OpenContext, result opening.Result) bool {
 	return result.AttemptID == open.AttemptID && result.PipeID != "" && len(result.PipeID) <= routing.MaxIdentityBytes && sameBinding(result.Binding, open.Binding)
 }
 
@@ -321,94 +340,4 @@ func (s *Service) wait(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-type serverCallerEndpoint struct {
-	outbound     *sendActor[*gatewayv1.ForwardResponse]
-	cancel       context.CancelCauseFunc
-	timeout      time.Duration
-	pipeMu       sync.Mutex
-	pipeID       string
-	accepted     chan struct{}
-	acceptedOnce sync.Once
-	terminalOnce sync.Once
-}
-
-func newServerCallerEndpoint(outbound *sendActor[*gatewayv1.ForwardResponse], cancel context.CancelCauseFunc, timeout time.Duration) *serverCallerEndpoint {
-	return &serverCallerEndpoint{outbound: outbound, cancel: cancel, timeout: timeout, accepted: make(chan struct{})}
-}
-
-func (e *serverCallerEndpoint) setPipeID(pipeID string) {
-	e.pipeMu.Lock()
-	if e.pipeID == "" {
-		e.pipeID = pipeID
-	} else if e.pipeID != pipeID {
-		e.cancel(opening.ErrUnknown)
-	}
-	e.pipeMu.Unlock()
-}
-
-func (e *serverCallerEndpoint) markAccepted() {
-	e.acceptedOnce.Do(func() { close(e.accepted) })
-}
-
-func (e *serverCallerEndpoint) DeliverPayload(parent context.Context, payload localbinding.PipePayload) error {
-	e.pipeMu.Lock()
-	pipeID := e.pipeID
-	e.pipeMu.Unlock()
-	if parent == nil || pipeID == "" || payload.PipeID != pipeID || len(payload.Data) == 0 || len(payload.Data) > localbinding.MaxPayloadBytes {
-		return fmt.Errorf("%w: invalid remote caller payload", localbinding.ErrEndpointUnavailable)
-	}
-	ctx, cancel := context.WithTimeout(parent, e.timeout)
-	defer cancel()
-	select {
-	case <-e.accepted:
-	case <-ctx.Done():
-		e.cancel(ctx.Err())
-		return localbinding.ErrEndpointUnavailable
-	}
-	err := e.outbound.send(ctx, &gatewayv1.ForwardResponse{Message: &gatewayv1.ForwardResponse_PipePayload{
-		PipePayload: &gatewayv1.PipePayload{PipeId: pipeID, Payload: append([]byte(nil), payload.Data...)},
-	}})
-	if err != nil {
-		e.cancel(err)
-		if isSendContextError(err) {
-			return localbinding.ErrPayloadBackpressure
-		}
-		return localbinding.ErrEndpointUnavailable
-	}
-	return nil
-}
-
-func (e *serverCallerEndpoint) TerminatePipe(parent context.Context, pipeID string) error {
-	e.pipeMu.Lock()
-	expected := e.pipeID
-	if expected == "" && pipeID != "" && len(pipeID) <= routing.MaxIdentityBytes {
-		e.pipeID = pipeID
-		expected = pipeID
-	}
-	e.pipeMu.Unlock()
-	if parent == nil || pipeID == "" || expected == "" || pipeID != expected {
-		return fmt.Errorf("%w: invalid remote caller terminal", localbinding.ErrEndpointUnavailable)
-	}
-	var terminalErr error
-	e.terminalOnce.Do(func() {
-		wait, cancelWait := context.WithTimeout(parent, e.timeout)
-		select {
-		case <-e.accepted:
-		case <-wait.Done():
-			terminalErr = wait.Err()
-			e.cancel(wait.Err())
-			cancelWait()
-			return
-		}
-		cancelWait()
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), e.timeout)
-		terminalErr = e.outbound.send(ctx, &gatewayv1.ForwardResponse{Message: &gatewayv1.ForwardResponse_PipeTerminal{
-			PipeTerminal: &gatewayv1.PipeTerminal{PipeId: pipeID},
-		}})
-		cancel()
-		e.cancel(context.Canceled)
-	})
-	return terminalErr
 }

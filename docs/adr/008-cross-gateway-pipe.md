@@ -25,6 +25,8 @@ Caller --public--> Ingress ==internal bidi stream==> Owner --public--> Listener
   timeout or cancellation, it terminalizes that Pipe and cancels the stream; it does not promise a separate priority
   bypass inside a blocked gRPC write.
 - The internal hop does not redial, retry, resume, or replay payload.
+- [ADR 013](013-payload-delivery-receipts.md) adds exact end-to-end SDK queue-admission receipts without adding durable
+  payload storage, hop retry, Pipe resume, or application processing acknowledgement.
 
 If the response or hop is lost after Open linearizes, the caller outcome may be `Unknown`. The caller starts a new Open
 instead of attaching to the same request.

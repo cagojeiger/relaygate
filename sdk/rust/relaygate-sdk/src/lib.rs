@@ -4,9 +4,11 @@
 //! one authenticated stream and exposes only client, listener, offer, and pipe
 //! concepts.
 //!
-//! [`ManagedClient`] is an opt-in in-process supervisor. It reconnects a fresh
-//! authenticated session and rebinds current logical listeners, but never
-//! retries or resumes Open, Pipe, or payload work.
+//! [`ManagedClient`] is the recommended application entry point. Its in-process
+//! supervisor reconnects a fresh authenticated session and rebinds current
+//! logical listeners, but never retries or resumes Open, Pipe, or payload work.
+//! Raw [`Client`] is available when the application intentionally owns session
+//! reconnection and Listener redeclaration.
 
 mod client;
 mod config;
@@ -23,8 +25,9 @@ mod wire {
 pub use client::{Client, Session};
 pub use config::Config;
 pub use error::{
-    AcceptError, BindError, CloseError, ConnectError, ManagedError, OpenError, OpenFailure,
-    PipeError, RejectError, SessionError, UnbindError,
+    AcceptError, BindError, CloseError, ConnectError, DeliveryError, DeliveryFailure,
+    DeliveryOutcome, ManagedError, OpenError, OpenFailure, PipeError, RejectError, SessionError,
+    UnbindError,
 };
 pub use listener::{Listener, Offer, OfferMetadata};
 pub use managed::{ManagedClient, ManagedListener, ManagedState};

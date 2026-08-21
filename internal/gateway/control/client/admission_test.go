@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	"google.golang.org/protobuf/proto"
@@ -20,7 +19,7 @@ func TestOpenContextFromProtoRejectsEveryMismatchedProvenanceField(t *testing.T)
 		AuthorityID:       "authority-a",
 		ControlSessionID:  "ingress-control",
 	}
-	auth := authority.AuthContext{ClientSessionID: "caller-session", ClientID: "client-a", APIKeyID: "key-a", AuthRevision: "revision-a"}
+	auth := routing.AuthContext{ClientSessionID: "caller-session", ClientID: "client-a", APIKeyID: "key-a", AuthRevision: "revision-a"}
 	key := routing.BindingKey{ClientID: auth.ClientID, EndpointPattern: "/jobs", TargetID: "worker"}
 	binding := routing.LiveBinding{
 		Key: key,

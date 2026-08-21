@@ -10,7 +10,8 @@ If the SDK retries Open, Pipe, or payload state, RelayGate becomes a queue/repla
 The Go/Rust SDKs provide two layers.
 
 - `Client` owns one authenticated Relay session. Session end is terminal for every child handle.
-- Opt-in `ManagedClient` reconnects a fresh `Client` through one SDK-internal supervisor.
+- Recommended `ManagedClient` reconnects a fresh `Client` through one SDK-internal supervisor. Raw `Client` remains the
+  advanced API for applications that intentionally own session reconnection and Listener redeclaration.
 
 `ManagedClient` keeps only current logical Listener declarations in memory. When a session ends, it terminates old
 Listeners, Offers, Opens, and Pipes; after bounded backoff, it authenticates a new session and performs fresh Bind for

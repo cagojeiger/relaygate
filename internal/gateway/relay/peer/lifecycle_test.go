@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/access/session"
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
 )
@@ -15,7 +15,7 @@ import (
 func TestGatewayRelayClientCapacityIsProcessWide(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	owner := &testOwner{open: func(ctx context.Context, open authority.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
+	owner := &testOwner{open: func(ctx context.Context, open routing.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
 		close(started)
 		select {
 		case <-release:
@@ -49,7 +49,7 @@ func TestGatewayRelayClientCapacityIsProcessWide(t *testing.T) {
 func TestGatewayRelayServerCapacityIsProcessWideAcrossClients(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	owner := &testOwner{open: func(ctx context.Context, open authority.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
+	owner := &testOwner{open: func(ctx context.Context, open routing.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
 		if open.AttemptID == "attempt-server-one" {
 			close(started)
 			select {
@@ -86,7 +86,7 @@ func TestGatewayRelayServerCapacityIsProcessWideAcrossClients(t *testing.T) {
 
 func TestGatewayRelayClientCloseCancelsAndJoinsActivePipe(t *testing.T) {
 	ownerLifetime := make(chan context.Context, 1)
-	owner := &testOwner{open: func(ctx context.Context, open authority.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
+	owner := &testOwner{open: func(ctx context.Context, open routing.OpenContext, _ localbinding.CallerEndpoint) (opening.Result, error) {
 		ownerLifetime <- ctx
 		return opening.Result{AttemptID: open.AttemptID, PipeID: "pipe-client-close", Binding: open.Binding}, nil
 	}}
@@ -120,7 +120,7 @@ func TestGatewayRelayClientCloseCancelsAndJoinsActivePipe(t *testing.T) {
 
 func TestGatewayRelayTerminalCancelsBlockedInboundDeliveryAndJoins(t *testing.T) {
 	ownerEndpoint := make(chan localbinding.CallerEndpoint, 1)
-	owner := &testOwner{open: func(_ context.Context, open authority.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
+	owner := &testOwner{open: func(_ context.Context, open routing.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
 		ownerEndpoint <- endpoint
 		return opening.Result{AttemptID: open.AttemptID, PipeID: "pipe-terminal", Binding: open.Binding}, nil
 	}}
@@ -142,14 +142,18 @@ func TestGatewayRelayTerminalCancelsBlockedInboundDeliveryAndJoins(t *testing.T)
 		t.Fatalf("Activate(): %v", err)
 	}
 	endpoint := receive(t, ownerEndpoint)
-	if err := endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, Data: []byte("blocked")}); err != nil {
-		t.Fatalf("owner DeliverPayload(): %v", err)
-	}
+	deliveryResult := make(chan error, 1)
+	go func() {
+		deliveryResult <- endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, PayloadID: "payload-blocked", Data: []byte("blocked")})
+	}()
 	receive(t, deliveryStarted)
 	if err := endpoint.TerminatePipe(context.Background(), result.PipeID); err != nil {
 		t.Fatalf("TerminatePipe(): %v", err)
 	}
 	receive(t, deliveryCanceled)
+	if err := receive(t, deliveryResult); err == nil {
+		t.Fatal("owner DeliverPayload succeeded without a receipt")
+	}
 	select {
 	case <-result.Endpoint.Done():
 	case <-time.After(testTimeout):
@@ -162,11 +166,11 @@ func TestGatewayRelayOwnerTerminalCancelsBlockedOwnerPayload(t *testing.T) {
 	relayStarted := make(chan struct{})
 	relayCanceled := make(chan struct{})
 	owner := &testOwner{
-		open: func(_ context.Context, open authority.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
+		open: func(_ context.Context, open routing.OpenContext, endpoint localbinding.CallerEndpoint) (opening.Result, error) {
 			ownerEndpoint <- endpoint
 			return opening.Result{AttemptID: open.AttemptID, PipeID: "pipe-owner-blocked", Binding: open.Binding}, nil
 		},
-		relayPayload: func(ctx context.Context, _ clientsession.Ref, _ string, _ []byte) error {
+		relayPayload: func(ctx context.Context, _ clientsession.Ref, _ string, _ string, _ []byte) error {
 			close(relayStarted)
 			<-ctx.Done()
 			close(relayCanceled)
@@ -183,14 +187,18 @@ func TestGatewayRelayOwnerTerminalCancelsBlockedOwnerPayload(t *testing.T) {
 		t.Fatalf("Activate(): %v", err)
 	}
 	endpoint := receive(t, ownerEndpoint)
-	if err := result.Endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, Data: []byte("blocked")}); err != nil {
-		t.Fatalf("DeliverPayload(): %v", err)
-	}
+	deliveryResult := make(chan error, 1)
+	go func() {
+		deliveryResult <- result.Endpoint.DeliverPayload(context.Background(), localbinding.PipePayload{PipeID: result.PipeID, PayloadID: "payload-blocked", Data: []byte("blocked")})
+	}()
 	receive(t, relayStarted)
 	if err := endpoint.TerminatePipe(context.Background(), result.PipeID); err != nil {
 		t.Fatalf("TerminatePipe(): %v", err)
 	}
 	receive(t, relayCanceled)
+	if err := receive(t, deliveryResult); err == nil {
+		t.Fatal("DeliverPayload succeeded without a receipt")
+	}
 	select {
 	case <-result.Endpoint.Done():
 	case <-time.After(testTimeout):

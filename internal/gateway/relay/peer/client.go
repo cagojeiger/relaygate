@@ -2,13 +2,10 @@ package gatewayrelay
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"sync"
 	"time"
 
-	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/binding"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing/opening"
@@ -56,7 +53,7 @@ func NewClient(connectTimeout, openTimeout time.Duration, maxPipes uint32) (*Cli
 	}, nil
 }
 
-func (c *Client) Open(ctx context.Context, open authority.OpenContext, callerEndpoint localbinding.CallerEndpoint) (opening.RemoteResult, error) {
+func (c *Client) Open(ctx context.Context, open routing.OpenContext, callerEndpoint localbinding.CallerEndpoint) (opening.RemoteResult, error) {
 	if ctx == nil || callerEndpoint == nil {
 		return opening.RemoteResult{}, fmt.Errorf("%w: context and caller endpoint are required", ErrInvalid)
 	}
@@ -215,17 +212,17 @@ func (c *Client) Close() {
 	close(c.closedDone)
 }
 
-func validateClientOpen(open authority.OpenContext, now time.Time) error {
+func validateClientOpen(open routing.OpenContext, now time.Time) error {
 	if open.ExpiresAt.IsZero() || !now.Before(open.ExpiresAt) {
 		return opening.ErrContextExpired
 	}
-	if _, err := authority.NewForwardedOpenContext(
+	if _, err := routing.NewForwardedOpenContext(
 		open.ClusterEpoch,
 		open.AuthorityID,
 		open.AttemptID,
 		open.Auth,
 		cloneBinding(open.Binding),
-		authority.ForwardingContext{
+		routing.ForwardingContext{
 			IngressGatewayID:         open.IngressGatewayID,
 			IngressGatewayInstanceID: open.IngressGatewayInstanceID,
 			IngressControlSessionID:  open.IngressControlSessionID,
@@ -301,217 +298,4 @@ func detachedPipeContext(attempt, root context.Context) (context.Context, contex
 		stop()
 		cancel(cause)
 	}
-}
-
-type remoteEndpoint struct {
-	client         *Client
-	cancel         context.CancelCauseFunc
-	connection     *grpc.ClientConn
-	stream         grpc.BidiStreamingClient[gatewayv1.ForwardRequest, gatewayv1.ForwardResponse]
-	sender         *sendActor[*gatewayv1.ForwardRequest]
-	callerEndpoint localbinding.CallerEndpoint
-	timeout        time.Duration
-	attemptID      string
-	pipeID         string
-	binding        routing.LiveBinding
-	inbound        chan localbinding.PipePayload
-	done           chan struct{}
-
-	activateOnce sync.Once
-	activateDone chan struct{}
-	activateErr  error
-	workers      sync.WaitGroup
-	closeOnce    sync.Once
-	closeDone    chan struct{}
-	closeErr     error
-}
-
-func newRemoteEndpoint(
-	client *Client,
-	cancel context.CancelCauseFunc,
-	connection *grpc.ClientConn,
-	stream grpc.BidiStreamingClient[gatewayv1.ForwardRequest, gatewayv1.ForwardResponse],
-	sender *sendActor[*gatewayv1.ForwardRequest],
-	callerEndpoint localbinding.CallerEndpoint,
-	attemptID, pipeID string,
-	binding routing.LiveBinding,
-) *remoteEndpoint {
-	return &remoteEndpoint{
-		client:         client,
-		cancel:         cancel,
-		connection:     connection,
-		stream:         stream,
-		sender:         sender,
-		callerEndpoint: callerEndpoint,
-		timeout:        client.openTimeout,
-		attemptID:      attemptID,
-		pipeID:         pipeID,
-		binding:        cloneBinding(binding),
-		inbound:        make(chan localbinding.PipePayload, 1),
-		done:           make(chan struct{}),
-		activateDone:   make(chan struct{}),
-		closeDone:      make(chan struct{}),
-	}
-}
-
-func (e *remoteEndpoint) start(ctx context.Context) {
-	e.workers.Add(2)
-	go e.receive()
-	go e.deliver(ctx)
-	go e.cleanup(ctx)
-}
-
-func (e *remoteEndpoint) DeliverPayload(parent context.Context, payload localbinding.PipePayload) error {
-	if parent == nil || payload.PipeID != e.pipeID || len(payload.Data) == 0 || len(payload.Data) > localbinding.MaxPayloadBytes {
-		return fmt.Errorf("%w: invalid remote Pipe payload", localbinding.ErrEndpointUnavailable)
-	}
-	ctx, cancel := context.WithTimeout(parent, e.timeout)
-	defer cancel()
-	err := e.sender.send(ctx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_PipePayload{
-		PipePayload: &gatewayv1.PipePayload{PipeId: e.pipeID, Payload: append([]byte(nil), payload.Data...)},
-	}})
-	if err != nil {
-		e.cancel(err)
-		if isSendContextError(err) {
-			return localbinding.ErrPayloadBackpressure
-		}
-		return localbinding.ErrEndpointUnavailable
-	}
-	return nil
-}
-
-func (e *remoteEndpoint) Activate(parent context.Context) error {
-	if parent == nil {
-		return ErrInvalid
-	}
-	e.activateOnce.Do(func() {
-		defer close(e.activateDone)
-		ctx, cancel := context.WithTimeout(parent, e.timeout)
-		defer cancel()
-		if err := e.sender.send(ctx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_ActivatePipe{
-			ActivatePipe: &gatewayv1.ActivatePipe{PipeId: e.pipeID},
-		}}); err != nil {
-			e.activateErr = fmt.Errorf("%w: activate owner Pipe: %w", opening.ErrUnavailable, err)
-			e.cancel(err)
-			return
-		}
-	})
-	select {
-	case <-e.activateDone:
-		return e.activateErr
-	case <-parent.Done():
-		return parent.Err()
-	}
-}
-
-func (e *remoteEndpoint) Close(parent context.Context) error {
-	if parent == nil {
-		return ErrInvalid
-	}
-	e.closeOnce.Do(func() {
-		defer close(e.closeDone)
-		select {
-		case <-e.done:
-			return
-		default:
-		}
-		ctx, cancel := context.WithTimeout(parent, e.timeout)
-		err := e.sender.send(ctx, &gatewayv1.ForwardRequest{Message: &gatewayv1.ForwardRequest_ClosePipe{
-			ClosePipe: &gatewayv1.ClosePipe{PipeId: e.pipeID},
-		}})
-		cancel()
-		if err == nil {
-			err = e.stream.CloseSend()
-		}
-		if err != nil {
-			e.closeErr = err
-			e.cancel(err)
-		} else {
-			wait := time.NewTimer(e.timeout)
-			select {
-			case <-e.done:
-				wait.Stop()
-			case <-parent.Done():
-				wait.Stop()
-				e.closeErr = parent.Err()
-				e.cancel(parent.Err())
-			case <-wait.C:
-				e.closeErr = context.DeadlineExceeded
-				e.cancel(context.DeadlineExceeded)
-			}
-		}
-		<-e.done
-	})
-	select {
-	case <-e.closeDone:
-		return e.closeErr
-	case <-parent.Done():
-		return parent.Err()
-	}
-}
-
-func (e *remoteEndpoint) Done() <-chan struct{} {
-	return e.done
-}
-
-func (e *remoteEndpoint) receive() {
-	defer e.workers.Done()
-	for {
-		response, err := e.stream.Recv()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				err = opening.ErrUnavailable
-			}
-			e.cancel(err)
-			return
-		}
-		if payload := response.GetPipePayload(); payload != nil {
-			if payload.GetPipeId() != e.pipeID || len(payload.GetPayload()) == 0 || len(payload.GetPayload()) > localbinding.MaxPayloadBytes {
-				e.cancel(opening.ErrUnavailable)
-				return
-			}
-			item := localbinding.PipePayload{PipeID: e.pipeID, Data: append([]byte(nil), payload.GetPayload()...)}
-			select {
-			case e.inbound <- item:
-			default:
-				e.cancel(ErrBackpressure)
-				return
-			}
-			continue
-		}
-		if terminal := response.GetPipeTerminal(); terminal != nil && terminal.GetPipeId() == e.pipeID {
-			e.cancel(context.Canceled)
-			return
-		}
-		e.cancel(opening.ErrUnavailable)
-		return
-	}
-}
-
-func (e *remoteEndpoint) deliver(ctx context.Context) {
-	defer e.workers.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case payload := <-e.inbound:
-			deliveryCtx, cancel := context.WithTimeout(ctx, e.timeout)
-			err := e.callerEndpoint.DeliverPayload(deliveryCtx, payload)
-			cancel()
-			if err != nil {
-				e.cancel(err)
-				return
-			}
-		}
-	}
-}
-
-func (e *remoteEndpoint) cleanup(ctx context.Context) {
-	<-ctx.Done()
-	e.sender.stop(context.Cause(ctx))
-	_ = e.connection.Close()
-	e.workers.Wait()
-	<-e.sender.joined
-	close(e.done)
-	e.client.release()
 }

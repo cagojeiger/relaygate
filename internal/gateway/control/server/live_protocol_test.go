@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cagojeiger/relaygate/internal/gateway/control/authority"
+	controlmodel "github.com/cagojeiger/relaygate/internal/gateway/control/model"
 	"github.com/cagojeiger/relaygate/internal/gateway/routing"
 	controlv1 "github.com/cagojeiger/relaygate/internal/gen/control/v1"
 	raftnode "github.com/cagojeiger/relaygate/internal/raft/node"
@@ -129,7 +130,7 @@ func TestDeclareReportsCurrentLiveConflict(t *testing.T) {
 
 func TestSnapshotEnvelopeAcceptsMaximumLegalSetAndRejectsExcess(t *testing.T) {
 	identity := strings.Repeat("i", routing.MaxIdentityBytes)
-	ref := authority.SessionRef{
+	ref := controlmodel.SessionRef{
 		ClusterEpoch:      identity,
 		AuthorityID:       identity,
 		ControlSessionID:  identity,

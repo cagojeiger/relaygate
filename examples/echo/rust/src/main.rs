@@ -1,6 +1,6 @@
 use std::{env, future::Future, time::Duration};
 
-use relaygate_sdk::{Client, Config, Pipe};
+use relaygate_sdk::{Config, ManagedClient, Pipe};
 use tokio::time::timeout;
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:27420";
@@ -100,7 +100,7 @@ fn required_env(name: &str) -> AppResult<String> {
         .ok_or_else(|| format!("{name} is required"))
 }
 
-async fn connect(settings: &Settings) -> AppResult<Client> {
+async fn connect(settings: &Settings) -> AppResult<ManagedClient> {
     let config = Config::new(
         format!("http://{}", settings.address),
         &settings.client_id,
@@ -108,7 +108,7 @@ async fn connect(settings: &Settings) -> AppResult<Client> {
         &settings.api_key,
     )
     .with_insecure_local();
-    stage("connect", Client::connect(config)).await
+    stage("connect", ManagedClient::connect(config)).await
 }
 
 async fn serve(settings: Settings, target: String) -> AppResult<()> {
