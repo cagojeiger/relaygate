@@ -1,63 +1,65 @@
-# TEST 002: Current Failure Evidence
+# TEST 002: 현재 장애 근거
 
-This file records what current automation has executed and what remains external/operator evidence. It does not mark missing production evidence as passed.
+이 문서는 현재 automation이 실제 실행한 것과 external/operator evidence가 남은 것을 구분한다. 없는 production evidence를 passed로 표시하지 않는다.
 
-## Status Meaning
+## Status 의미
 
-| Status | Meaning |
+| Status | 의미 |
 | --- | --- |
-| `executed` | A test/harness directly observes the fault order and oracle |
-| `representative` | Deterministic automation observes the stated local boundary, but not every OS/network/deployment realization of that failure class |
-| `invariant` | Ownership/API boundaries make the interaction unreachable or independent, with boundary tests |
-| `missing-evidence` | Required, but not proven by current automated tests |
-| `external-blocked` | Requires deployment/operator evidence outside this repository |
+| `executed` | Test/harness가 fault order와 oracle을 직접 관찰 |
+| `representative` | Deterministic automation이 local boundary를 관찰하지만 모든 OS/network/deployment realization은 아님 |
+| `invariant` | Ownership/API boundary가 interaction을 불가능 또는 독립으로 만들고 boundary test 존재 |
+| `missing-evidence` | 필수지만 current automation으로 증명되지 않음 |
+| `external-blocked` | Repository 밖 deployment/operator evidence 필요 |
 
-## Failure Axes
+## 장애 축
 
-| Axis | Cases | Status | Evidence |
+| 축 | 경우 | Status | 근거 |
 | --- | --- | --- | --- |
-| Controller restart | same durable store, same `NodeId`, no bootstrap | `executed` | `TestSameStoreRestartRestoresStateWithoutBootstrap` |
-| Snapshot recovery | compacted log restores current FSM | `executed` | `TestSnapshotRecoveryRestoresCurrentState`, FSM snapshot restore tests |
-| Controller replacement primitive | fresh `NodeId` add, current-FSM catch-up, remove; old identity reuse rejected | `executed` | `TestAddCatchUpAndRemoveVoter`, `TestExistingStoreRejectsDifferentNodeID` |
-| Local membership operator | controller-local Unix-socket list/add/remove, leader-only guard, state-idempotent retry | `executed` | membership service/client tests and Compose operator stage |
-| Production replacement operation | deployed runbook drives start/add/readiness/remove safely | `external-blocked` | production operator evidence required |
-| Initial bootstrap validation | one-shot bootstrap requires voter manifest and is removed from steady Compose services | `executed` | config bootstrap tests; the command-scoped Compose input is removed by recreating only the bootstrap controller with `bootstrap=false` before fault stages |
-| Production PVC/runbook | actual storage class, backup, replacement procedure | `external-blocked` | operator evidence required |
-| Disaster reset fence | old controller/control/gateway paths fenced before new epoch | `external-blocked` | operator evidence required; not covered by Compose stop |
-| Authority | current, caller cancel, term/ref change, follower, definitive verify loss, steady point-lookup admission | `executed` | authority manager tests including `TestAdmissionRejectsChangedAuthorityRef` and `TestSteadyStateConfirmAndAdmitOpenDoNotCopyFullState` |
-| Control session | syncing, revalidated, timeout, replacement, stale message | `executed` | control client/server tests and blackhole integration |
-| Directory `C` | exact, absent, conflict, churn, max snapshot, cascade delete | `executed` | FSM/authority directory tests |
-| Open | all six gates, reject, cancel, deadline, ACK loss, Unknown | `executed` | 64-vector and opening manager race tests |
-| Remote hop | exact provenance, replay, expiry, and representative stream loss | `representative` | admission decoder, peer relay, forwarded-attempt tests; no arbitrary packet-loss/partition campaign |
-| Payload receipt | both directions, exact queue-admission receipt, `NotSent`/`Rejected`/`Unknown`, duplicate fingerprint, pressure, and participant termination | `representative` | opening/public/peer and Go/Rust SDK receipt tests; no OS process-kill payload crash cut |
-| Public error scope | Bind/Unbind stable failures stay operation-local; payload receipt/rejection is exact and rejection ends only the owned Pipe; every unknown/unspecified enum and malformed/foreign/conflicting correlation fails closed | `executed` | public Relay plus Go/Rust SDK strict-enum, error-scope, receipt-replay, and terminal-order tests |
-| SDK retry state | Protocol failure in connect, rebind, or ready enters terminal Failed; only transient transport/availability enters Backoff | `executed` | Go wrapped rebind-protocol regression and Go/Rust managed classification tests |
-| Auth config | current, invalid candidate, removal, process skew | `executed` | auth/runtime/admin tests |
-| Runtime role | controller owns Raft/control; gateway owns relay and no Raft/store/control server | `representative` | runtime composition and config/admin tests; Compose verifies the Gateway-side closed controller ports |
-| Presence | committed `C` counters, leader-local `V` counters, no completeness/revocation claim | `representative` | authority/admin tests verify exact local values; no deployment-wide expected-roster proof |
-| Data-plane process crash | OS/container kill during an active Pipe or payload write | `missing-evidence` | in-process cancellation tests are not a process-crash harness |
-| Arbitrary network fault campaign | packet loss, duplication, reorder, delay, and partition at every peer/control cut | `missing-evidence` | representative stream-loss and timeout tests only |
-| Remote clock bound | real node clock skew | `external-blocked` | operational evidence required |
-| Internal identity | untrusted/shared network | `external-blocked` | peer/control/Raft authentication or mTLS required |
-| Go SDK module | server module/workspace-free build/test | `executed` | `sdk/go` `GOWORK=off` test/vet |
+| Controller restart | Same store/`NodeId`, no bootstrap | `executed` | Same-store restart test |
+| Snapshot recovery | Compacted log에서 current FSM restore | `executed` | Node/FSM snapshot test |
+| Controller replacement primitive | Fresh `NodeId` add/catch-up/remove, old identity reuse 거부 | `executed` | Add/remove와 identity test |
+| Local membership operator | Unix socket list/add/remove, leader guard, idempotent retry | `executed` | Membership/Compose operator test |
+| Production replacement | Deployed runbook의 safe start/add/readiness/remove | `external-blocked` | Production operator evidence 필요 |
+| Initial bootstrap | One-shot voter manifest, steady Compose에서 bootstrap 제거 | `executed` | Config/Compose bootstrap stage |
+| Production PVC/runbook | Real storage class/backup/replacement | `external-blocked` | Operator evidence 필요 |
+| Disaster reset fence | New epoch 전 old path fence | `external-blocked` | Compose stop으로 증명 불가 |
+| Authority | Current/cancel/term/ref/follower/quorum loss/point lookup | `executed` | Authority manager test |
+| Control session | Syncing/revalidated/timeout/replacement/stale message | `executed` | Client/server blackhole integration |
+| Directory `C` | Exact/absent/conflict/churn/max/cascade | `executed` | FSM/authority directory test |
+| Open | Six gates/reject/cancel/deadline/ACK loss/Unknown | `executed` | 64-vector/opening race test |
+| Remote hop | Provenance/replay/expiry/stream loss | `representative` | Decoder/peer/forwarded test, arbitrary network campaign 없음 |
+| Peer connection sharing | Same owner reuse, sibling isolation, owner replacement drain, bounded idle eviction | `executed` | `TestGatewayRelaySharesOneConnectionAcrossOwnerPipes`, `TestGatewayRelayReplacesChangedOwnerIdentityAfterOldPipesDrain`, `TestGatewayRelayIdleConnectionCacheIsBounded` |
+| Payload receipt | 양방향/queue LP/outcome/duplicate/pressure/terminal | `representative` | Opening/public/peer/Go/Rust, OS process-kill cut 없음 |
+| Public error scope | Operation-local stable failure, strict correlation/enum | `executed` | Public + Go/Rust strict/error test |
+| SDK retry state | Protocol은 Failed, transient transport만 Backoff | `executed` | Go/Rust managed classification |
+| Auth config | Current/invalid/removal/process skew | `executed` | Auth/runtime/admin test |
+| Runtime role | Controller Raft/control, Gateway Relay/no store | `representative` | Composition/config/admin/Compose port test |
+| Presence | Committed `C`, leader-local `V`, completeness claim 없음 | `representative` | Authority/admin exact value test |
+| Data-plane process crash | Active Pipe/payload write 중 OS/container kill | `missing-evidence` | In-process cancellation은 process crash가 아님 |
+| Arbitrary network campaign | 모든 cut의 loss/duplicate/reorder/delay/partition | `missing-evidence` | Representative loss/timeout만 존재 |
+| Remote clock bound | Real node clock skew | `external-blocked` | 운영 근거 필요 |
+| Internal identity | Untrusted/shared network | `external-blocked` | Authentication/mTLS 필요 |
+| Go SDK module | Server/workspace 없는 build/test | `executed` | `sdk/go` GOWORK=off test/vet |
 
-## Compound Evidence
+## 복합 근거
 
-| Interaction | Direct evidence | Result |
+| 상호작용 | 직접 근거 | 결과 |
 | --- | --- | --- |
-| Authority change x stale session x partial redeclare | `TestAuthorityFailoverRetainsCommittedDirectoryButDropsV`, `TestStaleGraceCleanupCannotDeleteReplacementInstance` | `V` empty first, fresh exact routes only |
-| Same-store restart x persisted FSM | raft node restart/snapshot tests | Durable `C` survives restart |
-| Lost store x replacement | raft node add/remove tests | New `NodeId` required; old identity reuse rejected |
-| Session end x declare ACK loss x reconnect | `TestEndSessionRetainsCAndReconnectCancelsGraceCleanup`, `TestControlKeepaliveBlackholeDeletesAndRedeclaresCurrentRoutes` | `V` clears immediately; reconnect snapshot or grace cleanup converges `C`; no history/replay |
-| Credential removal x config skew | `TestX03CredentialRemovalDuringGatewayConfigSkewRemainsProcessLocal` | Process-local retirement only |
-| Listener accept x ACK loss x owner shutdown | `TestX04ListenerAcceptThenConfirmationLossAndOwnerShutdownIsUnknown` | Caller `Unknown`, active 0 |
-| Replay x expiry x response loss | `TestForwardedOwnerSingleUseExpiryAndFailedGuard` | One O, no result replay |
-| Backpressure x cancel x crash | `TestX07BackpressureCancelAndParticipantCrashReleaseAllPayloadSlots` | Bounded terminal and slot drain |
-| Payload handoff x receipt loss x terminal | Go blocked-writer/receipt tests and Rust cancelled receipt-wait test | Pre-handoff is `NotSent`; post-handoff without an exact receipt is `Unknown`; late exact receipt is bounded NoOp |
-| Duplicate payload x queue pressure | public/peer receipt-state tests and Go/Rust SDK fingerprint tests | Exact bytes enqueue once and re-ACK; conflicting bytes fail closed; full queue rejects without silent drop |
+| Authority change × stale session × partial redeclare | Authority failover/stale cleanup test | 먼저 빈 `V`, fresh exact route만 |
+| Same-store restart × persisted FSM | Raft restart/snapshot test | Durable `C` 생존 |
+| Lost store × replacement | Add/remove test | Fresh `NodeId`, old reuse 거부 |
+| Session end × ACK loss × reconnect | End/reconnect/blackhole test | `V` 즉시 clear, snapshot/cleanup으로 `C` 수렴 |
+| Credential removal × skew | X03 | Process-local retirement만 |
+| Listener accept × ACK loss × shutdown | X04 | Caller `Unknown`, active 0 |
+| Replay × expiry × response loss | Forwarded owner test | O 하나, result replay 없음 |
+| Peer sharing × stream close × owner replacement | Connection pool test | Sibling 유지, identity change connection 교체/drain |
+| Backpressure × cancel × crash | X07 | Bounded terminal/slot drain |
+| Payload handoff × receipt loss × terminal | Go/Rust receipt-wait test | Pre=`NotSent`, post=`Unknown`, late result NoOp |
+| Duplicate payload × pressure | Public/peer/SDK fingerprint test | Exact bytes once/re-ACK, conflict fail closed, full queue reject |
 
-## Runtime Evidence
+## Runtime 근거
 
-`./scripts/compose-smoke.sh` validates the local multi-container shape: command-scoped one-shot bootstrap retirement, controller named volumes, gateway services without Raft data volume, local leader-only membership socket, same/cross-Gateway relay, SDK combinations, leader failover, and fail-closed behavior under insufficient quorum.
+`./scripts/compose-smoke.sh`는 command-scoped bootstrap retirement, Controller named volume, storeless Gateway, leader-only membership socket, same/cross-Gateway Relay, SDK 조합, leader failover, insufficient quorum fail-closed를 검증한다.
 
-Local Compose is not production evidence for PVC durability, backup/restore, mTLS, clock skew, or disaster reset fencing.
+Local Compose는 production PVC durability, backup/restore, mTLS, clock skew, disaster reset fencing의 근거가 아니다.

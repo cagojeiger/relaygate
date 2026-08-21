@@ -1,4 +1,4 @@
-# Render from the repository root:
+# Repository root에서 render:
 # d2 --layout elk docs/diagrams/cluster-topology.d2 docs/diagrams/cluster-topology.svg
 direction: right
 
@@ -27,29 +27,29 @@ listener: {
 }
 
 operator: {
-  label: "Operator"
+  label: "운영자"
   class: actor
 }
 
 external_config: {
-  label: "External client config\nClientId -> ApiKeyId verifier\nno service DB or Raft credential state"
+  label: "외부 client config\nClientId -> ApiKeyId verifier\nservice DB/Raft credential state 없음"
   class: config
 }
 
 gateways: {
-  label: "Gateway role · no durable store"
+  label: "Gateway role · durable store 없음"
   direction: down
   style.fill: "#f8fafc"
   style.stroke: "#2563eb"
   style.border-radius: 8
 
   ingress: {
-    label: "Ingress Gateway\npublic Relay + peer Relay\ncontrol client\nno Raft/store/control server"
+    label: "Ingress Gateway\npublic Relay + peer Relay\ncontrol client\nRaft/store/control server 없음"
     class: gateway
   }
 
   owner: {
-    label: "Owner Gateway\nListener bindings\nPipe segments + payload buffers\nprocess memory only"
+    label: "Owner Gateway\nListener binding\nPipe segment + payload buffer\nprocess memory only"
     class: gateway
   }
 }
@@ -62,7 +62,7 @@ controllers: {
   style.border-radius: 8
 
   leader: {
-    label: "Controller A · leader\ncontrol gRPC + admin\nno public/peer Relay"
+    label: "Controller A · leader\ncontrol gRPC + admin\npublic/peer Relay 없음"
     class: controller
   }
 
@@ -84,23 +84,23 @@ controllers: {
   }
 
   durable: {
-    label: "Durable Raft store per controller\nterm / vote / log / membership\nstable state / snapshots / NodeId\ncurrent GatewaySession + exact routes"
+    label: "Controller별 durable Raft store\nterm / vote / log / membership\nstable state / snapshot / NodeId\ncurrent GatewaySession + exact route"
     class: store
   }
 
   c_fsm: {
-    label: "C · committed current FSM\nGatewaySession + exact routes\ntrue delete / cascade\nno application tombstone/history"
+    label: "C · committed current FSM\nGatewaySession + exact route\ntrue delete / cascade\napplication tombstone/history 없음"
     class: store
   }
 
   v_authority: {
-    label: "V · leader-local authority\nAuthorityId / control sessions\nowner relay addresses / revalidated mirror\nresets on leader change"
+    label: "V · leader-local authority\nAuthorityId / control session\nowner relay address / revalidated mirror\nleader 변경 시 초기화"
     class: volatile
   }
 }
 
 admission: {
-  label: "New-Pipe admission\nA · L · Q · C · V · O\nonly 111111 admits"
+  label: "New-Pipe admission\nA · L · Q · C · V · O\n111111만 허용"
   shape: diamond
   style.fill: "#ecfdf5"
   style.stroke: "#059669"
@@ -108,7 +108,7 @@ admission: {
 }
 
 disaster: {
-  label: "Explicit disaster reset\nfence old paths first\nnew epoch/cohort starts empty\nbootstrap is not member recovery"
+  label: "명시적 disaster reset\n먼저 old path fence\nnew epoch/cohort는 empty start\nbootstrap은 member recovery가 아님"
   shape: page
   style.fill: "#fef2f2"
   style.stroke: "#dc2626"
@@ -117,29 +117,29 @@ disaster: {
 
 caller <-> gateways.ingress: "public Relay gRPC\nOpen / payload" {class: grpc}
 gateways.owner <-> listener: "public Relay gRPC\nListen / Pipe" {class: grpc}
-gateways.ingress <-> gateways.owner: "peer Relay gRPC\none stream per remote Pipe\nno redial/replay/resume" {class: grpc}
+gateways.ingress <-> gateways.owner: "peer Relay gRPC\nowner identity별 shared connection\nremote Pipe별 독립 stream\nredial/replay/resume 없음" {class: grpc}
 
 external_config -> gateways.ingress: "startup + SIGHUP\nprocess-local auth snapshot" {class: control}
 external_config -> gateways.owner: {class: control}
 
 gateways.ingress -> controllers.leader: "Hello / full snapshot\nDeclare / Withdraw" {class: control}
-gateways.owner -> controllers.leader: "Hello advertises owner relay address\nfull current binding snapshot" {class: control}
+gateways.owner -> controllers.leader: "Hello로 owner relay address 광고\nfull current binding snapshot" {class: control}
 
 controllers.leader <-> controllers.followers.b: "HashiCorp Raft TCP" {class: raft}
 controllers.leader <-> controllers.followers.c: "HashiCorp Raft TCP" {class: raft}
-controllers.leader -> controllers.durable: "persist and compact log to snapshots" {class: raft}
+controllers.leader -> controllers.durable: "log persist와 snapshot compact" {class: raft}
 controllers.followers.b -> controllers.durable: {class: raft}
 controllers.followers.c -> controllers.durable: {class: raft}
-controllers.durable -> controllers.c_fsm: "restore current rows only" {class: raft}
+controllers.durable -> controllers.c_fsm: "current row만 restore" {class: raft}
 controllers.leader -> controllers.c_fsm: "linearizable C route lookup" {class: raft}
-controllers.leader -> controllers.v_authority: "confirmed leader creates V" {class: control}
+controllers.leader -> controllers.v_authority: "confirmed leader가 V 생성" {class: control}
 controllers.leader -> admission: "L + Q\nVerifyLeader + Barrier" {class: raft}
 controllers.v_authority -> admission: "V" {class: control}
 controllers.c_fsm -> admission: "C" {class: raft}
 gateways.ingress -> admission: "A" {class: control}
-gateways.owner -> admission: "O owner reservation" {class: control}
+gateways.owner -> admission: "O · owner reservation" {class: control}
 
 operator -> controllers.leader: "GET /status\nread-only" {class: observe}
 operator -> gateways.ingress: "GET /status\nread-only" {class: observe}
-operator -> disaster: "manual only" {class: no}
-disaster -> controllers.durable: "not automatic recovery" {class: no}
+operator -> disaster: "수동 작업만" {class: no}
+disaster -> controllers.durable: "자동 recovery 아님" {class: no}

@@ -1,29 +1,27 @@
-# ADR 006: Client Isolation and Credentials
+# ADR 006: Client 격리와 credential
 
-## Context
+## 배경
 
-Clients that use the same Endpoint need a namespace that cannot be bypassed and a single credential source.
-This final document consolidates and replaces the client isolation and credential verification decisions from the previous ADR 006 and ADR 007. The previous decision records remain in Git history.
+같은 Endpoint를 사용하는 Client도 우회할 수 없는 namespace와 단일 credential source가 필요하다. 이 문서는 과거 ADR 006과 ADR 007의 client isolation 및 credential verification 결정을 통합해 대체한다. 이전 기록은 Git history에 남는다.
 
-## Decision
+## 결정
 
-`ClientId` is a strict namespace determined by authentication. Bindings, routes, and Pipe operations are interpreted only inside that namespace. Cross-client lookup is not allowed.
+`ClientId`는 인증으로 결정되는 strict namespace다. Binding, route, Pipe operation은 이 namespace 안에서만 해석하며 cross-client lookup을 허용하지 않는다.
 
-The source of truth for clients and API keys is external config.
+Client와 API key의 source of truth는 external config다.
 
-- API keys are limited to operator-generated, high-entropy bearer secrets.
-- One `ClientId` can have multiple immutable `ApiKeyId` values for rotation.
-- Config stores only `sha256:<64 lowercase hex>` verifiers, not raw keys.
-- Gateway compares exact `(ClientId, ApiKeyId)` verifiers in constant time.
-- RelayGate does not store credentials in a database or Raft and does not provide a CRUD API.
-- Only the first message of public `Relay.Connect` contains the raw key. Later identity comes from the authenticated session.
-- Invalid startup config fails closed. An invalid candidate during reload is rejected and the current snapshot is preserved.
-  Only valid candidates are applied atomically, and sessions for removed credentials are terminated.
+- API key는 operator가 생성한 high-entropy bearer secret만 허용한다.
+- 하나의 `ClientId`는 rotation을 위해 여러 immutable `ApiKeyId`를 가질 수 있다.
+- Config는 raw key가 아니라 `sha256:<64 lowercase hex>` verifier만 저장한다.
+- Gateway는 exact `(ClientId, ApiKeyId)` verifier를 constant time으로 비교한다.
+- RelayGate는 credential을 database나 Raft에 저장하지 않으며 CRUD API도 제공하지 않는다.
+- Public `Relay.Connect`의 첫 message만 raw key를 포함한다. 이후 identity는 authenticated session에서 가져온다.
+- 잘못된 startup config는 fail closed한다. Reload candidate가 잘못되면 거부하고 현재 snapshot을 유지한다. Valid candidate만 atomic apply하며 제거된 credential의 session은 종료한다.
 
-Non-loopback Public Relay is allowed only when TLS is provided.
+Non-loopback Public Relay는 TLS가 제공될 때만 허용한다.
 
-## Consequences
+## 결과
 
-- RelayGate supports per-client route isolation and uninterrupted key rotation together.
-- External config owns the credential lifecycle.
-- Raw keys are not recorded in logs, state, Raft, or config.
+- Client별 route isolation과 중단 없는 key rotation을 함께 지원한다.
+- Credential lifecycle은 external config가 소유한다.
+- Raw key를 log, state, Raft, config에 기록하지 않는다.
