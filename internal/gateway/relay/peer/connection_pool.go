@@ -128,15 +128,18 @@ func (c *Client) evictIdleConnectionsLocked() []*grpc.ClientConn {
 		}
 	}
 	var evicted []*grpc.ClientConn
-	for uint32(len(idle)) > c.maxIdleConnections {
-		oldestIndex := 0
+	keep := c.maxIdleConnections
+	for len(idle) > 0 && keep > 0 {
+		newestIndex := 0
 		for index := 1; index < len(idle); index++ {
-			if idle[index].lastUsed < idle[oldestIndex].lastUsed {
-				oldestIndex = index
+			if idle[index].lastUsed > idle[newestIndex].lastUsed {
+				newestIndex = index
 			}
 		}
-		oldest := idle[oldestIndex]
-		idle = append(idle[:oldestIndex], idle[oldestIndex+1:]...)
+		idle = append(idle[:newestIndex], idle[newestIndex+1:]...)
+		keep--
+	}
+	for _, oldest := range idle {
 		if c.connections[oldest.key.gatewayID] == oldest {
 			delete(c.connections, oldest.key.gatewayID)
 		}
