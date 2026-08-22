@@ -20,13 +20,13 @@ func newMetrics(registerer prometheus.Registerer, node *Node) (*metrics, error) 
 			Namespace: "relaygate",
 			Subsystem: "raft",
 			Name:      "proposals_total",
-			Help:      "Raft safety-marker proposals observed by result.",
+			Help:      "Raft current-control-state proposals observed by result.",
 		}, []string{"result"}),
 		proposalDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: "relaygate",
 			Subsystem: "raft",
 			Name:      "proposal_duration_seconds",
-			Help:      "Time spent waiting for a Raft safety-marker proposal outcome.",
+			Help:      "Time spent waiting for a Raft current-control-state proposal outcome.",
 			Buckets:   prometheus.DefBuckets,
 		}),
 		snapshots: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -95,7 +95,7 @@ var (
 	)
 	raftReady = prometheus.NewDesc(
 		"relaygate_raft_ready",
-		"Whether the epoch safety marker is initialized, a leader is known, and shutdown has not begun.",
+		"Whether the current-control-state FSM is initialized, a leader is known, and shutdown has not begun.",
 		nil,
 		nil,
 	)
@@ -113,7 +113,7 @@ var (
 	)
 	raftAppliedIndex = prometheus.NewDesc(
 		"relaygate_raft_applied_index",
-		"Highest Raft log index applied to the Raft safety FSM.",
+		"Highest Raft log index applied to the current-control-state FSM.",
 		nil,
 		nil,
 	)
@@ -125,7 +125,7 @@ var (
 	)
 	raftPendingFSM = prometheus.NewDesc(
 		"relaygate_raft_fsm_pending",
-		"Raft safety commands waiting to be applied to the FSM.",
+		"Raft current-control-state commands waiting to be applied to the FSM.",
 		nil,
 		nil,
 	)

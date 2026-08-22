@@ -81,8 +81,8 @@ func (n *Node) EnsureCluster(ctx context.Context, cluster controlstate.Initializ
 	}
 }
 
-// ClusterEpoch returns the constant-size safety marker held by the local FSM.
-// It never exposes Gateway, route, listener, or Pipe state.
+// ClusterEpoch returns only the cluster epoch held by the local current-state
+// FSM. It does not expose Gateway, route, listener, or Pipe state.
 func (n *Node) ClusterEpoch() string {
 	return n.fsm.ClusterEpoch()
 }
@@ -95,10 +95,10 @@ func (n *Node) Apply(ctx context.Context, command []byte) (controlstate.ApplyRes
 		return controlstate.ApplyResult{}, fmt.Errorf("raft node is shutting down")
 	}
 	if len(command) == 0 {
-		return controlstate.ApplyResult{}, fmt.Errorf("raft safety command is empty")
+		return controlstate.ApplyResult{}, fmt.Errorf("raft control-state command is empty")
 	}
 	if len(command) > n.config.MaxCommandBytes {
-		return controlstate.ApplyResult{}, fmt.Errorf("raft safety command is %d bytes; limit is %d", len(command), n.config.MaxCommandBytes)
+		return controlstate.ApplyResult{}, fmt.Errorf("raft control-state command is %d bytes; limit is %d", len(command), n.config.MaxCommandBytes)
 	}
 
 	started := time.Now()

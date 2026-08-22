@@ -91,7 +91,7 @@ Lost-store replacement는 fresh `NodeId`, empty data directory, `bootstrap=false
 - 소유자 식별자·주소 변경 시 새 연결을 사용하며 이전 연결은 기존 Pipe stream이 모두 종료된 뒤 닫는다.
 - 유휴 Peer 연결은 `min(max_pipes, 64)` 상한의 LRU cache로 제한해 과거 Gateway 변동이 socket 누적으로 이어지지 않게 한다.
 - 한 peer stream의 timeout/cancel은 해당 Pipe만 종료하고 shared connection의 sibling stream은 유지한다. Connection-level 장애는 그 connection의 Pipe 전체를 종료한다.
-- 내부 재연결, payload 재시도, 재개, 재생은 없다.
+- 기존 Peer stream과 Pipe는 재연결·재개하지 않고 payload도 재시도·재생하지 않는다. 이후 Open은 복구된 공유 연결 또는 새 stream을 사용할 수 있다.
 - `Send` 성공은 peer SDK가 exact `PayloadId`를 bounded receive queue에 넣고 correlated receipt가 돌아왔다는 뜻이다. Peer application processing이나 durable commit을 뜻하지 않으며 local transport handoff 뒤 receipt loss는 `Unknown`이다.
 - 다중화된 공개 Relay stream은 제어·종료와 payload를 별도 상한 대기열로 보내 쌓인 payload 압력을 우회한다.
 - Pipe별 peer stream은 bounded lane 하나에서 send를 직렬화한다. Blocked send timeout/cancel은 해당 Pipe와 stream을 종료하지만 frame을 몰래 drop/retry/replay하지 않는다.
