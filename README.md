@@ -160,4 +160,4 @@ Smoke 검증 도구는 다중 역할 로컬 구성을 검증하고 실행 뒤 �
 - `ClockSkewBound < relay.open_timeout` 근거
 - Controller 교체, quorum 복원, 명시적 재해 초기화 차단의 운영 절차서 근거
 
-계약: [SPEC 001](docs/spec/001-system-model.md), [SPEC 003](docs/spec/003-failure-and-recovery-model.md), [SPEC 004](docs/spec/004-state-transition-model.md). 검증: [TEST 001](docs/test/001-core-correctness-test-plan.md), [TEST 002](docs/test/002-failure-evidence-matrix.md). Runtime 결정: [ADR 002](docs/adr/002-current-state-cluster-and-recovery.md), [ADR 005](docs/adr/005-runtime-and-release-boundary.md).
+계약: [SPEC 001](docs/spec/001-system-model.md), [SPEC 003](docs/spec/003-failure-and-recovery-model.md), [SPEC 004](docs/spec/004-state-transition-model.md). 검증: [TEST 001](docs/test/001-core-correctness-test-plan.md), [TEST 002](docs/test/002-failure-evidence-matrix.md). 결정 기록: [ADR 색인](docs/adr/README.md), 특히 [ADR 002](docs/adr/002-current-state-cluster-and-recovery.md), [ADR 005](docs/adr/005-runtime-and-release-boundary.md), [ADR 014](docs/adr/014-control-state-authority-split.md).
