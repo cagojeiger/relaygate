@@ -91,7 +91,7 @@ Lost-store replacement는 fresh `NodeId`, empty data directory, `bootstrap=false
 - 소유자 식별자·주소 변경 시 새 연결을 사용하며 이전 연결은 기존 Pipe stream이 모두 종료된 뒤 닫는다.
 - 유휴 Peer 연결은 `min(max_pipes, 64)` 상한의 LRU cache로 제한해 과거 Gateway 변동이 socket 누적으로 이어지지 않게 한다.
 - 한 peer stream의 timeout/cancel은 해당 Pipe만 종료하고 shared connection의 sibling stream은 유지한다. Connection-level 장애는 그 connection의 Pipe 전체를 종료한다.
-- 내부 재연결, payload 재시도, 재개, 재생은 없다.
+- 기존 Peer stream과 Pipe는 재연결·재개하지 않고 payload도 재시도·재생하지 않는다. 이후 Open은 복구된 공유 연결 또는 새 stream을 사용할 수 있다.
 - `Send` 성공은 peer SDK가 exact `PayloadId`를 bounded receive queue에 넣고 correlated receipt가 돌아왔다는 뜻이다. Peer application processing이나 durable commit을 뜻하지 않으며 local transport handoff 뒤 receipt loss는 `Unknown`이다.
 - 다중화된 공개 Relay stream은 제어·종료와 payload를 별도 상한 대기열로 보내 쌓인 payload 압력을 우회한다.
 - Pipe별 peer stream은 bounded lane 하나에서 send를 직렬화한다. Blocked send timeout/cancel은 해당 Pipe와 stream을 종료하지만 frame을 몰래 drop/retry/replay하지 않는다.
@@ -160,4 +160,4 @@ Smoke 검증 도구는 다중 역할 로컬 구성을 검증하고 실행 뒤 �
 - `ClockSkewBound < relay.open_timeout` 근거
 - Controller 교체, quorum 복원, 명시적 재해 초기화 차단의 운영 절차서 근거
 
-계약: [SPEC 001](docs/spec/001-system-model.md), [SPEC 003](docs/spec/003-failure-and-recovery-model.md), [SPEC 004](docs/spec/004-state-transition-model.md). 검증: [TEST 001](docs/test/001-core-correctness-test-plan.md), [TEST 002](docs/test/002-failure-evidence-matrix.md). Runtime 결정: [ADR 002](docs/adr/002-current-state-cluster-and-recovery.md), [ADR 005](docs/adr/005-runtime-and-release-boundary.md).
+계약: [SPEC 001](docs/spec/001-system-model.md), [SPEC 003](docs/spec/003-failure-and-recovery-model.md), [SPEC 004](docs/spec/004-state-transition-model.md). 검증: [TEST 001](docs/test/001-core-correctness-test-plan.md), [TEST 002](docs/test/002-failure-evidence-matrix.md). 결정 기록: [ADR 색인](docs/adr/README.md), 특히 [ADR 002](docs/adr/002-current-state-cluster-and-recovery.md), [ADR 005](docs/adr/005-runtime-and-release-boundary.md), [ADR 014](docs/adr/014-control-state-authority-split.md).

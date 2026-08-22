@@ -12,6 +12,53 @@
 | `missing-evidence` | 필수지만 현재 자동화로 증명되지 않음 |
 | `external-blocked` | 저장소 밖 배포·운영자 근거 필요 |
 
+## 장애 축 지도
+
+```mermaid
+flowchart TD
+    subgraph Raft 계층
+        R1[Controller 재시작]
+        R2[Snapshot recovery]
+        R3[Controller replacement primitive]
+        R4[로컬 구성원 운영]
+        R5[Membership 최소 정족수 보호]
+        R6[Initial bootstrap]
+    end
+    subgraph Authority 와 세션
+        A1[Authority]
+        A2[Control session]
+        A3[차단 규율]
+        A4[만료와 수렴]
+        A5[정상 종료]
+    end
+    subgraph Directory 와 Open
+        D1[Directory C]
+        D2[Open]
+    end
+    subgraph 원격 과 데이터 평면
+        P1[Remote hop]
+        P2[Peer 연결 공유]
+        P3[Payload receipt]
+        P4[Data-plane process crash]
+    end
+    subgraph 설정 과 관찰
+        C1[공개 오류 범위]
+        C2[SDK retry state]
+        C3[Auth config]
+        C4[실행 역할]
+        C5[Presence]
+        C6[Go SDK module]
+    end
+    subgraph 운영 경계 밖
+        E1[Production replacement]
+        E2[Production PVC 런북]
+        E3[Disaster reset fence]
+        E4[Remote clock bound]
+        E5[Internal identity]
+        E6[Arbitrary network campaign]
+    end
+```
+
 ## 장애 축
 
 | 장애 축 | 경우 | 상태값 | 근거 |
@@ -20,12 +67,16 @@
 | Snapshot recovery | Compacted log에서 current FSM restore | `executed` | Node/FSM snapshot test |
 | Controller replacement primitive | Fresh `NodeId` add/catch-up/remove, old identity reuse 거부 | `executed` | Add/remove와 identity test |
 | 로컬 구성원 운영 | Unix socket 목록·추가·제거, 리더 조건, 멱등 재시도 | `executed` | 구성원·Compose 운영 테스트 |
+| Membership 최소 정족수 보호 | 마지막 voter 제거 요청 거부, `RemoveServer` 미호출 | `executed` | `TestServiceRefusesToRemoveLastVoter` |
 | Production replacement | Deployed runbook의 safe start/add/readiness/remove | `external-blocked` | Production operator evidence 필요 |
 | Initial bootstrap | One-shot voter manifest, steady Compose에서 bootstrap 제거 | `executed` | Config/Compose bootstrap stage |
 | Production PVC/runbook | Real storage class/backup/replacement | `external-blocked` | Operator evidence 필요 |
 | Disaster reset fence | New epoch 전 old path fence | `external-blocked` | Compose stop으로 증명 불가 |
 | Authority | Current/cancel/term/ref/follower/quorum loss/point lookup | `executed` | Authority manager test |
 | Control session | Syncing/revalidated/timeout/replacement/stale message | `executed` | Client/server blackhole integration |
+| 차단 규율 | Apply 전송 실패 시 V 전체 fence, C는 무손상. Authority 교체 시 이전 term의 진행 중 mutation이 V를 되살리지 못함 | `executed` | `TestEndSessionDropsVWhileMutationApplyIsInFlight`, `TestAuthorityChangeDuringMutationCannotRestoreStaleV`, `TestAuthorityFailoverRetainsCommittedDirectoryButDropsV`, `TestStaleConfirmationCannotReplaceNewerAuthorityTerm` |
+| 만료와 수렴 | 새 authority 확립 시 committed C 전체에 grace 부여, 재검증한 Gateway는 만료되지 않음, grace 만료 시 정확히 그 인스턴스만 cascade delete, 교체 인스턴스는 stale cleanup에서 보호 | `executed` | `TestNewLeaderCleansPersistedGatewayThatNeverRevalidates`, `TestGraceCleanupDeletesOnlyUnrevalidatedCurrentGateway`, `TestSyncingSessionExpiresWithoutFullSnapshot`, `TestStaleGraceCleanupCannotDeleteReplacementInstance`, `TestEndSessionRetainsCAndReconnectCancelsGraceCleanup` |
+| 정상 종료 | draining 진입 후 Apply/VerifyLeader/AddVoter/RemoveServer 거부, shutdown timeout 시 transport만 닫고 store는 열어 둠 | `missing-evidence` | `lifecycle.go`의 `BeginShutdown`/`Close` 경로를 직접 검증하는 테스트 없음 |
 | Directory `C` | Exact/absent/conflict/churn/max/cascade | `executed` | FSM/authority directory test |
 | Open | Six gates/reject/cancel/deadline/ACK loss/Unknown | `executed` | 64-vector/opening race test |
 | Remote hop | Provenance/replay/expiry/stream loss | `representative` | Decoder/peer/forwarded test, arbitrary network campaign 없음 |
@@ -47,6 +98,9 @@
 | 상호작용 | 직접 근거 | 결과 |
 | --- | --- | --- |
 | Authority change × stale session × partial redeclare | Authority failover/stale cleanup test | 먼저 빈 `V`, fresh exact route만 |
+| Apply 전송 실패 × authority 교체 × 늦은 커밋 | `TestAuthorityChangeDuringMutationCannotRestoreStaleV` | 새 term에서 `V` 즉시 빈 상태, 늦게 도착한 커밋은 `C`에만 반영되고 `V`는 복원되지 않음 |
+| Session end × 진행 중 Apply × Open 시도 | `TestEndSessionDropsVWhileMutationApplyIsInFlight` | Apply가 막힌 동안에도 `EndSession`이 즉시 `V`를 fence, 이후 커밋은 `ErrStaleSession` |
+| 새 authority 확립 × 미재검증 gateway × grace 만료 | `TestNewLeaderCleansPersistedGatewayThatNeverRevalidates` | 정확히 그 인스턴스만 cascade delete |
 | Same-store restart × persisted FSM | Raft restart/snapshot test | Durable `C` 생존 |
 | Lost store × replacement | Add/remove test | Fresh `NodeId`, old reuse 거부 |
 | Session end × ACK loss × reconnect | End/reconnect/blackhole test | `V` 즉시 clear, snapshot/cleanup으로 `C` 수렴 |
@@ -62,4 +116,4 @@
 
 `./scripts/compose-smoke.sh`는 command-scoped bootstrap retirement, Controller named volume, storeless Gateway, leader-only membership socket, same/cross-Gateway Relay, SDK 조합, leader failover, insufficient quorum fail-closed를 검증한다.
 
-로컬 Compose는 운영 PVC 내구성, 백업·복원, mTLS, 시계 오차, 재해 초기화 차단의 근거가 아니다.
+로컬 Compose는 운영 PVC 내구성, 백업·복원, mTLS, 시계 오차, 재해 초기화 차단, draining 중 정상 종료 경계의 근거가 아니다.
