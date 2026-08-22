@@ -16,16 +16,21 @@
 | `R04` | Bootstrap initial-only | Empty store는 valid voter manifest 필요, same-store restart는 bootstrap 없음 | Bootstrap config test |
 | `R05` | Runtime role boundary | Gateway에는 Raft/store/control listener가 없고 Controller에는 Relay가 없음 | Runtime/config/admin test와 Compose port 검증 |
 | `R06` | Local membership operator | Leader-only Unix socket list/add/remove, exact retry 수렴, conflict/limit 거부 | Membership test와 Compose operator stage |
+| `R07` | 마지막 voter 제거 거부 | Voter 1개만 남은 상태에서 `RemoveServer`가 `FailedPrecondition`으로 거부되고 membership 불변 | `TestServiceRefusesToRemoveLastVoter` |
+| `R08` | Draining 중 쓰기·검증 거부 | `BeginShutdown` 이후 신규 `Apply`/`VerifyLeader`/`AddVoter`/`RemoveServer`가 즉시 실패 | 미확보, draining 상태 주입 test 신규 필요 |
 | `D01` | Atomic full snapshot | Invalid/conflict/over-cap snapshot partial install 0 | FSM/authority snapshot test |
 | `D02` | Current-only cardinality | Bind/unbind churn 뒤 directory size=current live set | `TestFSMChurnDoesNotConsumeCapacityAndTrueDeleteReclaimsIt` |
 | `D03` | True delete/cascade | Withdraw/remove/replacement 뒤 tombstone/history 없음 | FSM/authority stale/replacement test |
 | `D04` | Exact stale fence | Old session mutation이 replacement state 생성/삭제 불가 | FSM ABA와 stale grace cleanup test |
 | `D05` | ACK-loss convergence | Session end에서 `V` clear, reconnect snapshot 또는 grace cleanup으로 `C` 수렴, response replay 없음 | Control keepalive/reconnect test |
 | `D06` | Maximum snapshot wire | 512 binding 허용, 513은 state change 전 거부 | Maximum envelope test |
+| `G01` | Grace deadline 부여와 revalidation 면제 | 새 authority 확립 시 committed `C`의 모든 Gateway에 grace deadline이 부여되고, 재검증한 Gateway는 만료되지 않음 | `TestNewLeaderCleansPersistedGatewayThatNeverRevalidates`, `TestEndSessionRetainsCAndReconnectCancelsGraceCleanup` |
+| `G02` | Grace 만료의 exact instance cascade | Deadline 경과 시 정확히 그 instance만 `RemoveGateway`되고 owned route가 cascade delete되며, 교체되거나 재검증된 instance는 삭제되지 않음 | `TestGraceCleanupDeletesOnlyUnrevalidatedCurrentGateway`, `TestStaleGraceCleanupCannotDeleteReplacementInstance` |
 | `A01` | Six-gate admission | 64개 `A,L,Q,C,V,O` 조합 중 `111111`만 admit | `TestSixGateAdmissionComposition` |
 | `A02` | Authority call cancellation | Caller cancel/deadline은 해당 call만 영향 | Authority call-scoped test |
 | `A03` | 확정 리더 상실 | `V` 제거, 허용 판정 닫힌 실패 | 권한 주체 장애 전환 테스트 |
 | `A04` | One confirmed boundary | VerifyLeader+Barrier 하나가 exact authority `C/V`를 묶고 steady Open은 full FSM copy 없음 | Admission ref/state-call test |
+| `A05` | Apply 전송 실패 fence | 쓰기 명령 Apply 전송 실패 시 `V` 전체가 즉시 fence되고 `C`는 무손상으로 남음 | 미확보, Apply 전송 실패 주입 test 신규 필요 |
 | `O01` | Open 선형화 순서 | O → 제안 → 수락·PipeId → 확인 ACK → 호출자 활성화 | Opening·공개 통합 테스트 |
 | `O02` | Accept/cancel/unbind race | First LP wins, late success revival 없음, pre-O failure offer 없음 | Both-order/retirement test |
 | `O03` | Unknown boundary | Post-LP response/hop loss는 retry/resume 없이 `Unknown` 가능 | Confirmation-loss/peer-loss test |

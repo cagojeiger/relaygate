@@ -2,6 +2,16 @@
 
 ## 인증 정보 원본
 
+```mermaid
+flowchart TD
+    A[클라이언트가 ClientId · ApiKeyId · 원본 key 제시] --> B[제시된 key의 sha256 계산]
+    D[설정된 sha256 verifier 조회, 없으면 32바이트 zero 값] --> C
+    B --> C{subtle.ConstantTimeCompare}
+    C -- 일치 --> E[세션 ClientId 고정]
+    C -- 불일치 --> F[ErrInvalidCredential]
+    E --> G[이후 요청 필드는 ClientId를 바꿀 수 없음]
+```
+
 정규 외부 YAML이 Client/API key의 유일한 기준 정보다.
 
 ```text
@@ -9,7 +19,7 @@ ClientId -> ApiKeyId -> sha256:<64 lowercase hex>
 ```
 
 - 원본 key는 설정, log, Raft, REST, 실행 상태 관찰에 저장하지 않는다.
-- 제시된 key는 exact `(ClientId, ApiKeyId)` 검증 값과 일정한 시간으로 비교한다.
+- 제시된 key는 exact `(ClientId, ApiKeyId)` 검증 값과 `subtle.ConstantTimeCompare`로 일정한 시간에 비교한다. 검증 값을 못 찾아도 32바이트 zero 값을 대신 비교 대상으로 써서 항상 같은 길이로 비교하므로, 조회 실패와 값 불일치를 시간차로 구분할 수 없다.
 - 하나의 Client는 교체를 위해 여러 key를 가질 수 있다.
 - 같은 `ApiKeyId`의 검증 값 변경이나 한 프로세스 수명 안의 검증 값 공유는 유효하지 않다.
 - 공개 stream의 첫 message만 원본 key를 포함할 수 있으며 인증 제한 시간이 지나면 stream을 종료한다.
@@ -21,19 +31,35 @@ Bearer 인증 정보를 TLS로 보호하기 전에는 공개 Relay를 loopback�
 
 ```mermaid
 flowchart LR
-    C[후보] --> V{전체 설정이 유효한가?}
-    V -- 아니요 --> K[현재 snapshot 유지]
-    V -- 예 --> S[Client snapshot 원자적 교체]
+    C[후보 전체 YAML 로드] --> V{전체 설정이 유효한가}
+    V -- 아니요 --> K[현재 snapshot과 실행 상태 유지]
+    V -- 예 --> D{clients 이외 필드가 현재와 동일한가}
+    D -- 아니요 --> X[SIGHUP 거부, 재시작 필요]
+    D -- 예 --> S[Client snapshot 원자적 교체]
     S --> R[제거된 로컬 세션·바인딩·Pipe 정리]
+    R --> L[Listener·port·Raft 설정은 이 경로에서 불변]
 ```
 
 - 유효하지 않은 시작 설정은 서비스를 열지 않는다.
-- `SIGHUP`은 전체 파일을 읽고 검증하지만 프로세스 로컬 `clients`만 교체한다. Listener, port, Raft 설정은 재시작으로만 바꾼다.
+- `SIGHUP`은 전체 파일을 읽고 검증하지만 프로세스 로컬 `clients`만 교체한다. Listener, port, Raft 설정은 재시작으로만 바꾼다. `clients`를 제외한 나머지 필드가 현재 설정과 완전히 같지 않으면 다시 불러오기 자체를 거부한다.
 - 유효하지 않은 다시 불러오기는 현재 snapshot과 실행 상태를 유지한다.
 - 유효한 제거는 먼저 교체해 제거된 인증 정보의 새 인증을 막고, 로컬 세션·바인딩·Pipe 정리를 마친 뒤 종료한다.
 - 다시 불러오기가 모든 Gateway에 동시에 적용된다고 가정하지 않는다. 상태 관찰은 분할된 Gateway의 과거 유효 snapshot이 폐기됐음을 증명하지 않는다.
 
 ## 상태 관찰과 외부 인터페이스
+
+```mermaid
+flowchart TD
+    A[GET /healthz/ready] --> B[로컬 raft Status 읽기]
+    B --> C{draining 아님 그리고 LeaderAddress 있음 그리고 ClusterEpoch 있음}
+    C -- 예 --> OK[ready]
+    C -- 아니요 --> BAD[not_ready, 503]
+
+    F[GET /status] --> G[Presence.Observe 호출]
+    G --> H[VerifyLeader로 이 노드가 지금도 리더인지 quorum 확인]
+    H -- 실패 --> I[NoAuthority Presence, 503]
+    H -- 성공 --> J[committed·revalidated 값을 포함한 Presence 반환]
+```
 
 | 외부 인터페이스 | 허용 | 금지 |
 | --- | --- | --- |
@@ -41,7 +67,11 @@ flowchart LR
 | 읽기 전용 REST | 로컬 health/readiness, quorum으로 확인한 현재 관찰 수, metric | 변경, 비밀 정보, payload, buffer, 이력·완전성 |
 | 외부 설정 | Client/key 추가·제거·교체 | RelayGate database/Raft 인증 정보 수명주기 |
 
+`/healthz/ready`는 이 노드의 로컬 raft 상태만 읽는다. quorum 왕복이 없어 값싸지만, 이 순간 이 노드가 실제로 리더인지까지는 확인하지 않는다. `/status`가 호출하는 `Observe`는 `VerifyLeader`로 현재 리더십을 quorum 확인한 뒤에만 `Presence`를 반환하므로 더 비싸지만 권위 있다.
+
 상태 관찰 값은 `NoAuthority` 또는 `Current`다. `Current`는 합의된 `C`의 `committed_gateways`·`committed_routes`, 리더 로컬 `V`의 `revalidated_gateways`, exact `C/V`가 일치하는 `eligible_routes`를 분리한다. 예상 replica 목록이 없으므로 0이나 일부 개수도 유효한 관찰이다. 완전·수렴 여부 표시는 노출하지 않으며 상태 관찰은 권한 결정이나 새 Pipe 허용 조건이 아니다.
+
+`Presence`를 포함한 관찰 경로는 barrier 없는 로컬 FSM 읽기다. `Observe`가 요구하는 `VerifyLeader`는 이 노드가 지금 리더라는 사실만 quorum으로 확인할 뿐, 이 노드가 최신 committed 항목을 전부 적용했다는 보장은 아니다. `VerifyLeader`와 `Barrier`를 함께 요구해 최신성까지 보장하는 경로는 `AdmitOpen`뿐이다.
 
 Gateway 제어 세션만 끊기면 로컬 `LiveBinding` 선언은 프로세스 메모리에 남고 `V`만 사라진다. 새 제어 세션은 새로운 FullSnapshot으로 현재 선언을 다시 게시한다. ACK 전 `RegisteringB`였던 Bind는 실패하고 변경을 다음 세션에 재생하지 않는다.
 

@@ -29,9 +29,42 @@
 | ReceiverReceipt | 수신 SDK, Pipe별 상한 | 상한이 있는 프로세스 메모리 | Pipe·세션 종료·이력 제거 |
 | SDK 감독자 | Go/Rust `ManagedClient` | 프로세스 메모리 | 닫기·영구 연결 실패 |
 
-`C`는 `ClusterEpoch`, capacity limit, current `GatewaySession`, exact current route만 가진다. `V`는 current leader observation인 control session, revalidation, owner relay address, current binding mirror만 가진다.
+`C`는 `ClusterEpoch`, capacity limit, current `GatewaySession`, exact current route만 가진다. `V`는 current leader observation인 control session, revalidation, owner relay address, current binding mirror, grace cleanup deadline만 가진다.
+
+### Raft 디스크 저장 레이아웃
+
+`raft.data_dir` 아래 저장 구조는 다음과 같다.
+
+```
+raft.db                    bbolt 단일 파일
+  bucket "logs"            index -> msgpack raft.Log{Index,Term,Type,Data,AppendedAt}
+                            Data는 우리 JSON 명령 그대로
+  bucket "conf"             CurrentTerm / LastVoteTerm / LastVoteCand는 라이브러리 소유
+                            relaygate/node-id/v1은 우리 소유
+snapshots/{term}-{index}-{ts}/
+  meta.json                 ID, Index, Term, Configuration, Size, CRC
+  state.bin                 우리 FSM JSON, version 2와 state
+```
+
+`C`에는 시각이 없다. `AppendedAt`은 log entry에 대한 라이브러리 메타데이터일 뿐 FSM 상태가 아니며, `C`의 어떤 transition도 시각을 읽거나 쓰지 않는다. Snapshot이 로그를 compact해도 `raft.db` 파일 자체는 즉시 줄지 않는다. 해제된 페이지는 free list에 들어가 재사용되므로 파일 크기는 high-water mark로 남고, 볼륨 사용량과 현재 FSM 카디널리티는 별도로 관측해야 한다.
 
 ## Raft 구성원과 Controller 저장소
+
+```mermaid
+stateDiagram-v2
+    [*] --> EmptyStoreR
+    EmptyStoreR --> MemberR: valid initial voter의 external one-shot bootstrap
+    MemberR --> MemberR: same store/NodeId process restart
+    MemberR --> MemberR: same-epoch leader loss, quorum 생존
+    MemberR --> UnavailableR: quorum unavailable
+    UnavailableR --> MemberR: valid existing member로 quorum 복구
+    MemberR --> MemberR: fresh NodeId replacement에 leader AddVoter 성공
+    MemberR --> MemberR: exact existing voter Add retry
+    MemberR --> MemberR: leader RemoveServer 성공
+    MemberR --> MemberR: exact absent member Remove retry
+    MemberR --> EmptyStoreR2: full old-path fence 증명과 new epoch
+    EmptyStoreR2: EmptyStoreR 새 cohort
+```
 
 | 이전 상태 | 이벤트와 조건 | 다음 상태 | 효과 |
 | --- | --- | --- | --- |
@@ -44,11 +77,74 @@
 | `MemberR` | exact existing voter Add retry | `MemberR` | NoOp, current membership 반환 |
 | `MemberR` | leader `RemoveServer(lost NodeId)` 성공 | `MemberR` | Committed membership에서 제거 |
 | `MemberR` | exact absent member Remove retry | `MemberR` | NoOp, current membership 반환 |
+| `MemberR` | voter 8개째 `AddVoter` 시도 | `MemberR` | `ResourceExhausted` 거부, voter 상한 7 |
+| `MemberR` | 마지막 voter `RemoveServer` 시도 | `MemberR` | `FailedPrecondition` 거부, membership 불변 |
+| `MemberR` | 기존 `NodeId`를 다른 주소로 `AddVoter` | `MemberR` | `AlreadyExists` 거부, 지워진 식별자 재사용 방지 |
+| `MemberR` | 다른 `NodeId`를 기존 주소로 `AddVoter` | `MemberR` | `AlreadyExists` 거부 |
 | any old cohort | full old-path fence 증명 + new epoch | `EmptyStoreR'` | 별도 disaster-reset machine, old state 복구 없음 |
 
-Erased store의 old `NodeId`에는 recovery transition이 없다. `bootstrap=true`는 initial empty cluster만 유효하다. Membership command는 verified leader의 controller-local Unix socket에서만 받는다.
+Erased store의 old `NodeId`에는 recovery transition이 없다. `bootstrap=true`는 initial empty cluster만 유효하다. Membership command는 verified leader의 controller-local Unix socket에서만 받는다. `List`를 포함한 모든 membership 작업이 `VerifyLeader`를 요구한다.
+
+### Controller-local Unix Socket 보호
+
+```mermaid
+flowchart TD
+    A["membership.sock 준비"] --> B["데이터 디렉터리를 0o700으로 강제"]
+    B --> C["소켓 파일을 0o600으로 생성"]
+    C --> D["chmod 후 SameFile로 재검증"]
+    D --> E{"검증 중 파일이 바뀌었나?"}
+    E -- 예 --> F["실패, TOCTOU 방어"]
+    E -- 아니오 --> G["배타 락 파일로 동시 사용 방지"]
+    H["기존 소켓 발견"] --> I{"dial 시도 결과는?"}
+    I -- 응답함 --> J["거부, 이미 사용 중"]
+    I -- 무응답 --> K["기존 소켓 제거 후 재생성"]
+    I -- 판정 불가 --> L["제거 거부"]
+```
+
+소켓 이름은 `membership.sock`이며 기본 위치는 Raft 데이터 디렉터리 옆이다. 경로가 100바이트를 넘으면 Unix socket 경로 길이 제한 때문에 대체 경로를 사용한다.
+
+## 종료와 감지 상한
+
+```mermaid
+flowchart TD
+    A["BeginShutdown 호출"] --> B["draining을 true로 설정"]
+    B --> C["신규 Apply, VerifyLeader, AddVoter, RemoveServer 즉시 거부"]
+    C --> D["raft.Shutdown 대기, ShutdownTimeout"]
+    D --> E{"제한 시간 내 완료했나?"}
+    E -- 예 --> F["transport close 후 store close"]
+    E -- 아니오 --> G["transport만 close, store는 열어둔 채 포기"]
+```
+
+`draining`이 켜지면 `Apply`, `VerifyLeader`, `AddVoter`, `RemoveServer`가 즉시 거부된다. `raft.Shutdown()`이 `ShutdownTimeout` 안에 끝나면 transport와 store를 순서대로 닫는다. 타임아웃이 나면 transport만 닫고 store는 닫지 않은 채 포기한다. Raft가 미확인 shutdown 이후에도 durable store에 접근할 수 있으므로, 그 goroutine 아래에서 store를 닫지 않기 위함이다.
+
+`Status.Ready`는 `!draining`, `LeaderAddress`가 비어있지 않음, `ClusterEpoch`가 비어있지 않음 세 조건의 결합이다.
+
+control 평면 keepalive는 다음 상수를 쓴다.
+
+| 상수 | 값 | 의미 |
+| --- | --- | --- |
+| `KeepaliveTime` | 10s | HTTP/2 PING 주기 |
+| `KeepaliveTimeout` | 5s | 응답 없으면 연결 사망 판정 |
+| `KeepaliveMinPingTime` | 5s | 서버측 남용 방지 하한 |
+
+이 값은 control server와 client 양쪽에 적용된다. TCP만으로는 half-open 연결을 감지하지 못하므로, Gateway 프로세스가 FIN 없이 죽어도 keepalive가 최대 약 15초 안에 스트림을 에러로 종료시키고 `EndSession`을 유발한다. "연결이 끊겼다"를 보장하는 것은 grace 타이머가 아니라 keepalive다.
 
 ## 현재 상태 기계 `C`
+
+```mermaid
+stateDiagram-v2
+    [*] --> UninitializedC
+    UninitializedC --> ReadyC: 유효한 InitializeCluster
+    ReadyC --> ReadyC: 중복 또는 불일치 initialize
+    AbsentGatewayC --> CurrentGatewayC: 용량 내 RegisterGateway
+    CurrentGatewayC --> CurrentGatewayC: 동일 ID 새 instance register
+    CurrentGatewayC --> CurrentGatewayC: 유효한 ReplaceSnapshot
+    CurrentGatewayC --> AbsentGatewayC: 확인된 리더가 제안한 exact RemoveGateway 커밋
+    CurrentGatewayC --> AbsentGatewayC: 리더 로컬 grace deadline 경과, 해당 instance는 RevalidatedSessionV 아님
+    AbsentRouteC --> DeclaredRouteC: current revalidated DeclareRoute
+    DeclaredRouteC --> DeclaredRouteC: 동일 선언 또는 충돌하는 선언
+    DeclaredRouteC --> AbsentRouteC: exact WithdrawRoute
+```
 
 | 이전 상태 | 이벤트와 조건 | 다음 상태 | 효과 |
 | --- | --- | --- | --- |
@@ -64,24 +160,124 @@ Erased store의 old `NodeId`에는 recovery transition이 없다. `bootstrap=tru
 | `DeclaredRouteC` | same declaration | same | NoOp/AlreadyApplied |
 | `DeclaredRouteC` | same key/different owner-ref | same | Conflict, current route 보존 |
 | `DeclaredRouteC` | exact `WithdrawRoute` | `AbsentRouteC` | True delete |
-| `CurrentGatewayC` | exact `RemoveGateway` | `AbsentGatewayC` | Session과 owned route cascade delete |
+| `CurrentGatewayC` | exact `RemoveGateway` 커밋, 확인된 리더만 제안 가능 | `AbsentGatewayC` | Session과 owned route cascade delete |
+| `CurrentGatewayC` | 리더 로컬 grace deadline 경과 + 해당 instance가 `RevalidatedSessionV` 아님 | `AbsentGatewayC` | 확인된 리더만 조건부 `RemoveGateway` 제안, 세션·소유 route cascade delete |
 | any `C` | Raft snapshot compact/restore | same logical `C` | Current row만 persist/restore |
 
-`C`에는 route tombstone/history/payload/Pipe/control session/relay address/credential을 만드는 transition이 없다.
+`C`에는 route tombstone/history/payload/Pipe/control session/relay address/credential/시각을 만드는 transition이 없다.
 
 ## 권한 주체와 세션 거울 `V`
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoAuthorityV
+    NoAuthorityV --> AuthorityV: 초기화된 C에서 leader와 quorum confirm
+    AuthorityV --> AuthorityV: caller-owned verify cancel 또는 deadline
+    AuthorityV --> NoAuthorityV: 강등, term 변경, 확정 검증 실패 또는 quorum 상실
+    AbsentSessionV --> SyncingSessionV: RegisterGateway 커밋 뒤 exact current Hello, grace deadline 등록
+    SyncingSessionV --> RevalidatedSessionV: 수락된 full snapshot과 커밋된 replace, grace deadline 해제
+    SyncingSessionV --> AbsentSessionV: 유효하지 않은 snapshot, timeout, close 또는 authority end
+    RevalidatedSessionV --> AbsentSessionV: close, timeout, replacement 또는 authority end, grace deadline 등록
+```
 
 | 이전 상태 | 이벤트와 조건 | 다음 상태 | 효과 |
 | --- | --- | --- | --- |
 | `NoAuthorityV` | initialized `C`에서 leader+quorum confirm | `AuthorityV` | New `AuthorityId`, empty `V` |
 | `AuthorityV` | caller-owned verify cancel/deadline, leadership current | same | 해당 call만 실패 |
 | `AuthorityV` | 강등·term 변경·확정 검증 실패·quorum 상실 | `NoAuthorityV` | 이전 권한 주체 차단, 세션·주소·재검증 제거 |
-| `AbsentSessionV` | `RegisterGateway` commit 뒤 exact current Hello | `SyncingSessionV` | New `ControlSessionId`, owner address 기록 |
-| `SyncingSessionV` | accepted full snapshot + committed replace | `RevalidatedSessionV` | Leader-local binding mirror install |
+| `AbsentSessionV` | `RegisterGateway` commit 뒤 exact current Hello | `SyncingSessionV` | New `ControlSessionId`, owner address 기록, grace deadline 등록 |
+| `SyncingSessionV` | accepted full snapshot + committed replace | `RevalidatedSessionV` | Leader-local binding mirror install, grace deadline 해제 |
 | `SyncingSessionV` | invalid snapshot/timeout/close/authority end | `AbsentSessionV` | Session/address clear |
-| `RevalidatedSessionV` | close/timeout/replacement/authority end | `AbsentSessionV` | Session/address/mirror clear, exact `C` cleanup 가능 |
+| `RevalidatedSessionV` | close/timeout/replacement/authority end | `AbsentSessionV` | Session/address/mirror clear, grace deadline 등록 |
 
 `AuthorityV`가 없으면 Presence=`NoAuthority`다. `Current`는 `C` committed count, `V` revalidated count, exact `C/V` eligible count를 분리하며 completeness를 증명하거나 admission을 바꾸지 않는다.
+
+## 리더 권한과 차단
+
+```mermaid
+flowchart TD
+    A["Confirm 요청 경로 진입"] --> B{"Role이 Leader이고 ClusterEpoch 일치?"}
+    B -- 아니오 --> FENCE["fenceLocked: V 전체 clear"]
+    B -- 예 --> C{"VerifyLeader 성공?"}
+    C -- 아니오, 호출자 취소 --> G1["해당 call만 실패, V 유지"]
+    C -- 아니오, 배경 probe context 에러 --> FENCE
+    C -- 예 --> D{"재확인: term == currentTerm?"}
+    D -- 아니오 --> FENCE
+    D -- 예 --> E["confirm 성공, sweep과 admission 진행"]
+    H["임의의 쓰기 명령 Apply 전송"] --> I{"Apply 전송 성공?"}
+    I -- 아니오 --> FENCE
+    I -- 예 --> J["V 유지, C는 커밋 여부와 무관하게 무손상"]
+    FENCE --> K["C는 이 경로에서 전혀 건드리지 않는다"]
+```
+
+`fenceLocked`는 모든 session을 close하고 clear하며 cleanup map을 비우고 current를 nil로 만든다. `C`는 이 경로에서 전혀 변경되지 않는다.
+
+fence가 걸리는 지점은 다음과 같다.
+
+| 트리거 | 위치 | 비고 |
+| --- | --- | --- |
+| `Status.Role != Leader` | `leadership.go:19-22` | confirm 진입 시 |
+| `ClusterEpoch` 불일치 | `leadership.go:19-22` | 동일 |
+| `VerifyLeader` 실패 | `leadership.go:24-33` | 호출자 취소면 조건부 |
+| `VerifyLeader` 후 재확인 실패 | `leadership.go:34-39` | 검증과 재확인 사이 강등 방어 |
+| `term != currentTerm` | `leadership.go:44-50` | 같은 노드가 재선출된 경우 |
+| 쓰기 명령 Apply 전송 실패 | `session.go:181-186` | 모든 쓰기 공통, 가장 중요한 규칙 |
+| probe 배경 루프의 context 에러 | `leadership.go:107` | `fenceOnContextError=true` |
+
+쓰기 명령의 Apply 전송이 실패하면 커밋 여부를 알 수 없다. 호출자는 timeout이 election과 경합했는지 구분할 수 없으므로 낙관하지 않고 `V` 전체를 fence한다. Gateway는 재연결해 새로 barrier로 확인된 authority에 다시 참여한다. `C`는 Raft 안에서 무손상으로 남는다.
+
+`confirm`은 두 모드로 호출된다.
+
+| 호출자 | fenceOnContextError | 의미 |
+| --- | --- | --- |
+| `Confirm()` 요청 경로 | false | 호출자 취소는 그 call만 실패시키고 다른 요청의 `V`는 유지한다 |
+| `probe()` 배경 루프 | true | 배경 타임아웃은 leadership 문제로 간주해 fence한다 |
+
+## 만료와 정리
+
+```mermaid
+sequenceDiagram
+    participant GW as Gateway
+    participant V as 리더 로컬 V
+    participant C as Raft FSM C
+    participant SW as sweep probe 루프
+
+    GW->>C: RegisterGateway 커밋
+    C-->>V: 신규 authority 확립 시 모든 Gateway에 grace deadline 부여
+    GW->>V: Hello, SyncingSessionV 진입
+    V->>V: grace deadline 등록
+    GW->>V: full snapshot 수락과 커밋
+    V->>V: RevalidatedSessionV 진입, grace deadline 해제
+    Note over GW: Gateway 프로세스 사망, FIN 없음
+    Note over V: keepalive PING 10초 주기, 5초 응답 대기
+    V->>V: 최대 약 15초 내 스트림 종료 감지, EndSession
+    V->>V: grace deadline 재등록
+    loop 250ms probe
+        SW->>V: confirm 성공 여부 확인
+    end
+    SW->>V: confirm 성공 뒤에만 due 목록 계산
+    SW->>V: LookupGateway로 정확한 instance 재확인
+    SW->>C: EncodeRemoveGateway 제안
+    C-->>SW: 성공 시 커밋
+    SW->>V: cleanup 제거, 세션 close
+```
+
+`GatewayRevalidationTimeout` 기본값은 15초, `AuthorityProbeInterval` 기본값은 250ms다.
+
+deadline이 등록되는 지점과 해제되는 지점은 다음과 같다.
+
+| 구분 | 시점 | 위치 |
+| --- | --- | --- |
+| 등록 | 새 authority 확립 시 committed `C`의 모든 Gateway에 일괄 부여 | `leadership.go:57-63` |
+| 등록 | `OpenSession` 성공 시, `SyncingSessionV` 상태에서도 부여 | `session.go:71-73` |
+| 등록 | `EndSession` 시 | `session.go:120-126` |
+| 해제 | `Revalidate` 성공 시 | `session.go:95` |
+| 해제 | sweep에서 해당 Gateway가 `RevalidatedSessionV`로 복귀해 있으면 제거 | `leadership.go:112-152` |
+| 해제 | `fenceLocked`에서 전체 clear | `leadership.go:170-181` |
+
+sweep은 250ms probe 루프에서 `confirm()` 성공 후에만 실행된다. cleanup을 순회해 `RevalidatedSessionV`로 복귀했으면 제거하고, deadline이 아직 도래하지 않았으면 건너뛰고, 나머지를 due 목록에 넣는다. due 각각은 `mutationMu`를 잡고 여전히 due인지 재확인한 뒤, `LookupGateway`로 정확히 그 instance인지 확인하고, `EncodeRemoveGateway`를 제안한다. Apply가 실패하면 deadline을 유지하고 다음 probe에서 재시도한다.
+
+**릴리즈(삭제 제안)는 확인된 리더만 한다.** Raft가 비리더의 Apply를 거부하고, sweep은 `confirm()` 성공 후에만 돈다. **deadline은 리더 시계로 계산되며 `C`에 기록되지 않는다.** 복제되는 것은 시각이 아니라 `RemoveGateway` 명령이다. 각 노드가 자기 시계로 만료를 판정하면 복제 상태 기계가 갈라지므로, 이 규칙이 결정성을 지킨다.
 
 ## 인증, 세션, 바인딩
 
@@ -101,6 +297,18 @@ Erased store의 old `NodeId`에는 recovery transition이 없다. `bootstrap=tru
 | `LiveB` | control end, Gateway/client session 생존 | `LiveB` | Next FullSnapshot용 local declaration 유지, `V=false`라 O 차단 |
 | `LiveB` | unbind/revocation/session/Gateway end | `RetiringB` | 즉시 O=false, conditional withdraw |
 | `RetiringB` | cleanup complete | `RetiredB` | Capacity 반환, late ACK revival 불가 |
+
+## 읽기 일관성
+
+```mermaid
+flowchart TD
+    A["읽기 요청"] --> B{"AdmitOpen인가?"}
+    B -- 예 --> C["VerifyLeader와 Barrier로 fence 확인 뒤 C/V 조회"]
+    B -- 아니오, LookupGateway/LookupRoute/Presence --> D["barrier 없이 로컬 맵을 그대로 읽는다, 관찰 전용"]
+    E["쓰기 경로"] --> F["Apply 자체가 비리더에서 실패하므로 barrier가 필요 없다"]
+```
+
+`AdmitOpen`만 `VerifyLeader + Barrier` fence를 요구한다. barrier 없는 `LookupGateway`/`LookupRoute`/`Presence`는 관찰 전용이며 completeness나 revocation을 증명하지 않는다. 쓰기 경로는 barrier를 요구하지 않는다. Apply 자체가 비리더에서 실패하므로 별도 fence가 필요 없다.
 
 ## 허용 판정, Open, 재생 차단
 
