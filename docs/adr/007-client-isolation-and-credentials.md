@@ -1,8 +1,8 @@
-# ADR 006: 클라이언트 격리와 인증 정보
+# ADR 007: 클라이언트 격리와 인증 정보
 
 ## 배경
 
-같은 Endpoint를 사용하는 Client도 우회할 수 없는 namespace와 단일 credential source가 필요하다. 이 문서는 과거 ADR 006과 ADR 007의 client isolation 및 credential verification 결정을 통합해 대체한다. 이전 기록은 Git history에 남는다.
+같은 Endpoint를 사용하는 Client도 우회할 수 없는 namespace와 단일 credential source가 필요하다. 이 문서는 과거의 client isolation 및 credential verification 결정을 통합해 대체한다. 이전 기록은 Git history에 남는다.
 
 ## 결정
 

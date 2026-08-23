@@ -1,4 +1,4 @@
-# ADR 008: Gateway 간 Pipe
+# ADR 009: Gateway 간 Pipe
 
 ## 배경
 
@@ -24,7 +24,7 @@ Caller --public--> Ingress ==internal bidi stream==> Owner --public--> Listener
 - 여러 Pipe를 multiplex하는 public Relay stream은 control/terminal과 payload를 별도 bounded lane으로 보내 ready control/terminal이 queued payload pressure를 우회한다.
 - Pipe 하나를 운반하는 internal peer stream은 모든 send를 하나의 bounded lane에서 직렬화한다. Blocked send가 timeout/cancel되면 해당 Pipe를 terminalize하고 stream만 취소하며 shared ClientConn과 sibling Pipe stream은 유지한다.
 - 내부 구간은 payload 재연결, 재시도, 재개, 재생을 하지 않는다.
-- [ADR 013](013-payload-delivery-receipts.md)은 durable payload storage, hop retry, Pipe resume, application processing acknowledgement 없이 exact end-to-end SDK queue-admission receipt를 추가한다.
+- [ADR 010](010-payload-delivery-receipts.md)은 durable payload storage, hop retry, Pipe resume, application processing acknowledgement 없이 exact end-to-end SDK queue-admission receipt를 추가한다.
 
 Open이 선형화된 뒤 응답이나 구간이 사라지면 호출자 결과는 `Unknown`일 수 있다. 호출자는 같은 요청에 다시 붙지 않고 새 Open을 시작한다.
 

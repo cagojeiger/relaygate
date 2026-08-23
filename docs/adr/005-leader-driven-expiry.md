@@ -1,8 +1,8 @@
-# ADR 015: 만료는 확인된 리더가 명령으로 제안한다
+# ADR 005: 만료는 확인된 리더가 명령으로 제안한다
 
 ## 배경
 
-[ADR 014](014-control-state-authority-split.md)에 따라 `V`는 리더 임기 동안만 존재한다. 리더가 바뀌면 `C`에는 `GatewaySession`과 route가 남아 있지만 어떤 Gateway가 실제로 살아 있는지는 알 수 없다.
+[ADR 004](004-control-state-authority-split.md)에 따라 `V`는 리더 임기 동안만 존재한다. 리더가 바뀌면 `C`에는 `GatewaySession`과 route가 남아 있지만 어떤 Gateway가 실제로 살아 있는지는 알 수 없다.
 
 이 상태를 영원히 두면 죽은 Gateway의 route가 directory에 남는다. 그렇다고 리더 교체 즉시 지우면 정상 재시작 중인 Gateway까지 잃는다. 재연결할 시간을 주되 돌아오지 않으면 정리하는 규칙이 필요하다.
 

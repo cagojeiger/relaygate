@@ -1,4 +1,4 @@
-# ADR 002: 영속 Controller 집합과 현재 상태 복구
+# ADR 003: 영속 Controller 집합과 현재 상태 복구
 
 ## 배경
 

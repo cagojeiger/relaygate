@@ -1,4 +1,4 @@
-# ADR 013: 종단 간 payload 전달 확인
+# ADR 010: 종단 간 payload 전달 확인
 
 ## 배경
 
