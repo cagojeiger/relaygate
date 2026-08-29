@@ -1,7 +1,48 @@
 [workspace]
-members = ["examples/echo/rust", "sdk/rust/relaygate-sdk"]
 resolver = "3"
+members = [
+    "crates/relaygate-gateway",
+    "crates/relaygate-protocol",
+    "crates/relaygate-sdk",
+    "crates/relaygate-server",
+    "examples/echo-listener",
+    "examples/echo-probe",
+]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.96.1"
+license = "Apache-2.0"
+repository = "https://github.com/cagojeiger/relaygate"
+
+[workspace.dependencies]
+anyhow = "1"
+bytes = "1"
+futures-util = { version = "0.3", features = ["sink"] }
+relaygate-gateway = { path = "crates/relaygate-gateway" }
+relaygate-protocol = { path = "crates/relaygate-protocol" }
+relaygate-sdk = { path = "crates/relaygate-sdk" }
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+await_holding_lock = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unreachable = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

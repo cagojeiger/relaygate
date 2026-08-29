@@ -1,9 +1,9 @@
 .git
 .github
+.omc
 .omx
-data
+.repos
 target
-bin
-coverage.out
-*.test
-docs
+Dockerfile*
+docker-compose*.yml
+docker-compose*.yaml

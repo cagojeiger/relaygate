@@ -1,0 +1,58 @@
+name: relaygate-local
+
+x-runtime: &runtime
+  image: relaygate:dev
+  init: true
+  read_only: true
+  restart: "no"
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+
+services:
+  gateway:
+    <<: *runtime
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    command: ["relaygate-server"]
+    environment:
+      RELAYGATE_BIND_ADDR: 0.0.0.0:27420
+      RELAYGATE_CLIENT_KEYS: echo.alpha=dev-echo-alpha-v1,echo.shared=dev-echo-shared-v1
+      RELAYGATE_LOG: info
+    ports:
+      - "127.0.0.1:27420:27420"
+    healthcheck:
+      test: ["CMD", "relaygate-server", "check", "127.0.0.1:27420"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+      start_period: 1s
+    stop_grace_period: 5s
+
+  listener-echo:
+    <<: *runtime
+    command: ["relaygate-echo-listener"]
+    environment:
+      RELAYGATE_ADDR: gateway:27420
+      RELAYGATE_CLIENT_ID: echo.alpha
+      RELAYGATE_CLIENT_KEY: dev-echo-alpha-v1
+    depends_on:
+      gateway:
+        condition: service_healthy
+    stop_grace_period: 5s
+
+  probe:
+    <<: *runtime
+    command: ["relaygate-echo-probe"]
+    environment:
+      RELAYGATE_ADDR: gateway:27420
+      RELAYGATE_CLIENT_ID: echo.alpha
+    depends_on:
+      gateway:
+        condition: service_healthy
+      listener-echo:
+        condition: service_started
