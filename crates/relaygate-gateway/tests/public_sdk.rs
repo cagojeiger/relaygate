@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod support;
 
 use relaygate_sdk::{Config, Connector, ErrorCode, Listener, ListenerRuntime, Pipe};
@@ -68,9 +69,7 @@ async fn open_until_success(connector: &Connector, client_id: &str) -> TestResul
             Err(error)
                 if matches!(
                     error.code(),
-                    ErrorCode::NotFound
-                        | ErrorCode::Unavailable
-                        | ErrorCode::DeadlineExceeded
+                    ErrorCode::NotFound | ErrorCode::Unavailable | ErrorCode::DeadlineExceeded
                 ) && Instant::now() < deadline =>
             {
                 sleep(Duration::from_millis(10)).await;
