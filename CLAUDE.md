@@ -9,45 +9,38 @@
 
 ## 프로젝트 경계
 
-- Production Controller와 Gateway runtime은 Go가 소유한다.
-- 하나의 server binary/image는 `controller`와 `gateway` 두 role을 제공한다.
-- `controller`는 persistent Raft voter, current-state FSM, control gRPC와 admin만 소유한다.
-- `gateway`는 public/peer Relay와 control client를 소유하며 Raft/store를 열지 않는다.
-- Public Go/Rust SDK는 하나의 protobuf contract를 공유하며 server/Raft type을 노출하지 않는다.
-- Go SDK는 `sdk/go` 독립 module이고 root workspace 없이 build/test되어야 한다.
-- Relay는 gRPC, Raft transport는 내부 protocol, REST는 read-only observation surface다.
-- `ClientId`는 인증으로 정해지는 strict namespace다. Client/API key는 external client config만 관리한다.
+- Production runtime과 public SDK는 Rust workspace가 소유한다.
+- 루트에 단일 `src/`를 두지 않고 `crates/` 아래의 책임별 crate가 각자 `src/`와 `tests/`를 소유한다.
+- `relaygate-server`는 process boot, config, observation, shutdown과 dependency wiring만 소유한다.
+- `relaygate-gateway`는 Listener/Connector session, local binding, OPEN admission, Pipe relay와 cleanup을 소유한다.
+- `relaygate-sdk`는 public `Connector`, `Listener`, `Pipe` API와 managed reconnect를 소유하며 Gateway state type을 노출하지 않는다.
+- `relaygate-protocol`은 SDK–Gateway wire contract만 소유하는 workspace-internal crate이며 socket, session policy와 routing state를 소유하지 않는다.
+- Gateway와 SDK는 서로 직접 의존하지 않고 `relaygate-protocol`만 공유한다.
+- 최초 구현은 Gateway 하나의 local Pipe 경로만 다루며 RouteTable, peer relay와 persistence를 포함하지 않는다.
+- RelayGate는 payload를 opaque bytes로 취급하고 application 인증·인가, message 의미, delivery acknowledgement와 업무 retry를 소유하지 않는다.
+- `ClientId`와 binding 등록용 `ClientKey`는 external client configuration이 관리하고 RelayGate는 credential 값을 영속화하지 않는다.
 
 ## 문서
 
 - `docs/` 아래 canonical 문서의 기본 언어는 한국어다. 코드 식별자, 프로토콜 메시지, 상태명은 구현과의 추적성을 위해 원문 표기를 유지할 수 있다.
 - 장기 설계 결정은 `docs/adr/`, 상태와 동작 계약은 `docs/spec/`, 검증 계획은 `docs/test/`에 둔다.
-- State/event 의미를 바꾸면 `SPEC 004`의 canonical table과 `TEST 001`의 대응 test를 함께 갱신한다.
+- State/event 의미를 바꾸면 `SPEC 007`의 canonical table과 `TEST 001`의 대응 test를 함께 갱신한다.
 - Accepted ADR의 의미를 바꿀 때는 기존 문장을 조용히 고치지 말고 새 결정을 기록한다.
 
 ## 검증
 
-Go runtime 변경:
-
-```text
-gofmt -w <touched .go files>
-GOWORK=off go test ./...
-GOWORK=off go vet ./...
-```
-
-Go SDK 변경:
-
-```text
-cd sdk/go
-GOWORK=off go test ./...
-GOWORK=off go vet ./...
-```
-
-Rust SDK 변경:
+Rust workspace 변경:
 
 ```text
 cargo fmt --all --check
 cargo check --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
+
+container 경로 변경:
+
+```text
+docker compose up --build --abort-on-container-exit --exit-code-from probe
+docker compose down --volumes --remove-orphans
 ```

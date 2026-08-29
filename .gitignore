@@ -24,3 +24,8 @@ target
 /data/
 *.test
 coverage.out
+
+# Local analysis clones and agent session state
+.omc/
+.omx/
+.repos/
