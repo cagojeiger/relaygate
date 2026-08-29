@@ -62,7 +62,7 @@ pub(super) struct ListenerState {
     pub(super) incoming_rx: tokio::sync::Mutex<mpsc::Receiver<Pipe>>,
     pub(super) initial_deadline: Instant,
     lifecycle: StdMutex<ListenerLifecycle>,
-    registration_attempt: StdMutex<Option<RegistrationAttempt>>,
+    registration_committed: StdMutex<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,11 +70,6 @@ enum ListenerLifecycle {
     Pending,
     Returned,
     Terminal,
-}
-
-struct RegistrationAttempt {
-    cancel: CancellationToken,
-    committed: bool,
 }
 
 struct ListenGuard {
@@ -157,7 +152,7 @@ impl ListenerRuntime {
             incoming_rx: tokio::sync::Mutex::new(incoming_rx),
             initial_deadline: deadline,
             lifecycle: StdMutex::new(ListenerLifecycle::Pending),
-            registration_attempt: StdMutex::new(None),
+            registration_committed: StdMutex::new(false),
         });
         {
             let mut desired = self.inner.desired.lock().map_err(|_| {
@@ -511,27 +506,21 @@ impl ListenerState {
             return;
         }
         *lifecycle = ListenerLifecycle::Terminal;
-        if let Ok(mut attempt) = self.registration_attempt.lock()
-            && let Some(attempt) = attempt.take()
-            && attempt.committed
-        {
-            attempt.cancel.cancel();
+        if let Ok(mut committed) = self.registration_committed.lock() {
+            *committed = false;
         }
         self.set_status(ListenerStatus::Closed, error);
     }
 
-    pub(super) fn begin_registration_commit(&self, cancel: CancellationToken) -> bool {
+    pub(super) fn begin_registration_commit(&self) -> bool {
         let Ok(lifecycle) = self.lifecycle.lock() else {
             return false;
         };
         if *lifecycle == ListenerLifecycle::Terminal {
             return false;
         }
-        if let Ok(mut attempt) = self.registration_attempt.lock() {
-            *attempt = Some(RegistrationAttempt {
-                cancel,
-                committed: true,
-            });
+        if let Ok(mut committed) = self.registration_committed.lock() {
+            *committed = true;
             self.set_status(ListenerStatus::Registering, None);
             true
         } else {
@@ -540,8 +529,8 @@ impl ListenerState {
     }
 
     pub(super) fn finish_registration_attempt(&self) {
-        if let Ok(mut attempt) = self.registration_attempt.lock() {
-            *attempt = None;
+        if let Ok(mut committed) = self.registration_committed.lock() {
+            *committed = false;
         }
     }
 
@@ -556,16 +545,16 @@ impl ListenerState {
         if *lifecycle != ListenerLifecycle::Pending {
             return None;
         }
-        let observation = self
-            .registration_attempt
-            .lock()
-            .ok()
-            .and_then(|mut attempt| attempt.take())
-            .filter(|attempt| attempt.committed)
-            .map_or(PeerObservation::NotObserved, |attempt| {
-                attempt.cancel.cancel();
-                PeerObservation::MaybeObserved
-            });
+        let observation = self.registration_committed.lock().map_or(
+            PeerObservation::NotObserved,
+            |mut committed| {
+                if std::mem::take(&mut *committed) {
+                    PeerObservation::MaybeObserved
+                } else {
+                    PeerObservation::NotObserved
+                }
+            },
+        );
         *lifecycle = ListenerLifecycle::Terminal;
         self.set_status(
             ListenerStatus::Closed,

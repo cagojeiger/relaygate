@@ -18,7 +18,7 @@ ClientId *  ◄──── ListenerBinding ────►  * ListenerSession
 
 ClientId          -> 0..N live ListenerBinding locations
 one SDK runtime   -> ClientId별 non-CLOSED Listener handle 0..1
-one connect       -> one live ListenerBinding
+one open          -> one live ListenerBinding
 established Pipe  -> Connector 1 : 1 Listener
 ```
 

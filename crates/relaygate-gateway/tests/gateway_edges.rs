@@ -92,6 +92,63 @@ async fn same_client_id_is_offered_to_exactly_one_listener() -> TestResult {
 }
 
 #[tokio::test]
+async fn rejected_offer_does_not_fallback_within_the_same_open() -> TestResult {
+    let gateway = TestGateway::start(&[("echo.shared", "secret")]).await?;
+    let mut first = sdk_session(gateway.address, SessionRole::Listener).await?;
+    let mut second = sdk_session(gateway.address, SessionRole::Listener).await?;
+    register(&mut first, 1).await?;
+    let second_binding = register(&mut second, 2).await?;
+    let mut connector = sdk_session(gateway.address, SessionRole::Connector).await?;
+
+    let rejected_pipe = request_offer(&mut connector, &mut first, 1).await?;
+    first
+        .send(Frame::OfferRejected {
+            pipe_id: rejected_pipe,
+            code: ErrorCode::ResourceExhausted,
+            message: "Listener incoming queue is full".to_owned(),
+        })
+        .await?;
+    assert!(matches!(
+        next_frame(&mut connector).await?,
+        Frame::OpenFailed {
+            connection_id: 1,
+            code: ErrorCode::ResourceExhausted,
+            observation: PeerObservation::NotObserved,
+            ..
+        }
+    ));
+    assert!(
+        timeout(Duration::from_millis(30), second.next())
+            .await
+            .is_err()
+    );
+
+    connector
+        .send(Frame::Open {
+            connection_id: 2,
+            client_id: "echo.shared".to_owned(),
+        })
+        .await?;
+    let Frame::Offer {
+        pipe_id,
+        binding_id,
+        ..
+    } = next_frame(&mut second).await?
+    else {
+        return Err("new OPEN did not select the next live listener".into());
+    };
+    assert_eq!(binding_id, second_binding);
+    second.send(Frame::OfferAccepted { pipe_id }).await?;
+    assert!(matches!(
+        next_frame(&mut connector).await?,
+        Frame::Opened { pipe_id: opened } if opened == pipe_id
+    ));
+
+    gateway.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn listener_disconnect_resets_its_pipe_and_preserves_sibling_binding() -> TestResult {
     let gateway = TestGateway::start(&[("echo.shared", "secret")]).await?;
     let mut first = sdk_session(gateway.address, SessionRole::Listener).await?;

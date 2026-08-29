@@ -19,7 +19,7 @@ fn listener_state(client_id: &str) -> Arc<ListenerState> {
         incoming_rx: Mutex::new(incoming_rx),
         initial_deadline: tokio::time::Instant::now() + Duration::from_secs(2),
         lifecycle: std::sync::Mutex::new(super::ListenerLifecycle::Returned),
-        registration_attempt: std::sync::Mutex::new(None),
+        registration_committed: std::sync::Mutex::new(false),
     })
 }
 

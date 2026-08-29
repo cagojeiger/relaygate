@@ -11,7 +11,7 @@
 
 ```text
 Connector application                              Listener application
-         │ connect(ClientId)                       accept() │
+         │ open(ClientId)                          accept() │
          ▼                                                  ▼
     Connector ───────────── opaque bidirectional Pipe ── Listener
 ```
@@ -88,7 +88,7 @@ unordered Gateway pair 1
 
 PeerTransport 1 ── RelayStream 0..N ── remote Pipe 1
 
-one connect
+one open
     └── one selected ListenerBinding
             └── Connector 1 ◄════ Pipe ════► 1 Listener
 ```
@@ -160,22 +160,22 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 - **`TERM-006`**: 같은 `(GatewayId, ListenerSessionId, ClientId)`에는 동시에 최대 하나의 live `ListenerBinding`만 존재해야 하며 제거 후 재등록은 재사용하지 않은 새 `BindingId`를 가져야 한다.
 - **`TERM-007`**: 하나의 `ClientId`와 하나의 `ListenerSession`은 각각 0개 이상의 `ListenerBinding`에 참여할 수 있어야 한다.
 - **`TERM-008`**: `BindingSet(ClientId)`은 그 `ClientId`의 active `MappingEntry`만 포함해야 하며 durable history로 취급해서는 안 된다.
-- **`TERM-009`**: 하나의 connect는 후보가 몇 개이든 최대 하나의 `ListenerBinding`을 선택해야 한다.
-- **`TERM-010`**: 성공한 connect는 정확히 하나의 Connector endpoint와 하나의 Listener endpoint로 이루어진 Pipe 하나를 만들어야 한다.
+- **`TERM-009`**: 하나의 open attempt는 후보가 몇 개이든 최대 하나의 `ListenerBinding`을 선택해야 한다.
+- **`TERM-010`**: 성공한 open attempt는 정확히 하나의 Connector endpoint와 하나의 Listener endpoint로 이루어진 Pipe 하나를 만들어야 한다.
 - **`TERM-011`**: `ListenerBinding`은 이를 소유한 `ListenerSession`보다 오래 존재해서는 안 된다. 새 live session은 같은 `GatewayId` 범위에서 이전에 사용하지 않은 `ListenerSessionId`를 가져야 한다.
 - **`TERM-012`**: protocol identifier는 해당 protocol이 명시한 `ConnectionId` counter, `StreamId` role bit와 counter, `ShardDirectoryGeneration` content digest 외에는 opaque하게 취급해야 하며 application 의미를 부여해서는 안 된다.
 - **`TERM-013`**: `GatewayId`는 한 Gateway incarnation의 identity이고 runtime 시작마다 이전 incarnation에서 사용하지 않은 새 값을 가져야 한다. `GatewayLocator`는 재사용 가능한 routable location이며 둘을 동일한 식별자로 취급해서는 안 된다.
 - **`TERM-014`**: 하나의 `PeerTransport`는 0개 이상의 `RelayStream`을 운반할 수 있고, 각 `RelayStream`은 remote Pipe 하나에만 대응하며 소유 transport보다 오래 존재해서는 안 된다.
 - **`TERM-015`**: 하나의 `MappingEntry`는 `(GatewayId, ListenerSessionId, BindingId)`로 식별되는 binding incarnation 하나를 나타내고 `ClientId`와 `GatewayLocator`를 포함해야 한다. 그 identity는 authority shard에 최대 하나의 active mapping만 가져야 하며 `ClientKey`나 payload를 포함해서는 안 된다.
 - **`TERM-016`**: peer transport candidate는 `(DialerGatewayId, PeerTransportId)`로 식별해야 한다. `PeerTransportId`는 해당 dialer Gateway incarnation 안에서 재사용하지 않는 opaque identity여야 하며 `GatewayLocator`나 연결 도착 순서에서 계산해서는 안 된다.
-- **`TERM-017`**: 한 connect attempt는 `(EntryGatewayId, ConnectorSessionId, ConnectionId)`로 식별해야 한다. `ConnectorSessionId`는 해당 Entry Gateway incarnation 안에서 재사용하지 않아야 한다. Connector SDK는 session마다 증가하는 counter로 `ConnectionId`를 할당하고 전송 순서가 이전 값보다 커야 하며, Gateway는 remote high-watermark 하나로 낮거나 같은 값을 거절해야 한다.
+- **`TERM-017`**: 한 open attempt는 `(EntryGatewayId, ConnectorSessionId, ConnectionId)`로 식별해야 한다. `ConnectorSessionId`는 해당 Entry Gateway incarnation 안에서 재사용하지 않아야 한다. Connector SDK는 session마다 증가하는 counter로 `ConnectionId`를 할당하고 전송 순서가 이전 값보다 커야 하며, Gateway는 remote high-watermark 하나로 낮거나 같은 값을 거절해야 한다.
 - **`TERM-018`**: `ShardDirectory`는 각 `ShardId`의 stable logical RT endpoint를 정확히 하나만 포함하고 `ClientId`의 remote binding mapping을 포함해서는 안 된다. 서로 독립적으로 쓰이는 복수 endpoint를 한 logical shard record에 넣어서는 안 된다.
 - **`TERM-019`**: 하나의 `RegistrationKey`는 `(GatewayId, ListenerSessionId, ShardId)`이고 동시에 최대 하나의 active lease를 가져야 한다.
 - **`TERM-020`**: `RegistrationRevision`은 하나의 active lease 안에서만 단조 증가해야 한다. 같은 revision의 다른 snapshot과 낮은 revision은 current mapping을 대체해서는 안 되며 새 lease는 첫 revision부터 시작한다.
 - **`TERM-021`**: 새 `LeaseId`는 RT의 `Register`만 발급해야 한다. `Deregister`, expiry 또는 RT restart로 종료된 lease의 `Update`와 `KeepAlive`는 새 registration이나 mapping을 만들 수 없고, 새 등록은 새 `LeaseId`를 사용해야 한다.
 - **`TERM-022`**: Gateway는 자신이 소유한 local binding과 registration 상태만 보관하고 RT 전체 mapping이나 과거 `Resolve` 결과를 current routing authority로 보관해서는 안 된다.
 - **`TERM-023`**: 하나의 Connector SDK runtime은 동시에 `0..1`개의 current `ConnectorSession`을 가져야 한다. 재연결은 이전 identity를 재사용하지 않는 새 `ConnectorSessionId`를 만들어야 한다.
-- **`TERM-024`**: 모든 connect attempt와 Connector Pipe endpoint는 정확히 하나의 `ConnectorSession`에 속하고 그 session보다 오래 존재해서는 안 된다. `ConnectorSessionId`는 application peer identity, credential 또는 delivery identity가 아니다.
+- **`TERM-024`**: 모든 open attempt와 Connector Pipe endpoint는 정확히 하나의 `ConnectorSession`에 속하고 그 session보다 오래 존재해서는 안 된다. `ConnectorSessionId`는 application peer identity, credential 또는 delivery identity가 아니다.
 - **`TERM-025`**: 하나의 Listener SDK runtime에는 같은 `ClientId`를 예약한 pending `ListenAttempt` 또는 그 `ClientId`를 desired destination으로 가진 non-`CLOSED` Listener handle이 합쳐서 최대 하나만 존재해야 한다. terminal 실패는 pending reservation을 제거한다. 이 제한은 다른 SDK runtime이나 `ListenerSession`이 같은 `ClientId`를 등록하는 N:M 관계를 제한하지 않는다.
 - **`TERM-026`**: 하나의 unordered Gateway pair에는 `DialerGatewayId`별 `PeerTransportSlot`이 하나씩 있어야 한다. 각 slot은 `READY` PeerTransport를 최대 하나만 가지므로 pair 전체의 `READY` PeerTransport는 최대 두 개다.
 - **`TERM-027`**: `ShardDirectoryGeneration`은 generation 필드를 포함하지 않은 immutable shard directory artifact의 exact bytes를 SHA-256으로 계산해야 한다. 같은 bytes는 같은 generation을 만들고 artifact bytes가 바뀌면 generation을 다시 계산해야 하며, Gateway와 RT process는 시작 시 검증한 generation과 directory를 종료할 때까지 바꾸어서는 안 된다.

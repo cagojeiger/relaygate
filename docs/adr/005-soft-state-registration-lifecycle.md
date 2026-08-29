@@ -35,7 +35,7 @@ Gateway가 현재 소유한 live `ListenerSession`과 `ListenerBinding`이 truth
 - current lease가 존재하는 동안 오래되거나 충돌하는 update는 그 lease와 revision을 바꾸지 못한다.
 - 종료되거나 알려지지 않은 lease의 `Update`와 `KeepAlive`는 state를 만들지 않고 거절된다.
 - RT는 tombstone이나 종료된 lease history를 보관하지 않으며 새 state 생성과 active lease 갱신을 분리한다.
-- stale mapping이 선택되면 Owner Gateway가 binding을 재검증하고 같은 connect는 실패할 수 있다. 새 후보 선택은 새 connect의 책임이다.
+- stale mapping이 선택되면 Owner Gateway가 binding을 재검증하고 같은 open은 실패할 수 있다. 새 후보 선택은 새 open의 책임이다.
 - 기존 Pipe의 lifecycle은 route mapping 복구와 분리된다.
 
 ## 이 ADR에서 정하지 않는 것

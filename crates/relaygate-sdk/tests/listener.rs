@@ -198,6 +198,124 @@ async fn desired_listener_is_registered_again_on_new_session_case() -> TestResul
 }
 
 #[tokio::test]
+async fn closing_listener_during_recovery_register_rebuilds_session_for_sibling() -> TestResult {
+    timeout(
+        Duration::from_secs(5),
+        closing_listener_during_recovery_register_rebuilds_session_for_sibling_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn closing_listener_during_recovery_register_rebuilds_session_for_sibling_case() -> TestResult
+{
+    let (gateway, address) = bind_gateway().await?;
+    let (initial_ready_tx, initial_ready_rx) = oneshot::channel();
+    let (recovery_committed_tx, recovery_committed_rx) = oneshot::channel();
+    let (sibling_recovered_tx, sibling_recovered_rx) = oneshot::channel();
+    let (done_tx, done_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut initial, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        for expected_client in ["echo.alpha", "echo.beta"] {
+            let register = initial
+                .next()
+                .await
+                .ok_or_else(|| io::Error::other("missing initial REGISTER"))??;
+            let request_id = match register {
+                Frame::Register {
+                    request_id,
+                    client_id,
+                    ..
+                } if client_id == expected_client => request_id,
+                other => return Err(unexpected(other).into()),
+            };
+            initial
+                .send(Frame::Registered {
+                    request_id,
+                    binding_id: BindingId::new(),
+                })
+                .await?;
+        }
+        let _ = initial_ready_rx.await;
+        drop(initial);
+
+        let (mut recovery, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let mut recovery_clients = Vec::new();
+        for _ in 0..2 {
+            let register = recovery
+                .next()
+                .await
+                .ok_or_else(|| io::Error::other("missing recovery REGISTER"))??;
+            match register {
+                Frame::Register { client_id, .. } => recovery_clients.push(client_id),
+                other => return Err(unexpected(other).into()),
+            }
+        }
+        recovery_clients.sort();
+        assert_eq!(
+            recovery_clients,
+            vec!["echo.alpha".to_owned(), "echo.beta".to_owned()]
+        );
+        let _ = recovery_committed_tx.send(());
+        let ended = timeout(Duration::from_secs(1), recovery.next()).await?;
+        if ended.is_some() {
+            return Err(io::Error::other(
+                "abandoned recovery REGISTER did not rebuild ListenerSession",
+            )
+            .into());
+        }
+
+        let (mut replacement, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let register = replacement
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing sibling recovery REGISTER"))??;
+        let request_id = match register {
+            Frame::Register {
+                request_id,
+                client_id,
+                ..
+            } if client_id == "echo.beta" => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        replacement
+            .send(Frame::Registered {
+                request_id,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        let _ = sibling_recovered_tx.send(());
+        let _ = done_rx.await;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_secs(1))
+            .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+    )
+    .await?;
+    let alpha = runtime.listen("echo.alpha", "dev-key").await?;
+    let beta = runtime.listen("echo.beta", "dev-key").await?;
+    let _ = initial_ready_tx.send(());
+    recovery_committed_rx.await?;
+
+    drop(alpha);
+    sibling_recovered_rx.await?;
+    timeout(Duration::from_secs(1), async {
+        while beta.status() != ListenerStatus::Active {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+
+    let _ = done_tx.send(());
+    runtime.close();
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn returned_listener_retries_transient_recovery_failure() -> TestResult {
     timeout(
         Duration::from_secs(3),

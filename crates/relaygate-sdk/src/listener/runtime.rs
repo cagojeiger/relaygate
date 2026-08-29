@@ -257,6 +257,16 @@ async fn reconcile_registrations(
     let Some(desired) = snapshot_desired_by_client(inner) else {
         return false;
     };
+    let abandoned_committed_registration = session.pending.values().any(|pending| {
+        pending.committed
+            && (!desired
+                .get(&pending.state.client_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &pending.state))
+                || *pending.state.status.borrow() == ListenerStatus::Closed)
+    });
+    if abandoned_committed_registration {
+        return false;
+    }
     let registered_clients = session.registrations.keys().cloned().collect::<Vec<_>>();
     for client_id in registered_clients {
         let stale = session
@@ -345,7 +355,7 @@ async fn reconcile_registrations(
         session
             .pending_by_client
             .insert(state.client_id.clone(), request_id);
-        if !state.begin_registration_commit(session_cancel.clone()) {
+        if !state.begin_registration_commit() {
             session.pending.remove(&request_id);
             session.pending_by_client.remove(&state.client_id);
             continue;

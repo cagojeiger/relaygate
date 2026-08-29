@@ -26,7 +26,7 @@ Mappings(ClientId)              = 0..N live mapping entries
 
 최초 모델에서 하나의 logical shard record는 정확히 하나의 stable RT endpoint를 가진다. 그 endpoint는 하나의 process 주소 또는 하나의 logical service 주소일 수 있지만, 서로 독립적으로 쓰이는 여러 RT instance를 뜻하지 않는다. 한 shard의 복수 replica와 failover는 별도 합의 없이는 같은 authority가 아니므로 이 결정에 포함하지 않는다.
 
-Gateway는 RT 전체 mapping을 복제하거나 구독하지 않는다. 자신이 소유한 binding은 authority shard에 registration으로 반영하고, 원격 binding이 필요한 connect마다 해당 `ClientId`를 resolve한다. payload와 established Pipe는 RouteTable을 통과하지 않는다.
+Gateway는 RT 전체 mapping을 복제하거나 구독하지 않는다. 자신이 소유한 binding은 authority shard에 registration으로 반영하고, 원격 binding이 필요한 open마다 해당 `ClientId`를 resolve한다. payload와 established Pipe는 RouteTable을 통과하지 않는다.
 
 ## 결과
 

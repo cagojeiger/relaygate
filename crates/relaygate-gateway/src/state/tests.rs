@@ -659,7 +659,7 @@ fn pending_offer_limit_rejects_without_observation_or_state_growth()
 }
 
 #[test]
-fn live_pipe_limit_resolves_concurrent_admission_with_observed_failure()
+fn live_pipe_limit_before_opened_reports_maybe_observed_failure()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = limited_state(GatewayLimits {
         max_live_pipes: 1,
@@ -720,7 +720,7 @@ fn live_pipe_limit_resolves_concurrent_admission_with_observed_failure()
         delivery.frame,
         Frame::OpenFailed {
             code: ErrorCode::ResourceExhausted,
-            observation: relaygate_protocol::PeerObservation::Observed,
+            observation: relaygate_protocol::PeerObservation::MaybeObserved,
             ..
         }
     )));

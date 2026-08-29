@@ -3,9 +3,13 @@
 RelayGate는 NAT 뒤의 Listener가 먼저 Gateway에 연결하고, Connector가 논리 주소인 `ClientId`로 opaque bidirectional `Pipe`를 여는 relay입니다.
 
 ```text
-Connector SDK ── connect(ClientId) ──► Gateway ◄── register(ClientId) ── Listener SDK
-             ◄════════════════════ opaque bidirectional Pipe ═══════════════════►
+Connector SDK ── open(ClientId) ──► Gateway ◄── listen(ClientId, ClientKey) ── Listener SDK
+              ◄════════════════ opaque bidirectional Pipe ═════════════════════►
 ```
+
+Rust API에서 `Connector::connect(Config)`와 `ListenerRuntime::connect(Config)`는 각각
+Gateway session을 만들고 관리한다. 논리적인 Pipe 연결은 `connector.open(ClientId)`가
+시작하며, Listener application은 `listener.accept()`로 선택된 Pipe를 받는다.
 
 현재 구현 단계는 **단일 Gateway의 local Pipe**입니다.
 
@@ -16,6 +20,10 @@ Connector SDK ── connect(ClientId) ──► Gateway ◄── register(Clie
 - bounded queue와 `FIN` / `CLOSE` / `RESET`
 - SDK session reconnect; 이미 전송된 `OPEN`과 기존 Pipe는 replay하지 않음
 - RouteTable shard와 Gateway 간 peer relay는 다음 단계
+
+SDK는 자신의 Gateway session을 재연결하고 이미 반환된 Listener를 재등록한다. 끊어진
+Pipe나 commit된 `open` operation은 자동 재시도하지 않으며, application은
+`Error::is_retryable()`을 보수적 힌트로 삼아 새 `open(ClientId)` 여부를 결정한다.
 
 ## 로컬 실행
 

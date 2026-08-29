@@ -164,7 +164,7 @@ registration에 더 이상 binding이 없으면 Gateway는 빈 snapshot을 유�
 | `RT-051` | RT는 `BindingSet`만 반환한다. 어느 binding으로 Pipe를 열지는 connection establishment 계약이 결정한다. |
 | `RT-052` | `Resolve`, snapshot replace와 lease cleanup은 전체 RT table scan을 요구해서는 안 된다. 구현은 `ClientId` forward index와 registration reverse index에 상응하는 경계를 제공해야 한다. |
 | `RT-053` | 한 shard의 multi-index mutation은 하나의 순서로 atomic하게 적용되어 partial mapping이나 orphan index를 외부에 노출해서는 안 된다. |
-| `RT-054` | RT는 `ConnectorSessionId`, `ConnectionId`, connect attempt 또는 Pipe 상태를 저장하지 않아야 한다. ConnectorSession의 생성·단절은 RT mapping을 직접 변경하지 않는다. |
+| `RT-054` | RT는 `ConnectorSessionId`, `ConnectionId`, open attempt 또는 Pipe 상태를 저장하지 않아야 한다. ConnectorSession의 생성·단절은 RT mapping을 직접 변경하지 않는다. |
 
 ## 불변식
 
@@ -176,7 +176,7 @@ registration에 더 이상 binding이 없으면 Gateway는 빈 snapshot을 유�
 6. `Update`와 `KeepAlive`는 active lease identity가 일치할 때만 state를 변경한다.
 7. 한 registration의 replace, deregister 또는 expiry는 다른 registration과 Gateway-local binding에 영향을 주지 않는다.
 8. RT state 크기는 현재 live mapping과 active lease 수에 비례하며 과거 mutation 수에 비례하지 않는다.
-9. RT는 ConnectorSession, connect attempt, payload, binding selection과 established Pipe lifecycle에 참여하지 않는다.
+9. RT는 ConnectorSession, open attempt, payload, binding selection과 established Pipe lifecycle에 참여하지 않는다.
 10. 종료된 lease의 operation은 mapping을 되살리지 못하며, Owner Gateway는 active mapping도 `OPEN` 시점에 재검증한다.
 11. RT mutation의 `GatewayId`는 authenticated transport identity와 일치해야 하며 claimed identifier만으로 registration authority를 얻을 수 없다.
 

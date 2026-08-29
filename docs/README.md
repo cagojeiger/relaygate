@@ -28,8 +28,11 @@ Entry Gateway × G
      └── remote binding ─► Owner Gateway ──► Listener SDK
                             one hop
 
-Connector SDK ── ConnectorSession + connect(ClientId) ──► Entry Gateway
+Connector SDK ── ConnectorSession + open(ClientId) ──► Entry Gateway
 ```
+
+Phase 1 Rust API에서 `Connector::connect(Config)`는 SDK-Gateway session을 만들고,
+`connector.open(ClientId)`가 Listener 하나를 선택하는 논리적 연결을 시작한다.
 
 ```text
 Authority(Generation, ClientId) = exactly 1 logical shard

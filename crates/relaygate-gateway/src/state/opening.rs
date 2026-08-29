@@ -142,7 +142,7 @@ impl GatewayState {
                     Frame::OpenFailed {
                         connection_id: pipe_id.connection_id(),
                         code: ErrorCode::ResourceExhausted,
-                        observation: PeerObservation::Observed,
+                        observation: PeerObservation::MaybeObserved,
                         message: message.to_owned(),
                     },
                 ),

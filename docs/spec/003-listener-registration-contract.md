@@ -27,7 +27,7 @@ LocalRegistry
   └── SessionId  -> Set<BindingId>
 ```
 
-하나의 `ListenerBinding` record를 여러 index가 참조한다. `ClientId` index는 local connect 후보 조회에, `ListenerSessionId` index는 session 종료 시 일괄 cleanup에 사용한다.
+하나의 `ListenerBinding` record를 여러 index가 참조한다. `ClientId` index는 local open 후보 조회에, `ListenerSessionId` index는 session 종료 시 일괄 cleanup에 사용한다.
 
 ```text
 ClientId A
