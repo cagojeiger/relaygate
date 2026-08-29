@@ -6,6 +6,7 @@
 mod config;
 mod connector;
 mod error;
+mod lifetime;
 mod listener;
 mod pipe;
 mod session;

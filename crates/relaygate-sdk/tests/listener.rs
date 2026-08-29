@@ -13,6 +13,33 @@ use tokio::time::timeout;
 use support::{TestResult, accept_session, bind_gateway, unexpected};
 
 #[tokio::test]
+async fn dropping_last_listener_owner_stops_the_session() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        dropping_last_listener_owner_stops_the_session_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn dropping_last_listener_owner_stops_the_session_case() -> TestResult {
+    let (gateway, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let ended = timeout(Duration::from_secs(1), transport.next()).await?;
+        if ended.is_some() {
+            return Err(io::Error::other("dropped Listener runtime kept its session alive").into());
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(Config::new(address)).await?;
+    drop(runtime);
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn concurrent_duplicate_listener_is_rejected_and_closed_id_can_be_reused() -> TestResult {
     timeout(
         Duration::from_secs(3),
@@ -171,6 +198,290 @@ async fn desired_listener_is_registered_again_on_new_session_case() -> TestResul
 }
 
 #[tokio::test]
+async fn returned_listener_retries_transient_recovery_failure() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        returned_listener_retries_transient_recovery_failure_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn returned_listener_retries_transient_recovery_failure_case() -> TestResult {
+    let (gateway, address) = bind_gateway().await?;
+    let (returned_tx, returned_rx) = oneshot::channel();
+    let (recovered_tx, recovered_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut first, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let initial = first
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing initial REGISTER"))??;
+        let initial_request = match initial {
+            Frame::Register { request_id, .. } => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        first
+            .send(Frame::Registered {
+                request_id: initial_request,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        let _ = returned_rx.await;
+        drop(first);
+
+        let (mut replacement, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let recovery = replacement
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing recovery REGISTER"))??;
+        let recovery_request = match recovery {
+            Frame::Register { request_id, .. } => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        replacement
+            .send(Frame::RegisterFailed {
+                request_id: recovery_request,
+                code: WireErrorCode::Unavailable,
+                message: "temporary recovery failure".to_owned(),
+            })
+            .await?;
+
+        let retried = replacement
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing managed recovery retry"))??;
+        let retry_request = match retried {
+            Frame::Register { request_id, .. } => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        replacement
+            .send(Frame::Registered {
+                request_id: retry_request,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        let _ = recovered_tx.send(());
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(
+        Config::new(address)
+            .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+    )
+    .await?;
+    let listener = runtime.listen("echo.alpha", "dev-key").await?;
+    let _ = returned_tx.send(());
+    recovered_rx.await?;
+    timeout(Duration::from_secs(1), async {
+        while listener.status() != ListenerStatus::Active {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    runtime.close();
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn initial_register_failure_is_terminal_until_application_retries() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        initial_register_failure_is_terminal_until_application_retries_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn initial_register_failure_is_terminal_until_application_retries_case() -> TestResult {
+    let (gateway, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let first = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing first REGISTER"))??;
+        let first_request = match first {
+            Frame::Register { request_id, .. } => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        transport
+            .send(Frame::RegisterFailed {
+                request_id: first_request,
+                code: WireErrorCode::Unavailable,
+                message: "temporary registration failure".to_owned(),
+            })
+            .await?;
+
+        let retried = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing application retry REGISTER"))??;
+        let retry_request = match retried {
+            Frame::Register {
+                request_id,
+                client_id,
+                ..
+            } if client_id == "echo.alpha" => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        transport
+            .send(Frame::Registered {
+                request_id: retry_request,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(Config::new(address)).await?;
+    let error = runtime
+        .listen("echo.alpha", "dev-key")
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("failed initial listen unexpectedly succeeded"))?;
+    assert_eq!(error.code(), ErrorCode::Unavailable);
+
+    let listener = runtime.listen("echo.alpha", "dev-key").await?;
+    assert_eq!(listener.status(), ListenerStatus::Active);
+    runtime.close();
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn committed_register_timeout_closes_session_without_replay() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        committed_register_timeout_closes_session_without_replay_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn committed_register_timeout_closes_session_without_replay_case() -> TestResult {
+    let (gateway, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let register = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing REGISTER"))??;
+        if !matches!(register, Frame::Register { .. }) {
+            return Err(unexpected(register).into());
+        }
+        let ended = timeout(Duration::from_secs(1), transport.next()).await?;
+        if ended.is_some() {
+            return Err(io::Error::other("timed-out ListenerSession remained open").into());
+        }
+
+        let (mut replacement, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        assert!(
+            timeout(Duration::from_millis(150), replacement.next())
+                .await
+                .is_err()
+        );
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_millis(80))
+            .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+    )
+    .await?;
+    let error = runtime
+        .listen("echo.alpha", "dev-key")
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("timed-out listen unexpectedly succeeded"))?;
+    assert_eq!(error.code(), ErrorCode::DeadlineExceeded);
+    assert_eq!(
+        error.observation(),
+        relaygate_sdk::PeerObservation::MaybeObserved
+    );
+    server.await??;
+    runtime.close();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_committed_listen_closes_session_and_client_id_can_be_reused() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        cancelled_committed_listen_closes_session_and_client_id_can_be_reused_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn cancelled_committed_listen_closes_session_and_client_id_can_be_reused_case() -> TestResult
+{
+    let (gateway, address) = bind_gateway().await?;
+    let (committed_tx, committed_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let register = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing cancelled REGISTER"))??;
+        if !matches!(register, Frame::Register { .. }) {
+            return Err(unexpected(register).into());
+        }
+        let _ = committed_tx.send(());
+        let ended = timeout(Duration::from_secs(1), transport.next()).await?;
+        if ended.is_some() {
+            return Err(io::Error::other("cancelled ListenerSession remained open").into());
+        }
+
+        let (mut replacement, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let retry = replacement
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing replacement REGISTER"))??;
+        let request_id = match retry {
+            Frame::Register {
+                request_id,
+                client_id,
+                ..
+            } if client_id == "echo.alpha" => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        replacement
+            .send(Frame::Registered {
+                request_id,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_secs(1))
+            .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+    )
+    .await?;
+    let pending = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.listen("echo.alpha", "dev-key").await }
+    });
+    committed_rx.await?;
+    pending.abort();
+    assert!(pending.await.is_err());
+
+    let listener = runtime.listen("echo.alpha", "dev-key").await?;
+    assert_eq!(listener.status(), ListenerStatus::Active);
+    runtime.close();
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn reconnect_replays_all_desired_listeners_with_capacity_one() -> TestResult {
     timeout(
         Duration::from_secs(5),
@@ -214,7 +525,11 @@ async fn reconnect_replays_all_desired_listeners_with_capacity_one_case() -> Tes
             let mut expected = CLIENTS.map(str::to_owned).to_vec();
             expected.sort();
             assert_eq!(observed, expected);
-            if generation == 1 {
+            if generation == 0 {
+                // All three successful listen calls must return before this
+                // test exercises managed recovery of returned handles.
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            } else {
                 let _ = replayed_tx.send(());
                 let _ = done_rx.await;
                 break;
@@ -247,6 +562,89 @@ async fn reconnect_replays_all_desired_listeners_with_capacity_one_case() -> Tes
     })
     .await?;
     let _ = done_tx.send(());
+    runtime.close();
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stalled_listener_transport_send_times_out_and_cleans_up_session() -> TestResult {
+    timeout(
+        Duration::from_secs(5),
+        stalled_listener_transport_send_times_out_and_cleans_up_session_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn stalled_listener_transport_send_times_out_and_cleans_up_session_case() -> TestResult {
+    let (gateway, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let register = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing REGISTER"))??;
+        let request_id = match register {
+            Frame::Register { request_id, .. } => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        let binding_id = BindingId::new();
+        transport
+            .send(Frame::Registered {
+                request_id,
+                binding_id,
+            })
+            .await?;
+
+        let pipe_id = PipeId::new(SessionId::new(), 1);
+        transport
+            .send(Frame::Offer {
+                pipe_id,
+                binding_id,
+                client_id: "echo.alpha".to_owned(),
+            })
+            .await?;
+        let accepted = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing OFFER_ACCEPTED"))??;
+        if !matches!(accepted, Frame::OfferAccepted { pipe_id: id } if id == pipe_id) {
+            return Err(unexpected(accepted).into());
+        }
+
+        // Deliberately stop reading. The Listener actor must bound the socket
+        // send and fail its session instead of retaining the Pipe forever.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(transport);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_millis(20))
+            .with_outbound_capacity(1)
+            .with_reconnect_backoff(Duration::from_secs(1), Duration::from_secs(1)),
+    )
+    .await?;
+    let listener = runtime.listen("echo.alpha", "dev-key").await?;
+    let mut pipe = listener.accept().await?;
+    let payload = vec![0_u8; 32 * 1024 * 1024];
+    let write_error = timeout(Duration::from_secs(2), pipe.write_all(&payload))
+        .await?
+        .err()
+        .ok_or_else(|| {
+            io::Error::other("stalled Listener transport write unexpectedly succeeded")
+        })?;
+    assert_eq!(write_error.code(), ErrorCode::Unavailable);
+
+    let mut byte = [0_u8; 1];
+    let read_error = timeout(Duration::from_secs(1), pipe.read(&mut byte))
+        .await?
+        .err()
+        .ok_or_else(|| io::Error::other("stalled ListenerSession Pipe did not fail"))?;
+    assert_eq!(read_error.code(), ErrorCode::Unavailable);
+    assert_eq!(listener.status(), ListenerStatus::Suspended);
     runtime.close();
     server.await??;
     Ok(())

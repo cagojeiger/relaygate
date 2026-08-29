@@ -20,6 +20,7 @@ async fn precommit_closed_actor_retries_on_replacement_session()
         next_connection_id: Mutex::new(1),
         control: stale_control,
         cancellations: mpsc::unbounded_channel().0,
+        cancel: CancellationToken::new(),
     });
     let (current, _) = tokio::sync::watch::channel(Some(stale));
     let connector = Connector {
@@ -27,7 +28,11 @@ async fn precommit_closed_actor_retries_on_replacement_session()
             config: Config::new("unused").with_operation_timeout(Duration::from_secs(5)),
             current: current.clone(),
             cancel: CancellationToken::new(),
+            lifetime: std::sync::Weak::new(),
         }),
+        _lifetime: std::sync::Arc::new(crate::lifetime::RuntimeLifetime::new(
+            CancellationToken::new(),
+        )),
     };
 
     let opening = tokio::spawn({
@@ -42,6 +47,7 @@ async fn precommit_closed_actor_retries_on_replacement_session()
         next_connection_id: Mutex::new(1),
         control: replacement_control,
         cancellations: mpsc::unbounded_channel().0,
+        cancel: CancellationToken::new(),
     })));
     let command = timeout(Duration::from_secs(2), replacement_receiver.recv())
         .await?
@@ -73,13 +79,18 @@ async fn concurrent_opens_commit_monotonic_connection_ids() -> Result<(), Box<dy
         next_connection_id: Mutex::new(1),
         control,
         cancellations,
+        cancel: CancellationToken::new(),
     })));
     let connector = Connector {
         inner: std::sync::Arc::new(ConnectorInner {
             config: Config::new("unused").with_operation_timeout(Duration::from_secs(5)),
             current,
             cancel: CancellationToken::new(),
+            lifetime: std::sync::Weak::new(),
         }),
+        _lifetime: std::sync::Arc::new(crate::lifetime::RuntimeLifetime::new(
+            CancellationToken::new(),
+        )),
     };
 
     let mut openings = Vec::new();

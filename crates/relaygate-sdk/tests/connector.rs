@@ -11,6 +11,90 @@ use tokio::time::timeout;
 use support::{TestResult, accept_session, bind_gateway, unexpected};
 
 #[tokio::test]
+async fn idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let (idle_checked_tx, idle_checked_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
+        if let Ok(frame) = timeout(Duration::from_millis(150), transport.next()).await {
+            return match frame {
+                Some(Ok(frame)) => Err(unexpected(frame).into()),
+                Some(Err(error)) => Err(error.into()),
+                None => Err(io::Error::other("idle ConnectorSession closed itself").into()),
+            };
+        }
+        let _ = idle_checked_tx.send(());
+
+        let open = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing OPEN after idle period"))??;
+        let connection_id = match open {
+            Frame::Open { connection_id, .. } => connection_id,
+            other => return Err(unexpected(other).into()),
+        };
+        let pipe_id = PipeId::new(session_id, connection_id);
+        transport.send(Frame::Opened { pipe_id }).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        transport
+            .send(Frame::Data {
+                pipe_id,
+                payload: Bytes::from_static(b"x"),
+            })
+            .await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector =
+        Connector::connect(Config::new(address).with_operation_timeout(Duration::from_millis(50)))
+            .await?;
+    idle_checked_rx.await?;
+    let mut pipe = connector.open("echo.idle").await?;
+    let mut byte = [0_u8; 1];
+    assert_eq!(pipe.read(&mut byte).await?, 1);
+    assert_eq!(&byte, b"x");
+    connector.close();
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropping_last_connector_owner_stops_the_session() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        dropping_last_connector_owner_stops_the_session_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn dropping_last_connector_owner_stops_the_session_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&listener, SessionRole::Connector).await?;
+        let ended = timeout(Duration::from_secs(1), transport.next()).await?;
+        if ended.is_some() {
+            return Err(io::Error::other("dropped Connector kept its session alive").into());
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector = Connector::connect(Config::new(address)).await?;
+    drop(connector);
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn pipe_preserves_bytes_and_directional_fin() -> TestResult {
     timeout(
         Duration::from_secs(3),
@@ -22,6 +106,7 @@ async fn pipe_preserves_bytes_and_directional_fin() -> TestResult {
 
 async fn pipe_preserves_bytes_and_directional_fin_case() -> TestResult {
     let (listener, address) = bind_gateway().await?;
+    let (received_tx, received_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
         let frame = transport
@@ -63,11 +148,19 @@ async fn pipe_preserves_bytes_and_directional_fin_case() -> TestResult {
         if !matches!(fin, Frame::Fin { pipe_id: id } if id == pipe_id) {
             return Err(unexpected(fin).into());
         }
+        let _ = received_tx.send(());
+        let ended = timeout(Duration::from_secs(1), transport.next()).await?;
+        if ended.is_some() {
+            return Err(
+                io::Error::other("Pipe drop did not stop the last SDK runtime owner").into(),
+            );
+        }
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     });
 
     let connector = Connector::connect(Config::new(address)).await?;
     let mut pipe = connector.open("echo.alpha").await?;
+    drop(connector);
     let mut buffer = [0_u8; 5];
     assert_eq!(pipe.read(&mut buffer).await?, 5);
     assert_eq!(&buffer, b"hello");
@@ -75,8 +168,9 @@ async fn pipe_preserves_bytes_and_directional_fin_case() -> TestResult {
     pipe.write_all(b"reply").await?;
     pipe.shutdown_write().await?;
     pipe.shutdown_write().await?;
+    received_rx.await?;
+    drop(pipe);
     server.await??;
-    connector.close();
     Ok(())
 }
 
@@ -127,6 +221,142 @@ async fn committed_open_is_not_replayed_and_reports_maybe_observed_case() -> Tes
     assert_eq!(error.observation(), PeerObservation::MaybeObserved);
     server.await??;
     connector.close();
+    Ok(())
+}
+
+#[tokio::test]
+async fn committed_open_timeout_closes_session_and_existing_pipes() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        committed_open_timeout_closes_session_and_existing_pipes_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn committed_open_timeout_closes_session_and_existing_pipes_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
+        let first = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing first OPEN"))??;
+        let first_connection = match first {
+            Frame::Open { connection_id, .. } => connection_id,
+            other => return Err(unexpected(other).into()),
+        };
+        transport
+            .send(Frame::Opened {
+                pipe_id: PipeId::new(session_id, first_connection),
+            })
+            .await?;
+
+        let second = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing timed-out OPEN"))??;
+        if !matches!(second, Frame::Open { .. }) {
+            return Err(unexpected(second).into());
+        }
+        let ended = timeout(Duration::from_secs(1), transport.next()).await?;
+        if ended.is_some() {
+            return Err(io::Error::other("timed-out ConnectorSession remained open").into());
+        }
+
+        let (mut replacement, _) = accept_session(&listener, SessionRole::Connector).await?;
+        assert!(
+            timeout(Duration::from_millis(150), replacement.next())
+                .await
+                .is_err()
+        );
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector = Connector::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_millis(80))
+            .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+    )
+    .await?;
+    let mut existing = connector.open("echo.alpha").await?;
+    let error = connector
+        .open("echo.beta")
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("timed-out OPEN unexpectedly succeeded"))?;
+    assert_eq!(error.code(), ErrorCode::DeadlineExceeded);
+    assert_eq!(error.observation(), PeerObservation::MaybeObserved);
+
+    let mut byte = [0_u8; 1];
+    let pipe_error = timeout(Duration::from_secs(1), existing.read(&mut byte))
+        .await?
+        .err()
+        .ok_or_else(|| io::Error::other("existing Pipe survived session timeout"))?;
+    assert_eq!(pipe_error.code(), ErrorCode::Unavailable);
+    server.await??;
+    connector.close();
+    Ok(())
+}
+
+#[tokio::test]
+async fn stalled_transport_send_times_out_and_cleans_up_session() -> TestResult {
+    timeout(
+        Duration::from_secs(5),
+        stalled_transport_send_times_out_and_cleans_up_session_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn stalled_transport_send_times_out_and_cleans_up_session_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
+        let open = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing OPEN"))??;
+        let connection_id = match open {
+            Frame::Open { connection_id, .. } => connection_id,
+            other => return Err(unexpected(other).into()),
+        };
+        transport
+            .send(Frame::Opened {
+                pipe_id: PipeId::new(session_id, connection_id),
+            })
+            .await?;
+
+        // Deliberately stop reading. The SDK must bound the socket send and
+        // terminate the session instead of leaving the actor blocked forever.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(transport);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector = Connector::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_millis(20))
+            .with_outbound_capacity(1)
+            .with_reconnect_backoff(Duration::from_secs(1), Duration::from_secs(1)),
+    )
+    .await?;
+    let mut pipe = connector.open("echo.alpha").await?;
+    let payload = vec![0_u8; 32 * 1024 * 1024];
+    let write_error = timeout(Duration::from_secs(2), pipe.write_all(&payload))
+        .await?
+        .err()
+        .ok_or_else(|| io::Error::other("stalled transport write unexpectedly succeeded"))?;
+    assert_eq!(write_error.code(), ErrorCode::Unavailable);
+
+    let mut byte = [0_u8; 1];
+    let read_error = timeout(Duration::from_secs(1), pipe.read(&mut byte))
+        .await?
+        .err()
+        .ok_or_else(|| io::Error::other("stalled session Pipe did not fail"))?;
+    assert_eq!(read_error.code(), ErrorCode::Unavailable);
+    connector.close();
+    server.await??;
     Ok(())
 }
 

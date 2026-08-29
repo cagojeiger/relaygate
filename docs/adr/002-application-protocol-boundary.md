@@ -29,7 +29,7 @@ Deployment  = Gateway service identity + channel integrity
 - 여러 Listener에 분산된 상태나 결과의 통합은 application 책임이다.
 - RelayGate의 rate, connection과 buffer 제한은 자원 보호이지 application 권한 모델이 아니다.
 - `ClientKey` 폐기는 신규 binding과 신규 Pipe admission을 막지만 이미 admission을 마친 Pipe의 application 권한을 소급해 판단하지 않는다.
-- 내부 transport identity와 integrity가 없는 배포는 RelayGate의 `GatewayId`와 RT publication 신뢰 전제를 만족하지 않는다.
+- 내부 transport identity와 integrity가 없는 배포는 RelayGate의 `GatewayId`와 RT registration 신뢰 전제를 만족하지 않는다.
 
 ## 이 ADR에서 정하지 않는 것
 

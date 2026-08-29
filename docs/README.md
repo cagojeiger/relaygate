@@ -16,11 +16,11 @@ Listener SDK
      ▼
 Owner Gateway × G
      │ Gateway-local ListenerBinding = truth
-     │ PublishCurrent(session-shard snapshot)
+     │ Register lease + Update(current snapshot)
      ▼
 RouteTable shard × R
      │ immutable ShardDirectoryGeneration
-     │ ClientId -> BindingSet<BindingProjection>
+     │ ClientId -> BindingSet<MappingEntry>
      │ Resolve(Generation, ClientId)
      ▼
 Entry Gateway × G
@@ -34,14 +34,14 @@ Connector SDK ── ConnectorSession + connect(ClientId) ──► Entry Gatewa
 ```text
 Authority(Generation, ClientId) = exactly 1 logical shard
 Endpoint(Generation, ShardId)   = exactly 1 stable logical endpoint
-Mappings(ClientId)              = 0..N live binding projections
+Mappings(ClientId)              = 0..N live mapping entries
 Payload는 RouteTable을 통과하지 않는다.
 
 Generation = SHA-256(exact ShardDirectory artifact bytes)
 ```
 
 Gateway는 RT 전체 mapping을 복제하거나 구독하지 않는다. 자신이 소유한 current binding만
-session-shard snapshot으로 게시하고, 원격 연결이 필요할 때 해당 `ClientId`의 `BindingSet`만
+active registration lease의 session-shard snapshot으로 갱신하고, 원격 연결이 필요할 때 해당 `ClientId`의 `BindingSet`만
 조회한다.
 
 등록 관계와 실제 연결은 다르다.
@@ -65,7 +65,7 @@ one PeerTransport
   └── FIN(one direction) | CLOSE(normal) | RESET(failure)
 ```
 
-RT의 `Release`와 expiry는 tombstone을 남기는 hard fence가 아니다. 늦은 `PublishCurrent`가 stale projection을 잠시 다시 만들 수 있지만, Owner Gateway가 `BindingId`를 재검증하므로 잘못된 Pipe는 열리지 않는다. 마지막 늦은 갱신 뒤에는 lease expiry로 다시 제거된다.
+RT는 새 registration에 `LeaseId`를 발급한다. `Update`와 `KeepAlive`는 active lease에만 적용되고, `Deregister`, expiry 또는 RT restart로 종료된 lease의 늦은 operation은 mapping을 되살리지 못한다. Owner Gateway는 mapping이 active여도 `OPEN` 시점에 `BindingId`를 다시 검증한다.
 
 ## 책임
 
@@ -74,8 +74,8 @@ RT의 `Release`와 expiry는 tombstone을 남기는 hard fence가 아니다. 늦
 | 애플리케이션 | payload protocol, peer 인증·인가, service 선택, aggregation, idempotency, 업무 retry |
 | 배포 환경 | SDK가 접속하는 Gateway service identity와 channel integrity, Gateway 간 및 Gateway-RT 간 component identity와 integrity |
 | SDK | `Connector`, `Listener`, `Pipe` 사용자 계약 |
-| Gateway | Connector/Listener session과 local binding 소유, RT publication, binding 선택, Pipe 수립, local/one-hop relay |
-| RouteTable shard | 한 `ShardDirectoryGeneration`의 현재 `ClientId -> BindingSet<BindingProjection>` mapping authority와 publication lease |
+| Gateway | Connector/Listener session과 local binding 소유, RT registration, binding 선택, Pipe 수립, local/one-hop relay |
+| RouteTable shard | 한 `ShardDirectoryGeneration`의 현재 `ClientId -> BindingSet<MappingEntry>` mapping authority와 registration lease |
 
 ```text
 ClientKey        = ClientId binding 등록 권한
@@ -106,7 +106,7 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | [ADR 002](adr/002-application-protocol-boundary.md) | 등록 권한 밖의 application 의미와 보안은 endpoint가 소유한다. |
 | [ADR 003](adr/003-client-id-listener-binding.md) | 전역 binding은 many-to-many이고 runtime 내부 동일 ClientId Listener 중복은 거절한다. |
 | [ADR 004](adr/004-current-state-routing-topology.md) | `RouteTable`은 content-hash generation의 hash-sharded mapping authority다. |
-| [ADR 005](adr/005-soft-state-registration-lifecycle.md) | Route mapping은 tombstone을 두지 않는 current soft state다. |
+| [ADR 005](adr/005-soft-state-registration-lifecycle.md) | Route mapping은 active registration lease에 연결된 current soft state다. |
 | [ADR 006](adr/006-one-hop-peer-multiplexing.md) | Gateway data plane은 initiator-bit StreamId를 쓰는 one-hop multiplexed relay다. |
 
 ## SPEC
@@ -115,8 +115,8 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | --- | --- |
 | [SPEC 001](spec/001-terminology-and-object-model.md) | 용어, 객체, identifier와 scope |
 | [SPEC 002](spec/002-sdk-pipe-contract.md) | SDK와 Pipe 사용자 계약 |
-| [SPEC 003](spec/003-listener-registration-contract.md) | Gateway local registry와 RT publication lifecycle |
-| [SPEC 004](spec/004-route-table-contract.md) | RouteTable schema와 `PublishCurrent/Refresh/Release/Resolve` 계약 |
+| [SPEC 003](spec/003-listener-registration-contract.md) | Gateway local registry와 RT registration lifecycle |
+| [SPEC 004](spec/004-route-table-contract.md) | RouteTable schema와 `Register/Update/KeepAlive/Deregister/Resolve` 계약 |
 | [SPEC 005](spec/005-connection-establishment-contract.md) | local lookup, resolve, binding 선택과 Pipe 수립 계약 |
 | [SPEC 006](spec/006-peer-relay-contract.md) | one-hop peer relay와 multiplexing 계약 |
 | [SPEC 007](spec/007-error-and-state-model.md) | canonical 오류, 상태와 failure observation |

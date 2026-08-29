@@ -1,15 +1,18 @@
 use std::{collections::HashMap, sync::Arc};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use relaygate_protocol::{Frame, PipeId, SessionId, SessionRole};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::{
+    sync::{Mutex, mpsc, oneshot},
+    time::Instant,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{ConnectorCommand, ConnectorInner, ConnectorSession};
 use crate::{
     Error, ErrorCode, PeerObservation, Pipe, Result,
     pipe::{PipeState, to_wire_code},
-    session::{EstablishedSession, establish, next_backoff},
+    session::{EstablishedSession, establish, next_backoff, send_bounded},
 };
 
 pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: EstablishedSession) {
@@ -35,7 +38,7 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
                 }
             },
         };
-        backoff = inner.config.reconnect_initial;
+        let started_at = Instant::now();
         let (control_tx, control_rx) = mpsc::channel(inner.config.outbound_capacity);
         let (cancellation_tx, cancellation_rx) = mpsc::unbounded_channel();
         let (outbound_tx, outbound_rx) = mpsc::channel(inner.config.outbound_capacity);
@@ -45,6 +48,7 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             next_connection_id: Mutex::new(1),
             control: control_tx,
             cancellations: cancellation_tx,
+            cancel: session_cancel.clone(),
         });
         inner.current.send_replace(Some(Arc::clone(&session)));
         run_connector_session(
@@ -54,6 +58,8 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             outbound_tx,
             outbound_rx,
             inner.config.pipe_inbound_capacity,
+            inner.config.operation_timeout,
+            inner.lifetime.clone(),
             session_cancel,
         )
         .await;
@@ -65,9 +71,21 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
         {
             inner.current.send_replace(None);
         }
+        if inner.cancel.is_cancelled() {
+            return;
+        }
+        if started_at.elapsed() >= inner.config.reconnect_maximum {
+            backoff = inner.config.reconnect_initial;
+        }
+        tokio::select! {
+            _ = inner.cancel.cancelled() => return,
+            _ = tokio::time::sleep(backoff) => {}
+        }
+        backoff = next_backoff(backoff, inner.config.reconnect_maximum);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_connector_session(
     mut established: EstablishedSession,
     mut control: mpsc::Receiver<ConnectorCommand>,
@@ -75,6 +93,8 @@ async fn run_connector_session(
     outbound_tx: mpsc::Sender<Frame>,
     mut outbound_rx: mpsc::Receiver<Frame>,
     pipe_inbound_capacity: usize,
+    operation_timeout: std::time::Duration,
+    lifetime: std::sync::Weak<crate::lifetime::RuntimeLifetime>,
     cancel: CancellationToken,
 ) {
     let mut pending = HashMap::<u64, oneshot::Sender<Result<Pipe>>>::new();
@@ -102,7 +122,10 @@ async fn run_connector_session(
                         Frame::Open { connection_id, client_id }
                     }
                 };
-                if established.transport.send(frame).await.is_err() {
+                if send_bounded(&mut established.transport, frame, operation_timeout, &cancel)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -118,14 +141,29 @@ async fn run_connector_session(
                 if let Some(pipe) = pipes.remove(&pipe_id) {
                     pipe.close_normal();
                 }
-                if established.transport.send(Frame::Cancel { pipe_id }).await.is_err() {
+                if send_bounded(
+                    &mut established.transport,
+                    Frame::Cancel { pipe_id },
+                    operation_timeout,
+                    &cancel,
+                )
+                .await
+                .is_err()
+                {
                     break;
                 }
             }
             abandoned = abandoned_rx.recv() => {
                 let Some(pipe_id) = abandoned else { continue; };
                 if pipes.remove(&pipe_id).is_some()
-                    && established.transport.send(Frame::Close { pipe_id }).await.is_err()
+                    && send_bounded(
+                        &mut established.transport,
+                        Frame::Close { pipe_id },
+                        operation_timeout,
+                        &cancel,
+                    )
+                    .await
+                    .is_err()
                 {
                     break;
                 }
@@ -137,7 +175,10 @@ async fn run_connector_session(
                     Frame::Fin { pipe_id } if pipes.get(pipe_id).is_some_and(|pipe| pipe.is_finished()) => Some(*pipe_id),
                     _ => None,
                 };
-                if established.transport.send(frame).await.is_err() {
+                if send_bounded(&mut established.transport, frame, operation_timeout, &cancel)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
                 if let Some(pipe_id) = terminal_pipe {
@@ -156,6 +197,9 @@ async fn run_connector_session(
                     pipe_inbound_capacity,
                     &abandoned_tx,
                     &mut established.transport,
+                    operation_timeout,
+                    &lifetime,
+                    &cancel,
                 ).await {
                     break;
                 }
@@ -183,23 +227,42 @@ async fn handle_connector_frame(
     pipe_inbound_capacity: usize,
     abandoned: &mpsc::UnboundedSender<PipeId>,
     transport: &mut crate::session::WireTransport,
+    operation_timeout: std::time::Duration,
+    lifetime: &std::sync::Weak<crate::lifetime::RuntimeLifetime>,
+    cancel: &CancellationToken,
 ) -> bool {
     match frame {
         Frame::Opened { pipe_id } if pipe_id.connector_session_id() == session_id => {
             let Some(response) = pending.remove(&pipe_id.connection_id()) else {
-                let _ = transport.send(Frame::Cancel { pipe_id }).await;
+                let _ = send_bounded(
+                    transport,
+                    Frame::Cancel { pipe_id },
+                    operation_timeout,
+                    cancel,
+                )
+                .await;
                 return true;
             };
-            let (pipe, state) = PipeState::pair(
+            let Some(lifetime) = lifetime.upgrade() else {
+                return false;
+            };
+            let (pipe, state) = PipeState::pair_with_lifetime(
                 pipe_id,
                 outbound.clone(),
                 pipe_inbound_capacity,
                 abandoned.clone(),
+                lifetime,
             );
             if response.send(Ok(pipe)).is_ok() {
                 pipes.insert(pipe_id, state);
             } else {
-                let _ = transport.send(Frame::Cancel { pipe_id }).await;
+                let _ = send_bounded(
+                    transport,
+                    Frame::Cancel { pipe_id },
+                    operation_timeout,
+                    cancel,
+                )
+                .await;
             }
         }
         Frame::OpenFailed {
@@ -222,13 +285,17 @@ async fn handle_connector_frame(
             {
                 pipe.fail(error.clone());
                 pipes.remove(&pipe_id);
-                let _ = transport
-                    .send(Frame::Reset {
+                let _ = send_bounded(
+                    transport,
+                    Frame::Reset {
                         pipe_id,
                         code: to_wire_code(error.code()),
                         message: error.message().to_owned(),
-                    })
-                    .await;
+                    },
+                    operation_timeout,
+                    cancel,
+                )
+                .await;
             }
         }
         Frame::Fin { pipe_id } => {
@@ -266,7 +333,10 @@ async fn handle_connector_frame(
             }
         }
         Frame::Ping { nonce } => {
-            if transport.send(Frame::Pong { nonce }).await.is_err() {
+            if send_bounded(transport, Frame::Pong { nonce }, operation_timeout, cancel)
+                .await
+                .is_err()
+            {
                 return false;
             }
         }

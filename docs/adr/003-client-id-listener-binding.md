@@ -36,7 +36,7 @@ many-to-many는 identity와 runtime location을 분리하는 모델이다. broad
 
 ## 이 ADR에서 정하지 않는 것
 
-- binding과 route projection의 field 및 identifier 형식
+- binding과 route mapping entry의 field 및 identifier 형식
 - binding selection, fairness, weight, locality와 stickiness
 - registration API, 중복 오류 code와 wire retry의 idempotency
 - binding lifetime과 cleanup 순서

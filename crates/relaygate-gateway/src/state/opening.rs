@@ -254,11 +254,13 @@ impl GatewayState {
                     .then_some(*pipe_id)
             })
             .collect();
-        let mut deliveries = Vec::with_capacity(expired.len() * 2);
+        let mut deliveries = Vec::with_capacity(expired.len());
+        let mut expired_listeners = std::collections::HashSet::new();
         for pipe_id in expired {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
+            expired_listeners.insert(pipe.listener);
             if let Some(delivery) = self.to(
                 pipe.connector,
                 Frame::OpenFailed {
@@ -270,16 +272,9 @@ impl GatewayState {
             ) {
                 deliveries.push(delivery);
             }
-            if let Some(delivery) = self.to(
-                pipe.listener,
-                Frame::Reset {
-                    pipe_id,
-                    code: ErrorCode::DeadlineExceeded,
-                    message: "Gateway OFFER deadline exceeded".to_owned(),
-                },
-            ) {
-                deliveries.push(delivery);
-            }
+        }
+        for listener in expired_listeners {
+            deliveries.extend(self.remove_session(listener));
         }
         deliveries
     }

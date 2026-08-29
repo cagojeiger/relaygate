@@ -27,8 +27,16 @@ fn limited_state(limits: GatewayLimits) -> GatewayState {
 }
 
 fn add_session(state: &mut GatewayState, role: SessionRole) -> relaygate_protocol::SessionId {
+    add_session_with_cancellation(state, role, CancellationToken::new())
+}
+
+fn add_session_with_cancellation(
+    state: &mut GatewayState,
+    role: SessionRole,
+    cancellation: CancellationToken,
+) -> relaygate_protocol::SessionId {
     let (sender, _receiver) = mpsc::channel(8);
-    let session_id = state.add_session(role, sender, CancellationToken::new());
+    let session_id = state.add_session(role, sender, cancellation);
     assert!(session_id.is_some(), "test session limit was reached");
     session_id.unwrap_or_default()
 }
@@ -140,7 +148,7 @@ fn n_to_m_registry_offers_each_open_to_only_one_listener() -> Result<(), Box<dyn
 }
 
 #[test]
-fn disconnect_removes_only_owned_state_and_resets_counterpart()
+fn disconnect_removes_only_owned_state_and_terminates_pending_open()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
     let first_listener = add_session(&mut state, SessionRole::Listener);
@@ -164,16 +172,18 @@ fn disconnect_removes_only_owned_state_and_resets_counterpart()
         },
     )?;
 
-    let resets = state.remove_session(first_listener);
+    let failures = state.remove_session(first_listener);
 
     assert_eq!(state.registry.binding_count(), 1);
     assert_eq!(state.pipe_count(), 0);
-    assert!(resets.iter().any(|delivery| {
+    assert!(failures.iter().any(|delivery| {
         delivery.target == connector
             && matches!(
                 delivery.frame,
-                Frame::Reset {
+                Frame::OpenFailed {
+                    connection_id: 1,
                     code: ErrorCode::Unavailable,
+                    observation: relaygate_protocol::PeerObservation::MaybeObserved,
                     ..
                 }
             )
@@ -728,24 +738,55 @@ fn live_pipe_limit_resolves_concurrent_admission_with_observed_failure()
 }
 
 #[test]
-fn offer_deadline_cleans_both_ends_and_late_accept_cannot_resurrect()
+fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = limited_state(GatewayLimits {
         offer_timeout: Duration::from_millis(10),
         ..GatewayLimits::default()
     });
-    let listener = add_session(&mut state, SessionRole::Listener);
+    let listener_cancellation = CancellationToken::new();
+    let listener = add_session_with_cancellation(
+        &mut state,
+        SessionRole::Listener,
+        listener_cancellation.clone(),
+    );
+    let sibling = add_session(&mut state, SessionRole::Listener);
     let connector = add_session(&mut state, SessionRole::Connector);
     register_listener(&mut state, listener)?;
+    register_listener(&mut state, sibling)?;
+    state.handle(
+        listener,
+        Frame::Register {
+            request_id: 2,
+            client_id: "echo.other".to_owned(),
+            client_key: ClientKey::new("other-secret"),
+        },
+    )?;
+
+    let live_offer = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.other".to_owned(),
+        },
+    )?;
+    let live_pipe = live_offer
+        .iter()
+        .find_map(|delivery| match delivery.frame {
+            Frame::Offer { pipe_id, .. } if delivery.target == listener => Some(pipe_id),
+            _ => None,
+        })
+        .ok_or("missing live offer")?;
+    state.handle(listener, Frame::OfferAccepted { pipe_id: live_pipe })?;
     let before_open = Instant::now();
     let offered = state.handle(
         connector,
         Frame::Open {
-            connection_id: 1,
+            connection_id: 2,
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    let pipe_id = offered
+    let expired_pipe = offered
         .iter()
         .find_map(|delivery| match delivery.frame {
             Frame::Offer { pipe_id, .. } => Some(pipe_id),
@@ -757,25 +798,50 @@ fn offer_deadline_cleans_both_ends_and_late_accept_cannot_resurrect()
     assert!(expired.iter().any(|delivery| matches!(
         delivery.frame,
         Frame::OpenFailed {
+            connection_id: 2,
             code: ErrorCode::DeadlineExceeded,
             observation: relaygate_protocol::PeerObservation::MaybeObserved,
             ..
         }
     )));
-    assert!(expired.iter().any(|delivery| matches!(
-        delivery.frame,
-        Frame::Reset {
-            code: ErrorCode::DeadlineExceeded,
-            ..
-        }
-    )));
+    assert!(expired.iter().any(|delivery| {
+        delivery.target == connector
+            && matches!(
+                delivery.frame,
+                Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Unavailable,
+                    ..
+                } if pipe_id == live_pipe
+            )
+    }));
+    assert!(listener_cancellation.is_cancelled());
+    assert!(!state.sessions.contains_key(&listener));
+    assert!(state.sessions.contains_key(&sibling));
+    assert_eq!(state.registry.binding_count(), 1);
+    assert_eq!(state.registry.session_binding_count(sibling), 1);
     assert_eq!(state.pending_offer_count(), 0);
     assert_eq!(state.pipe_count(), 0);
     assert!(
         state
-            .handle(listener, Frame::OfferAccepted { pipe_id })?
+            .handle(
+                listener,
+                Frame::OfferAccepted {
+                    pipe_id: expired_pipe,
+                },
+            )?
             .is_empty()
     );
-    assert_eq!(state.pipe_count(), 0);
+
+    let next = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 3,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    assert!(next.iter().any(|delivery| {
+        delivery.target == sibling && matches!(delivery.frame, Frame::Offer { .. })
+    }));
     Ok(())
 }

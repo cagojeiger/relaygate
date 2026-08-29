@@ -70,7 +70,7 @@ OPEN ──► OPENED
 
 | ID | 요구사항 |
 | --- | --- |
-| `OPEN-001` | Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 local set에서 후보 하나를 선택하고 RT를 조회하지 않아야 한다. local set이 비었을 때만 configured generation의 `Authority(ClientId)`인 RT shard에 `Resolve(ShardDirectoryGeneration, ClientId)`를 보내 후보를 구한다. RT projection 상실만으로 live local binding을 제외하지 않는다. |
+| `OPEN-001` | Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 local set에서 후보 하나를 선택하고 RT를 조회하지 않아야 한다. local set이 비었을 때만 configured generation의 `Authority(ClientId)`인 RT shard에 `Resolve(ShardDirectoryGeneration, ClientId)`를 보내 후보를 구한다. RT mapping 상실만으로 live local binding을 제외하지 않는다. |
 | `OPEN-002` | live 후보가 없으면 `connect`는 `NOT_FOUND`로 끝나며 Pipe를 만들지 않는다. RT shard 자체를 사용할 수 없으면 `UNAVAILABLE`로 끝난다. |
 | `OPEN-003` | 하나의 연결 시도는 `OPEN-001`이 정한 local set 또는 RT `BindingSet` 중 하나의 candidate set에서 정확히 하나의 live binding만 선택한다. local-first 외의 selection 품질, 순서나 공정성은 보장하지 않는다. |
 | `OPEN-004` | 선택된 binding의 Owner Gateway는 `(GatewayId, ListenerSessionId, BindingId, ClientId)`가 자신의 current `ACTIVE` local binding과 일치하고 session이 살아 있는지 OPEN 처리 시점에 다시 확인한다. `GatewayLocator`만으로 identity를 판단하지 않는다. 이 revalidation과 Listener queue admission은 binding 제거·handle close·권한 폐기와 하나의 순서로 직렬화되어야 한다. admission이 먼저면 기존 Pipe lifecycle을 따르고 제거가 먼저면 Pipe를 만들지 않는다. |
@@ -93,6 +93,9 @@ OPEN ──► OPENED
 | `OPEN-021` | 재연결로 만든 새 `ConnectorSession`은 이전 session의 ConnectionId, attempt, Pipe 또는 terminal 결과를 승계하지 않는다. 이전 session identity의 늦은 frame은 새 session state를 변경할 수 없다. |
 | `OPEN-022` | RT가 `ShardDirectoryGeneration` mismatch를 반환하면 해당 remote connect attempt는 `FAILED_PRECONDITION`, `NOT_OBSERVED`로 끝나고 Pipe를 만들거나 다른 shard 또는 binding으로 재시도해서는 안 된다. Gateway는 같은 process에서 directory generation을 바꾸지 않는다. |
 | `OPEN-023` | local 후보가 없는 상태에서 RT `Resolve`의 component identity 또는 authorization 검증이 실패하면 해당 connect attempt는 `UNAUTHENTICATED` 또는 `PERMISSION_DENIED`, `NOT_OBSERVED`로 끝나야 한다. binding 선택, peer OPEN과 Listener queue admission은 일어나지 않으며 같은 attempt를 자동 재시도해서는 안 된다. |
+| `OPEN-024` | Owner Gateway가 selected ListenerSession에 `OFFER`를 보낸 뒤 configured deadline까지 `OFFER_ACCEPTED` 또는 `OFFER_REJECTED`를 받지 못하면 attempt는 `DEADLINE_EXCEEDED`, `MAYBE_OBSERVED`로 끝나야 한다. Gateway는 selected ListenerSession 전체를 종료하고 그 session의 모든 binding·Pipe를 정리하되 다른 ListenerSession은 유지해야 한다. 같은 attempt를 sibling binding으로 reroute해서는 안 된다. |
+| `OPEN-025` | Listener SDK가 deadline 안에 명시적인 `OFFER_REJECTED`를 반환한 것은 session liveness failure가 아니다. 해당 attempt만 전달된 code로 실패시키고 selected ListenerSession, sibling binding과 기존 Pipe는 유지해야 한다. |
+| `OPEN-026` | Connector SDK가 commit된 OPEN의 terminal Gateway 응답을 자신의 operation deadline까지 받지 못하면 해당 attempt는 `DEADLINE_EXCEEDED`, `MAYBE_OBSERVED`로 끝나고 current ConnectorSession을 종료해야 한다. 그 session의 다른 attempt와 Pipe도 terminal cleanup하며 새 session으로 자동 replay하지 않는다. |
 
 ## 연결 시도 불변식
 

@@ -31,9 +31,10 @@ impl GatewayState {
     }
 
     pub(crate) fn remove_session(&mut self, session_id: SessionId) -> Vec<Delivery> {
-        if self.sessions.remove(&session_id).is_none() {
+        let Some(session) = self.sessions.remove(&session_id) else {
             return Vec::new();
-        }
+        };
+        session.cancellation.cancel();
         self.registry.remove_session(session_id);
 
         let owned: Vec<_> = self
@@ -48,19 +49,34 @@ impl GatewayState {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
-            let counterpart = if pipe.connector == session_id {
-                pipe.listener
+            let (counterpart, frame) = if pipe.listener == session_id
+                && pipe.phase == super::PipePhase::Offered
+            {
+                (
+                    pipe.connector,
+                    Frame::OpenFailed {
+                        connection_id: pipe_id.connection_id(),
+                        code: ErrorCode::Unavailable,
+                        observation: relaygate_protocol::PeerObservation::MaybeObserved,
+                        message: "selected ListenerSession disconnected during OFFER".to_owned(),
+                    },
+                )
             } else {
-                pipe.connector
+                let counterpart = if pipe.connector == session_id {
+                    pipe.listener
+                } else {
+                    pipe.connector
+                };
+                (
+                    counterpart,
+                    Frame::Reset {
+                        pipe_id,
+                        code: ErrorCode::Unavailable,
+                        message: "counterpart session disconnected".to_owned(),
+                    },
+                )
             };
-            if let Some(delivery) = self.to(
-                counterpart,
-                Frame::Reset {
-                    pipe_id,
-                    code: ErrorCode::Unavailable,
-                    message: "counterpart session disconnected".to_owned(),
-                },
-            ) {
+            if let Some(delivery) = self.to(counterpart, frame) {
                 deliveries.push(delivery);
             }
         }

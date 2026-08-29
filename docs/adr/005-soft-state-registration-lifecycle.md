@@ -1,4 +1,4 @@
-# ADR 005: Route mapping은 current snapshot에서 파생한 soft state다
+# ADR 005: Route mapping은 active lease에 연결된 soft state다
 
 | 항목 | 값 |
 | --- | --- |
@@ -13,33 +13,35 @@ RouteTable의 목적은 과거를 복원하는 것이 아니라 현재 연결 �
 
 ```text
 Gateway current ListenerBinding set
-             │ publish / refresh
+             │ Register / Update / KeepAlive
              ▼
-RouteTable current BindingProjection set
-             │ replace / release / expire
+RouteTable current MappingEntry set
+             │ replace / Deregister / expire
              ▼
            removed
 ```
 
-Gateway가 현재 소유한 live `ListenerSession`과 `ListenerBinding`이 truth다. Gateway는 session-shard별 current binding snapshot을 게시한다. RouteTable은 그 snapshot과 lease에서 파생한 projection만 memory-only soft state로 보관하며, 갱신되지 않은 projection은 제거한다.
+Gateway가 현재 소유한 live `ListenerSession`과 `ListenerBinding`이 truth다. Gateway는 session-shard별 registration lease를 얻고 current binding snapshot으로 mapping을 갱신한다. RouteTable은 active lease에 연결된 `MappingEntry`만 memory-only soft state로 보관하며, 갱신되지 않은 mapping은 제거한다.
 
-`Release`와 expiry는 tombstone을 남기는 hard fence가 아니다. RT가 한 scope를 이미 잊은 뒤 늦은 `PublishCurrent`가 도착하면 그 snapshot을 새 current observation으로 다시 받아들일 수 있다. 이 projection은 live binding의 증명이 아니므로 Owner Gateway가 `OPEN` 시점에 binding identity를 다시 확인한다. 더 이상 늦은 publish나 refresh가 도착하지 않는 quiescent 상태에서는 마지막으로 수락한 갱신의 lease가 만료된 뒤 projection이 사라진다.
+새 mapping state는 `Register`만 만들 수 있고 RT가 새 `LeaseId`를 발급한다. `Update`와 `KeepAlive`는 현재 active lease에만 적용된다. `Deregister`, expiry 또는 RT restart로 종료된 lease의 늦은 operation은 새 mapping을 만들거나 과거 mapping을 되살리지 못한다. Gateway는 새 lease를 등록한 뒤 현재 snapshot을 다시 보낸다.
+
+여기서 `KeepAlive`는 Gateway가 RT registration lease를 갱신하는 control-plane operation이다. SDK와 Gateway 사이의 session liveness를 확인하는 periodic heartbeat와는 다른 계약이다. Owner Gateway는 lease가 active여도 process loss나 binding 제거와 lookup 사이의 경쟁을 막기 위해 `OPEN` 시점에 binding identity를 다시 확인한다.
 
 ## 결과
 
-- RT state는 현재 live registration과 publication lease 수에 비례한다.
+- RT state는 현재 live mapping과 registration lease 수에 비례한다.
 - RT는 binding history, mutation log, Pipe와 payload를 저장하지 않는다.
 - RT가 state를 잃으면 live Gateway의 current snapshot으로 다시 구성한다.
-- current lease가 존재하는 동안 오래되거나 충돌하는 publication은 그 lease와 revision을 바꾸지 못한다.
-- release 직후 늦은 publication이 projection을 잠시 되살릴 수 있지만 잘못된 Pipe를 열 수는 없다.
-- stale projection이 선택되면 다른 live binding이 함께 있어도 같은 connect는 실패할 수 있다. 새 후보 선택은 새 connect의 책임이다.
-- RT는 tombstone이나 종료된 lease history를 보관하지 않으므로 상태 크기는 과거 operation 수에 비례하지 않는다.
+- current lease가 존재하는 동안 오래되거나 충돌하는 update는 그 lease와 revision을 바꾸지 못한다.
+- 종료되거나 알려지지 않은 lease의 `Update`와 `KeepAlive`는 state를 만들지 않고 거절된다.
+- RT는 tombstone이나 종료된 lease history를 보관하지 않으며 새 state 생성과 active lease 갱신을 분리한다.
+- stale mapping이 선택되면 Owner Gateway가 binding을 재검증하고 같은 connect는 실패할 수 있다. 새 후보 선택은 새 connect의 책임이다.
 - 기존 Pipe의 lifecycle은 route mapping 복구와 분리된다.
 
 ## 이 ADR에서 정하지 않는 것
 
-- snapshot schema, lease identity와 revision 규칙
-- lease 시간, refresh 주기와 clock handling
+- registration key, snapshot schema, lease identity와 revision 규칙
+- lease 시간, keepalive 주기와 clock handling
 - RT restart 중 외부에 보이는 상태와 오류
 
 ## 참고

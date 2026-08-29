@@ -7,7 +7,7 @@ use bytes::{Buf, Bytes};
 use relaygate_protocol::{ErrorCode as WireErrorCode, Frame, PipeId};
 use tokio::sync::{Mutex, mpsc, watch};
 
-use crate::{Error, ErrorCode, PeerObservation, Result};
+use crate::{Error, ErrorCode, PeerObservation, Result, lifetime::RuntimeLifetime};
 
 #[cfg(test)]
 mod tests;
@@ -37,6 +37,7 @@ pub(crate) struct PipeState {
 /// One ordered, opaque, bidirectional byte stream.
 pub struct Pipe {
     state: Arc<PipeState>,
+    _lifetime: Option<Arc<RuntimeLifetime>>,
     inbound: mpsc::Receiver<Bytes>,
     current: Bytes,
     read_eof: bool,
@@ -49,11 +50,32 @@ impl std::fmt::Debug for Pipe {
 }
 
 impl PipeState {
+    #[cfg(test)]
     pub(crate) fn pair(
         id: PipeId,
         outbound: mpsc::Sender<Frame>,
         inbound_capacity: usize,
         abandoned: mpsc::UnboundedSender<PipeId>,
+    ) -> (Pipe, Arc<Self>) {
+        Self::pair_inner(id, outbound, inbound_capacity, abandoned, None)
+    }
+
+    pub(crate) fn pair_with_lifetime(
+        id: PipeId,
+        outbound: mpsc::Sender<Frame>,
+        inbound_capacity: usize,
+        abandoned: mpsc::UnboundedSender<PipeId>,
+        lifetime: Arc<RuntimeLifetime>,
+    ) -> (Pipe, Arc<Self>) {
+        Self::pair_inner(id, outbound, inbound_capacity, abandoned, Some(lifetime))
+    }
+
+    fn pair_inner(
+        id: PipeId,
+        outbound: mpsc::Sender<Frame>,
+        inbound_capacity: usize,
+        abandoned: mpsc::UnboundedSender<PipeId>,
+        lifetime: Option<Arc<RuntimeLifetime>>,
     ) -> (Pipe, Arc<Self>) {
         let (inbound_tx, inbound_rx) = mpsc::channel(inbound_capacity);
         let (terminal, _) = watch::channel(None);
@@ -71,6 +93,7 @@ impl PipeState {
         });
         let pipe = Pipe {
             state: Arc::clone(&state),
+            _lifetime: lifetime,
             inbound: inbound_rx,
             current: Bytes::new(),
             read_eof: false,

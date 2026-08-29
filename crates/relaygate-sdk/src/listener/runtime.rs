@@ -1,16 +1,20 @@
 use std::{collections::HashMap, sync::Arc};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use relaygate_protocol::{
     BindingId, ClientKey, ErrorCode as WireErrorCode, Frame, PipeId, SessionRole,
 };
-use tokio::{sync::mpsc, time::timeout};
+use tokio::{
+    sync::mpsc,
+    time::{Instant, sleep_until, timeout},
+};
+use tokio_util::sync::CancellationToken;
 
 use super::{ListenerRuntimeInner, ListenerState, ListenerStatus};
 use crate::{
     Error, ErrorCode, PeerObservation,
     pipe::{PipeState, to_wire_code},
-    session::{EstablishedSession, establish, next_backoff},
+    session::{EstablishedSession, establish, next_backoff, send_bounded},
 };
 
 pub(super) async fn listener_supervisor(
@@ -39,13 +43,30 @@ pub(super) async fn listener_supervisor(
                 }
             },
         };
-        backoff = inner.config.reconnect_initial;
-        run_listener_session(next, &inner).await;
+        let session_cancel = inner.cancel.child_token();
+        let registration_succeeded = run_listener_session(next, &inner, session_cancel).await;
+        if inner.cancel.is_cancelled() {
+            inner.close_all();
+            return;
+        }
+        if registration_succeeded {
+            backoff = inner.config.reconnect_initial;
+        }
+        tokio::select! {
+            _ = inner.cancel.cancelled() => {
+                inner.close_all();
+                return;
+            }
+            _ = tokio::time::sleep(backoff) => {}
+        }
+        backoff = next_backoff(backoff, inner.config.reconnect_maximum);
     }
 }
 
 struct PendingRegistration {
     state: Arc<ListenerState>,
+    committed: bool,
+    deadline: Instant,
 }
 
 struct Registration {
@@ -79,29 +100,55 @@ impl ListenerSessionState {
     }
 }
 
-async fn run_listener_session(mut established: EstablishedSession, inner: &ListenerRuntimeInner) {
+async fn run_listener_session(
+    mut established: EstablishedSession,
+    inner: &ListenerRuntimeInner,
+    session_cancel: CancellationToken,
+) -> bool {
     let (outbound_tx, mut outbound_rx) = mpsc::channel(inner.config.outbound_capacity);
     // One unique Pipe value can abandon one current PipeId, so this lane is
     // logically bounded by the session's live Pipe map rather than history.
     let (abandoned_tx, mut abandoned_rx) = mpsc::unbounded_channel();
     let mut state = ListenerSessionState::new();
     let mut needs_reconcile = true;
+    let mut timed_out_request = None;
+    let mut registration_succeeded = false;
 
     loop {
-        if needs_reconcile && !reconcile_registrations(inner, &mut established, &mut state).await {
+        if needs_reconcile
+            && !reconcile_registrations(inner, &mut established, &mut state, &session_cancel).await
+        {
             break;
         }
         needs_reconcile = false;
+        let registration_deadline = state
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.committed)
+            .min_by_key(|(_, pending)| pending.deadline)
+            .map(|(request_id, pending)| (*request_id, pending.deadline));
         tokio::select! {
             biased;
-            _ = inner.cancel.cancelled() => break,
+            _ = session_cancel.cancelled() => break,
+            _ = wait_for_registration_deadline(registration_deadline), if registration_deadline.is_some() => {
+                timed_out_request = registration_deadline.map(|(request_id, _)| request_id);
+                session_cancel.cancel();
+                break;
+            }
             _ = inner.reconcile.notified() => {
                 needs_reconcile = true;
             }
             abandoned = abandoned_rx.recv() => {
                 let Some(pipe_id) = abandoned else { continue; };
                 if state.pipes.remove(&pipe_id).is_some()
-                    && established.transport.send(Frame::Close { pipe_id }).await.is_err()
+                    && send_bounded(
+                        &mut established.transport,
+                        Frame::Close { pipe_id },
+                        inner.config.operation_timeout,
+                        &session_cancel,
+                    )
+                    .await
+                    .is_err()
                 {
                     break;
                 }
@@ -113,7 +160,15 @@ async fn run_listener_session(mut established: EstablishedSession, inner: &Liste
                     Frame::Fin { pipe_id } if state.pipes.get(pipe_id).is_some_and(|pipe| pipe.is_finished()) => Some(*pipe_id),
                     _ => None,
                 };
-                if established.transport.send(frame).await.is_err() {
+                if send_bounded(
+                    &mut established.transport,
+                    frame,
+                    inner.config.operation_timeout,
+                    &session_cancel,
+                )
+                .await
+                .is_err()
+                {
                     break;
                 }
                 if let Some(pipe_id) = terminal_pipe {
@@ -130,8 +185,12 @@ async fn run_listener_session(mut established: EstablishedSession, inner: &Liste
                     &abandoned_tx,
                     inner,
                     &mut established.transport,
+                    &session_cancel,
                 ).await {
                     ListenerFrameAction::Continue => {}
+                    ListenerFrameAction::RegistrationSucceeded => {
+                        registration_succeeded = true;
+                    }
                     ListenerFrameAction::Reconcile => needs_reconcile = true,
                     ListenerFrameAction::Stop => break,
                 }
@@ -139,21 +198,61 @@ async fn run_listener_session(mut established: EstablishedSession, inner: &Liste
         }
     }
 
-    for (_, pending) in state.pending {
-        suspend_if_live(&pending.state);
+    for (request_id, pending) in state.pending {
+        if *pending.state.status.borrow() == ListenerStatus::Closed {
+            continue;
+        }
+        if pending.committed {
+            let recovery_error = if timed_out_request == Some(request_id) {
+                Error::deadline(PeerObservation::MaybeObserved)
+            } else {
+                Error::maybe_observed("ListenerSession ended during managed REGISTER")
+            };
+            let initial_error = if timed_out_request == Some(request_id) {
+                Error::deadline(PeerObservation::MaybeObserved)
+            } else {
+                Error::maybe_observed("ListenerSession ended after REGISTER commit")
+            };
+            if pending
+                .state
+                .suspend_or_fail_initial(recovery_error, initial_error)
+            {
+                inner.remove_terminal_listener(&pending.state);
+            }
+        } else if is_current_desired(inner, &pending.state) {
+            pending
+                .state
+                .handle_precommit_session_end(Error::unavailable(
+                    "ListenerSession ended before managed REGISTER commit",
+                ));
+        }
     }
     for (_, registration) in state.registrations {
-        suspend_if_live(&registration.state);
+        if *registration.state.status.borrow() == ListenerStatus::Closed {
+            continue;
+        }
+        if registration.state.suspend_or_fail_initial(
+            Error::unavailable("ListenerSession transport ended"),
+            Error::new(
+                ErrorCode::Unavailable,
+                PeerObservation::Observed,
+                "ListenerSession ended after REGISTERED before listen returned",
+            ),
+        ) {
+            inner.remove_terminal_listener(&registration.state);
+        }
     }
     for (_, pipe) in state.pipes {
         pipe.fail(Error::unavailable("ListenerSession transport ended"));
     }
+    registration_succeeded
 }
 
 async fn reconcile_registrations(
     inner: &ListenerRuntimeInner,
     established: &mut EstablishedSession,
     session: &mut ListenerSessionState,
+    session_cancel: &CancellationToken,
 ) -> bool {
     let Some(desired) = snapshot_desired_by_client(inner) else {
         return false;
@@ -178,20 +277,26 @@ async fn reconcile_registrations(
         let Some(request_id) = session.next_request_id() else {
             return false;
         };
-        if established
-            .transport
-            .send(Frame::Unregister {
+        if send_bounded(
+            &mut established.transport,
+            Frame::Unregister {
                 request_id,
                 binding_id: registration.binding_id,
-            })
-            .await
-            .is_err()
+            },
+            inner.config.operation_timeout,
+            session_cancel,
+        )
+        .await
+        .is_err()
         {
             return false;
         }
     }
 
     for state in desired.values() {
+        if !is_current_desired(inner, state) {
+            continue;
+        }
         if matches!(
             *state.status.borrow(),
             ListenerStatus::Blocked | ListenerStatus::Closed
@@ -200,36 +305,68 @@ async fn reconcile_registrations(
         {
             continue;
         }
+        let deadline = if state.was_returned() {
+            Instant::now() + inner.config.operation_timeout
+        } else {
+            state.initial_deadline
+        };
+        if deadline <= Instant::now() {
+            if state.was_returned() {
+                state.set_status(
+                    ListenerStatus::Suspended,
+                    Some(Error::deadline(PeerObservation::NotObserved)),
+                );
+            } else {
+                inner.fail_initial_listener(state, Error::deadline(PeerObservation::NotObserved));
+            }
+            continue;
+        }
         let Some(request_id) = session.next_request_id() else {
-            state.set_status(
-                ListenerStatus::Blocked,
-                Some(Error::new(
-                    ErrorCode::ResourceExhausted,
-                    PeerObservation::NotObserved,
-                    "ListenerSession exhausted request IDs",
-                )),
+            let error = Error::new(
+                ErrorCode::ResourceExhausted,
+                PeerObservation::NotObserved,
+                "ListenerSession exhausted request IDs",
             );
+            if state.was_returned() {
+                state.block(error);
+            } else {
+                inner.fail_initial_listener(state, error);
+            }
             continue;
         };
-        state.set_status(ListenerStatus::Registering, None);
         session.pending.insert(
             request_id,
             PendingRegistration {
                 state: Arc::clone(state),
+                committed: false,
+                deadline,
             },
         );
         session
             .pending_by_client
             .insert(state.client_id.clone(), request_id);
-        if established
-            .transport
-            .send(Frame::Register {
+        if !state.begin_registration_commit(session_cancel.clone()) {
+            session.pending.remove(&request_id);
+            session.pending_by_client.remove(&state.client_id);
+            continue;
+        }
+        if let Some(pending) = session.pending.get_mut(&request_id) {
+            pending.committed = true;
+        }
+        if send_bounded(
+            &mut established.transport,
+            Frame::Register {
                 request_id,
                 client_id: state.client_id.clone(),
                 client_key: ClientKey::new(state.client_key.clone()),
-            })
-            .await
-            .is_err()
+            },
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(inner.config.operation_timeout),
+            session_cancel,
+        )
+        .await
+        .is_err()
         {
             return false;
         }
@@ -240,6 +377,7 @@ async fn reconcile_registrations(
 
 enum ListenerFrameAction {
     Continue,
+    RegistrationSucceeded,
     Reconcile,
     Stop,
 }
@@ -252,6 +390,7 @@ async fn handle_listener_frame(
     abandoned: &mpsc::UnboundedSender<PipeId>,
     inner: &ListenerRuntimeInner,
     transport: &mut crate::session::WireTransport,
+    session_cancel: &CancellationToken,
 ) -> ListenerFrameAction {
     match frame {
         Frame::Registered {
@@ -262,10 +401,8 @@ async fn handle_listener_frame(
                 return ListenerFrameAction::Continue;
             };
             session.pending_by_client.remove(&pending.state.client_id);
-            if is_current_desired(inner, &pending.state)
-                && *pending.state.status.borrow() != ListenerStatus::Closed
-            {
-                pending.state.set_status(ListenerStatus::Active, None);
+            pending.state.finish_registration_attempt();
+            if is_current_desired(inner, &pending.state) && pending.state.activate() {
                 session.registrations.insert(
                     pending.state.client_id.clone(),
                     Registration {
@@ -273,17 +410,22 @@ async fn handle_listener_frame(
                         binding_id,
                     },
                 );
+                return ListenerFrameAction::RegistrationSucceeded;
             } else {
                 let Some(request_id) = session.next_request_id() else {
                     return ListenerFrameAction::Stop;
                 };
-                if transport
-                    .send(Frame::Unregister {
+                if send_bounded(
+                    transport,
+                    Frame::Unregister {
                         request_id,
                         binding_id,
-                    })
-                    .await
-                    .is_err()
+                    },
+                    inner.config.operation_timeout,
+                    session_cancel,
+                )
+                .await
+                .is_err()
                 {
                     return ListenerFrameAction::Stop;
                 }
@@ -299,6 +441,7 @@ async fn handle_listener_frame(
                 return ListenerFrameAction::Continue;
             };
             session.pending_by_client.remove(&pending.state.client_id);
+            pending.state.finish_registration_attempt();
             if !is_current_desired(inner, &pending.state)
                 || *pending.state.status.borrow() == ListenerStatus::Closed
             {
@@ -310,10 +453,13 @@ async fn handle_listener_frame(
                 message,
             );
             if permanent_registration_failure(code) {
-                pending
-                    .state
-                    .set_status(ListenerStatus::Blocked, Some(error));
-            } else {
+                if pending.state.was_returned() {
+                    pending.state.block(error);
+                } else {
+                    inner.fail_initial_listener(&pending.state, error);
+                    return ListenerFrameAction::Reconcile;
+                }
+            } else if pending.state.was_returned() {
                 pending
                     .state
                     .set_status(ListenerStatus::Suspended, Some(error));
@@ -326,6 +472,9 @@ async fn handle_listener_frame(
                         _ = tokio::time::sleep(delay) => inner_reconcile.notify_one(),
                     }
                 });
+            } else {
+                inner.fail_initial_listener(&pending.state, error);
+                return ListenerFrameAction::Reconcile;
             }
         }
         Frame::Offer {
@@ -335,46 +484,62 @@ async fn handle_listener_frame(
         } => {
             if let Some(existing) = session.pipes.get(&pipe_id) {
                 if !existing.is_finished()
-                    && transport
-                        .send(Frame::OfferAccepted { pipe_id })
-                        .await
-                        .is_err()
+                    && send_bounded(
+                        transport,
+                        Frame::OfferAccepted { pipe_id },
+                        inner.config.operation_timeout,
+                        session_cancel,
+                    )
+                    .await
+                    .is_err()
                 {
                     return ListenerFrameAction::Stop;
                 }
                 return ListenerFrameAction::Continue;
             }
             let Some(registration) = session.registrations.get(&client_id) else {
-                return transport
-                    .send(Frame::OfferRejected {
+                return send_bounded(
+                    transport,
+                    Frame::OfferRejected {
                         pipe_id,
                         code: WireErrorCode::NotFound,
                         message: "Listener is not active".to_owned(),
-                    })
-                    .await
-                    .map_send_action();
+                    },
+                    inner.config.operation_timeout,
+                    session_cancel,
+                )
+                .await
+                .map_send_action();
             };
             if registration.binding_id != binding_id {
-                return transport
-                    .send(Frame::OfferRejected {
+                return send_bounded(
+                    transport,
+                    Frame::OfferRejected {
                         pipe_id,
                         code: WireErrorCode::FailedPrecondition,
                         message: "Listener binding incarnation is stale".to_owned(),
-                    })
-                    .await
-                    .map_send_action();
+                    },
+                    inner.config.operation_timeout,
+                    session_cancel,
+                )
+                .await
+                .map_send_action();
             }
             if !is_current_desired(inner, &registration.state)
                 || *registration.state.status.borrow() != ListenerStatus::Active
             {
-                return transport
-                    .send(Frame::OfferRejected {
+                return send_bounded(
+                    transport,
+                    Frame::OfferRejected {
                         pipe_id,
                         code: WireErrorCode::Unavailable,
                         message: "Listener is not active".to_owned(),
-                    })
-                    .await
-                    .map_send_action();
+                    },
+                    inner.config.operation_timeout,
+                    session_cancel,
+                )
+                .await
+                .map_send_action();
             }
             let permit = timeout(
                 inner.config.offer_timeout,
@@ -382,14 +547,18 @@ async fn handle_listener_frame(
             )
             .await;
             let Ok(Ok(permit)) = permit else {
-                return transport
-                    .send(Frame::OfferRejected {
+                return send_bounded(
+                    transport,
+                    Frame::OfferRejected {
                         pipe_id,
                         code: WireErrorCode::ResourceExhausted,
                         message: "Listener incoming queue is full".to_owned(),
-                    })
-                    .await
-                    .map_send_action();
+                    },
+                    inner.config.operation_timeout,
+                    session_cancel,
+                )
+                .await
+                .map_send_action();
             };
             let admitted = {
                 let desired = match inner.desired.lock() {
@@ -409,11 +578,16 @@ async fn handle_listener_frame(
                 {
                     false
                 } else {
-                    let (pipe, state) = PipeState::pair(
+                    let Some(lifetime) = inner.lifetime.upgrade() else {
+                        inner.cancel.cancel();
+                        return ListenerFrameAction::Stop;
+                    };
+                    let (pipe, state) = PipeState::pair_with_lifetime(
                         pipe_id,
                         outbound.clone(),
                         inner.config.pipe_inbound_capacity,
                         abandoned.clone(),
+                        lifetime,
                     );
                     session.pipes.insert(pipe_id, state);
                     permit.send(pipe);
@@ -421,19 +595,27 @@ async fn handle_listener_frame(
                 }
             };
             if !admitted {
-                return transport
-                    .send(Frame::OfferRejected {
+                return send_bounded(
+                    transport,
+                    Frame::OfferRejected {
                         pipe_id,
                         code: WireErrorCode::Unavailable,
                         message: "Listener closed during Pipe admission".to_owned(),
-                    })
-                    .await
-                    .map_send_action();
-            }
-            if transport
-                .send(Frame::OfferAccepted { pipe_id })
+                    },
+                    inner.config.operation_timeout,
+                    session_cancel,
+                )
                 .await
-                .is_err()
+                .map_send_action();
+            }
+            if send_bounded(
+                transport,
+                Frame::OfferAccepted { pipe_id },
+                inner.config.operation_timeout,
+                session_cancel,
+            )
+            .await
+            .is_err()
             {
                 return ListenerFrameAction::Stop;
             }
@@ -444,13 +626,17 @@ async fn handle_listener_frame(
             {
                 pipe.fail(error.clone());
                 session.pipes.remove(&pipe_id);
-                let _ = transport
-                    .send(Frame::Reset {
+                let _ = send_bounded(
+                    transport,
+                    Frame::Reset {
                         pipe_id,
                         code: to_wire_code(error.code()),
                         message: error.message().to_owned(),
-                    })
-                    .await;
+                    },
+                    inner.config.operation_timeout,
+                    session_cancel,
+                )
+                .await;
             }
         }
         Frame::Fin { pipe_id } => {
@@ -480,7 +666,15 @@ async fn handle_listener_frame(
             }
         }
         Frame::Ping { nonce } => {
-            if transport.send(Frame::Pong { nonce }).await.is_err() {
+            if send_bounded(
+                transport,
+                Frame::Pong { nonce },
+                inner.config.operation_timeout,
+                session_cancel,
+            )
+            .await
+            .is_err()
+            {
                 return ListenerFrameAction::Stop;
             }
         }
@@ -539,12 +733,9 @@ fn is_current_desired(inner: &ListenerRuntimeInner, state: &Arc<ListenerState>) 
     }
 }
 
-fn suspend_if_live(state: &Arc<ListenerState>) {
-    if !matches!(
-        *state.status.borrow(),
-        ListenerStatus::Blocked | ListenerStatus::Closed
-    ) {
-        state.set_status(ListenerStatus::Suspended, None);
+async fn wait_for_registration_deadline(deadline: Option<(u64, Instant)>) {
+    if let Some((_, deadline)) = deadline {
+        sleep_until(deadline).await;
     }
 }
 
