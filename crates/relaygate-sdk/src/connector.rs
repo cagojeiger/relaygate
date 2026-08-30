@@ -2,7 +2,7 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use relaygate_protocol::{PipeId, SessionId, SessionRole};
 use tokio::{
@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Config, Error, ErrorCode, PeerObservation, Pipe, Result,
+    lifetime::RuntimeLifetime,
     session::{establish, valid_identity},
 };
 
@@ -21,12 +22,14 @@ use self::runtime::connector_supervisor;
 #[derive(Clone)]
 pub struct Connector {
     inner: Arc<ConnectorInner>,
+    _lifetime: Arc<RuntimeLifetime>,
 }
 
 pub(super) struct ConnectorInner {
     pub(super) config: Config,
     pub(super) current: watch::Sender<Option<Arc<ConnectorSession>>>,
     pub(super) cancel: CancellationToken,
+    pub(super) lifetime: Weak<RuntimeLifetime>,
 }
 
 pub(super) struct ConnectorSession {
@@ -36,6 +39,7 @@ pub(super) struct ConnectorSession {
     // Each committed attempt owns one guard and can emit at most one cancel.
     // The receiver removes the corresponding current attempt when it consumes it.
     pub(super) cancellations: mpsc::UnboundedSender<PipeId>,
+    pub(super) cancel: CancellationToken,
 }
 
 pub(super) enum ConnectorCommand {
@@ -60,12 +64,6 @@ impl Drop for OpenGuard {
     }
 }
 
-impl Drop for ConnectorInner {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
 impl Connector {
     /// Connects the initial managed Connector session.
     ///
@@ -76,13 +74,19 @@ impl Connector {
         config.validate()?;
         let established = establish(&config, SessionRole::Connector).await?;
         let (current, _) = watch::channel(None);
+        let cancel = CancellationToken::new();
+        let lifetime = Arc::new(RuntimeLifetime::new(cancel.clone()));
         let inner = Arc::new(ConnectorInner {
             config,
             current,
-            cancel: CancellationToken::new(),
+            cancel,
+            lifetime: Arc::downgrade(&lifetime),
         });
         tokio::spawn(connector_supervisor(Arc::clone(&inner), established));
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            _lifetime: lifetime,
+        })
     }
 
     /// Opens one Pipe to a logical `ClientId`.
@@ -143,7 +147,10 @@ impl Connector {
                                     "ConnectorSession ended after OPEN commit",
                                 ))
                             }
-                            Err(_) => Err(Error::deadline(PeerObservation::MaybeObserved)),
+                            Err(_) => {
+                                session.cancel.cancel();
+                                Err(Error::deadline(PeerObservation::MaybeObserved))
+                            }
                         };
                         return result;
                     }

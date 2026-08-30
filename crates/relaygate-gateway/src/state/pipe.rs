@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use relaygate_protocol::{ErrorCode, Frame, PipeId, SessionId};
 
-use super::{Delivery, GatewayState, PipeEntry, PipePhase};
+use super::{Delivery, GatewayState, PipeEntry, PipePhase, ProtocolViolation};
 
 impl GatewayState {
     pub(super) fn data(
@@ -9,64 +9,77 @@ impl GatewayState {
         sender: SessionId,
         pipe_id: PipeId,
         payload: Bytes,
-    ) -> Vec<Delivery> {
+    ) -> Result<Vec<Delivery>, ProtocolViolation> {
         let Some(pipe) = self.pipes.get(&pipe_id) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let Some((counterpart, finished)) = endpoint(pipe, sender) else {
-            return Vec::new();
-        };
+        let (counterpart, finished) = endpoint(pipe, sender, pipe_id, "DATA")?;
         if pipe.phase != PipePhase::Open || finished {
-            return self.protocol_reset(pipe_id, "DATA is not valid in the current Pipe state");
+            return Ok(self.protocol_reset(pipe_id, "DATA is not valid in the current Pipe state"));
         }
-        self.to(counterpart, Frame::Data { pipe_id, payload })
+        Ok(self
+            .to(counterpart, Frame::Data { pipe_id, payload })
             .into_iter()
-            .collect()
+            .collect())
     }
 
-    pub(super) fn fin(&mut self, sender: SessionId, pipe_id: PipeId) -> Vec<Delivery> {
-        let (counterpart, remove_after_delivery) = {
-            let Some(pipe) = self.pipes.get_mut(&pipe_id) else {
-                return Vec::new();
+    pub(super) fn fin(
+        &mut self,
+        sender: SessionId,
+        pipe_id: PipeId,
+    ) -> Result<Vec<Delivery>, ProtocolViolation> {
+        let (counterpart, finished, phase) = {
+            let Some(pipe) = self.pipes.get(&pipe_id) else {
+                return Ok(Vec::new());
             };
-            if pipe.phase != PipePhase::Open {
-                return self.protocol_reset(pipe_id, "FIN arrived before the Pipe opened");
-            }
+            let (counterpart, finished) = endpoint(pipe, sender, pipe_id, "FIN")?;
+            (counterpart, finished, pipe.phase)
+        };
+        if phase != PipePhase::Open {
+            return Ok(self.protocol_reset(pipe_id, "FIN arrived before the Pipe opened"));
+        }
+        if finished {
+            return Ok(Vec::new());
+        }
+        let remove_after_delivery = {
+            let Some(pipe) = self.pipes.get_mut(&pipe_id) else {
+                return Ok(Vec::new());
+            };
             if pipe.connector == sender {
-                if pipe.connector_finished {
-                    return Vec::new();
-                }
                 pipe.connector_finished = true;
-                (pipe.listener, pipe.listener_finished)
-            } else if pipe.listener == sender {
-                if pipe.listener_finished {
-                    return Vec::new();
-                }
-                pipe.listener_finished = true;
-                (pipe.connector, pipe.connector_finished)
+                pipe.listener_finished
             } else {
-                return Vec::new();
+                debug_assert_eq!(pipe.listener, sender);
+                pipe.listener_finished = true;
+                pipe.connector_finished
             }
         };
         if remove_after_delivery {
             self.remove_pipe(pipe_id);
         }
-        self.to(counterpart, Frame::Fin { pipe_id })
+        Ok(self
+            .to(counterpart, Frame::Fin { pipe_id })
             .into_iter()
-            .collect()
+            .collect())
     }
 
-    pub(super) fn close(&mut self, sender: SessionId, pipe_id: PipeId) -> Vec<Delivery> {
+    pub(super) fn close(
+        &mut self,
+        sender: SessionId,
+        pipe_id: PipeId,
+    ) -> Result<Vec<Delivery>, ProtocolViolation> {
         let Some(pipe) = self.pipes.get(&pipe_id) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let Some((counterpart, _)) = endpoint(pipe, sender) else {
-            return Vec::new();
-        };
+        let (counterpart, _) = endpoint(pipe, sender, pipe_id, "CLOSE")?;
+        if pipe.phase != PipePhase::Open {
+            return Ok(self.protocol_reset(pipe_id, "CLOSE arrived before the Pipe opened"));
+        }
         self.remove_pipe(pipe_id);
-        self.to(counterpart, Frame::Close { pipe_id })
+        Ok(self
+            .to(counterpart, Frame::Close { pipe_id })
             .into_iter()
-            .collect()
+            .collect())
     }
 
     pub(super) fn reset(
@@ -75,27 +88,29 @@ impl GatewayState {
         pipe_id: PipeId,
         code: ErrorCode,
         message: String,
-    ) -> Vec<Delivery> {
+    ) -> Result<Vec<Delivery>, ProtocolViolation> {
         let Some(pipe) = self.pipes.get(&pipe_id) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let Some((counterpart, _)) = endpoint(pipe, sender) else {
-            return Vec::new();
-        };
+        let (counterpart, _) = endpoint(pipe, sender, pipe_id, "RESET")?;
+        if pipe.phase != PipePhase::Open {
+            return Ok(self.protocol_reset(pipe_id, "RESET arrived before the Pipe opened"));
+        }
         self.remove_pipe(pipe_id);
-        self.to(
-            counterpart,
-            Frame::Reset {
-                pipe_id,
-                code,
-                message,
-            },
-        )
-        .into_iter()
-        .collect()
+        Ok(self
+            .to(
+                counterpart,
+                Frame::Reset {
+                    pipe_id,
+                    code,
+                    message,
+                },
+            )
+            .into_iter()
+            .collect())
     }
 
-    fn protocol_reset(&mut self, pipe_id: PipeId, message: &str) -> Vec<Delivery> {
+    pub(super) fn protocol_reset(&mut self, pipe_id: PipeId, message: &str) -> Vec<Delivery> {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Vec::new();
         };
@@ -115,12 +130,17 @@ impl GatewayState {
     }
 }
 
-fn endpoint(pipe: &PipeEntry, session_id: SessionId) -> Option<(SessionId, bool)> {
+fn endpoint(
+    pipe: &PipeEntry,
+    session_id: SessionId,
+    pipe_id: PipeId,
+    frame_name: &'static str,
+) -> Result<(SessionId, bool), ProtocolViolation> {
+    pipe.ensure_owner(session_id, pipe_id, frame_name)?;
     if pipe.connector == session_id {
-        Some((pipe.listener, pipe.connector_finished))
-    } else if pipe.listener == session_id {
-        Some((pipe.connector, pipe.listener_finished))
+        Ok((pipe.listener, pipe.connector_finished))
     } else {
-        None
+        debug_assert_eq!(pipe.listener, session_id);
+        Ok((pipe.connector, pipe.listener_finished))
     }
 }

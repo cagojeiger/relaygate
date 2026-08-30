@@ -1,7 +1,11 @@
 use std::time::{Duration, Instant};
 
 use relaygate_sdk::{Config, Connector, ErrorCode, PeerObservation, Pipe};
-use tokio::{task::JoinSet, time::timeout};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    task::JoinSet,
+    time::timeout,
+};
 
 const CONCURRENT_PIPES: usize = 32;
 const ECHO_DEADLINE: Duration = Duration::from_secs(10);
@@ -86,7 +90,7 @@ async fn open_when_registered(
 
 async fn assert_echo(mut pipe: Pipe, payload: &[u8]) -> anyhow::Result<()> {
     pipe.write_all(payload).await?;
-    pipe.shutdown_write().await?;
+    pipe.shutdown().await?;
 
     let mut received = Vec::with_capacity(payload.len());
     let mut buffer = [0_u8; 8192];

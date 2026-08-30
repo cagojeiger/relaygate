@@ -3,9 +3,39 @@
 RelayGate는 NAT 뒤의 Listener가 먼저 Gateway에 연결하고, Connector가 논리 주소인 `ClientId`로 opaque bidirectional `Pipe`를 여는 relay입니다.
 
 ```text
-Connector SDK ── connect(ClientId) ──► Gateway ◄── register(ClientId) ── Listener SDK
-             ◄════════════════════ opaque bidirectional Pipe ═══════════════════►
+Connector SDK ── open(ClientId) ──► Gateway ◄── listen(ClientId, ClientKey) ── Listener SDK
+              ◄════════════════ opaque bidirectional Pipe ═════════════════════►
 ```
+
+Rust API에서 `Connector::connect(Config)`와 `ListenerRuntime::connect(Config)`는 각각
+Gateway session을 만들고 관리한다. 논리적인 Pipe 연결은 `connector.open(ClientId)`가
+시작하며, Listener application은 `listener.accept()`로 선택된 Pipe를 받는다.
+
+`Pipe`는 Tokio의 `AsyncRead`와 `AsyncWrite`를 구현한다. 하나의 task에서 그대로 읽고
+쓸 수 있고, 읽기와 쓰기를 독립 task에서 동시에 수행하려면 `into_split()`으로
+`PipeReadHalf`와 `PipeWriteHalf`를 얻는다.
+
+```rust
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+let pipe = connector.open("echo.alpha").await?;
+let (mut reader, mut writer) = pipe.into_split();
+
+let receive = tokio::spawn(async move {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await?;
+    Ok::<_, std::io::Error>(bytes)
+});
+
+writer.write_all(b"hello relaygate").await?;
+writer.shutdown().await?;
+let echoed = receive.await??;
+```
+
+`shutdown()`과 구조화된 `shutdown_write()`는 write 방향의 `FIN`이다. 한 half만 drop해도
+반대 방향을 임의로 닫지 않으며, 마지막 public Pipe owner가 사라질 때 전체 Pipe를 한 번
+정리한다. RelayGate 오류 세부 정보가 필요한 코드는 `read_into()`와
+`write_all_bytes()` 구조화 메서드를 사용할 수 있다.
 
 현재 구현 단계는 **단일 Gateway의 local Pipe**입니다.
 
@@ -16,6 +46,10 @@ Connector SDK ── connect(ClientId) ──► Gateway ◄── register(Clie
 - bounded queue와 `FIN` / `CLOSE` / `RESET`
 - SDK session reconnect; 이미 전송된 `OPEN`과 기존 Pipe는 replay하지 않음
 - RouteTable shard와 Gateway 간 peer relay는 다음 단계
+
+SDK는 자신의 Gateway session을 재연결하고 이미 반환된 Listener를 재등록한다. 끊어진
+Pipe나 commit된 `open` operation은 자동 재시도하지 않으며, application은
+`Error::is_retryable()`을 보수적 힌트로 삼아 새 `open(ClientId)` 여부를 결정한다.
 
 ## 로컬 실행
 
@@ -43,7 +77,7 @@ Probe는 UTF-8 payload, 65,537-byte binary payload, 32개 동시 Pipe의 byte �
 | `RELAYGATE_MAX_LIVE_PIPES` | `100000` | 열린 Pipe 총 상한 |
 | `RELAYGATE_OFFER_TIMEOUT_MS` | `5000` | Listener의 `OFFER` 응답 기한 |
 
-모든 상한과 timeout은 0보다 큰 정수여야 합니다. ClientKey는 process memory에서 등록 검증에만 사용하며 RelayGate가 영속화하지 않습니다.
+모든 상한과 timeout은 0보다 큰 정수여야 합니다. Gateway는 시작할 때 configured `ClientId`마다 `ClientKey` 하나를 로드하고 process 수명 동안 갱신하지 않습니다. ClientKey는 최초·recovery 등록 검증에만 사용하며 RelayGate가 발급하거나 영속화하지 않습니다.
 
 ## 검증
 

@@ -6,6 +6,7 @@
 mod config;
 mod connector;
 mod error;
+mod lifetime;
 mod listener;
 mod pipe;
 mod session;
@@ -14,4 +15,4 @@ pub use config::Config;
 pub use connector::Connector;
 pub use error::{Error, ErrorCode, PeerObservation, Result};
 pub use listener::{Listener, ListenerRuntime, ListenerStatus};
-pub use pipe::Pipe;
+pub use pipe::{Pipe, PipeReadHalf, PipeWriteHalf};

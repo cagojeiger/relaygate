@@ -1,4 +1,4 @@
-use super::{GatewayLimits, GatewayState};
+use super::{GatewayLimits, GatewayState, ProtocolViolation};
 use crate::auth::ClientKeyStore;
 use bytes::Bytes;
 use relaygate_protocol::{ClientKey, ErrorCode, Frame, PipeId, SessionRole};
@@ -27,8 +27,16 @@ fn limited_state(limits: GatewayLimits) -> GatewayState {
 }
 
 fn add_session(state: &mut GatewayState, role: SessionRole) -> relaygate_protocol::SessionId {
+    add_session_with_cancellation(state, role, CancellationToken::new())
+}
+
+fn add_session_with_cancellation(
+    state: &mut GatewayState,
+    role: SessionRole,
+    cancellation: CancellationToken,
+) -> relaygate_protocol::SessionId {
     let (sender, _receiver) = mpsc::channel(8);
-    let session_id = state.add_session(role, sender, CancellationToken::new());
+    let session_id = state.add_session(role, sender, cancellation);
     assert!(session_id.is_some(), "test session limit was reached");
     session_id.unwrap_or_default()
 }
@@ -54,6 +62,17 @@ fn open_pipe(
     listener: relaygate_protocol::SessionId,
     connection_id: u64,
 ) -> Result<PipeId, Box<dyn std::error::Error>> {
+    let pipe_id = offer_pipe(state, connector, listener, connection_id)?;
+    state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+    Ok(pipe_id)
+}
+
+fn offer_pipe(
+    state: &mut GatewayState,
+    connector: relaygate_protocol::SessionId,
+    listener: relaygate_protocol::SessionId,
+    connection_id: u64,
+) -> Result<PipeId, Box<dyn std::error::Error>> {
     let deliveries = state.handle(
         connector,
         Frame::Open {
@@ -68,7 +87,6 @@ fn open_pipe(
             _ => None,
         })
         .ok_or("missing offer")?;
-    state.handle(listener, Frame::OfferAccepted { pipe_id })?;
     Ok(pipe_id)
 }
 
@@ -140,7 +158,28 @@ fn n_to_m_registry_offers_each_open_to_only_one_listener() -> Result<(), Box<dyn
 }
 
 #[test]
-fn disconnect_removes_only_owned_state_and_resets_counterpart()
+fn same_connection_id_is_isolated_across_connector_sessions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let first_connector = add_session(&mut state, SessionRole::Connector);
+    let second_connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+
+    let first = offer_pipe(&mut state, first_connector, listener, 1)?;
+    let second = offer_pipe(&mut state, second_connector, listener, 1)?;
+
+    assert_ne!(first, second);
+    assert_eq!(first.connector_session_id(), first_connector);
+    assert_eq!(second.connector_session_id(), second_connector);
+    assert_eq!(first.connection_id(), 1);
+    assert_eq!(second.connection_id(), 1);
+    assert_eq!(state.pipe_count(), 2);
+    Ok(())
+}
+
+#[test]
+fn disconnect_removes_only_owned_state_and_terminates_pending_open()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
     let first_listener = add_session(&mut state, SessionRole::Listener);
@@ -164,16 +203,18 @@ fn disconnect_removes_only_owned_state_and_resets_counterpart()
         },
     )?;
 
-    let resets = state.remove_session(first_listener);
+    let failures = state.remove_session(first_listener);
 
     assert_eq!(state.registry.binding_count(), 1);
     assert_eq!(state.pipe_count(), 0);
-    assert!(resets.iter().any(|delivery| {
+    assert!(failures.iter().any(|delivery| {
         delivery.target == connector
             && matches!(
                 delivery.frame,
-                Frame::Reset {
+                Frame::OpenFailed {
+                    connection_id: 1,
                     code: ErrorCode::Unavailable,
+                    observation: relaygate_protocol::PeerObservation::MaybeObserved,
                     ..
                 }
             )
@@ -193,6 +234,359 @@ fn late_cancel_is_idempotent_and_cannot_create_state() -> Result<(), Box<dyn std
             .is_empty()
     );
     assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
+fn foreign_fin_on_offered_pipe_terminates_only_offender_and_preserves_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    let offender_cancellation = CancellationToken::new();
+    let offender = add_session_with_cancellation(
+        &mut state,
+        SessionRole::Connector,
+        offender_cancellation.clone(),
+    );
+    register_listener(&mut state, listener)?;
+    let pipe_id = offer_pipe(&mut state, connector, listener, 1)?;
+
+    let violation = match state.handle(offender, Frame::Fin { pipe_id }) {
+        Err(violation) => violation,
+        Ok(_) => return Err("a current Pipe frame from a non-owner must fail the session".into()),
+    };
+
+    assert!(matches!(
+        violation,
+        ProtocolViolation::PipeOwnership {
+            sender,
+            pipe_id: violated_pipe,
+            frame_name: "FIN",
+        } if sender == offender && violated_pipe == pipe_id
+    ));
+    assert_eq!(state.pending_offer_count(), 1);
+    assert_eq!(state.live_pipe_count(), 0);
+    assert_eq!(state.pipe_count(), 1);
+
+    // `run_session` performs this cleanup immediately after propagating the violation.
+    assert!(state.remove_session(offender).is_empty());
+    assert!(offender_cancellation.is_cancelled());
+    assert!(!state.sessions.contains_key(&offender));
+    assert!(state.sessions.contains_key(&connector));
+    assert!(state.sessions.contains_key(&listener));
+    assert_eq!(state.pending_offer_count(), 1);
+
+    let opened = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+    assert!(matches!(
+        opened.first().map(|delivery| (&delivery.target, &delivery.frame)),
+        Some((target, Frame::Opened { pipe_id: opened_pipe }))
+            if *target == connector && *opened_pipe == pipe_id
+    ));
+    assert_eq!(state.live_pipe_count(), 1);
+    Ok(())
+}
+
+#[test]
+fn foreign_open_pipe_frames_terminate_each_offender_without_mutating_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let pipe_id = open_pipe(&mut state, connector, listener, 1)?;
+
+    let frames = [
+        (
+            "DATA",
+            Frame::Data {
+                pipe_id,
+                payload: Bytes::from_static(b"foreign"),
+            },
+        ),
+        ("FIN", Frame::Fin { pipe_id }),
+        ("CLOSE", Frame::Close { pipe_id }),
+        (
+            "RESET",
+            Frame::Reset {
+                pipe_id,
+                code: ErrorCode::Cancelled,
+                message: "foreign".to_owned(),
+            },
+        ),
+    ];
+
+    for (frame_name, frame) in frames {
+        let offender_cancellation = CancellationToken::new();
+        let offender = add_session_with_cancellation(
+            &mut state,
+            SessionRole::Connector,
+            offender_cancellation.clone(),
+        );
+        let violation = match state.handle(offender, frame) {
+            Err(violation) => violation,
+            Ok(_) => {
+                return Err("a current Pipe frame from a non-owner must fail the session".into());
+            }
+        };
+        assert!(matches!(
+            violation,
+            ProtocolViolation::PipeOwnership {
+                sender,
+                pipe_id: violated_pipe,
+                frame_name: actual_frame,
+            } if sender == offender && violated_pipe == pipe_id && actual_frame == frame_name
+        ));
+        assert_eq!(state.pipe_count(), 1);
+        assert_eq!(state.live_pipe_count(), 1);
+
+        assert!(state.remove_session(offender).is_empty());
+        assert!(offender_cancellation.is_cancelled());
+        assert!(!state.sessions.contains_key(&offender));
+        assert!(state.sessions.contains_key(&connector));
+        assert!(state.sessions.contains_key(&listener));
+        assert_eq!(state.pipe_count(), 1);
+    }
+
+    assert_eq!(
+        state
+            .handle(
+                connector,
+                Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"still-open"),
+                },
+            )?
+            .len(),
+        1
+    );
+    assert_eq!(state.handle(connector, Frame::Fin { pipe_id })?.len(), 1);
+    assert_eq!(state.handle(listener, Frame::Fin { pipe_id })?.len(), 1);
+    assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
+fn foreign_offer_responses_and_cancel_preserve_the_pending_pipe()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let pipe_id = offer_pipe(&mut state, connector, listener, 1)?;
+    let cases = [
+        (
+            SessionRole::Listener,
+            "OFFER_ACCEPTED",
+            Frame::OfferAccepted { pipe_id },
+        ),
+        (
+            SessionRole::Listener,
+            "OFFER_REJECTED",
+            Frame::OfferRejected {
+                pipe_id,
+                code: ErrorCode::Cancelled,
+                message: "foreign".to_owned(),
+            },
+        ),
+        (SessionRole::Connector, "CANCEL", Frame::Cancel { pipe_id }),
+    ];
+
+    for (role, frame_name, frame) in cases {
+        let offender_cancellation = CancellationToken::new();
+        let offender =
+            add_session_with_cancellation(&mut state, role, offender_cancellation.clone());
+        let violation = match state.handle(offender, frame) {
+            Err(violation) => violation,
+            Ok(_) => {
+                return Err("a current Pipe frame from a non-owner must fail the session".into());
+            }
+        };
+        assert!(matches!(
+            violation,
+            ProtocolViolation::PipeOwnership {
+                sender,
+                pipe_id: violated_pipe,
+                frame_name: actual_frame,
+            } if sender == offender && violated_pipe == pipe_id && actual_frame == frame_name
+        ));
+        assert_eq!(state.pending_offer_count(), 1);
+        assert_eq!(state.pipe_count(), 1);
+
+        assert!(state.remove_session(offender).is_empty());
+        assert!(offender_cancellation.is_cancelled());
+        assert_eq!(state.pending_offer_count(), 1);
+    }
+
+    assert_eq!(
+        state
+            .handle(listener, Frame::OfferAccepted { pipe_id })?
+            .len(),
+        1
+    );
+    assert_eq!(state.live_pipe_count(), 1);
+    Ok(())
+}
+
+#[test]
+fn unknown_pipe_frames_are_no_op_for_every_pipe_operation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    let unknown = PipeId::new(connector, 99);
+    let cases = [
+        (listener, Frame::OfferAccepted { pipe_id: unknown }),
+        (
+            listener,
+            Frame::OfferRejected {
+                pipe_id: unknown,
+                code: ErrorCode::Cancelled,
+                message: "late".to_owned(),
+            },
+        ),
+        (connector, Frame::Cancel { pipe_id: unknown }),
+        (
+            connector,
+            Frame::Data {
+                pipe_id: unknown,
+                payload: Bytes::from_static(b"late"),
+            },
+        ),
+        (connector, Frame::Fin { pipe_id: unknown }),
+        (connector, Frame::Close { pipe_id: unknown }),
+        (
+            connector,
+            Frame::Reset {
+                pipe_id: unknown,
+                code: ErrorCode::Cancelled,
+                message: "late".to_owned(),
+            },
+        ),
+    ];
+
+    for (sender, frame) in cases {
+        assert!(state.handle(sender, frame)?.is_empty());
+        assert_eq!(state.pipe_count(), 0);
+    }
+    assert!(state.sessions.contains_key(&listener));
+    assert!(state.sessions.contains_key(&connector));
+    Ok(())
+}
+
+#[test]
+fn owner_invalid_phase_resets_only_the_target_pipe() -> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let healthy = open_pipe(&mut state, connector, listener, 1)?;
+
+    for invalid_case in 0..4 {
+        let pipe_id = offer_pipe(&mut state, connector, listener, 10 + invalid_case)?;
+        let frame = match invalid_case {
+            0 => Frame::Data {
+                pipe_id,
+                payload: Bytes::from_static(b"too-early"),
+            },
+            1 => Frame::Fin { pipe_id },
+            2 => Frame::Close { pipe_id },
+            3 => Frame::Reset {
+                pipe_id,
+                code: ErrorCode::Cancelled,
+                message: "too early".to_owned(),
+            },
+            _ => return Err("invalid offered-phase test case".into()),
+        };
+        let resets = state.handle(connector, frame)?;
+        assert_eq!(resets.len(), 2);
+        assert!(resets.iter().all(|delivery| matches!(
+            delivery.frame,
+            Frame::Reset {
+                pipe_id: reset_pipe,
+                code: ErrorCode::ProtocolError,
+                ..
+            } if reset_pipe == pipe_id
+        )));
+        assert_eq!(state.pipe_count(), 1);
+    }
+
+    for invalid_case in 0..2 {
+        let pipe_id = open_pipe(&mut state, connector, listener, 20 + invalid_case)?;
+        let (sender, frame) = match invalid_case {
+            0 => (listener, Frame::OfferAccepted { pipe_id }),
+            1 => (
+                listener,
+                Frame::OfferRejected {
+                    pipe_id,
+                    code: ErrorCode::Cancelled,
+                    message: "too late".to_owned(),
+                },
+            ),
+            _ => return Err("invalid open-phase test case".into()),
+        };
+        let resets = state.handle(sender, frame)?;
+        assert_eq!(resets.len(), 2);
+        assert!(resets.iter().all(|delivery| matches!(
+            delivery.frame,
+            Frame::Reset {
+                pipe_id: reset_pipe,
+                code: ErrorCode::ProtocolError,
+                ..
+            } if reset_pipe == pipe_id
+        )));
+        assert_eq!(state.pipe_count(), 1);
+    }
+
+    assert_eq!(
+        state
+            .handle(
+                connector,
+                Frame::Data {
+                    pipe_id: healthy,
+                    payload: Bytes::from_static(b"healthy"),
+                },
+            )?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn cancel_after_offer_admission_closes_only_the_cancelled_pipe()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let healthy = open_pipe(&mut state, connector, listener, 1)?;
+    let cancelled = open_pipe(&mut state, connector, listener, 2)?;
+
+    let resets = state.handle(connector, Frame::Cancel { pipe_id: cancelled })?;
+
+    assert!(matches!(
+        resets.first().map(|delivery| (&delivery.target, &delivery.frame)),
+        Some((target, Frame::Reset {
+            pipe_id,
+            code: ErrorCode::Cancelled,
+            ..
+        })) if *target == listener && *pipe_id == cancelled
+    ));
+    assert_eq!(resets.len(), 1);
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(
+        state
+            .handle(
+                connector,
+                Frame::Data {
+                    pipe_id: healthy,
+                    payload: Bytes::from_static(b"healthy"),
+                },
+            )?
+            .len(),
+        1
+    );
     Ok(())
 }
 
@@ -649,7 +1043,7 @@ fn pending_offer_limit_rejects_without_observation_or_state_growth()
 }
 
 #[test]
-fn live_pipe_limit_resolves_concurrent_admission_with_observed_failure()
+fn live_pipe_limit_before_opened_reports_maybe_observed_failure()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = limited_state(GatewayLimits {
         max_live_pipes: 1,
@@ -710,7 +1104,7 @@ fn live_pipe_limit_resolves_concurrent_admission_with_observed_failure()
         delivery.frame,
         Frame::OpenFailed {
             code: ErrorCode::ResourceExhausted,
-            observation: relaygate_protocol::PeerObservation::Observed,
+            observation: relaygate_protocol::PeerObservation::MaybeObserved,
             ..
         }
     )));
@@ -728,24 +1122,55 @@ fn live_pipe_limit_resolves_concurrent_admission_with_observed_failure()
 }
 
 #[test]
-fn offer_deadline_cleans_both_ends_and_late_accept_cannot_resurrect()
+fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = limited_state(GatewayLimits {
         offer_timeout: Duration::from_millis(10),
         ..GatewayLimits::default()
     });
-    let listener = add_session(&mut state, SessionRole::Listener);
+    let listener_cancellation = CancellationToken::new();
+    let listener = add_session_with_cancellation(
+        &mut state,
+        SessionRole::Listener,
+        listener_cancellation.clone(),
+    );
+    let sibling = add_session(&mut state, SessionRole::Listener);
     let connector = add_session(&mut state, SessionRole::Connector);
     register_listener(&mut state, listener)?;
+    register_listener(&mut state, sibling)?;
+    state.handle(
+        listener,
+        Frame::Register {
+            request_id: 2,
+            client_id: "echo.other".to_owned(),
+            client_key: ClientKey::new("other-secret"),
+        },
+    )?;
+
+    let live_offer = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.other".to_owned(),
+        },
+    )?;
+    let live_pipe = live_offer
+        .iter()
+        .find_map(|delivery| match delivery.frame {
+            Frame::Offer { pipe_id, .. } if delivery.target == listener => Some(pipe_id),
+            _ => None,
+        })
+        .ok_or("missing live offer")?;
+    state.handle(listener, Frame::OfferAccepted { pipe_id: live_pipe })?;
     let before_open = Instant::now();
     let offered = state.handle(
         connector,
         Frame::Open {
-            connection_id: 1,
+            connection_id: 2,
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    let pipe_id = offered
+    let expired_pipe = offered
         .iter()
         .find_map(|delivery| match delivery.frame {
             Frame::Offer { pipe_id, .. } => Some(pipe_id),
@@ -757,25 +1182,50 @@ fn offer_deadline_cleans_both_ends_and_late_accept_cannot_resurrect()
     assert!(expired.iter().any(|delivery| matches!(
         delivery.frame,
         Frame::OpenFailed {
+            connection_id: 2,
             code: ErrorCode::DeadlineExceeded,
             observation: relaygate_protocol::PeerObservation::MaybeObserved,
             ..
         }
     )));
-    assert!(expired.iter().any(|delivery| matches!(
-        delivery.frame,
-        Frame::Reset {
-            code: ErrorCode::DeadlineExceeded,
-            ..
-        }
-    )));
+    assert!(expired.iter().any(|delivery| {
+        delivery.target == connector
+            && matches!(
+                delivery.frame,
+                Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Unavailable,
+                    ..
+                } if pipe_id == live_pipe
+            )
+    }));
+    assert!(listener_cancellation.is_cancelled());
+    assert!(!state.sessions.contains_key(&listener));
+    assert!(state.sessions.contains_key(&sibling));
+    assert_eq!(state.registry.binding_count(), 1);
+    assert_eq!(state.registry.session_binding_count(sibling), 1);
     assert_eq!(state.pending_offer_count(), 0);
     assert_eq!(state.pipe_count(), 0);
     assert!(
         state
-            .handle(listener, Frame::OfferAccepted { pipe_id })?
+            .handle(
+                listener,
+                Frame::OfferAccepted {
+                    pipe_id: expired_pipe,
+                },
+            )?
             .is_empty()
     );
-    assert_eq!(state.pipe_count(), 0);
+
+    let next = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 3,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    assert!(next.iter().any(|delivery| {
+        delivery.target == sibling && matches!(delivery.frame, Frame::Offer { .. })
+    }));
     Ok(())
 }

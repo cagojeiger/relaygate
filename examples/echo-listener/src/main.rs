@@ -1,4 +1,5 @@
 use relaygate_sdk::{Config, ListenerRuntime, Pipe};
+use tokio::io::{AsyncWriteExt, copy};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -19,16 +20,10 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn echo(mut pipe: Pipe) -> relaygate_sdk::Result<()> {
-    let mut buffer = vec![0_u8; 16 * 1024];
-    loop {
-        let count = pipe.read(&mut buffer).await?;
-        if count == 0 {
-            pipe.shutdown_write().await?;
-            return Ok(());
-        }
-        pipe.write_all(&buffer[..count]).await?;
-    }
+async fn echo(pipe: Pipe) -> std::io::Result<()> {
+    let (mut reader, mut writer) = pipe.into_split();
+    copy(&mut reader, &mut writer).await?;
+    writer.shutdown().await
 }
 
 fn environment(name: &str, default: &str) -> String {

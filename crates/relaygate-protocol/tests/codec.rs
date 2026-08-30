@@ -1,7 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use relaygate_protocol::{
-    BindingId, ClientKey, ErrorCode, Frame, FrameCodec, PeerObservation, PipeId, SessionId,
-    SessionRole,
+    BindingId, ClientKey, ErrorCode, Frame, FrameCodec, PeerObservation, PipeId, ProtocolError,
+    SessionId, SessionRole,
 };
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -97,6 +97,15 @@ fn fragmented_frame_waits_for_complete_payload() -> Result<(), Box<dyn std::erro
     encoded.extend_from_slice(&tail);
     assert_eq!(codec.decode(&mut encoded)?, Some(expected));
     Ok(())
+}
+
+#[test]
+fn unsupported_wire_version_is_rejected_before_payload_decode() {
+    let mut input = BytesMut::from(&b"RG\x02\x01\x00\x00\x00\x00"[..]);
+
+    let error = FrameCodec::default().decode(&mut input);
+
+    assert!(matches!(error, Err(ProtocolError::UnsupportedVersion(2))));
 }
 
 #[test]

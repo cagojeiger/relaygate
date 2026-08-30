@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Phase 1 구현·로컬 검증 완료 (2026-08-29) |
+| 상태 | Phase 1 local Pipe와 SDK↔Gateway closure 구현; PR CI를 canonical verification으로 사용 |
 | 목적 | 전체 구조를 한 번에 구현하지 않고 local Pipe 경로를 먼저 증명한다. |
 | 상위 계약 | [SPEC 002](../spec/002-sdk-pipe-contract.md), [SPEC 003](../spec/003-listener-registration-contract.md), [SPEC 005](../spec/005-connection-establishment-contract.md), [SPEC 007](../spec/007-error-and-state-model.md) |
 | 전체 검증 기준 | [TEST 001](001-requirement-test-matrix.md) |
@@ -21,7 +21,9 @@ Runtime        = Docker Compose
 Data path      = local binding only
 ```
 
-Gateway가 하나면 모든 live `ListenerBinding`은 같은 Gateway의 `LocalRegistry`에 있다. 따라서 최초 구현은 RT 조회, shard, publication lease와 Gateway 간 peer relay를 포함하지 않는다.
+Gateway가 하나면 모든 live `ListenerBinding`은 같은 Gateway의 `LocalRegistry`에 있다. 따라서 최초 구현은 RT 조회, shard, registration lease와 Gateway 간 peer relay를 포함하지 않는다.
+
+Gateway는 process 시작 시 `ClientId -> ClientKey` config를 로드하며 configured `ClientId`마다 key 하나만 허용한다. 이 map은 process 수명 동안 불변이고 최초 및 recovery `REGISTER`마다 검증한다. runtime key 발급·rotation·revocation은 Phase 1에 포함하지 않는다.
 
 ```text
 ┌──────────────────── Docker Compose network ────────────────────┐
@@ -32,7 +34,7 @@ Gateway가 하나면 모든 live `ListenerBinding`은 같은 Gateway의 `LocalRe
 │                                 ▲                               │
 │  probe ──────── Connector SDK ──┘                               │
 │                                                                │
-│  connect(ClientId) -> local binding -> Pipe -> echo -> close    │
+│  open(ClientId) -> local binding -> Pipe -> echo -> close       │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,28 +43,62 @@ Gateway가 하나면 모든 live `ListenerBinding`은 같은 Gateway의 `LocalRe
 ```text
 Listener 등록
   -> Gateway-local ACTIVE binding
-  -> local connect
+  -> local open
   -> bounded Listener queue
   -> bidirectional Pipe
   -> FIN / CLOSE / RESET
   -> cleanup 또는 새 session 재연결
 ```
 
-Listener SDK는 per-command 재생 큐를 source of truth로 삼지 않는다. `ListenerRuntime`의 desired `ClientId -> Listener handle` map이 현재 의도이고, shared ListenerSession actor는 reconnect 또는 notify 시점마다 desired set과 session-local pending/registered set을 비교하여 `REGISTER`와 `UNREGISTER`를 수렴시킨다.
+Listener SDK는 per-command 재생 큐를 source of truth로 삼지 않는다. `ListenerRuntime`은 pending `ListenAttempt` reservation과 이미 반환된 `ClientId -> Listener handle` 복구 집합을 구분한다. shared ListenerSession actor는 current session의 pending/registered set과 비교하여 `REGISTER`와 `UNREGISTER`를 수렴시키되, session을 넘어 복구하는 대상은 반환된 Listener뿐이다.
 
 ```text
-ListenerRuntime desired map
-        │ notify
-        ▼
+ListenerRuntime
+  ├── pending ListenAttempt reservation
+  └── returned Listener recovery set
+              │ reconcile
+              ▼
 ListenerSession actor
         │
-        ├── desired에 있고 session에 없음      -> REGISTER
-        ├── desired에서 제거된 registered     -> UNREGISTER
-        ├── pending 결과가 늦게 도착           -> stale이면 즉시 UNREGISTER
-        └── transient register failure         -> sleep 후 notify, command replay 없음
+        ├── 최초 attempt REGISTER commit 뒤 실패 -> terminal, 새 session 이동 없음
+        ├── returned Listener가 session에 없음   -> 새 identity로 REGISTER
+        ├── recovery transient failure            -> bounded backoff
+        ├── current set에서 제거된 registered     -> UNREGISTER
+        └── pending 결과가 늦게 도착              -> state 부활 없이 cleanup
 ```
 
-`Listener::close`는 desired에서 handle을 제거하고 신규 수신을 닫는다. 아직 `accept`되지 않은 queued Pipe는 drop되어 session actor가 Pipe `CLOSE`를 보낼 수 있지만, shared ListenerSession, sibling Listener handle과 이미 application이 accept한 Pipe는 닫지 않는다.
+`Listener::close`는 desired에서 handle을 제거하고 신규 수신을 닫는다. 정상 `ACTIVE` binding이면 아직 `accept`되지 않은 queued Pipe와 해당 binding만 닫고 shared ListenerSession, sibling Listener와 이미 accept된 Pipe는 유지한다. returned Listener의 recovery `REGISTER`가 commit된 채 결과가 불확실하면 handle이 session token을 직접 취소하지 않고 actor가 current ListenerSession을 reset한다. 이 경우 old session Pipe는 실패하고 closing Listener를 제외한 returned sibling만 새 session에 재등록한다.
+
+## Phase 1 public API와 책임 경계
+
+SPEC의 `open(ClientId)`는 Phase 1 Rust API에서 `connector.open(ClientId)`에 해당한다. SDK-Gateway session 생성과 logical Pipe 생성을 같은 `connect`로 혼동하지 않는다.
+
+```text
+Connector::connect(Config) -> Connector
+connector.open(ClientId)   -> Pipe
+
+ListenerRuntime::connect(Config)             -> ListenerRuntime
+listener_runtime.listen(ClientId, ClientKey) -> Listener
+listener.accept()                            -> Pipe
+
+Pipe: AsyncRead + AsyncWrite
+Pipe::into_split() -> (PipeReadHalf, PipeWriteHalf)
+```
+
+```text
+Connector SDK                  Gateway                    Listener SDK
+  session reconnect       registry / OFFER / relay       session reconnect
+  local Pipe endpoint     pending Pipe cleanup           returned Listener 재등록
+         │                       │                         │
+         └──────────── opaque bidirectional Pipe ────────────┘
+```
+
+- SDK는 자기 SDK-Gateway session을 자동 재연결하고, Listener 쪽은 이미 반환된 Listener만 새 session에 재등록한다.
+- 기존 Pipe, commit된 OPEN과 payload는 자동 replay, reroute 또는 resume하지 않는다. 새 `open(ClientId)`와 업무 retry는 application이 결정한다.
+- Gateway는 local registry, selected binding, `OFFER`, pending Pipe, relay cleanup과 terminal signal을 소유한다.
+- 명확한 Pipe-local 오류는 해당 Pipe만 `RESET`한다. commit된 control 결과가 불확실하면 이를 감지한 owner가 current session을 종료한다.
+- 같은 `ClientId`는 서로 다른 ListenerRuntime/ListenerSession에서 함께 등록할 수 있다. 한 runtime 내부 중복은 `ALREADY_EXISTS`이고, 한 open은 Listener 하나만 선택한다. 선택 실패 시 같은 attempt의 sibling fallback은 없다.
+- conforming Gateway는 같은 attempt의 `OFFER`를 재전송하거나 `PipeId`를 재사용하지 않는다. ordered SDK-Gateway session을 신뢰하므로 Listener SDK에 종료 Pipe별 tombstone을 요구하지 않는다.
 
 ## Rust workspace와 crate 경계
 
@@ -125,9 +161,9 @@ echo-probe      ─┴──► relaygate-sdk     ──► relaygate-protocol
 | --- | --- | --- |
 | `gateway` | Listener/Connector session, local registry, local OPEN과 Pipe relay | test 종료 또는 fatal error |
 | `listener-echo` | `echo.alpha`를 등록하고 받은 bytes를 그대로 반환 | session 종료 또는 test 종료 |
-| `probe` | readiness 대기, connect·payload·종료 assertion 수행 | 모든 assertion 성공 시 exit 0 |
+| `probe` | readiness 대기, open·payload·종료 assertion 수행 | 모든 assertion 성공 시 exit 0 |
 
-`probe`는 Gateway healthcheck만으로 Listener 등록 완료를 가정하지 않는다. 자신의 deadline 안에서 `connect`를 반복해 local binding 수렴을 기다리되, 이미 commit된 하나의 connect attempt를 replay하지 않고 매번 새 operation을 시작한다.
+`probe`는 Gateway healthcheck만으로 Listener 등록 완료를 가정하지 않는다. 자신의 deadline 안에서 `open(ClientId)`을 반복해 local binding 수렴을 기다리되, 이미 commit된 하나의 open attempt를 replay하지 않고 매번 새 operation을 시작한다.
 
 기본 smoke 실행의 목표 형태는 다음과 같다.
 
@@ -172,9 +208,13 @@ Compose E2E는 실제 container build, DNS, process startup, healthcheck와 TCP-
 | `SG-U-04` | OPEN admission과 binding remove를 동시에 실행 | 먼저 확정된 순서 하나만 적용; Pipe 하나 또는 `NOT_OBSERVED` 실패 |
 | `SG-U-05` | queue와 buffer capacity 소진 | 기존 item을 버리지 않고 backpressure 또는 `RESOURCE_EXHAUSTED` |
 | `SG-U-06` | FIN, duplicate FIN, CLOSE, RESET과 FIN 뒤 DATA | 방향별 EOF, idempotent terminal, protocol 위반은 해당 Pipe만 RESET |
-| `SG-U-07` | terminal frame과 unknown identity의 늦은 도착 | state 재생성 없음; 다른 live Pipe 불변 |
+| `SG-U-07` | terminal OPENED/OPEN_FAILED/DATA/FIN/CLOSE/RESET과 unknown identity의 늦은 도착 | state 재생성 없음; 다른 live Pipe 불변. 종료된 PipeId의 새 OFFER를 판별하기 위한 tombstone은 만들지 않음 |
 | `SG-U-08` | 한 session에서 실패 OPEN 10,000개 뒤 낮은 ConnectionId 재사용 | Gateway는 scalar high-watermark 하나만 유지하고 terminal history를 누적하지 않으며 낮은 ID를 무시 |
 | `SG-U-09` | outbound capacity를 기다리는 close·drop과 remote FIN·failure 경쟁 | terminal·abandonment lane은 current Pipe당 한 번만 신호하고 먼저 확정된 전체 종료 의미를 유지하며 방향 FIN이 뒤의 full failure를 EOF로 가리지 않음 |
+| `SG-U-10` | 같은 open attempt를 pending, 명시적 거절, timeout과 terminal cleanup까지 진행 | Gateway는 `OFFER`를 최대 한 번만 보내고 `PipeId`를 재사용하지 않으며 timeout에서 재전송 대신 selected ListenerSession을 종료 |
+| `SG-U-11` | transient error code와 세 `PeerObservation` 조합의 `Error::is_retryable()` | `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`이면서 `NOT_OBSERVED`일 때만 true; MAYBE_OBSERVED/OBSERVED는 false이고 operation 자동 실행 없음 |
+| `SG-U-12` | Offered/Open Pipe에 owner·foreign·unknown session이 `OFFER_ACCEPTED`, `OFFER_REJECTED`, `CANCEL`, `DATA`, `FIN`, `CLOSE`, `RESET` 전송 | owner만 valid phase를 변경한다. unknown/stale identity는 no-op이고 current Pipe의 foreign frame은 target을 바꾸지 않은 채 offending session만 `PROTOCOL_ERROR`로 종료한다. owner의 invalid phase는 해당 Pipe만 RESET |
+| `SG-U-13` | Tokio Pipe adapter의 outbound queue full, terminal failure, shutdown과 half drop 경쟁 | pending write는 capacity 또는 terminal failure에 정확히 깨어나고 shutdown은 FIN을 한 번 보낸다. shutdown 뒤 write는 실패하며 half 하나의 drop은 frame을 만들지 않고 마지막 public owner drop만 abandonment를 한 번 발생시킨다. `std::io::Error::get_ref()`로 원래 RelayGate Error를 downcast할 수 있다. |
 
 ### Integration
 
@@ -182,17 +222,29 @@ Compose E2E는 실제 container build, DNS, process startup, healthcheck와 TCP-
 | --- | --- | --- |
 | `SG-I-01` | valid ClientKey로 Listener 등록 | local binding `ACTIVE`; RT 없이 등록 성공 |
 | `SG-I-02` | invalid ClientKey로 Listener 등록 | `UNAUTHENTICATED`; binding과 queue 없음 |
-| `SG-I-03` | Connector connect 뒤 Listener queue 확인 | queue 적재 뒤에만 connect 성공과 `OBSERVED` |
+| `SG-I-03` | Connector open 뒤 Listener queue 확인 | queue admission이 Pipe를 하나 만들고 그 뒤 `OPENED`를 확인해야만 Connector open 성공과 `OBSERVED` |
 | `SG-I-04` | binary payload 양방향 전송 | byte 순서와 값 보존; message boundary 가정 없음 |
-| `SG-I-05` | 서로 다른 두 ListenerSession이 같은 ClientId 등록 | 두 binding 공존; 한 connect는 한 Listener에만 전달되고 fan-out 없음 |
-| `SG-I-06` | Listener queue full 상태에서 추가 connect | 기존 Pipe 보존; 새 operation만 대기 또는 명시적 실패 |
+| `SG-I-05` | public SDK로 서로 다른 두 ListenerRuntime이 같은 ClientId 등록 | 두 binding 공존; 한 open은 한 Listener에만 전달되고 fan-out 없음 |
+| `SG-I-06` | Listener queue full 상태에서 추가 open, 그리고 capacity 1의 queued Pipe가 accept 전에 terminal이 된 뒤 새 open | 기존 non-terminal Pipe는 보존하고 새 operation만 대기 또는 명시적 실패한다. terminal Pipe는 애플리케이션의 중간 accept 없이 capacity에서 제거되어 다음 live OFFER가 admission된다. |
 | `SG-I-07` | Connector request commit 전 session 단절 | deadline 전 새 session 준비를 기다리거나 terminal 취소 |
-| `SG-I-08` | Connector request commit 후 OPENED 확인 전 단절 | `MAYBE_OBSERVED`; 새 session으로 자동 replay 없음 |
-| `SG-I-09` | ListenerSession 단절 | 소유 binding과 Pipe 제거; 다른 session과 binding 유지 |
-| `SG-I-10` | Gateway connection 복구 | SDK가 새 session identity로 재연결하고 desired Listener만 재등록; 과거 Pipe 복구 없음 |
-| `SG-I-11` | concurrent close·cancel·OPENED | 외부 terminal 결과 하나; provisional state와 buffer bounded cleanup |
-| `SG-I-12` | `outbound_capacity=1`에서 여러 desired Listener 재연결 | command queue 크기와 무관하게 모든 live desired Listener가 새 session에 재등록 |
+| `SG-I-08` | Connector request commit과 Listener queue admission 후 OPENED 확인 전 단절 | `MAYBE_OBSERVED`; 생성된 Pipe terminal cleanup; 새 session으로 자동 replay 없음 |
+| `SG-I-09` | ListenerSession 단절 | 소유 binding과 accepted Pipe 실패, old session 미수락 queue 제거; 다른 session과 binding 유지. pending accept는 새 session의 Pipe를 기다리고 application이 시작한 새 open은 살아 있는 ListenerRuntime으로 수렴 |
+| `SG-I-10` | Gateway connection 복구 | SDK가 새 session identity로 재연결하고 이미 반환된 Listener만 재등록; pending 최초 attempt와 과거 Pipe 복구 없음 |
+| `SG-I-11` | concurrent close·cancel·OPENED | 외부 terminal 결과 하나; queue admission으로 생성된 Pipe와 buffer bounded cleanup |
+| `SG-I-12` | `outbound_capacity=1`에서 여러 returned Listener 재연결 | command queue 크기와 무관하게 모든 live returned Listener가 새 session에 재등록 |
 | `SG-I-13` | Listener close와 queued·pending accept 경쟁 | close가 먼저 확정되면 미수락 Pipe를 반환하지 않고 sibling handle·accepted Pipe는 유지 |
+| `SG-I-14` | Gateway OFFER 무응답 deadline | selected ListenerSession 전체와 소유 binding·Pipe 제거; 다른 ListenerSession 유지; 늦은 accept로 state 부활 없음 |
+| `SG-I-15` | commit된 Connector OPEN terminal 응답 무응답 | `MAYBE_OBSERVED`; current ConnectorSession과 소유 Pipe 종료; 새 session identity; 자동 replay 없음 |
+| `SG-I-16` | public SDK owner drop과 explicit close | clone 하나의 drop은 유지; live Pipe는 runtime을 유지; 마지막 owner drop 또는 explicit close는 transport 종료와 reconnect 중단 |
+| `SG-I-17` | SDK transport write 정체 | cancellation 또는 configured deadline 안에 해당 session 종료와 bounded cleanup |
+| `SG-I-18` | Listener queue full의 명시적 OFFER_REJECTED | 해당 attempt만 `RESOURCE_EXHAUSTED`; ListenerSession, sibling binding과 기존 Pipe 유지 |
+| `SG-I-19` | periodic heartbeat 없는 idle session | idle 자체로 닫히지 않으며 active operation 또는 transport event에서만 failure-on-use 수렴 |
+| `SG-I-20` | commit된 Listener REGISTER terminal 응답 무응답 또는 명시적 transient 실패 | 무응답은 current ListenerSession 전체 종료; 최초 ListenAttempt는 두 경우 모두 terminal 실패하고 reservation 제거; 새 session에는 이미 반환된 Listener만 새 request identity로 재등록하고 그 recovery transient 실패만 bounded backoff; silent old binding은 OFFER timeout으로 정리 |
+| `SG-I-21` | 같은 ClientId의 ListenerSession 두 개 중 selected Listener가 거절 또는 OFFER timeout | 최초 open은 terminal 실패하고 sibling binding으로 fallback하지 않음; application이 시작한 새 open만 남은 live Listener를 선택 가능 |
+| `SG-I-22` | returned Listener A·B 재연결 중 A의 recovery REGISTER commit 뒤 A close/drop | Listener handle이 session token을 직접 취소하지 않고 actor가 불확실한 current ListenerSession을 종료; A는 제외하고 sibling B만 새 session에 재등록 |
+| `SG-I-23` | returned Listener A·B 재연결에서 A recovery REGISTER는 `UNAUTHENTICATED`, B는 성공 | A의 old 미수락 queue 제거와 pending·후속 accept 등록 오류, A만 `BLOCKED`, B와 shared ListenerSession 유지, A 자동 재등록 없음; A close 뒤 새 key의 새 `listen`이 새 binding으로 성공 |
+| `SG-I-24` | Listener queue admission·accept와 ListenerSession 단절 경쟁 | accept가 먼저면 반환된 Pipe가 `UNAVAILABLE`을 관찰하고, 단절이 먼저면 old 미수락 Pipe를 반환하지 않는다. returned Listener는 새 session에서 재등록되고 pending accept는 새 Pipe만 반환 |
+| `SG-I-25` | public `Pipe::into_split()`의 read/write half를 별도 task에서 실제 Gateway Pipe에 연결 | 두 방향 I/O가 동시에 진행되고 byte 순서가 보존된다. write half의 Tokio shutdown 뒤 peer는 EOF를 보고 read half는 반대 방향 data와 EOF를 계속 받을 수 있다. |
 
 ### Server process integration
 
@@ -200,7 +252,7 @@ Compose E2E는 실제 container build, DNS, process startup, healthcheck와 TCP-
 | --- | --- | --- |
 | `SG-P-01` | 유효한 설정으로 process 부팅 뒤 protocol health check와 SIGTERM | health check 성공; SIGTERM 뒤 deadline 안에 exit 0 |
 | `SG-P-02` | 알 수 없는 command, 누락·초과된 `check` 인자 | non-zero exit와 사용 가능한 오류 메시지 |
-| `SG-P-03` | 잘못된 ClientKey 형식과 0인 queue capacity | socket을 열기 전에 non-zero exit와 설정 항목을 식별하는 오류 메시지 |
+| `SG-P-03` | 잘못된 ClientKey 형식, 중복 ClientId key와 0인 queue capacity | socket을 열기 전에 non-zero exit와 설정 항목을 식별하는 오류 메시지 |
 
 ### Docker Compose E2E
 
@@ -210,7 +262,7 @@ Compose E2E는 실제 container build, DNS, process startup, healthcheck와 TCP-
 | `SG-E-02` | `hello relaygate` echo | 입력과 출력 byte가 동일 |
 | `SG-E-03` | binary 및 frame boundary를 넘는 payload | byte 손실·중복·재정렬 없음 |
 | `SG-E-04` | 여러 동시 Pipe | Pipe별 데이터 격리, configured memory bound 유지 |
-| `SG-E-05` | 완료된 probe 뒤 Gateway process restart와 새 probe | Listener 재등록 뒤 새로운 connect와 echo 성공; restart 당시 live Pipe 실패는 SDK integration test가 검증 |
+| `SG-E-05` | 완료된 probe 뒤 Gateway process restart와 새 probe | Listener 재등록 뒤 새로운 open과 echo 성공; restart 당시 live Pipe 실패는 SDK integration test가 검증 |
 | `SG-E-06` | Compose 종료 | process가 deadline 안에 종료되고 volume·stale container 의존성 없음 |
 
 ## 테스트 데이터
@@ -227,7 +279,7 @@ Compose E2E는 실제 container build, DNS, process startup, healthcheck와 TCP-
 | concurrency | 32 Pipes | 기본 multiplex·격리와 bounded resource smoke |
 | queue capacity | 2 | backpressure와 full queue를 작게 재현 |
 
-ClientKey는 Compose test environment에만 두고 repository에 운영 credential을 저장하지 않는다. random payload 대신 deterministic seed를 기록해 실패를 재현할 수 있게 한다.
+ClientKey는 Compose test environment에만 두고 repository에 운영 credential을 저장하지 않는다. Gateway startup config는 ClientId마다 key 하나만 가지며 runtime에 갱신하지 않는다. random payload 대신 deterministic seed를 기록해 실패를 재현할 수 있게 한다.
 
 ## CI gate
 
@@ -250,17 +302,21 @@ CI는 `probe` exit code를 최종 E2E 결과로 사용하고 실패 시 Gateway,
 ## 완료 기준
 
 1. `SG-U-*`, `SG-I-*`, `SG-P-*`, `SG-E-*`가 모두 통과한다.
-2. 한 connect는 정확히 한 Listener queue와 Pipe만 만든다.
-3. 실패·취소·단절 뒤 live state와 buffer는 configured bound 안에 제거된다.
-4. SDK reconnect가 이전 connect, Pipe 또는 payload를 replay하지 않는다.
-5. `docker compose up` 한 실행으로 clean build부터 echo assertion까지 재현할 수 있다.
+2. 한 open은 Listener queue admission에서 정확히 하나의 Pipe만 만들고 Connector endpoint는 `OPENED` 확인 뒤에만 반환한다.
+3. queue admission 뒤를 포함한 실패·취소·단절에서 생성된 Pipe, live state와 buffer는 configured bound 안에 제거된다.
+4. SDK reconnect가 이전 open request, Pipe 또는 payload를 replay하지 않는다.
+5. selected Listener 실패는 같은 open attempt의 sibling fallback을 만들지 않고, application이 시작한 새 open만 새 candidate를 선택한다.
+6. 모든 Pipe/control frame은 role·current identity·sender ownership·phase 순서로 검증되고 foreign session이 target state를 변경하지 못한다.
+7. `docker compose up` 한 실행으로 clean build부터 echo assertion까지 재현할 수 있다.
 
 ## 검증 기록
 
-2026-08-29 기준 Phase 1 baseline은 다음 명령으로 통과했다.
+아래는 2026-08-29 기준 Phase 1 baseline 기록이다. 이후 SDK↔Gateway 책임 경계와 no-fallback·one-shot `OFFER` 보완은 위 회귀 항목과 PR CI를 canonical verification으로 사용한다.
+
+2026-08-29 기준 Phase 1 구현은 다음 명령으로 통과했다.
 
 ```text
-cargo fmt --all
+cargo fmt --all --check
 cargo check --workspace --all-targets
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -269,21 +325,23 @@ docker compose up --build --abort-on-container-exit --exit-code-from probe
 docker compose down --volumes --remove-orphans
 ```
 
-Rust test suite가 통과했다. 여기에는 실패 OPEN 10,000개 뒤 scalar high-watermark만 남는지, `outbound_capacity=1`보다 많은 desired Listener가 재연결 뒤 전부 등록되는지, terminal 경쟁에서 최초 결과가 유지되고 방향 FIN이 full failure를 가리지 않는지, Listener close가 이긴 queued·pending accept가 Pipe를 반환하지 않는지 확인하는 회귀 테스트가 포함된다. `relaygate-server` process integration test는 정상 부팅·protocol health check·SIGTERM 정상 종료와 잘못된 CLI·환경 설정의 non-zero exit를 확인한다.
+당시 Rust test suite 전체가 통과했다. 여기에는 실패 OPEN 10,000개 뒤 scalar high-watermark만 남는지, `outbound_capacity=1`보다 많은 returned Listener가 재연결 뒤 전부 등록되는지, terminal 경쟁에서 최초 결과가 유지되고 방향 FIN이 full failure를 가리지 않는지, Listener close가 이긴 queued·pending accept가 Pipe를 반환하지 않는지 확인하는 회귀 테스트가 포함된다. `relaygate-server` process integration test는 정상 부팅·protocol health check·SIGTERM 정상 종료와 잘못된 CLI·환경 설정의 non-zero exit를 확인한다.
 
 Compose probe는 UTF-8 payload, deterministic 65,537-byte payload와 32 concurrent Pipe echo를 확인한다. 완료된 probe 뒤 Gateway를 재시작하고 새 probe가 성공하는 것을 확인했으며, 종료 뒤 persistent volume이나 stale container를 남기지 않았다. 재시작 순간의 live Pipe failure는 Compose가 아니라 결정적인 SDK integration test가 검증한다.
+
+SG-I-14부터 SG-I-20까지도 integration test로 검증했다. unanswered `OFFER`는 선택된 ListenerSession 전체만 닫고 sibling session을 보존한다. commit된 `OPEN`·`REGISTER` timeout은 각각 current SDK session 전체를 닫고 과거 operation을 replay하지 않는다. 모든 SDK transport send는 cancellation과 configured deadline에 종속된다. 마지막 public owner가 사라지면 supervisor가 종료되지만 live Pipe가 남아 있으면 I/O 수명은 유지된다. 명시적 `OFFER_REJECTED`, idle session 무heartbeat, Pipe read idle과 Listener recovery의 transient retry도 각각 독립적으로 검증했다.
 
 ## 다음 단계로 미루는 것
 
 ```text
 Phase 1  Gateway × 1, local Pipe              <- 이 문서
-Phase 2  RouteTable × 1, publication/Resolve
+Phase 2  RouteTable × 1, registration/Resolve
 Phase 3  Gateway × 2, one-hop PeerTransport
 Phase 4  RT shard × N, immutable directory
 Phase 5  replication/failover는 별도 결정
 ```
 
-- RouteTable schema, lease, restart와 stale projection
+- RouteTable schema, lease, restart와 stale mapping
 - ShardDirectory와 generation mismatch
 - Gateway 간 PeerTransport와 StreamId multiplexing
 - peer identity와 one-hop failure isolation

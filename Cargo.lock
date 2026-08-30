@@ -247,6 +247,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "relaygate-protocol",
+ "relaygate-sdk",
  "subtle",
  "thiserror",
  "tokio",

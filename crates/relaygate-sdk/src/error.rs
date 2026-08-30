@@ -67,12 +67,16 @@ impl Error {
         &self.message
     }
 
+    /// Returns `true` only when a transient failure is proven not to have
+    /// reached the peer. The SDK does not retry the operation automatically;
+    /// the application still decides whether to start a new operation.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        matches!(
-            self.code,
-            ErrorCode::Unavailable | ErrorCode::DeadlineExceeded | ErrorCode::ResourceExhausted
-        )
+        matches!(self.observation, PeerObservation::NotObserved)
+            && matches!(
+                self.code,
+                ErrorCode::Unavailable | ErrorCode::DeadlineExceeded | ErrorCode::ResourceExhausted
+            )
     }
 
     pub(crate) fn closed() -> Self {
@@ -134,5 +138,35 @@ impl PeerObservation {
             WirePeerObservation::MaybeObserved => Self::MaybeObserved,
             WirePeerObservation::Observed => Self::Observed,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, ErrorCode, PeerObservation};
+
+    #[test]
+    fn retryable_requires_a_transient_not_observed_failure() {
+        for code in [
+            ErrorCode::Unavailable,
+            ErrorCode::DeadlineExceeded,
+            ErrorCode::ResourceExhausted,
+        ] {
+            let not_observed = Error::new(code, PeerObservation::NotObserved, "transient");
+            let maybe_observed = Error::new(code, PeerObservation::MaybeObserved, "uncertain");
+            let observed = Error::new(code, PeerObservation::Observed, "observed");
+            assert!(not_observed.is_retryable());
+            assert!(!maybe_observed.is_retryable());
+            assert!(!observed.is_retryable());
+        }
+
+        assert!(
+            !Error::new(
+                ErrorCode::PermissionDenied,
+                PeerObservation::NotObserved,
+                "terminal",
+            )
+            .is_retryable()
+        );
     }
 }
