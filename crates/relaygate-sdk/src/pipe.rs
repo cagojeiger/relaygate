@@ -3,11 +3,15 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
+use futures_util::{future::poll_fn, task::AtomicWaker};
 use relaygate_protocol::{ErrorCode as WireErrorCode, Frame, PipeId};
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{mpsc, watch};
+use tokio_util::sync::PollSender;
 
 use crate::{Error, ErrorCode, PeerObservation, Result, lifetime::RuntimeLifetime};
+
+mod io;
 
 #[cfg(test)]
 mod tests;
@@ -22,30 +26,74 @@ enum Terminal {
 
 pub(crate) struct PipeState {
     id: PipeId,
-    outbound: mpsc::Sender<Frame>,
     inbound: mpsc::Sender<Bytes>,
     remote_fin: AtomicBool,
-    remote_fin_signal: watch::Sender<bool>,
     local_fin: AtomicBool,
     terminal: watch::Sender<Option<Terminal>>,
-    write_lane: Mutex<()>,
-    // A Pipe value is unique and Drop emits its id at most once. The session
-    // actor retains that id only while the corresponding PipeState is current.
+    read_waker: AtomicWaker,
+    write_waker: AtomicWaker,
     abandoned: mpsc::UnboundedSender<PipeId>,
 }
 
-/// One ordered, opaque, bidirectional byte stream.
-pub struct Pipe {
+struct PipeOwner {
     state: Arc<PipeState>,
     _lifetime: Option<Arc<RuntimeLifetime>>,
+}
+
+struct PipeWriter {
+    outbound: PollSender<Frame>,
+}
+
+struct PipeReader {
     inbound: mpsc::Receiver<Bytes>,
     current: Bytes,
     read_eof: bool,
 }
 
+/// One ordered, opaque, bidirectional byte stream.
+pub struct Pipe {
+    owner: Arc<PipeOwner>,
+    reader: PipeReader,
+    writer: PipeWriter,
+}
+
+/// The unique read side of an owned [`Pipe`] split.
+///
+/// Dropping this half does not send `FIN`. The Pipe is abandoned only after
+/// both owned halves have been dropped without an explicit terminal action.
+pub struct PipeReadHalf {
+    owner: Arc<PipeOwner>,
+    reader: PipeReader,
+}
+
+/// The unique write side of an owned [`Pipe`] split.
+///
+/// Call [`PipeWriteHalf::shutdown_write`] or [`tokio::io::AsyncWriteExt::shutdown`]
+/// to send `FIN`; dropping this half alone never half-closes the Pipe.
+pub struct PipeWriteHalf {
+    owner: Arc<PipeOwner>,
+    writer: PipeWriter,
+}
+
 impl std::fmt::Debug for Pipe {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("Pipe").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for PipeReadHalf {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PipeReadHalf")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for PipeWriteHalf {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PipeWriteHalf")
+            .finish_non_exhaustive()
     }
 }
 
@@ -79,24 +127,30 @@ impl PipeState {
     ) -> (Pipe, Arc<Self>) {
         let (inbound_tx, inbound_rx) = mpsc::channel(inbound_capacity);
         let (terminal, _) = watch::channel(None);
-        let (remote_fin_signal, _) = watch::channel(false);
         let state = Arc::new(Self {
             id,
-            outbound,
             inbound: inbound_tx,
             remote_fin: AtomicBool::new(false),
-            remote_fin_signal,
             local_fin: AtomicBool::new(false),
             terminal,
-            write_lane: Mutex::new(()),
+            read_waker: AtomicWaker::new(),
+            write_waker: AtomicWaker::new(),
             abandoned,
         });
-        let pipe = Pipe {
+        let owner = Arc::new(PipeOwner {
             state: Arc::clone(&state),
             _lifetime: lifetime,
-            inbound: inbound_rx,
-            current: Bytes::new(),
-            read_eof: false,
+        });
+        let pipe = Pipe {
+            owner,
+            reader: PipeReader {
+                inbound: inbound_rx,
+                current: Bytes::new(),
+                read_eof: false,
+            },
+            writer: PipeWriter {
+                outbound: PollSender::new(outbound),
+            },
         };
         (pipe, state)
     }
@@ -119,9 +173,8 @@ impl PipeState {
     }
 
     pub(crate) fn remote_fin(&self) {
-        if !self.remote_fin.swap(true, Ordering::AcqRel) {
-            self.remote_fin_signal.send_replace(true);
-        }
+        self.remote_fin.store(true, Ordering::Release);
+        self.read_waker.wake();
         if self.local_fin.load(Ordering::Acquire) {
             self.close_normal();
         }
@@ -141,13 +194,18 @@ impl PipeState {
     }
 
     fn try_set_terminal(&self, terminal: Terminal) -> bool {
-        self.terminal.send_if_modified(|current| {
+        let changed = self.terminal.send_if_modified(|current| {
             if current.is_some() {
                 return false;
             }
             *current = Some(terminal);
             true
-        })
+        });
+        if changed {
+            self.read_waker.wake();
+            self.write_waker.wake();
+        }
+        changed
     }
 
     fn write_error(&self) -> Option<Error> {
@@ -166,193 +224,149 @@ impl PipeState {
             None => None,
         }
     }
+
+    fn terminal_failure(&self) -> Option<Error> {
+        match self.terminal.borrow().clone() {
+            Some(Terminal::Failed(error)) => Some(error),
+            Some(Terminal::Closed) | None => None,
+        }
+    }
 }
 
 impl Pipe {
     pub(crate) fn is_terminal(&self) -> bool {
-        self.state.terminal.borrow().is_some()
+        self.owner.state.terminal.borrow().is_some()
     }
 
-    /// Reads ordered bytes. `0` means graceful EOF.
-    pub async fn read(&mut self, destination: &mut [u8]) -> Result<usize> {
-        if destination.is_empty() {
-            return Ok(0);
-        }
-        loop {
-            if self.current.has_remaining() {
-                let count = destination.len().min(self.current.remaining());
-                self.current.copy_to_slice(&mut destination[..count]);
-                return Ok(count);
-            }
-            if self.read_eof {
-                return Ok(0);
-            }
-            match self.inbound.try_recv() {
-                Ok(payload) => {
-                    self.current = payload;
-                    continue;
-                }
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    self.read_eof = true;
-                    return Ok(0);
-                }
-                Err(mpsc::error::TryRecvError::Empty) => {}
-            }
-            match self.state.terminal.borrow().clone() {
-                Some(Terminal::Failed(error)) => return Err(error),
-                Some(Terminal::Closed) => {
-                    self.read_eof = true;
-                    return Ok(0);
-                }
-                None => {}
-            }
-            if self.state.remote_fin.load(Ordering::Acquire) {
-                self.read_eof = true;
-                return Ok(0);
-            }
-            let mut terminal = self.state.terminal.subscribe();
-            let mut remote_fin = self.state.remote_fin_signal.subscribe();
-            tokio::select! {
-                biased;
-                payload = self.inbound.recv() => {
-                    match payload {
-                        Some(payload) => self.current = payload,
-                        None => {
-                            self.read_eof = true;
-                            if let Some(Terminal::Failed(error)) = terminal.borrow().clone() {
-                                return Err(error);
-                            }
-                            return Ok(0);
-                        }
-                    }
-                }
-                changed = terminal.changed() => {
-                    if changed.is_err() {
-                        self.read_eof = true;
-                        return Ok(0);
-                    }
-                    match terminal.borrow().clone() {
-                        Some(Terminal::Failed(error)) => return Err(error),
-                        Some(Terminal::Closed) => {
-                            self.read_eof = true;
-                            return Ok(0);
-                        }
-                        None => {}
-                    }
-                }
-                changed = remote_fin.changed() => {
-                    if changed.is_err() || *remote_fin.borrow() {
-                        continue;
-                    }
-                }
-            }
-        }
+    /// Splits this Pipe into independently owned read and write halves.
+    ///
+    /// The halves share one protocol state and cannot be cloned. The read half
+    /// retains the only inbound cursor, while the write half retains all write,
+    /// half-close, close, and reset operations.
+    #[must_use]
+    pub fn into_split(self) -> (PipeReadHalf, PipeWriteHalf) {
+        let Self {
+            owner,
+            reader,
+            writer,
+        } = self;
+        let write_owner = Arc::clone(&owner);
+        (
+            PipeReadHalf { owner, reader },
+            PipeWriteHalf {
+                owner: write_owner,
+                writer,
+            },
+        )
+    }
+
+    /// Reads ordered bytes while preserving RelayGate's structured [`Error`].
+    /// `0` means graceful EOF.
+    ///
+    /// Prefer Tokio's [`tokio::io::AsyncReadExt`] helpers for ordinary I/O.
+    pub async fn read_into(&mut self, destination: &mut [u8]) -> Result<usize> {
+        poll_fn(|context| {
+            self.reader
+                .poll_read(&self.owner.state, context, destination)
+        })
+        .await
     }
 
     /// Enqueues all bytes to the bounded session path in order.
     ///
     /// Success is not a peer application delivery acknowledgement.
-    pub async fn write_all(&self, payload: &[u8]) -> Result<()> {
-        let _lane = self.state.write_lane.lock().await;
-        if let Some(error) = self.state.write_error() {
-            return Err(error);
-        }
-        for chunk in payload.chunks(DATA_CHUNK_LEN) {
-            let permit = self
-                .state
-                .outbound
-                .reserve()
-                .await
-                .map_err(|_| Error::maybe_observed("session ended while writing Pipe data"))?;
-            if let Some(error) = self.state.write_error() {
-                return Err(error);
-            }
-            permit.send(Frame::Data {
-                pipe_id: self.state.id,
-                payload: Bytes::copy_from_slice(chunk),
-            });
-        }
-        Ok(())
+    /// Prefer Tokio's [`tokio::io::AsyncWriteExt`] helpers for ordinary I/O.
+    pub async fn write_all_bytes(&mut self, payload: &[u8]) -> Result<()> {
+        self.writer.write_all(&self.owner.state, payload).await
     }
 
     /// Gracefully closes only this endpoint's write direction.
-    pub async fn shutdown_write(&self) -> Result<()> {
-        let _lane = self.state.write_lane.lock().await;
-        if self.state.terminal.borrow().is_some() {
-            return Ok(());
-        }
-        if self.state.local_fin.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let permit = self
-            .state
-            .outbound
-            .reserve()
-            .await
-            .map_err(|_| Error::maybe_observed("session ended while sending FIN"))?;
-        if self.state.terminal.borrow().is_some() {
-            return Ok(());
-        }
-        self.state.local_fin.store(true, Ordering::Release);
-        permit.send(Frame::Fin {
-            pipe_id: self.state.id,
-        });
-        if self.state.remote_fin.load(Ordering::Acquire) {
-            self.state.close_normal();
-        }
-        Ok(())
+    pub async fn shutdown_write(&mut self) -> Result<()> {
+        self.writer.shutdown_write(&self.owner.state).await
     }
 
     /// Closes both directions. Repeated calls are safe.
-    pub async fn close(&self) -> Result<()> {
-        let _lane = self.state.write_lane.lock().await;
-        if self.state.terminal.borrow().is_some() {
-            return Ok(());
-        }
-        let permit = self
-            .state
-            .outbound
-            .reserve()
-            .await
-            .map_err(|_| Error::maybe_observed("session ended while sending CLOSE"))?;
-        if !self.state.close_normal() {
-            return Ok(());
-        }
-        permit.send(Frame::Close {
-            pipe_id: self.state.id,
-        });
-        Ok(())
+    pub async fn close(&mut self) -> Result<()> {
+        self.writer.close(&self.owner.state).await
     }
 
     /// Fails both directions. Repeated calls are safe.
-    pub async fn reset(&self, code: ErrorCode, message: impl Into<String>) -> Result<()> {
-        let _lane = self.state.write_lane.lock().await;
-        if self.state.terminal.borrow().is_some() {
-            return Ok(());
-        }
-        let message = message.into();
-        let permit = self
-            .state
-            .outbound
-            .reserve()
+    pub async fn reset(&mut self, code: ErrorCode, message: impl Into<String>) -> Result<()> {
+        self.writer
+            .reset(&self.owner.state, code, message.into())
             .await
-            .map_err(|_| Error::maybe_observed("session ended while sending RESET"))?;
-        if !self
-            .state
-            .fail(Error::new(code, PeerObservation::Observed, message.clone()))
-        {
-            return Ok(());
-        }
-        permit.send(Frame::Reset {
-            pipe_id: self.state.id,
-            code: to_wire_code(code),
-            message,
-        });
-        Ok(())
     }
 }
 
-impl Drop for Pipe {
+impl PipeReadHalf {
+    /// Reads ordered bytes while preserving RelayGate's structured [`Error`].
+    /// `0` means graceful EOF.
+    ///
+    /// Prefer Tokio's [`tokio::io::AsyncReadExt`] helpers for ordinary I/O.
+    pub async fn read_into(&mut self, destination: &mut [u8]) -> Result<usize> {
+        poll_fn(|context| {
+            self.reader
+                .poll_read(&self.owner.state, context, destination)
+        })
+        .await
+    }
+}
+
+impl PipeWriteHalf {
+    /// Enqueues all bytes to the bounded session path in order.
+    ///
+    /// Success is not a peer application delivery acknowledgement.
+    /// Prefer Tokio's [`tokio::io::AsyncWriteExt`] helpers for ordinary I/O.
+    pub async fn write_all_bytes(&mut self, payload: &[u8]) -> Result<()> {
+        self.writer.write_all(&self.owner.state, payload).await
+    }
+
+    /// Gracefully closes only this endpoint's write direction.
+    pub async fn shutdown_write(&mut self) -> Result<()> {
+        self.writer.shutdown_write(&self.owner.state).await
+    }
+
+    /// Closes both directions. Repeated calls are safe.
+    pub async fn close(&mut self) -> Result<()> {
+        self.writer.close(&self.owner.state).await
+    }
+
+    /// Fails both directions. Repeated calls are safe.
+    pub async fn reset(&mut self, code: ErrorCode, message: impl Into<String>) -> Result<()> {
+        self.writer
+            .reset(&self.owner.state, code, message.into())
+            .await
+    }
+}
+
+impl PipeWriter {
+    async fn write_all(&mut self, state: &PipeState, payload: &[u8]) -> Result<()> {
+        if payload.is_empty() {
+            self.outbound.abort_send();
+            return state.write_error().map_or(Ok(()), Err);
+        }
+        let mut written = 0;
+        while written < payload.len() {
+            written +=
+                poll_fn(|context| self.poll_write(state, context, &payload[written..])).await?;
+        }
+        Ok(())
+    }
+
+    async fn shutdown_write(&mut self, state: &PipeState) -> Result<()> {
+        poll_fn(|context| self.poll_shutdown(state, context)).await
+    }
+
+    async fn close(&mut self, state: &PipeState) -> Result<()> {
+        poll_fn(|context| self.poll_close(state, context)).await
+    }
+
+    async fn reset(&mut self, state: &PipeState, code: ErrorCode, message: String) -> Result<()> {
+        poll_fn(|context| self.poll_reset(state, context, code, &message)).await
+    }
+}
+
+impl Drop for PipeOwner {
     fn drop(&mut self) {
         if self.state.close_normal() {
             let _ = self.state.abandoned.send(self.state.id);

@@ -60,7 +60,7 @@ async fn idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout_case(
     idle_checked_rx.await?;
     let mut pipe = connector.open("echo.idle").await?;
     let mut byte = [0_u8; 1];
-    assert_eq!(pipe.read(&mut byte).await?, 1);
+    assert_eq!(pipe.read_into(&mut byte).await?, 1);
     assert_eq!(&byte, b"x");
     connector.close();
     server.await??;
@@ -162,10 +162,10 @@ async fn pipe_preserves_bytes_and_directional_fin_case() -> TestResult {
     let mut pipe = connector.open("echo.alpha").await?;
     drop(connector);
     let mut buffer = [0_u8; 5];
-    assert_eq!(pipe.read(&mut buffer).await?, 5);
+    assert_eq!(pipe.read_into(&mut buffer).await?, 5);
     assert_eq!(&buffer, b"hello");
-    assert_eq!(pipe.read(&mut buffer).await?, 0);
-    pipe.write_all(b"reply").await?;
+    assert_eq!(pipe.read_into(&mut buffer).await?, 0);
+    pipe.write_all_bytes(b"reply").await?;
     pipe.shutdown_write().await?;
     pipe.shutdown_write().await?;
     received_rx.await?;
@@ -187,7 +187,8 @@ async fn committed_open_is_not_replayed_and_reports_maybe_observed() -> TestResu
 async fn committed_open_is_not_replayed_and_reports_maybe_observed_case() -> TestResult {
     let (listener, address) = bind_gateway().await?;
     let server = tokio::spawn(async move {
-        let (mut transport, _) = accept_session(&listener, SessionRole::Connector).await?;
+        let (mut transport, initial_session_id) =
+            accept_session(&listener, SessionRole::Connector).await?;
         let frame = transport
             .next()
             .await
@@ -199,7 +200,9 @@ async fn committed_open_is_not_replayed_and_reports_maybe_observed_case() -> Tes
 
         // The managed Connector may reconnect, but the old OPEN must not be
         // replayed on that session.
-        let (mut replacement, _) = accept_session(&listener, SessionRole::Connector).await?;
+        let (mut replacement, replacement_session_id) =
+            accept_session(&listener, SessionRole::Connector).await?;
+        assert_ne!(initial_session_id, replacement_session_id);
         assert!(
             timeout(Duration::from_millis(150), replacement.next())
                 .await
@@ -289,7 +292,7 @@ async fn committed_open_timeout_closes_session_and_existing_pipes_case() -> Test
     assert_eq!(error.observation(), PeerObservation::MaybeObserved);
 
     let mut byte = [0_u8; 1];
-    let pipe_error = timeout(Duration::from_secs(1), existing.read(&mut byte))
+    let pipe_error = timeout(Duration::from_secs(1), existing.read_into(&mut byte))
         .await?
         .err()
         .ok_or_else(|| io::Error::other("existing Pipe survived session timeout"))?;
@@ -343,14 +346,14 @@ async fn stalled_transport_send_times_out_and_cleans_up_session_case() -> TestRe
     .await?;
     let mut pipe = connector.open("echo.alpha").await?;
     let payload = vec![0_u8; 32 * 1024 * 1024];
-    let write_error = timeout(Duration::from_secs(2), pipe.write_all(&payload))
+    let write_error = timeout(Duration::from_secs(2), pipe.write_all_bytes(&payload))
         .await?
         .err()
         .ok_or_else(|| io::Error::other("stalled transport write unexpectedly succeeded"))?;
     assert_eq!(write_error.code(), ErrorCode::Unavailable);
 
     let mut byte = [0_u8; 1];
-    let read_error = timeout(Duration::from_secs(1), pipe.read(&mut byte))
+    let read_error = timeout(Duration::from_secs(1), pipe.read_into(&mut byte))
         .await?
         .err()
         .ok_or_else(|| io::Error::other("stalled session Pipe did not fail"))?;
@@ -395,7 +398,7 @@ async fn opened_pipe_fails_when_its_session_is_replaced() -> TestResult {
     .await?;
     let mut pipe = connector.open("echo.alpha").await?;
     let mut buffer = [0_u8; 1];
-    let error = timeout(Duration::from_secs(1), pipe.read(&mut buffer))
+    let error = timeout(Duration::from_secs(1), pipe.read_into(&mut buffer))
         .await?
         .err()
         .ok_or_else(|| io::Error::other("old Pipe did not fail after session replacement"))?;
@@ -451,10 +454,10 @@ async fn full_pipe_buffer_resets_only_that_pipe_case() -> TestResult {
     let mut pipe = connector.open("echo.alpha").await?;
     tokio::time::sleep(Duration::from_millis(30)).await;
     let mut buffer = [0_u8; 3];
-    assert_eq!(pipe.read(&mut buffer).await?, 3);
+    assert_eq!(pipe.read_into(&mut buffer).await?, 3);
     assert_eq!(&buffer, b"one");
     let error = pipe
-        .read(&mut buffer)
+        .read_into(&mut buffer)
         .await
         .err()
         .ok_or_else(|| io::Error::other("buffer overflow did not fail Pipe"))?;

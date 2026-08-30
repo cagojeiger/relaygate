@@ -11,6 +11,32 @@ Rust API에서 `Connector::connect(Config)`와 `ListenerRuntime::connect(Config)
 Gateway session을 만들고 관리한다. 논리적인 Pipe 연결은 `connector.open(ClientId)`가
 시작하며, Listener application은 `listener.accept()`로 선택된 Pipe를 받는다.
 
+`Pipe`는 Tokio의 `AsyncRead`와 `AsyncWrite`를 구현한다. 하나의 task에서 그대로 읽고
+쓸 수 있고, 읽기와 쓰기를 독립 task에서 동시에 수행하려면 `into_split()`으로
+`PipeReadHalf`와 `PipeWriteHalf`를 얻는다.
+
+```rust
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+let pipe = connector.open("echo.alpha").await?;
+let (mut reader, mut writer) = pipe.into_split();
+
+let receive = tokio::spawn(async move {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await?;
+    Ok::<_, std::io::Error>(bytes)
+});
+
+writer.write_all(b"hello relaygate").await?;
+writer.shutdown().await?;
+let echoed = receive.await??;
+```
+
+`shutdown()`과 구조화된 `shutdown_write()`는 write 방향의 `FIN`이다. 한 half만 drop해도
+반대 방향을 임의로 닫지 않으며, 마지막 public Pipe owner가 사라질 때 전체 Pipe를 한 번
+정리한다. RelayGate 오류 세부 정보가 필요한 코드는 `read_into()`와
+`write_all_bytes()` 구조화 메서드를 사용할 수 있다.
+
 현재 구현 단계는 **단일 Gateway의 local Pipe**입니다.
 
 - Rust workspace와 Rust public SDK

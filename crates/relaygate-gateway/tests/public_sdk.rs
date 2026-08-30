@@ -2,7 +2,10 @@
 mod support;
 
 use relaygate_sdk::{Config, Connector, ErrorCode, Listener, ListenerRuntime, Pipe};
-use tokio::time::{Duration, Instant, sleep, timeout};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    time::{Duration, Instant, sleep, timeout},
+};
 
 use support::{TestGateway, TestResult};
 
@@ -18,8 +21,8 @@ async fn shared_client_id_open_reaches_surviving_listener_runtime() -> TestResul
     let second = second_runtime.listen("echo.shared", "secret").await?;
     let connector = Connector::connect(config).await?;
 
-    let opened = connector.open("echo.shared").await?;
-    let (first_selected, accepted) = accept_one_of(&first, &second).await?;
+    let mut opened = connector.open("echo.shared").await?;
+    let (first_selected, mut accepted) = accept_one_of(&first, &second).await?;
     assert_no_queued_pipe(if first_selected { &second } else { &first }).await?;
     opened.close().await?;
     accepted.close().await?;
@@ -30,14 +33,65 @@ async fn shared_client_id_open_reaches_surviving_listener_runtime() -> TestResul
         second_runtime.close();
     }
     let survivor = if first_selected { &second } else { &first };
-    let opened_after_close = open_until_success(&connector, "echo.shared").await?;
-    let accepted_after_close = timeout(Duration::from_secs(1), survivor.accept()).await??;
+    let mut opened_after_close = open_until_success(&connector, "echo.shared").await?;
+    let mut accepted_after_close = timeout(Duration::from_secs(1), survivor.accept()).await??;
     opened_after_close.close().await?;
     accepted_after_close.close().await?;
 
     connector.close();
     first_runtime.close();
     second_runtime.close();
+    gateway.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn owned_pipe_halves_run_full_duplex_in_independent_tasks() -> TestResult {
+    let gateway = TestGateway::start(&[("duplex.alpha", "secret")]).await?;
+    let config =
+        Config::new(gateway.address.to_string()).with_operation_timeout(Duration::from_millis(500));
+    let listener_runtime = ListenerRuntime::connect(config.clone()).await?;
+    let listener = listener_runtime.listen("duplex.alpha", "secret").await?;
+    let connector = Connector::connect(config).await?;
+
+    let connector_pipe = connector.open("duplex.alpha").await?;
+    let listener_pipe = timeout(Duration::from_secs(1), listener.accept()).await??;
+    let (mut connector_reader, mut connector_writer) = connector_pipe.into_split();
+    let (mut listener_reader, mut listener_writer) = listener_pipe.into_split();
+
+    let connector_receive = tokio::spawn(async move {
+        let mut payload = Vec::new();
+        connector_reader.read_to_end(&mut payload).await?;
+        Ok::<_, std::io::Error>(payload)
+    });
+    let connector_send = tokio::spawn(async move {
+        connector_writer.write_all(b"from connector").await?;
+        connector_writer.shutdown().await
+    });
+    let listener_receive = tokio::spawn(async move {
+        let mut payload = Vec::new();
+        listener_reader.read_to_end(&mut payload).await?;
+        Ok::<_, std::io::Error>(payload)
+    });
+    let listener_send = tokio::spawn(async move {
+        listener_writer.write_all(b"from listener").await?;
+        listener_writer.shutdown().await
+    });
+
+    let (connector_payload, (), listener_payload, ()) = timeout(Duration::from_secs(2), async {
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((
+            connector_receive.await??,
+            connector_send.await??,
+            listener_receive.await??,
+            listener_send.await??,
+        ))
+    })
+    .await??;
+    assert_eq!(connector_payload, b"from listener");
+    assert_eq!(listener_payload, b"from connector");
+
+    connector.close();
+    listener_runtime.close();
     gateway.stop().await?;
     Ok(())
 }

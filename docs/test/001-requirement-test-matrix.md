@@ -43,6 +43,7 @@
 | `T-SDK-14` | `SDK-025` | public runtime owner clone 하나의 drop은 session을 유지한다. live Pipe만 남은 동안에는 I/O가 유지되고 마지막 Connector 또는 Listener-side owner와 Pipe가 사라지면 transport가 닫히며 reconnect가 중단된다. explicit runtime close는 owner 수와 무관하게 종료한다. |
 | `T-SDK-15` | `SDK-026` | periodic heartbeat를 발생시키지 않아도 idle session을 그것만으로 닫지 않는다. silent blackhole은 active control operation deadline 또는 transport event에서만 실패로 수렴하고 단순 Pipe read idle은 session failure가 아니다. |
 | `T-SDK-16` | `SDK-027` | 기존 반환 Listener A·B와 최초 ListenAttempt C가 한 session에 있을 때 C의 commit된 REGISTER terminal 응답을 blackhole 처리한다. current ListenerSession 전체와 기존 Pipe가 종료되고 C는 한 번만 terminal 실패하며 reservation이 제거된다. 새 session에는 A·B만 새 request identity로 재등록되고 C나 old request는 replay되지 않는다. 별도로 최초 attempt의 명시적 transient `REGISTER_FAILED`는 terminal인 반면 A·B recovery registration의 transient 실패는 bounded backoff 뒤 새 request로 복구되는지 확인한다. TCP 연결 성공만으로 backoff를 초기화하지 않고 A·B recovery 성공 뒤 초기화한다. |
+| `T-SDK-17` | `SDK-028` | `Pipe`의 Tokio I/O trait와 consuming owned split을 public API로 사용한다. read/write half를 서로 다른 task에서 동시에 구동해 byte ordering과 half-close를 확인하고, outbound full 상태의 write가 capacity 또는 terminal failure에 깨어나는지 검증한다. half 하나의 drop은 frame을 만들지 않고 마지막 public owner drop만 cleanup을 한 번 발생시키며, `AsyncWrite::shutdown`은 `FIN`, shutdown 뒤 write는 오류이고 Tokio I/O 오류의 downcast 가능한 inner error에는 원래 RelayGate `Error`의 code와 observation이 남는다. |
 
 ## Gateway 등록과 route registration
 

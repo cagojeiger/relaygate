@@ -984,7 +984,7 @@ async fn session_loss_drains_unaccepted_pipe_before_recovery_admission_case() ->
     })
     .await?;
     let mut byte = [0_u8; 1];
-    let accepted_error = timeout(Duration::from_secs(1), accepted_pipe.read(&mut byte))
+    let accepted_error = timeout(Duration::from_secs(1), accepted_pipe.read_into(&mut byte))
         .await?
         .err()
         .ok_or_else(|| io::Error::other("accepted old-session Pipe did not fail"))?;
@@ -1105,9 +1105,9 @@ async fn terminal_queued_pipe_is_discarded_before_accept_case() -> TestResult {
     ready_rx.await?;
     let mut pipe = listener.accept().await?;
     let mut payload = [0_u8; 4];
-    assert_eq!(pipe.read(&mut payload).await?, payload.len());
+    assert_eq!(pipe.read_into(&mut payload).await?, payload.len());
     assert_eq!(&payload, b"live");
-    assert_eq!(pipe.read(&mut payload).await?, 0);
+    assert_eq!(pipe.read_into(&mut payload).await?, 0);
     drop(pipe);
     let _ = done_tx.send(());
     runtime.close();
@@ -1178,7 +1178,7 @@ async fn stalled_listener_transport_send_times_out_and_cleans_up_session_case() 
     let listener = runtime.listen("echo.alpha", "dev-key").await?;
     let mut pipe = listener.accept().await?;
     let payload = vec![0_u8; 32 * 1024 * 1024];
-    let write_error = timeout(Duration::from_secs(2), pipe.write_all(&payload))
+    let write_error = timeout(Duration::from_secs(2), pipe.write_all_bytes(&payload))
         .await?
         .err()
         .ok_or_else(|| {
@@ -1187,7 +1187,7 @@ async fn stalled_listener_transport_send_times_out_and_cleans_up_session_case() 
     assert_eq!(write_error.code(), ErrorCode::Unavailable);
 
     let mut byte = [0_u8; 1];
-    let read_error = timeout(Duration::from_secs(1), pipe.read(&mut byte))
+    let read_error = timeout(Duration::from_secs(1), pipe.read_into(&mut byte))
         .await?
         .err()
         .ok_or_else(|| io::Error::other("stalled ListenerSession Pipe did not fail"))?;

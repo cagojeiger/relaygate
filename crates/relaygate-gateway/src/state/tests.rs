@@ -158,6 +158,27 @@ fn n_to_m_registry_offers_each_open_to_only_one_listener() -> Result<(), Box<dyn
 }
 
 #[test]
+fn same_connection_id_is_isolated_across_connector_sessions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let first_connector = add_session(&mut state, SessionRole::Connector);
+    let second_connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+
+    let first = offer_pipe(&mut state, first_connector, listener, 1)?;
+    let second = offer_pipe(&mut state, second_connector, listener, 1)?;
+
+    assert_ne!(first, second);
+    assert_eq!(first.connector_session_id(), first_connector);
+    assert_eq!(second.connector_session_id(), second_connector);
+    assert_eq!(first.connection_id(), 1);
+    assert_eq!(second.connection_id(), 1);
+    assert_eq!(state.pipe_count(), 2);
+    Ok(())
+}
+
+#[test]
 fn disconnect_removes_only_owned_state_and_terminates_pending_open()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();

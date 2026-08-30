@@ -6,6 +6,7 @@ use relaygate_protocol::{
     BindingId, ClientKey, ErrorCode, Frame, PeerObservation, PipeId, SessionRole,
 };
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     time::{Duration, sleep, timeout},
 };
@@ -378,6 +379,40 @@ async fn session_limit_includes_connections_waiting_for_hello() -> TestResult {
     ));
 
     drop(first);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match timeout(
+            Duration::from_millis(100),
+            sdk_session(gateway.address, SessionRole::Connector),
+        )
+        .await
+        {
+            Ok(Ok(_session)) => break,
+            Ok(Err(_)) | Err(_) if tokio::time::Instant::now() < deadline => {
+                sleep(Duration::from_millis(10)).await;
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    gateway.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsupported_wire_version_closes_handshake_and_releases_session_slot() -> TestResult {
+    let gateway =
+        TestGateway::start_without_check(GatewayConfig::new([]).with_max_sessions(1)).await?;
+    let mut unsupported = TcpStream::connect(gateway.address).await?;
+    unsupported.write_all(b"RG\x02\x01\x00\x00\x00\x00").await?;
+
+    let mut byte = [0_u8; 1];
+    assert!(matches!(
+        timeout(Duration::from_secs(1), unsupported.read(&mut byte)).await,
+        Ok(Ok(0)) | Ok(Err(_))
+    ));
+
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     loop {
         match timeout(

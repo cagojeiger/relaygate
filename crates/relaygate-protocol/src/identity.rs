@@ -1,7 +1,8 @@
 use uuid::Uuid;
 
 macro_rules! opaque_uuid {
-    ($name:ident) => {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub struct $name(Uuid);
 
@@ -30,9 +31,23 @@ macro_rules! opaque_uuid {
     };
 }
 
-opaque_uuid!(SessionId);
-opaque_uuid!(BindingId);
+opaque_uuid!(
+    /// Identifies one SDK-Gateway transport-session incarnation.
+    ///
+    /// Gateways issue a fresh UUIDv4 for every established session and the
+    /// RelayGate cluster treats the value as globally unique.
+    SessionId
+);
+opaque_uuid!(
+    /// Identifies one live Listener binding.
+    BindingId
+);
 
+/// Identifies one Pipe as a Connector session plus its session-local counter.
+///
+/// `connection_id` is monotonic only within its Connector session. Combining
+/// it with the cluster-unique session incarnation makes the `PipeId` globally
+/// unique without exposing a Gateway identifier to the SDK wire contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PipeId {
     connector_session_id: SessionId,
