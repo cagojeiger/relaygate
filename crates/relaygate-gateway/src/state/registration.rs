@@ -2,7 +2,7 @@ use relaygate_protocol::{BindingId, ClientKey, ErrorCode, Frame, SessionId};
 
 use crate::registry::Registration;
 
-use super::{Delivery, GatewayState};
+use super::{GatewayAction, GatewayState};
 
 impl GatewayState {
     pub(super) fn register(
@@ -11,8 +11,8 @@ impl GatewayState {
         request_id: u64,
         client_id: String,
         client_key: ClientKey,
-    ) -> Vec<Delivery> {
-        let response = if client_id.is_empty() {
+    ) -> Vec<GatewayAction> {
+        let (response, publish) = if client_id.is_empty() {
             tracing::debug!(
                 component = "gateway",
                 event = "gateway.listener.registration_rejected",
@@ -21,11 +21,14 @@ impl GatewayState {
                 error_code = ?ErrorCode::InvalidArgument,
                 "Listener registration rejected"
             );
-            Frame::RegisterFailed {
-                request_id,
-                code: ErrorCode::InvalidArgument,
-                message: "ClientId must not be empty".to_owned(),
-            }
+            (
+                Frame::RegisterFailed {
+                    request_id,
+                    code: ErrorCode::InvalidArgument,
+                    message: "ClientId must not be empty".to_owned(),
+                },
+                false,
+            )
         } else if !self.auth.authorizes(&client_id, &client_key) {
             tracing::debug!(
                 component = "gateway",
@@ -36,11 +39,14 @@ impl GatewayState {
                 error_code = ?ErrorCode::Unauthenticated,
                 "Listener registration rejected"
             );
-            Frame::RegisterFailed {
-                request_id,
-                code: ErrorCode::Unauthenticated,
-                message: "ClientKey was not accepted".to_owned(),
-            }
+            (
+                Frame::RegisterFailed {
+                    request_id,
+                    code: ErrorCode::Unauthenticated,
+                    message: "ClientKey was not accepted".to_owned(),
+                },
+                false,
+            )
         } else if self.registry.binding_count() >= self.limits.max_bindings
             && !self
                 .registry
@@ -56,11 +62,14 @@ impl GatewayState {
                 listener_bindings = self.registry.binding_count(),
                 "Listener registration rejected"
             );
-            Frame::RegisterFailed {
-                request_id,
-                code: ErrorCode::ResourceExhausted,
-                message: "Gateway ListenerBinding limit reached".to_owned(),
-            }
+            (
+                Frame::RegisterFailed {
+                    request_id,
+                    code: ErrorCode::ResourceExhausted,
+                    message: "Gateway ListenerBinding limit reached".to_owned(),
+                },
+                false,
+            )
         } else {
             let registration = self.registry.register(session_id, &client_id);
             let (binding_id, created) = match registration {
@@ -78,12 +87,23 @@ impl GatewayState {
                 listener_bindings = self.registry.binding_count(),
                 "Listener registration accepted"
             );
-            Frame::Registered {
-                request_id,
-                binding_id,
-            }
+            (
+                Frame::Registered {
+                    request_id,
+                    binding_id,
+                },
+                created,
+            )
         };
-        self.to(session_id, response).into_iter().collect()
+        let mut actions = self
+            .to(session_id, response)
+            .map(GatewayAction::SendSdkFrame)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if publish {
+            actions.push(self.registration_publication(session_id));
+        }
+        actions
     }
 
     pub(super) fn unregister(
@@ -91,7 +111,7 @@ impl GatewayState {
         session_id: SessionId,
         request_id: u64,
         binding_id: BindingId,
-    ) -> Vec<Delivery> {
+    ) -> Vec<GatewayAction> {
         let removed = self.registry.remove_owned(session_id, binding_id).is_some();
         tracing::debug!(
             component = "gateway",
@@ -103,14 +123,17 @@ impl GatewayState {
             listener_bindings = self.registry.binding_count(),
             "Listener unregistration processed"
         );
-        let mut deliveries = if removed {
-            self.cancel_pending_binding(binding_id)
+        let mut actions = if removed {
+            Self::send_actions(self.cancel_pending_binding(binding_id))
         } else {
             Vec::new()
         };
         if let Some(response) = self.to(session_id, Frame::Unregistered { request_id }) {
-            deliveries.push(response);
+            actions.push(GatewayAction::SendSdkFrame(response));
         }
-        deliveries
+        if removed {
+            actions.push(self.registration_publication(session_id));
+        }
+        actions
     }
 }

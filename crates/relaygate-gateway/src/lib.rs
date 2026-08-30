@@ -9,10 +9,14 @@ mod config;
 mod error;
 mod gateway;
 mod observation;
+mod peer;
 mod registry;
+mod routing;
 mod state;
 
 pub use config::GatewayConfig;
 pub use error::GatewayError;
 pub use gateway::{Gateway, check};
 pub use observation::GatewaySnapshot;
+pub use peer::{GatewayPeerConfig, TrustedPeerConfig};
+pub use routing::GatewayRoutingConfig;

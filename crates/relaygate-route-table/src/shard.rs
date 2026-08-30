@@ -280,6 +280,18 @@ impl RouteTableShard {
         Ok(BindingSet::new(mappings.values().cloned().collect()))
     }
 
+    /// Returns the earliest active lease deadline, if one exists.
+    ///
+    /// Runtime adapters use this monotonic deadline to drive expiry even when
+    /// no RouteTable request arrives. The deadline is operational scheduling
+    /// state, not a stable identity and must not be sent over the wire.
+    #[must_use]
+    pub fn next_expiry_deadline(&self) -> Option<Instant> {
+        self.expiry_index
+            .first_key_value()
+            .map(|(deadline, _)| *deadline)
+    }
+
     /// Removes all registrations whose current deadline is at or before `now`.
     pub fn expire_due(&mut self, now: Instant) -> usize {
         let mut expired = 0;

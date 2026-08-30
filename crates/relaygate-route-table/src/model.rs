@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Duration,
+};
 
 use crate::{
     BindingId, ClientId, GatewayId, GatewayLocator, LeaseId, ListenerSessionId,
@@ -191,6 +194,30 @@ impl BindingSet {
         Self { entries }
     }
 
+    /// Reconstructs a Resolve result at a validated transport boundary.
+    pub fn from_entries(entries: Vec<MappingEntry>) -> Result<Self, RouteTableError> {
+        let Some(first) = entries.first() else {
+            return Err(RouteTableError::InvalidArgument(
+                "BindingSet must contain at least one mapping".to_owned(),
+            ));
+        };
+        let client_id = first.client_id();
+        let mut identities = HashSet::with_capacity(entries.len());
+        for entry in &entries {
+            if entry.client_id() != client_id {
+                return Err(RouteTableError::InvalidArgument(
+                    "BindingSet mappings must share one ClientId".to_owned(),
+                ));
+            }
+            if !identities.insert(entry.identity()) {
+                return Err(RouteTableError::InvalidArgument(
+                    "BindingSet contains a duplicate MappingIdentity".to_owned(),
+                ));
+            }
+        }
+        Ok(Self { entries })
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -226,6 +253,16 @@ impl RegistrationAck {
             accepted_revision,
             expires_in,
         }
+    }
+
+    /// Reconstructs an acknowledgement at a validated transport boundary.
+    #[must_use]
+    pub const fn from_parts(
+        lease_id: LeaseId,
+        accepted_revision: Option<RegistrationRevision>,
+        expires_in: Duration,
+    ) -> Self {
+        Self::new(lease_id, accepted_revision, expires_in)
     }
 
     #[must_use]

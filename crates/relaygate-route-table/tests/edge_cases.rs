@@ -3,9 +3,9 @@ mod support;
 use std::time::{Duration, Instant};
 
 use relaygate_route_table::{
-    BindingId, ClientId, ErrorCode, GatewayLocator, MappingEntry, MappingSnapshot, RegistrationKey,
-    RegistrationRevision, RequestContext, RouteTableConfig, RouteTableError, RouteTableShard,
-    ShardDirectory, ShardDirectoryGeneration, ShardId,
+    BindingId, BindingSet, ClientId, ErrorCode, GatewayLocator, MappingEntry, MappingSnapshot,
+    RegistrationKey, RegistrationRevision, RequestContext, RouteTableConfig, RouteTableError,
+    RouteTableShard, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
 use uuid::Uuid;
 
@@ -318,6 +318,10 @@ fn expiry_memory_is_bounded_by_live_leases_not_keepalive_count() -> Result<(), R
     let lease = shard
         .register(context, generation, key.clone(), start)?
         .lease_id();
+    assert_eq!(
+        shard.next_expiry_deadline(),
+        Some(start + Duration::from_secs(1_000_000))
+    );
 
     for second in 1..=10_000 {
         shard.keep_alive(
@@ -331,6 +335,10 @@ fn expiry_memory_is_bounded_by_live_leases_not_keepalive_count() -> Result<(), R
     assert_eq!(shard.stats().registration_count, 1);
     assert_eq!(shard.stats().expiry_record_count, 1);
     assert_eq!(shard.stats().mapping_count, 0);
+    assert_eq!(
+        shard.next_expiry_deadline(),
+        Some(start + Duration::from_secs(1_010_000))
+    );
     Ok(())
 }
 
@@ -362,6 +370,31 @@ fn empty_and_duplicate_snapshot_shapes_are_rejected() -> Result<(), RouteTableEr
         MappingSnapshot::new([first, second]),
         Err(ref error) if error.code() == ErrorCode::InvalidArgument
     ));
+    Ok(())
+}
+
+#[test]
+fn binding_set_transport_reconstruction_rejects_invalid_shapes() -> Result<(), RouteTableError> {
+    assert!(matches!(
+        BindingSet::from_entries(Vec::new()),
+        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+    ));
+
+    let gateway_id = gateway(62);
+    let session_id = session(620);
+    let alpha = mapping("alpha", gateway_id, session_id, binding(6201))?;
+    let duplicate = alpha.clone();
+    let beta = mapping("beta", gateway_id, session_id, binding(6202))?;
+
+    assert!(matches!(
+        BindingSet::from_entries(vec![alpha.clone(), duplicate]),
+        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+    ));
+    assert!(matches!(
+        BindingSet::from_entries(vec![alpha.clone(), beta]),
+        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+    ));
+    assert_eq!(BindingSet::from_entries(vec![alpha])?.len(), 1);
     Ok(())
 }
 

@@ -12,11 +12,12 @@
 - Production runtime과 public SDK는 Rust workspace가 소유한다.
 - 루트에 단일 `src/`를 두지 않고 `crates/` 아래의 책임별 crate가 각자 `src/`와 `tests/`를 소유한다.
 - `relaygate-server`는 process boot, config, observation, shutdown과 dependency wiring만 소유한다.
-- `relaygate-gateway`는 Listener/Connector session, local binding, OPEN admission, Pipe relay와 cleanup을 소유한다.
+- `relaygate-gateway`는 Listener/Connector session, local binding, RT registration·Resolve orchestration, one-hop peer relay, OPEN admission, Pipe relay와 cleanup을 소유한다.
 - `relaygate-sdk`는 public `Connector`, `Listener`, `Pipe` API와 managed reconnect를 소유하며 Gateway state type을 노출하지 않는다.
 - `relaygate-protocol`은 SDK–Gateway wire contract만 소유하는 workspace-internal crate이며 socket, session policy와 routing state를 소유하지 않는다.
 - Gateway와 SDK는 서로 직접 의존하지 않고 `relaygate-protocol`만 공유한다.
-- 최초 구현은 Gateway 하나의 local Pipe 경로만 다루며 RouteTable, peer relay와 persistence를 포함하지 않는다.
+- `relaygate-route-table`은 synchronous memory-only current-state core를, `relaygate-route-table-transport`는 bounded internal network/auth adapter를 소유하며 persistence를 포함하지 않는다.
+- local-only mode는 Gateway 하나의 local Pipe 경로를 유지한다. distributed mode는 memory-only RouteTable과 one-hop peer relay를 사용하며 persistence를 포함하지 않는다.
 - RelayGate는 payload를 opaque bytes로 취급하고 application 인증·인가, message 의미, delivery acknowledgement와 업무 retry를 소유하지 않는다.
 - `ClientId`와 binding 등록용 `ClientKey`는 external client configuration이 관리하고 RelayGate는 credential 값을 영속화하지 않는다.
 
@@ -41,6 +42,6 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 container 경로 변경:
 
 ```text
-docker compose up --build --abort-on-container-exit --exit-code-from probe
+docker compose up --build --abort-on-container-exit --exit-code-from topology-probe
 docker compose down --volumes --remove-orphans
 ```

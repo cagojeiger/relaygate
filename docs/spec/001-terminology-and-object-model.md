@@ -28,6 +28,7 @@ Connector application                              Listener application
 | `ListenerSession` | Listener SDK runtime이 Gateway에 현재 연결된 한 번의 live incarnation |
 | `ClientId` | 위치가 아닌 non-empty UTF-8 logical destination identifier. identity 비교와 authority hash는 정규화하지 않은 exact bytes를 사용한다. |
 | `ClientKey` | Listener가 해당 `ClientId`에 binding을 등록할 권한을 증명하는 credential. configured `ClientId`마다 Gateway startup configuration에 하나만 존재한다. |
+| `InternalGatewayKey` | 최초 local/CI adapter가 configured `GatewayName`을 internal RT/peer connection의 fresh runtime `GatewayId`에 결합할 때만 쓰는 static test credential. `ClientKey`, application identity 또는 production channel security가 아니다. |
 | `BindingId` | 하나의 `ListenerSession` 안에서 모든 `ListenerBinding` incarnation을 lifetime 전체에 걸쳐 구분하는 재사용하지 않는 opaque identifier |
 | `ListenerBinding` | 하나의 `ClientId`와 하나의 live `ListenerSession`을 연결하는 Gateway-local association |
 | `MappingEntry` | authority shard가 resolve에 사용하는 하나의 `ListenerBinding`에 대한 shard-local soft-state view |
@@ -43,7 +44,8 @@ Connector application                              Listener application
 | `ListenerSessionId` | 하나의 `GatewayId` 범위에서 `ListenerSession` incarnation마다 새로 발급하고 재사용하지 않는 식별자 |
 | `GatewayId` | Gateway runtime incarnation마다 새로 발급하고 이전 incarnation에서 재사용하지 않는 식별자 |
 | `GatewayLocator` | `ListenerSession`을 현재 소유한 Gateway의 위치 식별자 |
-| `ConnectionId` | 하나의 `ConnectorSession` 안에서 한 번의 Pipe 수립을 상관시키는 strictly increasing unsigned counter. 애플리케이션 message 또는 delivery ID가 아니다. |
+| `ConnectionId` | SDK→Entry Gateway `ConnectorSession` 안에서 한 번의 Pipe 수립을 상관시키는 strictly increasing unsigned counter. 애플리케이션 message 또는 delivery ID가 아니다. |
+| `OpenIdentity` | remote open 동안 `(EntryGatewayId, ConnectorSessionId, ConnectionId)`를 전달해 양 Gateway의 현재 attempt와 `RelayStream`을 상관시키는 identity. durable replay key가 아니다. |
 | `Pipe` | 정확히 하나의 Connector와 하나의 Listener를 연결하는 opaque bidirectional byte stream |
 | `PeerTransport` | Gateway pair 사이에서 여러 `RelayStream`을 운반하는 reusable bidirectional transport |
 | `PeerTransportSlot` | 하나의 unordered Gateway pair 안에서 `DialerGatewayId`로 구분되는 방향별 transport 자리 |
@@ -88,6 +90,7 @@ unordered Gateway pair 1
     └── PeerTransportSlot(dialer B) 1 ── READY PeerTransport 0..1
 
 PeerTransport 1 ── RelayStream 0..N ── remote Pipe 1
+                       └── current OpenIdentity 1
 
 one open
     └── one selected ListenerBinding
@@ -119,6 +122,7 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 | 객체 | 소유자 | 수명 |
 | --- | --- | --- |
 | `ClientId`, `ClientKey` | external client configuration | runtime session과 독립적이며 Gateway process 수명 동안 불변 |
+| `InternalGatewayKey` | local/CI deployment configuration | process 시작부터 종료까지 불변이며 RT mapping, peer stream과 로그 state에 포함되지 않음 |
 | `Connector SDK runtime` | Connector application | runtime을 닫을 때까지 |
 | `ConnectorSession`, `ConnectorSessionId` | Entry Gateway | Connector SDK와 맺은 한 번의 live 연결 동안 |
 | `Listener SDK runtime` | Listener application | runtime을 닫을 때까지 |
@@ -134,7 +138,8 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 | `ShardEndpoint` | deployment configuration | 해당 logical shard endpoint가 routable한 동안 |
 | `GatewayId` | Gateway runtime | 한 번의 live runtime incarnation 동안 |
 | `GatewayLocator` | deployment/network configuration | 해당 위치가 routable한 동안 |
-| `ConnectionId` | 하나의 `ConnectorSession` | 수립 시도 시작부터 실패 또는 Pipe 종료까지 |
+| `ConnectionId` | 하나의 SDK→Entry `ConnectorSession` | 수립 시도 시작부터 실패 또는 Pipe 종료까지 |
+| `OpenIdentity` | 현재 remote open과 양 Gateway | 대응 attempt 또는 `RelayStream` 종료까지 |
 | `Pipe`의 각 endpoint | 각각 Connector/Listener application | close, transport 상실 또는 terminal failure까지 |
 | `PeerTransport` | 참여하는 Gateway pair | transport close 또는 상실까지 |
 | `PeerTransportSlot` | unordered Gateway pair | 참여 Gateway incarnation 중 하나가 종료될 때까지 |
@@ -170,7 +175,7 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 - **`TERM-014`**: 하나의 `PeerTransport`는 0개 이상의 `RelayStream`을 운반할 수 있고, 각 `RelayStream`은 remote Pipe 하나에만 대응하며 소유 transport보다 오래 존재해서는 안 된다.
 - **`TERM-015`**: 하나의 `MappingEntry`는 `(GatewayId, ListenerSessionId, BindingId)`로 식별되는 binding incarnation 하나를 나타내고 `ClientId`와 `GatewayLocator`를 포함해야 한다. 그 identity는 authority shard에 최대 하나의 active mapping만 가져야 하며 `ClientKey`나 payload를 포함해서는 안 된다.
 - **`TERM-016`**: peer transport candidate는 `(DialerGatewayId, PeerTransportId)`로 식별해야 한다. `PeerTransportId`는 해당 dialer Gateway incarnation 안에서 재사용하지 않는 opaque identity여야 하며 `GatewayLocator`나 연결 도착 순서에서 계산해서는 안 된다.
-- **`TERM-017`**: 한 open attempt는 `(EntryGatewayId, ConnectorSessionId, ConnectionId)`로 식별해야 한다. `ConnectorSessionId`는 해당 Entry Gateway incarnation 안에서 재사용하지 않아야 한다. Connector SDK는 session마다 증가하는 counter로 `ConnectionId`를 할당하고 전송 순서가 이전 값보다 커야 하며, Gateway는 remote high-watermark 하나로 낮거나 같은 값을 거절해야 한다.
+- **`TERM-017`**: 한 open attempt는 `(EntryGatewayId, ConnectorSessionId, ConnectionId)`인 `OpenIdentity`로 식별해야 한다. `ConnectorSessionId`는 해당 Entry Gateway incarnation 안에서 재사용하지 않아야 한다. Connector SDK는 SDK→Entry `ConnectorSession`마다 증가하는 counter로 `ConnectionId`를 할당하고 전송 순서가 이전 값보다 커야 하며, Entry Gateway만 그 session의 remote high-watermark 하나로 낮거나 같은 값을 거절해야 한다. Owner Gateway는 `OpenIdentity`를 현재 peer stream과 attempt를 상관시키는 동안만 보유하고 종료 뒤 remote `ConnectorSession` high-watermark나 `OpenIdentity` tombstone을 보관해서는 안 된다.
 - **`TERM-018`**: `ShardDirectory`는 각 `ShardId`의 `ShardEndpoint`를 정확히 하나만 포함하고 `ClientId`의 remote binding mapping을 포함해서는 안 된다. `ShardEndpoint`를 `GatewayLocator`와 동일시하거나 서로 독립적으로 쓰이는 복수 endpoint를 한 logical shard record에 넣어서는 안 된다.
 - **`TERM-019`**: 하나의 `RegistrationKey`는 `(GatewayId, ListenerSessionId, ShardId)`이고 동시에 최대 하나의 active lease를 가져야 한다.
 - **`TERM-020`**: `RegistrationRevision`은 하나의 active lease 안에서만 증가해야 한다. 첫 accepted snapshot은 `1`이어야 하고, 이후에는 current revision보다 strictly greater여야 한다. 같은 revision의 동일 snapshot만 idempotent success이고, 같은 revision의 다른 snapshot·낮은 revision·첫 revision이 아닌 값은 current mapping을 대체해서는 안 된다.
@@ -183,6 +188,7 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 - **`TERM-027`**: `ShardDirectoryGeneration`은 generation 필드를 포함하지 않은 immutable shard directory artifact의 exact bytes를 SHA-256으로 계산해야 한다. 같은 bytes는 같은 generation을 만들고 artifact bytes가 바뀌면 generation을 다시 계산해야 하며, Gateway와 RT process는 시작 시 검증한 generation과 directory를 종료할 때까지 바꾸어서는 안 된다.
 - **`TERM-028`**: `PeerTransport`의 dialer는 initiator bit `0`, acceptor는 bit `1`을 가져야 한다. 각 endpoint가 새 stream을 시작할 때 `StreamId = (local_counter << 1) | initiator_bit`로 할당하며, 같은 transport 안에서 실패한 OPEN을 포함해 counter와 `StreamId`를 재사용하거나 wrap해서는 안 된다.
 - **`TERM-029`**: `ClientId`는 non-empty valid UTF-8이어야 하고 equality와 authority hash에 exact bytes를 사용해야 한다. Unicode normalization, case folding 또는 locale 변환을 암묵적으로 적용해서는 안 된다.
+- **`TERM-030`**: `InternalGatewayKey`는 local/CI internal component handshake에만 사용하고 `ClientKey`, application credential 또는 payload 권한과 동일시해서는 안 된다. startup configuration 밖의 mapping·lease·Pipe·RelayStream과 로그에 저장해서는 안 되며 plain TCP test adapter를 production confidentiality 또는 integrity 보장으로 표현해서는 안 된다.
 
 ## 이 SPEC에서 정하지 않는 것
 

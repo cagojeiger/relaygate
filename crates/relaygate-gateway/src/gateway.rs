@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    fmt,
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
@@ -15,30 +15,90 @@ use tokio::{
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use crate::{
-    GatewayConfig, GatewayError, GatewaySnapshot, auth::ClientKeyStore, state::GatewayLimits,
-    state::GatewayState, state::ProtocolViolation,
+    GatewayConfig, GatewayError, GatewayPeerConfig, GatewayRoutingConfig, GatewaySnapshot,
+    auth::ClientKeyStore,
+    peer::PeerHandle,
+    routing::RoutingHandle,
+    state::GatewayState,
+    state::ProtocolViolation,
+    state::{GatewayAction, GatewayLimits},
 };
+
+mod distributed;
+mod effects;
+
+use distributed::DistributedRuntime;
+use effects::ControlEffects;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_OFFER_SWEEP_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_OFFER_SWEEP_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Gateway {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug)]
 struct Inner {
     state: Mutex<GatewayState>,
     writer_queue_capacity: usize,
     max_frame_len: usize,
     offer_timeout: Duration,
     session_slots: Arc<Semaphore>,
+    routing: Option<RoutingHandle>,
+    peer: Option<PeerHandle>,
+    control_effects: Option<ControlEffects>,
+    distributed_runtime: Mutex<Option<DistributedRuntime>>,
+}
+
+impl fmt::Debug for Gateway {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Gateway")
+            .field("distributed", &self.inner.distributed_runtime())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Gateway {
     pub fn new(config: GatewayConfig) -> Result<Self, GatewayError> {
+        Self::build(config, None)
+    }
+
+    /// Creates a distributed Gateway with RouteTable discovery and one-hop
+    /// Gateway peer relay.
+    ///
+    /// RouteTable availability is not a startup prerequisite. The manager
+    /// reconnects in the background while local SDK sessions remain usable.
+    /// Construction must occur inside a running Tokio runtime.
+    pub fn new_distributed(
+        config: GatewayConfig,
+        routing_config: GatewayRoutingConfig,
+        peer_config: GatewayPeerConfig,
+        shutdown: CancellationToken,
+    ) -> Result<Self, GatewayError> {
+        config.validate()?;
+        tokio::runtime::Handle::try_current().map_err(|error| {
+            GatewayError::Routing(format!(
+                "distributed Gateway must be constructed inside a Tokio runtime: {error}"
+            ))
+        })?;
+        let gateway_id = relaygate_route_table::GatewayId::new();
+        let action_result_capacity = config.max_pending_offers;
+        let distributed = DistributedRuntime::start(
+            gateway_id,
+            routing_config,
+            peer_config,
+            action_result_capacity,
+            shutdown,
+        )?;
+        Self::build(config, Some(distributed))
+    }
+
+    fn build(
+        config: GatewayConfig,
+        distributed: Option<DistributedRuntime>,
+    ) -> Result<Self, GatewayError> {
         config.validate()?;
         let limits = GatewayLimits {
             max_sessions: config.max_sessions,
@@ -47,16 +107,34 @@ impl Gateway {
             max_live_pipes: config.max_live_pipes,
             offer_timeout: config.offer_timeout,
         };
+        let gateway_id = distributed.as_ref().map(DistributedRuntime::gateway_id);
+        let routing = distributed.as_ref().map(DistributedRuntime::routing);
+        let peer = distributed.as_ref().map(DistributedRuntime::peer);
+        let control_effects = distributed.as_ref().map(|runtime| {
+            ControlEffects::new(
+                config.max_pending_offers,
+                runtime.action_results(),
+                runtime.shutdown(),
+            )
+        });
         Ok(Self {
             inner: Arc::new(Inner {
-                state: Mutex::new(GatewayState::new(
-                    ClientKeyStore::new(config.client_keys),
-                    limits,
-                )),
+                state: Mutex::new(match gateway_id {
+                    Some(gateway_id) => GatewayState::new_distributed(
+                        ClientKeyStore::new(config.client_keys),
+                        limits,
+                        gateway_id,
+                    ),
+                    None => GatewayState::new(ClientKeyStore::new(config.client_keys), limits),
+                }),
                 writer_queue_capacity: config.writer_queue_capacity,
                 max_frame_len: config.max_frame_len,
                 offer_timeout: config.offer_timeout,
                 session_slots: Arc::new(Semaphore::new(config.max_sessions)),
+                routing,
+                peer,
+                control_effects,
+                distributed_runtime: Mutex::new(distributed),
             }),
         })
     }
@@ -67,13 +145,26 @@ impl Gateway {
         listener: TcpListener,
         shutdown: CancellationToken,
     ) -> Result<(), GatewayError> {
+        if self.inner.distributed_runtime() {
+            return Err(GatewayError::InvalidConfig(
+                "a distributed Gateway must be served with serve_distributed".to_owned(),
+            ));
+        }
+        self.serve_sdk(listener, shutdown).await
+    }
+
+    async fn serve_sdk(
+        &self,
+        listener: TcpListener,
+        shutdown: CancellationToken,
+    ) -> Result<(), GatewayError> {
         let mut sessions = JoinSet::new();
         let mut offer_sweep = tokio::time::interval(offer_sweep_interval(self.inner.offer_timeout));
         offer_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
-                _ = offer_sweep.tick() => self.inner.expire_offers(),
+                _ = offer_sweep.tick() => self.inner.expire_offers().await,
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let Ok(session_slot) = Arc::clone(&self.inner.session_slots).try_acquire_owned()
@@ -145,7 +236,19 @@ impl Gateway {
     /// must not interpret it as a cluster-wide or durable view.
     #[must_use]
     pub fn snapshot(&self) -> GatewaySnapshot {
-        self.inner.lock_state().snapshot()
+        let mut snapshot = self.inner.lock_state().snapshot();
+        if let Some(routing) = &self.inner.routing {
+            let counts = routing.current_counts();
+            snapshot.route_registrations_synced = counts.synced;
+            snapshot.route_registrations_unsynced = counts.unsynced;
+        }
+        if let Some(peer) = &self.inner.peer {
+            let counts = peer.counts();
+            snapshot.peer_transports_connecting = counts.connecting;
+            snapshot.peer_transports_ready = counts.ready;
+            snapshot.peer_streams = counts.streams;
+        }
+        snapshot
     }
 }
 
@@ -176,7 +279,7 @@ impl Inner {
             return Err(SessionError::ResourceExhausted);
         };
         if let Err(error) = framed.send(Frame::Welcome { session_id }).await {
-            self.cleanup(session_id);
+            self.cleanup(session_id).await;
             return Err(SessionError::Protocol(error));
         }
         let (sink, source) = framed.split();
@@ -188,7 +291,7 @@ impl Inner {
             result = write => result,
         };
         cancellation.cancel();
-        self.cleanup(session_id);
+        self.cleanup(session_id).await;
         result
     }
 
@@ -198,32 +301,69 @@ impl Inner {
         mut source: futures_util::stream::SplitStream<Framed<TcpStream, FrameCodec>>,
     ) -> Result<(), SessionError> {
         while let Some(frame) = source.next().await {
-            let deliveries = self.lock_state().handle(session_id, frame?)?;
-            self.deliver_all(deliveries);
+            let actions = {
+                let mut state = self.lock_state();
+                let actions = state.handle(session_id, frame?)?;
+                self.commit_registration_actions(&actions);
+                actions
+            };
+            self.execute_all(actions).await;
         }
         Ok(())
     }
 
-    fn cleanup(&self, session_id: relaygate_protocol::SessionId) {
-        let deliveries = self.lock_state().remove_session(session_id);
-        self.deliver_all(deliveries);
+    async fn cleanup(self: &Arc<Self>, session_id: relaygate_protocol::SessionId) {
+        let actions = {
+            let mut state = self.lock_state();
+            let actions = state.remove_session(session_id);
+            self.commit_registration_actions(&actions);
+            actions
+        };
+        self.execute_all(actions).await;
     }
 
-    fn expire_offers(&self) {
-        let deliveries = self.lock_state().expire_offers(std::time::Instant::now());
-        self.deliver_all(deliveries);
+    async fn expire_offers(self: &Arc<Self>) {
+        let actions = {
+            let mut state = self.lock_state();
+            let actions = state.expire_offers(std::time::Instant::now());
+            self.commit_registration_actions(&actions);
+            actions
+        };
+        self.execute_all(actions).await;
     }
 
-    fn deliver_all(&self, deliveries: Vec<crate::state::Delivery>) {
-        let mut pending = VecDeque::from(deliveries);
-        let mut cleaned = HashSet::new();
-        while let Some(delivery) = pending.pop_front() {
-            let Some(failed_session) = delivery.deliver() else {
+    /// Commits the latest complete snapshot while the Gateway state lock still
+    /// orders the corresponding local mutation. The manager wake is bounded
+    /// and synchronous; no network I/O occurs under this lock. This prevents a
+    /// delayed action from publishing an older snapshot after session cleanup.
+    fn commit_registration_actions(&self, actions: &[GatewayAction]) {
+        let Some(routing) = &self.routing else {
+            return;
+        };
+        for action in actions {
+            let GatewayAction::PublishRegistration {
+                session_id,
+                bindings,
+            } = action
+            else {
                 continue;
             };
-            if cleaned.insert(failed_session) {
-                pending.extend(self.lock_state().remove_session(failed_session));
+            if let Err(error) = routing.publish_session(*session_id, bindings.clone()) {
+                tracing::warn!(
+                    component = "gateway",
+                    event = "gateway.registration.publish_failed",
+                    listener_session_id = %session_id.as_uuid(),
+                    %error,
+                    "local registration remains active while RouteTable publication is unavailable"
+                );
             }
+        }
+    }
+
+    fn distributed_runtime(&self) -> bool {
+        match self.distributed_runtime.lock() {
+            Ok(runtime) => runtime.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
         }
     }
 
@@ -294,14 +434,15 @@ enum SessionError {
 
 #[cfg(test)]
 mod tests {
+    use crate::state::GatewayAction;
     use relaygate_protocol::{ClientKey, ErrorCode, Frame, SessionRole};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
     use super::{Gateway, GatewayConfig};
 
-    #[test]
-    fn full_delivery_queue_immediately_removes_the_failed_session_state()
+    #[tokio::test]
+    async fn full_delivery_queue_immediately_removes_the_failed_session_state()
     -> Result<(), Box<dyn std::error::Error>> {
         let gateway = Gateway::new(GatewayConfig::new([(
             "echo.shared".to_owned(),
@@ -344,7 +485,7 @@ mod tests {
             (listener, connector, offer)
         };
 
-        gateway.inner.deliver_all(offer);
+        gateway.inner.execute_all(offer).await;
 
         let after_cleanup = gateway.inner.lock_state().handle(
             connector,
@@ -354,7 +495,14 @@ mod tests {
             },
         )?;
         assert!(matches!(
-            after_cleanup.first().map(|delivery| &delivery.frame),
+            after_cleanup.first().and_then(|action| match action {
+                GatewayAction::SendSdkFrame(delivery) => Some(&delivery.frame),
+                GatewayAction::PublishRegistration { .. }
+                | GatewayAction::ResolveRoute { .. }
+                | GatewayAction::OpenPeer { .. }
+                | GatewayAction::CancelPeerOpen { .. }
+                | GatewayAction::SendPeerFrame(_) => None,
+            }),
             Some(Frame::OpenFailed {
                 code: ErrorCode::NotFound,
                 ..
