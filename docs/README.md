@@ -130,7 +130,7 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | 문서 | 검증 범위 |
 | --- | --- |
 | [TEST 001](test/001-requirement-test-matrix.md) | 전체 SPEC requirement와 edge case 대응 |
-| [TEST 002](test/002-single-gateway-rust-compose-test-plan.md) | 단일 Gateway Rust·Docker Compose 첫 구현 profile |
+| [TEST 002](test/002-single-gateway-rust-compose-test-plan.md) | 단일 Gateway local Pipe Rust 회귀 profile |
 | [TEST 003](test/003-route-table-core-test-plan.md) | memory-only RouteTable shard core 구현과 결정적 검증 profile |
 | [TEST 004](test/004-rt1-gw3-closed-loop-test-plan.md) | RT 1개와 Gateway 3개의 one-hop closed-loop 구현 profile |
 

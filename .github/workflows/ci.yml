@@ -55,26 +55,42 @@ jobs:
         run: cargo test --workspace --locked
 
   compose:
-    name: Docker Compose E2E
+    name: Docker Compose RT1/GW3 E2E
     needs: [hygiene, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
-      - name: Run single-Gateway echo
-        run: docker compose up --build --abort-on-container-exit --exit-code-from probe
-
-      - name: Reset smoke environment
-        run: docker compose down --volumes --remove-orphans
-
-      - name: Verify reconnect after Gateway restart
+      - name: Start RouteTable, three Gateways, Listeners, and continuity Pipe
         run: |
-          docker compose up --build -d --wait gateway listener-echo
-          docker compose run --rm probe
-          docker compose restart gateway
-          docker compose up -d --wait gateway
-          docker compose run --rm probe
+          docker compose up --build -d --wait \
+            rt-0 gateway-a gateway-b gateway-c \
+            listener-a listener-b listener-c continuity-ac
+
+      - name: Verify all local and directed remote paths
+        run: |
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+          docker compose exec continuity-ac relaygate-echo-probe continuity-check
+
+      - name: Verify unrelated pair continuity across Gateway B restart
+        run: |
+          docker compose restart gateway-b
+          docker compose up -d --wait gateway-b
+          docker compose exec continuity-ac relaygate-echo-probe continuity-check
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+
+      - name: Verify RouteTable outage boundary
+        run: |
+          docker compose stop rt-0
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-rt-unavailable
+          docker compose exec continuity-ac relaygate-echo-probe continuity-check
+
+      - name: Verify current-state recovery after RouteTable restart
+        run: |
+          docker compose up -d rt-0
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+          docker compose exec continuity-ac relaygate-echo-probe continuity-check
 
       - name: Capture logs
         if: failure()
