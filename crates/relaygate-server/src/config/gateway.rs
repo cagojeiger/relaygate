@@ -1,31 +1,41 @@
 use std::{collections::HashMap, env, fs, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use relaygate_gateway::{GatewayConfig, GatewayRoutingConfig};
+use relaygate_gateway::{
+    GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, TrustedPeerConfig,
+};
 use relaygate_route_table::{GatewayLocator, ShardDirectory};
 use relaygate_route_table_transport::{GatewayName, InternalGatewayKey, RouteTableClientConfig};
 
-use super::{optional_duration_millis, optional_usize};
+use super::{optional_duration_millis, optional_usize, parse_gateway_credentials};
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:27420";
+const DEFAULT_PEER_BIND_ADDRESS: &str = "0.0.0.0:27421";
 const DEFAULT_RT_CLIENT_QUEUE_CAPACITY: usize = 128;
 const DEFAULT_RT_MAX_FRAME_LEN: usize = 1024 * 1024;
 const DEFAULT_RT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_RT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_RT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-const ROUTING_ENVIRONMENT: [&str; 5] = [
+const DISTRIBUTED_ENVIRONMENT: [&str; 6] = [
     "RELAYGATE_RT_TRUSTED_LOCAL",
     "RELAYGATE_RT_SHARD_DIRECTORY_PATH",
     "RELAYGATE_GATEWAY_NAME",
     "RELAYGATE_GATEWAY_LOCATOR",
-    "RELAYGATE_INTERNAL_GATEWAY_KEY",
+    "RELAYGATE_INTERNAL_GATEWAY_KEYS",
+    "RELAYGATE_PEER_BIND_ADDR",
 ];
+
+pub(crate) struct DistributedGatewayConfig {
+    pub(crate) peer_bind_address: String,
+    pub(crate) routing: GatewayRoutingConfig,
+    pub(crate) peer: GatewayPeerConfig,
+}
 
 pub(crate) struct GatewayRuntimeConfig {
     pub(crate) bind_address: String,
     pub(crate) gateway: GatewayConfig,
-    pub(crate) routing: Option<GatewayRoutingConfig>,
+    pub(crate) distributed: Option<DistributedGatewayConfig>,
     pub(crate) configured_clients: usize,
     pub(crate) stats_interval: Option<Duration>,
 }
@@ -63,15 +73,15 @@ impl GatewayRuntimeConfig {
         Ok(Self {
             bind_address,
             gateway,
-            routing: routing_from_env()?,
+            distributed: distributed_from_env()?,
             configured_clients,
             stats_interval: optional_duration_millis("RELAYGATE_STATS_INTERVAL_MS")?,
         })
     }
 }
 
-fn routing_from_env() -> Result<Option<GatewayRoutingConfig>> {
-    if !ROUTING_ENVIRONMENT
+fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
+    if !DISTRIBUTED_ENVIRONMENT
         .iter()
         .any(|name| env::var_os(name).is_some())
     {
@@ -79,28 +89,43 @@ fn routing_from_env() -> Result<Option<GatewayRoutingConfig>> {
     }
     if env::var("RELAYGATE_RT_TRUSTED_LOCAL").ok().as_deref() != Some("true") {
         bail!(
-            "RELAYGATE_RT_TRUSTED_LOCAL must be `true` to enable Gateway RouteTable routing over the local/CI plain-TCP key adapter"
+            "RELAYGATE_RT_TRUSTED_LOCAL must be `true` to enable distributed Gateway routing over the local/CI plain-TCP key adapter"
         );
     }
 
     let directory_path = env::var("RELAYGATE_RT_SHARD_DIRECTORY_PATH")
-        .context("RELAYGATE_RT_SHARD_DIRECTORY_PATH is required for routed Gateway mode")?;
+        .context("RELAYGATE_RT_SHARD_DIRECTORY_PATH is required for distributed Gateway mode")?;
     let directory =
         ShardDirectory::from_json_bytes(fs::read(&directory_path).with_context(|| {
             format!("failed to read ShardDirectory artifact at {directory_path:?}")
         })?)?;
-    let gateway_name = GatewayName::new(
-        env::var("RELAYGATE_GATEWAY_NAME")
-            .context("RELAYGATE_GATEWAY_NAME is required for routed Gateway mode")?,
-    )?;
+    let gateway_name_value = env::var("RELAYGATE_GATEWAY_NAME")
+        .context("RELAYGATE_GATEWAY_NAME is required for distributed Gateway mode")?;
+    let gateway_name = GatewayName::new(gateway_name_value.clone())?;
     let gateway_locator = GatewayLocator::new(
         env::var("RELAYGATE_GATEWAY_LOCATOR")
-            .context("RELAYGATE_GATEWAY_LOCATOR is required for routed Gateway mode")?,
+            .context("RELAYGATE_GATEWAY_LOCATOR is required for distributed Gateway mode")?,
     )?;
-    let internal_gateway_key = InternalGatewayKey::new(
-        env::var("RELAYGATE_INTERNAL_GATEWAY_KEY")
-            .context("RELAYGATE_INTERNAL_GATEWAY_KEY is required for routed Gateway mode")?,
+    let credentials = parse_gateway_credentials(
+        env::var("RELAYGATE_INTERNAL_GATEWAY_KEYS")
+            .context("RELAYGATE_INTERNAL_GATEWAY_KEYS is required for distributed Gateway mode")?,
     )?;
+    let local = credentials
+        .iter()
+        .find(|credential| credential.name == gateway_name_value)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "RELAYGATE_INTERNAL_GATEWAY_KEYS has no entry for local GatewayName {:?}",
+                gateway_name_value
+            )
+        })?;
+    let internal_gateway_key = InternalGatewayKey::new(local.key.clone())?;
+    let trusted_peers = credentials
+        .iter()
+        .filter(|credential| credential.name != gateway_name_value)
+        .map(|credential| TrustedPeerConfig::new(&credential.name, &credential.key))
+        .collect::<Result<Vec<_>, _>>()?;
+    let peer = GatewayPeerConfig::new(gateway_name_value, local.key.clone(), trusted_peers)?;
     let client = RouteTableClientConfig::new(
         DEFAULT_RT_CLIENT_QUEUE_CAPACITY,
         DEFAULT_RT_MAX_FRAME_LEN,
@@ -108,13 +133,18 @@ fn routing_from_env() -> Result<Option<GatewayRoutingConfig>> {
         DEFAULT_RT_HANDSHAKE_TIMEOUT,
         DEFAULT_RT_REQUEST_TIMEOUT,
     )?;
-    Ok(Some(GatewayRoutingConfig::new(
-        directory,
-        gateway_name,
-        internal_gateway_key,
-        gateway_locator,
-        client,
-    )))
+    Ok(Some(DistributedGatewayConfig {
+        peer_bind_address: env::var("RELAYGATE_PEER_BIND_ADDR")
+            .unwrap_or_else(|_| DEFAULT_PEER_BIND_ADDRESS.to_owned()),
+        routing: GatewayRoutingConfig::new(
+            directory,
+            gateway_name,
+            internal_gateway_key,
+            gateway_locator,
+            client,
+        ),
+        peer,
+    }))
 }
 
 fn parse_client_keys(value: String) -> Result<HashMap<String, String>> {

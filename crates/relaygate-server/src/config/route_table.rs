@@ -6,7 +6,7 @@ use relaygate_route_table_transport::{
     GatewayName, InternalGatewayKey, RouteTableServiceConfig, TrustedGatewayKeys,
 };
 
-use super::{optional_duration_millis, optional_usize};
+use super::{optional_duration_millis, optional_usize, parse_gateway_credentials};
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:27430";
 const DEFAULT_SHARD_ID: &str = "rt-0";
@@ -43,10 +43,18 @@ impl RouteTableRuntimeConfig {
             optional_duration_millis("RELAYGATE_RT_LEASE_TTL_MS")?.unwrap_or(DEFAULT_LEASE_TTL);
         let shard = RouteTableShard::new(directory, shard_id, RouteTableConfig::new(lease_ttl)?)?;
 
-        let gateway_keys = parse_gateway_keys(
+        let gateway_keys = parse_gateway_credentials(
             env::var("RELAYGATE_INTERNAL_GATEWAY_KEYS")
                 .context("RELAYGATE_INTERNAL_GATEWAY_KEYS is required")?,
-        )?;
+        )?
+        .into_iter()
+        .map(|credential| {
+            Ok((
+                GatewayName::new(credential.name)?,
+                InternalGatewayKey::new(credential.key)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, relaygate_route_table_transport::TransportError>>()?;
         let configured_gateways = gateway_keys.len();
         let trusted_gateways = TrustedGatewayKeys::new(gateway_keys)?;
         let service = RouteTableServiceConfig::new(
@@ -79,38 +87,9 @@ fn require_trusted_local_opt_in(value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn parse_gateway_keys(value: String) -> Result<Vec<(GatewayName, InternalGatewayKey)>> {
-    if value.is_empty() {
-        bail!("RELAYGATE_INTERNAL_GATEWAY_KEYS must contain at least one GatewayName=Key entry");
-    }
-    let mut parsed = Vec::new();
-    for entry in value.split(',') {
-        let Some((gateway_name, key)) = entry.split_once('=') else {
-            bail!("RELAYGATE_INTERNAL_GATEWAY_KEYS entries must use GatewayName=Key");
-        };
-        parsed.push((
-            GatewayName::new(gateway_name.to_owned())?,
-            InternalGatewayKey::new(key.to_owned())?,
-        ));
-    }
-    Ok(parsed)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_gateway_keys, require_trusted_local_opt_in};
-
-    #[test]
-    fn gateway_keys_require_entries_and_preserve_equals_in_key()
-    -> Result<(), Box<dyn std::error::Error>> {
-        assert!(parse_gateway_keys(String::new()).is_err());
-        assert!(parse_gateway_keys("gw-a".to_owned()).is_err());
-        assert_eq!(
-            parse_gateway_keys("gw-a=key=with=equals".to_owned())?.len(),
-            1
-        );
-        Ok(())
-    }
+    use super::require_trusted_local_opt_in;
 
     #[test]
     fn trusted_local_adapter_requires_exact_opt_in() {

@@ -25,6 +25,14 @@ pub struct GatewaySnapshot {
     pub route_registrations_synced: usize,
     /// Number of worker-observed registrations awaiting RouteTable convergence.
     pub route_registrations_unsynced: usize,
+    /// Number of request-local remote OPEN attempts that have not terminated.
+    pub remote_open_attempts: usize,
+    /// Number of direction-scoped peer transport candidates connecting now.
+    pub peer_transports_connecting: usize,
+    /// Number of reusable peer transports ready now.
+    pub peer_transports_ready: usize,
+    /// Number of current RelayStreams across ready peer transports.
+    pub peer_streams: usize,
 }
 
 impl GatewaySnapshot {

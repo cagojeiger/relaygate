@@ -1,6 +1,6 @@
 use std::{error::Error, net::SocketAddr, time::Duration};
 
-use relaygate_gateway::{Gateway, GatewayConfig, GatewayRoutingConfig, check};
+use relaygate_gateway::{Gateway, GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, check};
 use relaygate_route_table::{
     ClientId, GatewayId, GatewayLocator, RouteTableConfig, RouteTableShard, ShardDirectory,
     ShardDirectoryGeneration, ShardId,
@@ -22,7 +22,6 @@ const GATEWAY_KEY: &str = "gateway-key";
 const PROBE_NAME: &str = "probe";
 const PROBE_KEY: &str = "probe-key";
 const SHARD_ID: &str = "rt-0";
-const GATEWAY_LOCATOR: &str = "gateway-under-test:27431";
 
 #[tokio::test]
 async fn routed_gateway_republishes_current_listener_state_after_route_table_restart() -> TestResult
@@ -49,7 +48,7 @@ async fn recovery_case() -> TestResult {
     let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
 
     let probe = connect_probe(route_endpoint, generation).await?;
-    wait_for_mapping(&probe, generation, CLIENT_ID, 1).await?;
+    wait_for_mapping(&probe, generation, CLIENT_ID, &gateway.peer_locator, 1).await?;
 
     route_table.stop().await?;
     let restarted_listener = TcpListener::bind(route_endpoint).await?;
@@ -57,7 +56,14 @@ async fn recovery_case() -> TestResult {
         RunningRouteTable::serve(restarted_listener, directory, Duration::from_millis(250))?;
     assert!(route_table.started_empty());
     let restarted_probe = connect_probe(route_endpoint, generation).await?;
-    wait_for_mapping(&restarted_probe, generation, CLIENT_ID, 1).await?;
+    wait_for_mapping(
+        &restarted_probe,
+        generation,
+        CLIENT_ID,
+        &gateway.peer_locator,
+        1,
+    )
+    .await?;
 
     assert_eq!(listener.client_id(), CLIENT_ID);
     listener_runtime.close();
@@ -70,19 +76,24 @@ async fn recovery_case() -> TestResult {
 
 struct RunningGateway {
     endpoint: SocketAddr,
+    peer_locator: String,
     shutdown: CancellationToken,
     task: JoinHandle<Result<(), relaygate_gateway::GatewayError>>,
 }
 
 impl RunningGateway {
     async fn start(directory: ShardDirectory) -> TestResult<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = listener.local_addr()?;
+        let peer_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let peer_endpoint = peer_listener.local_addr()?;
         let config = GatewayConfig::new([(CLIENT_ID.to_owned(), CLIENT_KEY.to_owned())])
             .with_offer_timeout(Duration::from_millis(100));
         let routing_config = GatewayRoutingConfig::new(
             directory,
             GatewayName::new(GATEWAY_NAME)?,
             InternalGatewayKey::new(GATEWAY_KEY)?,
-            GatewayLocator::new(GATEWAY_LOCATOR)?,
+            GatewayLocator::new(peer_endpoint.to_string())?,
             route_client_config()?,
         )
         .with_command_queue_capacity(8)
@@ -90,14 +101,19 @@ impl RunningGateway {
         .with_desired_scan_interval(Duration::from_millis(20))
         .with_shutdown_timeout(Duration::from_millis(200));
         let shutdown = CancellationToken::new();
-        let gateway = Gateway::new_routed(config, routing_config, shutdown.clone())?;
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let endpoint = listener.local_addr()?;
+        let peer_config = GatewayPeerConfig::new(GATEWAY_NAME, GATEWAY_KEY, [])?;
+        let gateway =
+            Gateway::new_distributed(config, routing_config, peer_config, shutdown.clone())?;
         let serve_shutdown = shutdown.clone();
-        let task = tokio::spawn(async move { gateway.serve(listener, serve_shutdown).await });
+        let task = tokio::spawn(async move {
+            gateway
+                .serve_distributed(listener, peer_listener, serve_shutdown)
+                .await
+        });
         check(endpoint, Duration::from_secs(1)).await?;
         Ok(Self {
             endpoint,
+            peer_locator: peer_endpoint.to_string(),
             shutdown,
             task,
         })
@@ -189,6 +205,7 @@ async fn wait_for_mapping(
     client: &RouteTableClient,
     generation: ShardDirectoryGeneration,
     client_id: &str,
+    expected_locator: &str,
     expected_len: usize,
 ) -> TestResult {
     let client_id = ClientId::new(client_id)?;
@@ -198,7 +215,7 @@ async fn wait_for_mapping(
         (entries.len() == expected_len
             && entries.iter().all(|entry| {
                 entry.client_id() == &client_id
-                    && entry.gateway_locator().as_str() == GATEWAY_LOCATOR
+                    && entry.gateway_locator().as_str() == expected_locator
             }))
         .then_some(())
     })

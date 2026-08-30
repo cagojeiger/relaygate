@@ -9,10 +9,11 @@
 이 문서는 새 동작 규칙을 정의하지 않는다. SPEC 요구사항과 TEST 001 시나리오를
 `RT x 1`, `Gateway x 3`, Rust SDK, Docker Compose 실행 profile로 연결한다.
 
-이 문서의 acceptance는 전체 분산 profile이 완성된 뒤 적용한다. 중간 구현 단계인 Gateway의
-RT registration/lease/resolve manager는 registration publication, READY-empty 재수렴과
-request-local Resolve까지만 검증하며, peer OPEN과 remote Pipe가 구현되기 전에는 이 문서의
-closed-loop 완료를 주장하지 않는다.
+이 문서의 acceptance는 전체 분산 profile이 완성된 뒤 적용한다. 현재 in-process 통합 검증은
+RT 1개와 Gateway 2개에서 request-local Resolve, shared PeerTransport의 다중 remote Pipe,
+양방향 bytes, RT 단절 뒤 기존 Pipe 지속과 terminal cleanup을 증명한다. Gateway 3개 directed
+pair 전체와 Docker Compose 장애 profile이 통과하기 전에는 이 문서의 closed-loop 완료를
+주장하지 않는다.
 
 ## 구현 profile
 
@@ -95,12 +96,15 @@ Docker timing에 의존하면 불안정한 순서와 state cleanup은 Rust integ
 | `G3-I-REG-02` | RT restart 뒤 current snapshot 재등록 | 과거 mutation replay 없이 새 lease와 current snapshot으로만 복구 | `T-REG-06`, `T-RT-05`, `T-EDGE-06` |
 | `G3-I-OPEN-01` | Resolve 뒤 selected binding 제거 | Owner revalidation 실패, `UNAVAILABLE`, `NOT_OBSERVED`, same-attempt fallback 없음 | `T-OPEN-03`, `T-EDGE-07` |
 | `G3-I-OPEN-02` | peer OPEN commit 전 실패 | Pipe 없음, `NOT_OBSERVED`, candidate cleanup | `T-OPEN-17`, `T-PEER-09`, `T-ERR-06` |
-| `G3-I-OPEN-03` | peer OPEN commit 뒤 terminal 결과 유실 | `MAYBE_OBSERVED`, same-attempt replay/reroute 없음 | `T-OPEN-17`, `T-PEER-09`, `T-ERR-06` |
+| `G3-I-OPEN-03` | peer OPEN commit 뒤 terminal 결과 유실, local OPENING 중 RESET 또는 stream-local protocol violation | `FAILED(code, MAYBE_OBSERVED)`, current attempt cleanup, same-attempt replay/reroute 없음 | `T-OPEN-17`, `T-PEER-05`, `T-PEER-09`, `T-ERR-06` |
 | `G3-I-OPEN-04` | OPENING remote attempt cancel과 OPENED 경쟁 | pre-commit state 제거, post-commit `RESET(CANCELLED)`, late result no-op, 별도 peer CANCEL 없음 | `T-OPEN-17`, `T-EDGE-34` |
+| `G3-I-OPEN-05` | local hit과 같은 ClientId의 반복 remote open | local hit은 RT·peer 호출 0회, local miss는 attempt마다 Resolve 정확히 1회와 Owner one hop. Resolve 결과 cache·fallback·reroute·replay 없음 | `T-OPEN-01`, `T-OPEN-06`, `T-OPEN-10`, `T-PEER-01` |
 | `G3-I-PEER-00` | 한 endpoint의 concurrent StreamId 할당과 OPEN commit | counter 순서와 writer commit 순서 일치, 실패한 counter 비재사용 | `T-PEER-03`, `T-EDGE-35` |
 | `G3-I-PEER-01` | A-B transport loss | A-B stream과 Pipe만 terminal, A-C/B-C state 불변 | `T-PEER-06`, `T-EDGE-14` |
 | `G3-I-PEER-02` | 한 RelayStream reset | sibling stream과 PeerTransport 유지 | `T-PEER-05`, `T-ERR-05` |
-| `G3-I-STATE-01` | failure/recovery 100회 반복 | transient attempt, stream, buffer, lease state가 baseline으로 수렴하고 tombstone/history가 증가하지 않음 | `T-STATE-REGISTRATION`, `T-STATE-PAIR`, `T-EDGE-18` |
+| `G3-I-PEER-03` | 같은 transport의 ConnectorSession S1 종료, RESET writer commit 성공·실패 | 성공 시 S1 current stream만 닫고 sibling 유지, 실패 시 transport close로 해당 transport stream 전체 cleanup. 반대 slot·RT mapping·binding 유지 | `T-OPEN-09`, `T-PEER-08`, `T-STATE-CONNECTOR`, `T-EDGE-14` |
+| `G3-I-PEER-04` | capacity 1 PeerEvent queue 포화와 receiver 종료 | 실행 중에는 cyclic wait 없이 각각 `RESOURCE_EXHAUSTED`/`UNAVAILABLE` fail-closed와 count 0 수렴. 정상 shutdown과 경쟁한 Full/Closed는 새 장애가 아님 | `T-PEER-04`, `T-STATE-TRANSPORT` |
+| `G3-I-STATE-01` | failure/recovery 100회 반복 | transient attempt, stream, OpenIdentity, buffer, lease state가 baseline으로 수렴한다. remote open 제어 중 Entry의 `remote_open_attempts=1`, Owner는 0이고 terminal 또는 established 전환 뒤 Entry도 0이다. Entry의 live ConnectorSession별 ConnectionId high-watermark와 peer transport별 StreamId high-watermark 외에 Owner remote ConnectorSession high-watermark·tombstone·history가 증가하지 않음 | `T-TERM-07`, `T-OPEN-09`, `T-STATE-REGISTRATION`, `T-STATE-PAIR`, `T-EDGE-18` |
 
 integration test는 RT table, Gateway snapshot, peer pool snapshot을 직접 관찰할 수 있다. public
 SDK에는 RT, Gateway, peer 내부 타입을 노출하지 않는다.
@@ -151,7 +155,7 @@ deterministic하게 검증한다.
 | `AC-G3-OPEN-02` | integration | stale mapping은 `UNAVAILABLE`, `NOT_OBSERVED`로 끝나고 같은 attempt fallback이 없다. |
 | `AC-G3-PEER-01` | integration/Compose | peer pair별 shared transport가 재사용되고 RelayStream이 Pipe 단위로 분리된다. |
 | `AC-G3-PEER-02` | integration | 한 peer pair 장애가 다른 pair, RT mapping, sibling stream으로 전파되지 않는다. |
-| `AC-G3-PEER-03` | integration | concurrent StreamId 할당·commit 순서와 remote cancel의 RESET cleanup이 deterministic하다. |
+| `AC-G3-PEER-03` | integration | concurrent StreamId 할당·commit 순서와 ConnectorSession/cancel의 RESET cleanup이 deterministic하다. RESET writer commit 실패는 해당 transport close로 수렴한다. |
 | `AC-G3-PIPE-01` | integration/Compose | local/remote `DATA`, `FIN`, `CLOSE`, `RESET` 의미가 동일하다. |
 | `AC-G3-FAIL-01` | Compose | GW-B restart 중 A-C established Pipe가 유지되고 B 재등록 뒤 matrix가 다시 성공한다. |
 | `AC-G3-FAIL-02` | Compose | RT outage 중 established Pipe는 유지되고 신규 remote open은 `UNAVAILABLE`로 terminal 실패한다. |
@@ -180,5 +184,5 @@ deterministic하게 검증한다.
 3. 모든 실패 attempt는 하나의 terminal result로 끝나고 usable Pipe를 남기지 않는다.
 4. established Pipe는 RT outage, RT restart와 무관하게 RT를 필요로 하지 않는다.
 5. 상태량은 current live session, binding, lease, open attempt, Pipe, PeerTransport와
-   RelayStream 수에 비례한다.
+   RelayStream/OpenIdentity 수에 비례하며 Owner에 remote ConnectorSession history를 남기지 않는다.
 6. 실패 로그나 snapshot에 `ClientKey`, `InternalGatewayKey`와 payload가 남지 않는다.

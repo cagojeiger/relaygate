@@ -8,30 +8,54 @@ use tokio_util::sync::CancellationToken;
 use crate::config::GatewayRuntimeConfig;
 
 pub(crate) async fn serve(config: GatewayRuntimeConfig, shutdown: CancellationToken) -> Result<()> {
-    let routing_enabled = config.routing.is_some();
-    let gateway = match config.routing {
-        Some(routing) => {
+    let listener = TcpListener::bind(&config.bind_address)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to bind Gateway SDK listener at {}",
+                config.bind_address
+            )
+        })?;
+    let local_address = listener.local_addr()?;
+    let (gateway, peer_listener, peer_address) = match config.distributed {
+        Some(distributed) => {
+            let peer_listener = TcpListener::bind(&distributed.peer_bind_address)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to bind Gateway peer listener at {}",
+                        distributed.peer_bind_address
+                    )
+                })?;
+            let peer_address = peer_listener.local_addr()?;
             tracing::warn!(
                 component = "gateway",
                 event = "gateway.route_table.trusted_local_enabled",
                 transport = "plain_tcp",
-                "local/CI RouteTable key adapter is enabled; channel security must be supplied by the deployment environment"
+                "local/CI RouteTable and peer key adapter is enabled; channel security must be supplied by the deployment environment"
             );
-            Gateway::new_routed(config.gateway, routing, shutdown.child_token())?
+            (
+                Gateway::new_distributed(
+                    config.gateway,
+                    distributed.routing,
+                    distributed.peer,
+                    shutdown.child_token(),
+                )?,
+                Some(peer_listener),
+                Some(peer_address),
+            )
         }
-        None => Gateway::new(config.gateway)?,
+        None => (Gateway::new(config.gateway)?, None, None),
     };
-    let listener = TcpListener::bind(&config.bind_address)
-        .await
-        .with_context(|| format!("failed to bind Gateway at {}", config.bind_address))?;
-    let local_address = listener.local_addr()?;
+    let distributed_enabled = peer_listener.is_some();
     tracing::info!(
         component = "server",
         event = "server.started",
         role = "gateway",
         address = %local_address,
         configured_clients = config.configured_clients,
-        routing_enabled,
+        distributed_enabled,
+        peer_address = ?peer_address,
         "RelayGate Gateway started"
     );
 
@@ -44,7 +68,14 @@ pub(crate) async fn serve(config: GatewayRuntimeConfig, shutdown: CancellationTo
         });
     }
 
-    gateway.serve(listener, shutdown).await?;
+    match peer_listener {
+        Some(peer_listener) => {
+            gateway
+                .serve_distributed(listener, peer_listener, shutdown)
+                .await?
+        }
+        None => gateway.serve(listener, shutdown).await?,
+    }
     tracing::info!(
         component = "server",
         event = "server.stopped",
@@ -83,6 +114,10 @@ fn log_gateway_snapshot(gateway: &Gateway) {
         live_pipes = snapshot.live_pipes,
         route_registrations_synced = snapshot.route_registrations_synced,
         route_registrations_unsynced = snapshot.route_registrations_unsynced,
+        remote_open_attempts = snapshot.remote_open_attempts,
+        peer_transports_connecting = snapshot.peer_transports_connecting,
+        peer_transports_ready = snapshot.peer_transports_ready,
+        peer_streams = snapshot.peer_streams,
         "Gateway current-state snapshot"
     );
 }

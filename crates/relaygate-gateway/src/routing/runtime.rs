@@ -147,20 +147,8 @@ struct ConnectedClient {
 #[derive(Clone)]
 enum ClientAvailability {
     Unavailable,
-    Ready(
-        #[allow(
-            dead_code,
-            reason = "request-local Resolve is retained for G005 remote OPEN integration"
-        )]
-        ConnectedClient,
-    ),
-    Terminal(
-        #[allow(
-            dead_code,
-            reason = "request-local Resolve is retained for G005 remote OPEN integration"
-        )]
-        TransportError,
-    ),
+    Ready(ConnectedClient),
+    Terminal(TransportError),
 }
 
 #[derive(Clone)]
@@ -172,15 +160,7 @@ struct ClientFailure {
 struct ShardHandle {
     shard_id: ShardId,
     wake: mpsc::Sender<()>,
-    #[allow(
-        dead_code,
-        reason = "request-local Resolve is retained for G005 remote OPEN integration"
-    )]
     client: watch::Receiver<ClientAvailability>,
-    #[allow(
-        dead_code,
-        reason = "request-local Resolve is retained for G005 remote OPEN integration"
-    )]
     failure: watch::Sender<Option<ClientFailure>>,
     counts: Arc<WorkerCounts>,
 }
@@ -228,10 +208,6 @@ impl RoutingHandle {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "request-local Resolve is retained for G005 remote OPEN integration"
-    )]
     pub(crate) async fn resolve(&self, client_id: ClientId) -> Result<BindingSet, RoutingError> {
         let record = self.directory.authority(&client_id);
         let worker = self.shards.get(record.id()).ok_or_else(|| {
@@ -827,10 +803,6 @@ pub(super) const fn is_terminal_control_error(code: ErrorCode) -> bool {
     )
 }
 
-#[allow(
-    dead_code,
-    reason = "request-local Resolve is retained for G005 remote OPEN integration"
-)]
 const fn should_report_resolve_failure(code: ErrorCode) -> bool {
     is_connection_error(code) || is_terminal_control_error(code)
 }

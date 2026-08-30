@@ -62,9 +62,11 @@ error_code / observation
 | registration | Listener registration active / rejected / suspended / blocked |
 | open | OPEN succeeded / failed |
 | Pipe | close / reset / session-loss terminal cleanup |
+| peer | handshake admission, PeerTransport loss와 frame commit failure |
 
-성공·실패 event는 기존 protocol/state 결과를 그대로 관찰한다. 관측성 event 유실이나 collector
-장애가 RelayGate 상태 전이와 Pipe 데이터 경로를 바꾸면 안 된다.
+성공·실패 event는 기존 protocol/state 결과를 그대로 관찰한다. 여기서 관측성 event는
+tracing/metrics event이며 Gateway 상태 전이를 전달하는 내부 `PeerEvent`가 아니다. 관측성 event
+유실이나 collector 장애가 RelayGate 상태 전이와 Pipe 데이터 경로를 바꾸면 안 된다.
 
 다음 값은 기록하지 않는다.
 
@@ -92,6 +94,10 @@ pending_offers
 live_pipes
 route_registrations_synced
 route_registrations_unsynced
+remote_open_attempts
+peer_transports_connecting
+peer_transports_ready
+peer_streams
 ```
 
 `route_registrations_*`는 Gateway의 routing worker가 마지막으로 관찰한 session-shard
@@ -100,6 +106,15 @@ registration 수렴 상태다. RT 전체 table이나 mapping 수가 아니다. p
 local state count와 하나의 원자적 시점으로 읽히지 않는다. worker가 단절을 관찰하면 local
 binding은 유지된 채 해당 registration이 `unsynced`로 수렴한다. 이 값은 routing 결정에 쓰는
 진실이 아니라 운영 관측값이다.
+
+`remote_open_attempts`는 Entry Gateway의 local-miss control attempt 중 `RESOLVING`,
+`STARTING_PEER`, `AWAITING_PEER` 상태의 수다. peer `OPENED`/`FAILED`, cancel,
+ConnectorSession 또는 PeerTransport loss에서 제거한다. Owner inbound `OPEN`, established
+Pipe/RelayStream과 terminal history는 포함하지 않는다. 따라서 external `OBSERVED`까지 이어지는
+canonical Open attempt보다 좁은 관측 scope다.
+`peer_transports_*`와 `peer_streams`는 peer manager가 마지막으로 관찰한 current pair transport와
+RelayStream 수다. 이 값들도 RT count 및 local session index와 원자적으로 읽히지 않으며
+cluster 전체 합계가 아니다. local-only mode에서는 모든 분산 count가 0이다.
 
 snapshot은 한 Gateway process의 순간 관찰값이다. 누적 counter, application 처리 결과,
 message delivery acknowledgement가 아니다.
@@ -123,7 +138,7 @@ durable metric history
 | --- | --- |
 | `OBS-001` | 로그 형식은 `text`와 `json`만 허용하고 잘못된 값이면 serve 전에 실패해야 한다. |
 | `OBS-002` | snapshot interval은 unset 또는 0보다 큰 millisecond만 허용해야 한다. |
-| `OBS-003` | `GatewaySnapshot`은 session, binding, pending offer와 live Pipe 수를 같은 local state index에서 계산해야 한다. RT manager가 있으면 worker가 마지막으로 관찰한 session-shard registration의 `SYNCED/UNSYNCED` 수렴 상태를 함께 제공하되 local count와 원자적 시점을 보장하지 않는다. local-only mode의 두 registration 수는 0이어야 하며 RT 전체 mapping 수나 routing 진실로 해석해서는 안 된다. |
+| `OBS-003` | `GatewaySnapshot`은 session, binding, pending offer, live Pipe와 remote open attempt 수를 같은 local state index에서 계산해야 한다. distributed runtime이 있으면 routing worker의 session-shard registration `SYNCED/UNSYNCED` 및 peer manager의 connecting/ready transport와 current stream 수를 함께 제공하되 각 source 사이 원자적 시점을 보장하지 않는다. local-only mode의 분산 count는 0이어야 하며 RT 전체 mapping 수, cluster 합계 또는 routing 진실로 해석해서는 안 된다. |
 | `OBS-004` | 구조화 event는 `component`, `event`와 현재 객체를 구분할 수 있는 identity field를 사용해야 한다. |
 | `OBS-005` | event는 `ClientKey`, `InternalGatewayKey`, payload, application data를 기록하지 않고 DATA hot path에 per-frame 로그를 만들지 않아야 한다. |
 | `OBS-006` | SDK와 Gateway lifecycle event는 기존 terminal code와 observation을 바꾸지 않고 관찰해야 한다. |

@@ -1,8 +1,11 @@
-use relaygate_protocol::{ErrorCode, Frame, SessionId, SessionRole};
+use relaygate_protocol::{ErrorCode, Frame, PeerObservation, SessionId, SessionRole};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{Delivery, GatewayAction, GatewayState, SessionEntry};
+use super::{
+    Delivery, GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipePhase, RemoteOpenPhase,
+    SessionEntry,
+};
 
 impl GatewayState {
     pub(crate) fn add_session(
@@ -25,14 +28,6 @@ impl GatewayState {
                     cancellation,
                     highest_connection_id: None,
                 });
-                tracing::debug!(
-                    component = "gateway",
-                    event = "gateway.session.added",
-                    session_id = %session_id.as_uuid(),
-                    role = role_name(role),
-                    active_sessions = self.sessions.len(),
-                    "SDK session added"
-                );
                 return Some(session_id);
             }
         }
@@ -45,62 +40,81 @@ impl GatewayState {
         session.cancellation.cancel();
         let removed_bindings = self.registry.remove_session(session_id).len();
 
+        let pending: Vec<_> = self
+            .remote_open_attempts
+            .iter()
+            .filter_map(|(open_identity, attempt)| {
+                (attempt.pipe_id.connector_session_id() == session_id).then_some(*open_identity)
+            })
+            .collect();
+        let mut actions = Vec::new();
+        for open_identity in pending {
+            let Some(attempt) = self.remote_open_attempts.remove(&open_identity) else {
+                continue;
+            };
+            self.active_peer_opens.remove(&open_identity);
+            match attempt.phase {
+                RemoteOpenPhase::Resolving => {}
+                RemoteOpenPhase::StartingPeer { .. } => {
+                    actions.push(GatewayAction::CancelPeerOpen { open_identity });
+                }
+                RemoteOpenPhase::AwaitingPeer { key, .. } => {
+                    actions.push(
+                        PeerDelivery::Reset {
+                            key,
+                            code: ErrorCode::Cancelled,
+                            message: "ConnectorSession disconnected".to_owned(),
+                        }
+                        .into(),
+                    );
+                }
+            }
+        }
+
         let owned: Vec<_> = self
             .pipes
             .iter()
             .filter_map(|(pipe_id, pipe)| {
-                (pipe.connector == session_id || pipe.listener == session_id).then_some(*pipe_id)
+                (pipe.connector == PipeEndpoint::Sdk(session_id)
+                    || pipe.listener == PipeEndpoint::Sdk(session_id))
+                .then_some(*pipe_id)
             })
             .collect();
         let removed_pipes = owned.len();
-        let mut actions =
-            Vec::with_capacity(owned.len() + usize::from(session.role == SessionRole::Listener));
         for pipe_id in owned {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
-            tracing::debug!(
-                component = "gateway",
-                event = "gateway.pipe.removed",
-                connector_session_id = %pipe.connector.as_uuid(),
-                listener_session_id = %pipe.listener.as_uuid(),
-                connection_id = pipe_id.connection_id(),
-                binding_id = %pipe.binding_id.as_uuid(),
-                phase = ?pipe.phase,
-                reason = "session_disconnected",
-                "Pipe removed during session cleanup"
-            );
-            let (counterpart, frame) = if pipe.listener == session_id
-                && pipe.phase == super::PipePhase::Offered
-            {
-                (
-                    pipe.connector,
-                    Frame::OpenFailed {
-                        connection_id: pipe_id.connection_id(),
-                        code: ErrorCode::Unavailable,
-                        observation: relaygate_protocol::PeerObservation::MaybeObserved,
-                        message: "selected ListenerSession disconnected during OFFER".to_owned(),
-                    },
-                )
-            } else {
-                let counterpart = if pipe.connector == session_id {
-                    pipe.listener
-                } else {
-                    pipe.connector
-                };
-                (
-                    counterpart,
-                    Frame::Reset {
-                        pipe_id,
-                        code: ErrorCode::Unavailable,
-                        message: "counterpart session disconnected".to_owned(),
-                    },
-                )
-            };
-            if let Some(delivery) = self.to(counterpart, frame) {
-                actions.push(GatewayAction::SendSdkFrame(delivery));
+            if pipe.listener == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
+                actions.extend(self.connector_failure(
+                    &pipe,
+                    pipe_id,
+                    ErrorCode::Unavailable,
+                    PeerObservation::MaybeObserved,
+                    "selected ListenerSession disconnected during OFFER",
+                ));
+                continue;
             }
+            let counterpart = if pipe.connector == PipeEndpoint::Sdk(session_id) {
+                pipe.listener
+            } else {
+                pipe.connector
+            };
+            let code = if pipe.connector == PipeEndpoint::Sdk(session_id)
+                && counterpart.peer_key().is_some()
+            {
+                ErrorCode::Cancelled
+            } else {
+                ErrorCode::Unavailable
+            };
+            actions.extend(self.endpoint_reset(
+                counterpart,
+                pipe_id,
+                code,
+                "counterpart session disconnected",
+            ));
         }
+
         tracing::debug!(
             component = "gateway",
             event = "gateway.session.removed",
@@ -111,6 +125,7 @@ impl GatewayState {
             active_sessions = self.sessions.len(),
             listener_bindings = self.registry.binding_count(),
             pending_offers = self.pending_offer_count,
+            remote_open_attempts = self.remote_open_attempts.len(),
             live_pipes = self.live_pipe_count,
             "SDK session removed"
         );

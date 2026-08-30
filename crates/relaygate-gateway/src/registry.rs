@@ -79,6 +79,21 @@ impl LocalRegistry {
         bindings
     }
 
+    /// Returns the current binding only when every incarnation component
+    /// matches. Remote OPEN admission uses this after RouteTable lookup so a
+    /// stale projection cannot attach to a replacement Listener binding.
+    pub(crate) fn exact(
+        &self,
+        session_id: SessionId,
+        binding_id: BindingId,
+        client_id: &str,
+    ) -> Option<Binding> {
+        self.by_id
+            .get(&binding_id)
+            .filter(|binding| binding.session_id == session_id && binding.client_id == client_id)
+            .cloned()
+    }
+
     pub(crate) fn select(&mut self, client_id: &str) -> Option<Binding> {
         let ids = self.by_client.get(client_id)?;
         if ids.is_empty() {
@@ -263,5 +278,30 @@ mod tests {
             vec![second]
         );
         assert!(registry.bindings_for_session(SessionId::new()).is_empty());
+    }
+
+    #[test]
+    fn exact_lookup_rejects_every_stale_identity_component() {
+        let session = SessionId::new();
+        let mut registry = LocalRegistry::default();
+        let binding = match registry.register(session, "echo.alpha") {
+            Registration::Created(binding) | Registration::Existing(binding) => binding,
+        };
+
+        assert_eq!(
+            registry.exact(session, binding.id, "echo.alpha"),
+            Some(binding.clone())
+        );
+        assert!(
+            registry
+                .exact(SessionId::new(), binding.id, "echo.alpha")
+                .is_none()
+        );
+        assert!(
+            registry
+                .exact(session, relaygate_protocol::BindingId::new(), "echo.alpha")
+                .is_none()
+        );
+        assert!(registry.exact(session, binding.id, "echo.beta").is_none());
     }
 }

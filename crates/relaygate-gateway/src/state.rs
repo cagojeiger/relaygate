@@ -1,18 +1,24 @@
 use std::{collections::HashMap, time::Duration};
 
-use relaygate_protocol::{BindingId, ErrorCode, Frame, PipeId, SessionId, SessionRole};
+use bytes::Bytes;
+use relaygate_protocol::{
+    BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId, SessionRole,
+};
+use relaygate_route_table::{ClientId as RouteClientId, GatewayId, GatewayLocator};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     GatewaySnapshot,
     auth::ClientKeyStore,
+    peer::{OpenIdentity, PeerStreamKey},
     registry::{Binding, LocalRegistry},
 };
 
 mod opening;
 mod pipe;
 mod registration;
+mod remote;
 mod session;
 #[cfg(test)]
 mod tests;
@@ -54,11 +60,61 @@ pub(crate) enum GatewayAction {
         session_id: SessionId,
         bindings: Vec<Binding>,
     },
+    ResolveRoute {
+        open_identity: OpenIdentity,
+        client_id: RouteClientId,
+    },
+    OpenPeer {
+        open_identity: OpenIdentity,
+        gateway_id: GatewayId,
+        gateway_locator: GatewayLocator,
+        client_id: String,
+        listener_session_id: SessionId,
+        binding_id: BindingId,
+    },
+    CancelPeerOpen {
+        open_identity: OpenIdentity,
+    },
+    SendPeerFrame(PeerDelivery),
 }
 
 impl From<Delivery> for GatewayAction {
     fn from(delivery: Delivery) -> Self {
         Self::SendSdkFrame(delivery)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PeerDelivery {
+    Opened {
+        key: PeerStreamKey,
+    },
+    Failed {
+        key: PeerStreamKey,
+        code: ErrorCode,
+        observation: PeerObservation,
+        message: String,
+    },
+    Data {
+        key: PeerStreamKey,
+        payload: Bytes,
+    },
+    Fin {
+        key: PeerStreamKey,
+    },
+    Close {
+        key: PeerStreamKey,
+    },
+    Reset {
+        key: PeerStreamKey,
+        code: ErrorCode,
+        message: String,
+    },
+}
+
+impl From<PeerDelivery> for GatewayAction {
+    fn from(delivery: PeerDelivery) -> Self {
+        Self::SendPeerFrame(delivery)
     }
 }
 
@@ -93,9 +149,10 @@ enum PipePhase {
 
 #[derive(Debug, Clone)]
 struct PipeEntry {
-    connector: SessionId,
-    listener: SessionId,
+    connector: PipeEndpoint,
+    listener: PipeEndpoint,
     binding_id: BindingId,
+    open_identity: Option<OpenIdentity>,
     phase: PipePhase,
     offered_at: std::time::Instant,
     connector_finished: bool,
@@ -103,13 +160,14 @@ struct PipeEntry {
 }
 
 impl PipeEntry {
-    fn ensure_owner(
+    fn ensure_sdk_owner(
         &self,
         sender: SessionId,
         pipe_id: PipeId,
         frame_name: &'static str,
     ) -> Result<(), ProtocolViolation> {
-        if self.connector == sender || self.listener == sender {
+        if self.connector == PipeEndpoint::Sdk(sender) || self.listener == PipeEndpoint::Sdk(sender)
+        {
             return Ok(());
         }
         Err(ProtocolViolation::PipeOwnership {
@@ -118,6 +176,54 @@ impl PipeEntry {
             frame_name,
         })
     }
+
+    fn peer_key(&self) -> Option<PeerStreamKey> {
+        match (self.connector, self.listener) {
+            (PipeEndpoint::Peer(key), _) | (_, PipeEndpoint::Peer(key)) => Some(key),
+            (PipeEndpoint::Sdk(_), PipeEndpoint::Sdk(_)) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipeEndpoint {
+    Sdk(SessionId),
+    Peer(PeerStreamKey),
+}
+
+impl PipeEndpoint {
+    const fn sdk_session(self) -> Option<SessionId> {
+        match self {
+            Self::Sdk(session_id) => Some(session_id),
+            Self::Peer(_) => None,
+        }
+    }
+
+    const fn peer_key(self) -> Option<PeerStreamKey> {
+        match self {
+            Self::Sdk(_) => None,
+            Self::Peer(key) => Some(key),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RemoteOpenAttempt {
+    pipe_id: PipeId,
+    client_id: String,
+    phase: RemoteOpenPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteOpenPhase {
+    Resolving,
+    StartingPeer {
+        binding_id: BindingId,
+    },
+    AwaitingPeer {
+        key: PeerStreamKey,
+        binding_id: BindingId,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -147,20 +253,40 @@ pub(crate) struct GatewayState {
     sessions: HashMap<SessionId, SessionEntry>,
     registry: LocalRegistry,
     pipes: HashMap<PipeId, PipeEntry>,
+    peer_pipes: HashMap<PeerStreamKey, PipeId>,
+    active_peer_opens: HashMap<OpenIdentity, PeerStreamKey>,
+    remote_open_attempts: HashMap<OpenIdentity, RemoteOpenAttempt>,
     pending_offer_count: usize,
     live_pipe_count: usize,
+    gateway_id: Option<GatewayId>,
     limits: GatewayLimits,
 }
 
 impl GatewayState {
     pub(crate) fn new(auth: ClientKeyStore, limits: GatewayLimits) -> Self {
+        Self::build(auth, limits, None)
+    }
+
+    pub(crate) fn new_distributed(
+        auth: ClientKeyStore,
+        limits: GatewayLimits,
+        gateway_id: GatewayId,
+    ) -> Self {
+        Self::build(auth, limits, Some(gateway_id))
+    }
+
+    fn build(auth: ClientKeyStore, limits: GatewayLimits, gateway_id: Option<GatewayId>) -> Self {
         Self {
             auth,
             sessions: HashMap::new(),
             registry: LocalRegistry::default(),
             pipes: HashMap::new(),
+            peer_pipes: HashMap::new(),
+            active_peer_opens: HashMap::new(),
+            remote_open_attempts: HashMap::new(),
             pending_offer_count: 0,
             live_pipe_count: 0,
+            gateway_id,
             limits,
         }
     }
@@ -232,12 +358,14 @@ impl GatewayState {
     }
 
     pub(crate) fn snapshot(&self) -> GatewaySnapshot {
-        GatewaySnapshot::from_parts(
+        let mut snapshot = GatewaySnapshot::from_parts(
             self.sessions.values().map(|session| session.role),
             self.registry.binding_count(),
             self.pending_offer_count,
             self.live_pipe_count,
-        )
+        );
+        snapshot.remote_open_attempts = self.remote_open_attempts.len();
+        snapshot
     }
 
     #[cfg(test)]
@@ -253,8 +381,14 @@ impl GatewayState {
         self.live_pipe_count
     }
 
+    #[cfg(test)]
+    fn remote_open_attempt_count(&self) -> usize {
+        self.remote_open_attempts.len()
+    }
+
     fn insert_offer(&mut self, pipe_id: PipeId, pipe: PipeEntry) {
         debug_assert_eq!(pipe.phase, PipePhase::Offered);
+        self.index_peer_pipe(pipe_id, &pipe);
         let previous = self.pipes.insert(pipe_id, pipe);
         debug_assert!(previous.is_none());
         self.pending_offer_count += 1;
@@ -262,6 +396,12 @@ impl GatewayState {
 
     fn remove_pipe(&mut self, pipe_id: PipeId) -> Option<PipeEntry> {
         let pipe = self.pipes.remove(&pipe_id)?;
+        if let Some(peer_key) = pipe.peer_key() {
+            self.peer_pipes.remove(&peer_key);
+        }
+        if let Some(open_identity) = pipe.open_identity {
+            self.active_peer_opens.remove(&open_identity);
+        }
         match pipe.phase {
             PipePhase::Offered => self.pending_offer_count -= 1,
             PipePhase::Open => self.live_pipe_count -= 1,
@@ -280,6 +420,26 @@ impl GatewayState {
         Some(pipe)
     }
 
+    fn insert_open(&mut self, pipe_id: PipeId, pipe: PipeEntry) {
+        debug_assert_eq!(pipe.phase, PipePhase::Open);
+        self.index_peer_pipe(pipe_id, &pipe);
+        let previous = self.pipes.insert(pipe_id, pipe);
+        debug_assert!(previous.is_none());
+        self.live_pipe_count += 1;
+    }
+
+    fn index_peer_pipe(&mut self, pipe_id: PipeId, pipe: &PipeEntry) {
+        let Some(peer_key) = pipe.peer_key() else {
+            return;
+        };
+        let previous = self.peer_pipes.insert(peer_key, pipe_id);
+        debug_assert!(previous.is_none());
+        if let Some(open_identity) = pipe.open_identity {
+            let previous = self.active_peer_opens.insert(open_identity, peer_key);
+            debug_assert!(previous.is_none());
+        }
+    }
+
     #[cfg(test)]
     fn connection_high_watermark(&self, session_id: SessionId) -> Option<u64> {
         self.sessions
@@ -287,8 +447,11 @@ impl GatewayState {
             .and_then(|session| session.highest_connection_id)
     }
 
-    fn send_actions(deliveries: Vec<Delivery>) -> Vec<GatewayAction> {
-        deliveries.into_iter().map(GatewayAction::from).collect()
+    fn send_actions<T>(deliveries: Vec<T>) -> Vec<GatewayAction>
+    where
+        T: Into<GatewayAction>,
+    {
+        deliveries.into_iter().map(Into::into).collect()
     }
 
     fn registration_publication(&self, session_id: SessionId) -> GatewayAction {

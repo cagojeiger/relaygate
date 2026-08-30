@@ -300,6 +300,7 @@ dependencies = [
  "relaygate-route-table",
  "relaygate-route-table-transport",
  "relaygate-sdk",
+ "sha2",
  "subtle",
  "thiserror",
  "tokio",

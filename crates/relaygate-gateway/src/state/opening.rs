@@ -3,8 +3,14 @@ use std::time::Instant;
 use relaygate_protocol::{
     BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId, SessionRole,
 };
+use relaygate_route_table::ClientId as RouteClientId;
 
-use super::{Delivery, GatewayAction, GatewayState, PipeEntry, PipePhase, ProtocolViolation};
+use crate::{peer::OpenIdentity, registry::Binding};
+
+use super::{
+    GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipeEntry, PipePhase,
+    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase,
+};
 
 impl GatewayState {
     pub(super) fn open(
@@ -23,6 +29,7 @@ impl GatewayState {
             return Vec::new();
         }
         session.highest_connection_id = Some(connection_id);
+
         if client_id.is_empty() {
             return self.open_failed(
                 connector,
@@ -41,17 +48,22 @@ impl GatewayState {
                 "Gateway live Pipe limit reached",
             );
         }
-        if self.pending_offer_count() >= self.limits.max_pending_offers {
+        if self.pending_capacity_reached() {
             return self.open_failed(
                 connector,
                 connection_id,
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
-                "Gateway pending OFFER limit reached",
+                "Gateway pending open limit reached",
             );
         }
 
-        let Some(binding) = self.registry.select(&client_id) else {
+        let pipe_id = PipeId::new(connector, connection_id);
+        if let Some(binding) = self.registry.select(&client_id) {
+            return self.offer_local(connector, pipe_id, binding, client_id);
+        }
+
+        let Some(gateway_id) = self.gateway_id else {
             return self.open_failed(
                 connector,
                 connection_id,
@@ -60,6 +72,38 @@ impl GatewayState {
                 "no live ListenerBinding exists",
             );
         };
+        let Ok(route_client_id) = RouteClientId::new(client_id.clone()) else {
+            return self.open_failed(
+                connector,
+                connection_id,
+                ErrorCode::InvalidArgument,
+                PeerObservation::NotObserved,
+                "ClientId is invalid",
+            );
+        };
+        let open_identity = OpenIdentity::new(gateway_id, connector, connection_id);
+        let previous = self.remote_open_attempts.insert(
+            open_identity,
+            RemoteOpenAttempt {
+                pipe_id,
+                client_id,
+                phase: RemoteOpenPhase::Resolving,
+            },
+        );
+        debug_assert!(previous.is_none());
+        vec![GatewayAction::ResolveRoute {
+            open_identity,
+            client_id: route_client_id,
+        }]
+    }
+
+    pub(super) fn offer_local(
+        &mut self,
+        connector: SessionId,
+        pipe_id: PipeId,
+        binding: Binding,
+        client_id: String,
+    ) -> Vec<GatewayAction> {
         let listener_is_live = self
             .sessions
             .get(&binding.session_id)
@@ -68,7 +112,7 @@ impl GatewayState {
             self.registry.remove_owned(binding.session_id, binding.id);
             let mut actions = self.open_failed(
                 connector,
-                connection_id,
+                pipe_id.connection_id(),
                 ErrorCode::Unavailable,
                 PeerObservation::NotObserved,
                 "selected ListenerSession is no longer live",
@@ -77,13 +121,12 @@ impl GatewayState {
             return actions;
         }
 
-        let pipe_id = PipeId::new(connector, connection_id);
         tracing::debug!(
             component = "gateway",
             event = "gateway.offer.created",
             connector_session_id = %connector.as_uuid(),
             listener_session_id = %binding.session_id.as_uuid(),
-            connection_id,
+            connection_id = pipe_id.connection_id(),
             binding_id = %binding.id.as_uuid(),
             client_id = %client_id,
             pending_offers = self.pending_offer_count() + 1,
@@ -93,9 +136,10 @@ impl GatewayState {
         self.insert_offer(
             pipe_id,
             PipeEntry {
-                connector,
-                listener: binding.session_id,
+                connector: PipeEndpoint::Sdk(connector),
+                listener: PipeEndpoint::Sdk(binding.session_id),
                 binding_id: binding.id,
+                open_identity: None,
                 phase: PipePhase::Offered,
                 offered_at: Instant::now(),
                 connector_finished: false,
@@ -115,7 +159,7 @@ impl GatewayState {
         .collect()
     }
 
-    fn open_failed(
+    pub(super) fn open_failed(
         &self,
         connector: SessionId,
         connection_id: u64,
@@ -150,13 +194,13 @@ impl GatewayState {
         &mut self,
         listener: SessionId,
         pipe_id: PipeId,
-    ) -> Result<Vec<Delivery>, ProtocolViolation> {
-        let (connector, phase) = {
+    ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
+        let phase = {
             let Some(pipe) = self.pipes.get(&pipe_id) else {
                 return Ok(Vec::new());
             };
-            pipe.ensure_owner(listener, pipe_id, "OFFER_ACCEPTED")?;
-            (pipe.connector, pipe.phase)
+            pipe.ensure_sdk_owner(listener, pipe_id, "OFFER_ACCEPTED")?;
+            pipe.phase
         };
         if phase != PipePhase::Offered {
             return Ok(
@@ -168,59 +212,34 @@ impl GatewayState {
                 return Ok(Vec::new());
             };
             let message = "Gateway live Pipe limit reached during admission";
-            tracing::warn!(
-                component = "gateway",
-                event = "gateway.offer.admission_failed",
-                connector_session_id = %pipe.connector.as_uuid(),
-                listener_session_id = %pipe.listener.as_uuid(),
-                connection_id = pipe_id.connection_id(),
-                binding_id = %pipe.binding_id.as_uuid(),
-                error_code = ?ErrorCode::ResourceExhausted,
-                observation = ?PeerObservation::MaybeObserved,
-                pending_offers = self.pending_offer_count(),
-                live_pipes = self.live_pipe_count(),
-                "Pipe offer could not be admitted"
+            let mut actions = self.connector_failure(
+                &pipe,
+                pipe_id,
+                ErrorCode::ResourceExhausted,
+                PeerObservation::MaybeObserved,
+                message,
             );
-            return Ok([
-                self.to(
-                    pipe.connector,
-                    Frame::OpenFailed {
-                        connection_id: pipe_id.connection_id(),
-                        code: ErrorCode::ResourceExhausted,
-                        observation: PeerObservation::MaybeObserved,
-                        message: message.to_owned(),
-                    },
-                ),
-                self.to(
-                    pipe.listener,
-                    Frame::Reset {
-                        pipe_id,
-                        code: ErrorCode::ResourceExhausted,
-                        message: message.to_owned(),
-                    },
-                ),
-            ]
-            .into_iter()
-            .flatten()
-            .collect());
+            actions.extend(self.endpoint_reset(
+                pipe.listener,
+                pipe_id,
+                ErrorCode::ResourceExhausted,
+                message,
+            ));
+            return Ok(actions);
         }
-        if self.promote_offer(pipe_id).is_none() {
+        let Some(pipe) = self.promote_offer(pipe_id).cloned() else {
             return Ok(Vec::new());
-        }
+        };
         tracing::debug!(
             component = "gateway",
             event = "gateway.pipe.opened",
             listener_session_id = %listener.as_uuid(),
-            connector_session_id = %connector.as_uuid(),
             connection_id = pipe_id.connection_id(),
             pending_offers = self.pending_offer_count(),
             live_pipes = self.live_pipe_count(),
             "Pipe opened"
         );
-        Ok(self
-            .to(connector, Frame::Opened { pipe_id })
-            .into_iter()
-            .collect())
+        Ok(self.connector_opened(&pipe, pipe_id))
     }
 
     pub(super) fn offer_rejected(
@@ -229,11 +248,11 @@ impl GatewayState {
         pipe_id: PipeId,
         code: ErrorCode,
         message: String,
-    ) -> Result<Vec<Delivery>, ProtocolViolation> {
+    ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
         let Some(pipe) = self.pipes.get(&pipe_id) else {
             return Ok(Vec::new());
         };
-        pipe.ensure_owner(listener, pipe_id, "OFFER_REJECTED")?;
+        pipe.ensure_sdk_owner(listener, pipe_id, "OFFER_REJECTED")?;
         if pipe.phase != PipePhase::Offered {
             return Ok(
                 self.protocol_reset(pipe_id, "OFFER_REJECTED is not valid after the Pipe opened")
@@ -242,71 +261,40 @@ impl GatewayState {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Ok(Vec::new());
         };
-        tracing::debug!(
-            component = "gateway",
-            event = "gateway.offer.rejected",
-            listener_session_id = %listener.as_uuid(),
-            connector_session_id = %pipe.connector.as_uuid(),
-            connection_id = pipe_id.connection_id(),
-            binding_id = %pipe.binding_id.as_uuid(),
-            error_code = ?code,
-            pending_offers = self.pending_offer_count(),
-            live_pipes = self.live_pipe_count(),
-            "Pipe offer rejected"
-        );
-        Ok(self
-            .to(
-                pipe.connector,
-                Frame::OpenFailed {
-                    connection_id: pipe_id.connection_id(),
-                    code,
-                    observation: PeerObservation::NotObserved,
-                    message,
-                },
-            )
-            .into_iter()
-            .collect())
+        Ok(self.connector_failure(&pipe, pipe_id, code, PeerObservation::NotObserved, &message))
     }
 
     pub(super) fn cancel(
         &mut self,
         connector: SessionId,
         pipe_id: PipeId,
-    ) -> Result<Vec<Delivery>, ProtocolViolation> {
+    ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
+        if !self.pipes.contains_key(&pipe_id) {
+            return Ok(self.cancel_remote_attempt(connector, pipe_id));
+        }
         let Some(pipe) = self.pipes.get(&pipe_id) else {
             return Ok(Vec::new());
         };
-        pipe.ensure_owner(connector, pipe_id, "CANCEL")?;
-        debug_assert_eq!(pipe_id.connector_session_id(), connector);
+        pipe.ensure_sdk_owner(connector, pipe_id, "CANCEL")?;
+        if pipe.connector != PipeEndpoint::Sdk(connector) {
+            return Err(ProtocolViolation::PipeOwnership {
+                sender: connector,
+                pipe_id,
+                frame_name: "CANCEL",
+            });
+        }
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Ok(Vec::new());
         };
-        tracing::debug!(
-            component = "gateway",
-            event = "gateway.offer.cancelled",
-            connector_session_id = %connector.as_uuid(),
-            listener_session_id = %pipe.listener.as_uuid(),
-            connection_id = pipe_id.connection_id(),
-            binding_id = %pipe.binding_id.as_uuid(),
-            reason = "connector_cancelled",
-            pending_offers = self.pending_offer_count(),
-            live_pipes = self.live_pipe_count(),
-            "Pipe offer cancelled"
-        );
-        Ok(self
-            .to(
-                pipe.listener,
-                Frame::Reset {
-                    pipe_id,
-                    code: ErrorCode::Cancelled,
-                    message: "Connector cancelled the Pipe".to_owned(),
-                },
-            )
-            .into_iter()
-            .collect())
+        Ok(self.endpoint_reset(
+            pipe.listener,
+            pipe_id,
+            ErrorCode::Cancelled,
+            "Connector cancelled the Pipe",
+        ))
     }
 
-    pub(super) fn cancel_pending_binding(&mut self, binding_id: BindingId) -> Vec<Delivery> {
+    pub(super) fn cancel_pending_binding(&mut self, binding_id: BindingId) -> Vec<GatewayAction> {
         let pending: Vec<_> = self
             .pipes
             .iter()
@@ -317,28 +305,16 @@ impl GatewayState {
             .collect();
         pending
             .into_iter()
-            .filter_map(|pipe_id| {
-                let pipe = self.remove_pipe(pipe_id)?;
-                tracing::debug!(
-                    component = "gateway",
-                    event = "gateway.offer.cancelled",
-                    connector_session_id = %pipe.connector.as_uuid(),
-                    listener_session_id = %pipe.listener.as_uuid(),
-                    connection_id = pipe_id.connection_id(),
-                    binding_id = %pipe.binding_id.as_uuid(),
-                    reason = "binding_removed",
-                    pending_offers = self.pending_offer_count(),
-                    live_pipes = self.live_pipe_count(),
-                    "Pipe offer cancelled"
-                );
-                self.to(
-                    pipe.connector,
-                    Frame::OpenFailed {
-                        connection_id: pipe_id.connection_id(),
-                        code: ErrorCode::Unavailable,
-                        observation: PeerObservation::NotObserved,
-                        message: "selected ListenerBinding was removed before admission".to_owned(),
-                    },
+            .flat_map(|pipe_id| {
+                let Some(pipe) = self.remove_pipe(pipe_id) else {
+                    return Vec::new();
+                };
+                self.connector_failure(
+                    &pipe,
+                    pipe_id,
+                    ErrorCode::Unavailable,
+                    PeerObservation::NotObserved,
+                    "selected ListenerBinding was removed before admission",
                 )
             })
             .collect()
@@ -360,33 +336,65 @@ impl GatewayState {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
-            tracing::warn!(
-                component = "gateway",
-                event = "gateway.offer.expired",
-                connector_session_id = %pipe.connector.as_uuid(),
-                listener_session_id = %pipe.listener.as_uuid(),
-                connection_id = pipe_id.connection_id(),
-                binding_id = %pipe.binding_id.as_uuid(),
-                error_code = ?ErrorCode::DeadlineExceeded,
-                observation = ?PeerObservation::MaybeObserved,
-                "Pipe offer expired"
-            );
-            expired_listeners.insert(pipe.listener);
-            if let Some(delivery) = self.to(
-                pipe.connector,
-                Frame::OpenFailed {
-                    connection_id: pipe_id.connection_id(),
-                    code: ErrorCode::DeadlineExceeded,
-                    observation: PeerObservation::MaybeObserved,
-                    message: "Listener did not answer OFFER before the Gateway deadline".to_owned(),
-                },
-            ) {
-                actions.push(GatewayAction::SendSdkFrame(delivery));
+            if let Some(listener) = pipe.listener.sdk_session() {
+                expired_listeners.insert(listener);
             }
+            actions.extend(self.connector_failure(
+                &pipe,
+                pipe_id,
+                ErrorCode::DeadlineExceeded,
+                PeerObservation::MaybeObserved,
+                "Listener did not answer OFFER before the Gateway deadline",
+            ));
         }
         for listener in expired_listeners {
             actions.extend(self.remove_session(listener));
         }
         actions
+    }
+
+    pub(super) fn pending_capacity_reached(&self) -> bool {
+        self.pending_offer_count
+            .saturating_add(self.remote_open_attempts.len())
+            >= self.limits.max_pending_offers
+    }
+
+    pub(super) fn connector_opened(&self, pipe: &PipeEntry, pipe_id: PipeId) -> Vec<GatewayAction> {
+        match pipe.connector {
+            PipeEndpoint::Sdk(connector) => self
+                .to(connector, Frame::Opened { pipe_id })
+                .map(GatewayAction::SendSdkFrame)
+                .into_iter()
+                .collect(),
+            PipeEndpoint::Peer(key) => vec![PeerDelivery::Opened { key }.into()],
+        }
+    }
+
+    pub(super) fn connector_failure(
+        &self,
+        pipe: &PipeEntry,
+        pipe_id: PipeId,
+        code: ErrorCode,
+        observation: PeerObservation,
+        message: &str,
+    ) -> Vec<GatewayAction> {
+        match pipe.connector {
+            PipeEndpoint::Sdk(connector) => self.open_failed(
+                connector,
+                pipe_id.connection_id(),
+                code,
+                observation,
+                message,
+            ),
+            PipeEndpoint::Peer(key) => vec![
+                PeerDelivery::Failed {
+                    key,
+                    code,
+                    observation,
+                    message: message.to_owned(),
+                }
+                .into(),
+            ],
+        }
     }
 }

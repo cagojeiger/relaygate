@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashSet, VecDeque},
     fmt,
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
@@ -16,14 +15,20 @@ use tokio::{
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use crate::{
-    GatewayConfig, GatewayError, GatewayRoutingConfig, GatewaySnapshot,
+    GatewayConfig, GatewayError, GatewayPeerConfig, GatewayRoutingConfig, GatewaySnapshot,
     auth::ClientKeyStore,
-    routing::{RoutingHandle, RoutingRuntime},
-    state::GatewayAction,
-    state::GatewayLimits,
+    peer::PeerHandle,
+    routing::RoutingHandle,
     state::GatewayState,
     state::ProtocolViolation,
+    state::{GatewayAction, GatewayLimits},
 };
+
+mod distributed;
+mod effects;
+
+use distributed::DistributedRuntime;
+use effects::ControlEffects;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_OFFER_SWEEP_INTERVAL: Duration = Duration::from_millis(10);
@@ -41,14 +46,16 @@ struct Inner {
     offer_timeout: Duration,
     session_slots: Arc<Semaphore>,
     routing: Option<RoutingHandle>,
-    routing_runtime: Mutex<Option<RoutingRuntime>>,
+    peer: Option<PeerHandle>,
+    control_effects: Option<ControlEffects>,
+    distributed_runtime: Mutex<Option<DistributedRuntime>>,
 }
 
 impl fmt::Debug for Gateway {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Gateway")
-            .field("routing_enabled", &self.inner.routing.is_some())
+            .field("distributed", &self.inner.distributed_runtime())
             .finish_non_exhaustive()
     }
 }
@@ -58,35 +65,39 @@ impl Gateway {
         Self::build(config, None)
     }
 
-    /// Creates a Gateway whose local ListenerBinding state is projected to
-    /// the configured memory-only RouteTable shards.
+    /// Creates a distributed Gateway with RouteTable discovery and one-hop
+    /// Gateway peer relay.
     ///
     /// RouteTable availability is not a startup prerequisite. The manager
     /// reconnects in the background while local SDK sessions remain usable.
     /// Construction must occur inside a running Tokio runtime.
-    pub fn new_routed(
+    pub fn new_distributed(
         config: GatewayConfig,
         routing_config: GatewayRoutingConfig,
+        peer_config: GatewayPeerConfig,
         shutdown: CancellationToken,
     ) -> Result<Self, GatewayError> {
         config.validate()?;
         tokio::runtime::Handle::try_current().map_err(|error| {
             GatewayError::Routing(format!(
-                "routed Gateway must be constructed inside a Tokio runtime: {error}"
+                "distributed Gateway must be constructed inside a Tokio runtime: {error}"
             ))
         })?;
-        let runtime = RoutingRuntime::start(
+        let gateway_id = relaygate_route_table::GatewayId::new();
+        let action_result_capacity = config.max_pending_offers;
+        let distributed = DistributedRuntime::start(
+            gateway_id,
             routing_config,
-            relaygate_route_table::GatewayId::new(),
+            peer_config,
+            action_result_capacity,
             shutdown,
         )?;
-        let handle = runtime.handle();
-        Self::build(config, Some((handle, runtime)))
+        Self::build(config, Some(distributed))
     }
 
     fn build(
         config: GatewayConfig,
-        routing: Option<(RoutingHandle, RoutingRuntime)>,
+        distributed: Option<DistributedRuntime>,
     ) -> Result<Self, GatewayError> {
         config.validate()?;
         let limits = GatewayLimits {
@@ -96,21 +107,34 @@ impl Gateway {
             max_live_pipes: config.max_live_pipes,
             offer_timeout: config.offer_timeout,
         };
-        let (routing, routing_runtime) = routing
-            .map(|(handle, runtime)| (Some(handle), Some(runtime)))
-            .unwrap_or((None, None));
+        let gateway_id = distributed.as_ref().map(DistributedRuntime::gateway_id);
+        let routing = distributed.as_ref().map(DistributedRuntime::routing);
+        let peer = distributed.as_ref().map(DistributedRuntime::peer);
+        let control_effects = distributed.as_ref().map(|runtime| {
+            ControlEffects::new(
+                config.max_pending_offers,
+                runtime.action_results(),
+                runtime.shutdown(),
+            )
+        });
         Ok(Self {
             inner: Arc::new(Inner {
-                state: Mutex::new(GatewayState::new(
-                    ClientKeyStore::new(config.client_keys),
-                    limits,
-                )),
+                state: Mutex::new(match gateway_id {
+                    Some(gateway_id) => GatewayState::new_distributed(
+                        ClientKeyStore::new(config.client_keys),
+                        limits,
+                        gateway_id,
+                    ),
+                    None => GatewayState::new(ClientKeyStore::new(config.client_keys), limits),
+                }),
                 writer_queue_capacity: config.writer_queue_capacity,
                 max_frame_len: config.max_frame_len,
                 offer_timeout: config.offer_timeout,
                 session_slots: Arc::new(Semaphore::new(config.max_sessions)),
                 routing,
-                routing_runtime: Mutex::new(routing_runtime),
+                peer,
+                control_effects,
+                distributed_runtime: Mutex::new(distributed),
             }),
         })
     }
@@ -121,34 +145,12 @@ impl Gateway {
         listener: TcpListener,
         shutdown: CancellationToken,
     ) -> Result<(), GatewayError> {
-        let routing_runtime = self.inner.take_routing_runtime();
-        if self.inner.routing.is_some() && routing_runtime.is_none() {
-            return Err(GatewayError::Routing(
-                "a routed Gateway runtime can only be served once".to_owned(),
+        if self.inner.distributed_runtime() {
+            return Err(GatewayError::InvalidConfig(
+                "a distributed Gateway must be served with serve_distributed".to_owned(),
             ));
         }
-        let sdk = self.serve_sdk(listener, shutdown.clone());
-        let Some(routing_runtime) = routing_runtime else {
-            return sdk.await;
-        };
-
-        tokio::pin!(sdk);
-        let routing = routing_runtime.wait();
-        tokio::pin!(routing);
-        tokio::select! {
-            result = &mut sdk => {
-                shutdown.cancel();
-                let routing_result = routing.await;
-                result?;
-                routing_result.map_err(GatewayError::from)
-            }
-            result = &mut routing => {
-                shutdown.cancel();
-                let sdk_result = sdk.await;
-                result.map_err(GatewayError::from)?;
-                sdk_result
-            }
-        }
+        self.serve_sdk(listener, shutdown).await
     }
 
     async fn serve_sdk(
@@ -162,7 +164,7 @@ impl Gateway {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
-                _ = offer_sweep.tick() => self.inner.expire_offers(),
+                _ = offer_sweep.tick() => self.inner.expire_offers().await,
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let Ok(session_slot) = Arc::clone(&self.inner.session_slots).try_acquire_owned()
@@ -240,6 +242,12 @@ impl Gateway {
             snapshot.route_registrations_synced = counts.synced;
             snapshot.route_registrations_unsynced = counts.unsynced;
         }
+        if let Some(peer) = &self.inner.peer {
+            let counts = peer.counts();
+            snapshot.peer_transports_connecting = counts.connecting;
+            snapshot.peer_transports_ready = counts.ready;
+            snapshot.peer_streams = counts.streams;
+        }
         snapshot
     }
 }
@@ -271,7 +279,7 @@ impl Inner {
             return Err(SessionError::ResourceExhausted);
         };
         if let Err(error) = framed.send(Frame::Welcome { session_id }).await {
-            self.cleanup(session_id);
+            self.cleanup(session_id).await;
             return Err(SessionError::Protocol(error));
         }
         let (sink, source) = framed.split();
@@ -283,7 +291,7 @@ impl Inner {
             result = write => result,
         };
         cancellation.cancel();
-        self.cleanup(session_id);
+        self.cleanup(session_id).await;
         result
     }
 
@@ -299,53 +307,29 @@ impl Inner {
                 self.commit_registration_actions(&actions);
                 actions
             };
-            self.execute_all(actions);
+            self.execute_all(actions).await;
         }
         Ok(())
     }
 
-    fn cleanup(&self, session_id: relaygate_protocol::SessionId) {
+    async fn cleanup(self: &Arc<Self>, session_id: relaygate_protocol::SessionId) {
         let actions = {
             let mut state = self.lock_state();
             let actions = state.remove_session(session_id);
             self.commit_registration_actions(&actions);
             actions
         };
-        self.execute_all(actions);
+        self.execute_all(actions).await;
     }
 
-    fn expire_offers(&self) {
+    async fn expire_offers(self: &Arc<Self>) {
         let actions = {
             let mut state = self.lock_state();
             let actions = state.expire_offers(std::time::Instant::now());
             self.commit_registration_actions(&actions);
             actions
         };
-        self.execute_all(actions);
-    }
-
-    fn execute_all(&self, actions: Vec<GatewayAction>) {
-        let mut pending = VecDeque::from(actions);
-        let mut cleaned = HashSet::new();
-        while let Some(action) = pending.pop_front() {
-            match action {
-                GatewayAction::SendSdkFrame(delivery) => {
-                    let Some(failed_session) = delivery.deliver() else {
-                        continue;
-                    };
-                    if cleaned.insert(failed_session) {
-                        let cleanup_actions = {
-                            let mut state = self.lock_state();
-                            let actions = state.remove_session(failed_session);
-                            self.commit_registration_actions(&actions);
-                            actions
-                        };
-                        pending.extend(cleanup_actions);
-                    }
-                }
-                GatewayAction::PublishRegistration { .. } => {}
-            }
-        }
+        self.execute_all(actions).await;
     }
 
     /// Commits the latest complete snapshot while the Gateway state lock still
@@ -376,17 +360,10 @@ impl Inner {
         }
     }
 
-    fn take_routing_runtime(&self) -> Option<RoutingRuntime> {
-        match self.routing_runtime.lock() {
-            Ok(mut runtime) => runtime.take(),
-            Err(poisoned) => {
-                tracing::error!(
-                    component = "gateway",
-                    event = "gateway.routing_runtime.lock_poisoned",
-                    "recovering poisoned routing runtime lock"
-                );
-                poisoned.into_inner().take()
-            }
+    fn distributed_runtime(&self) -> bool {
+        match self.distributed_runtime.lock() {
+            Ok(runtime) => runtime.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
         }
     }
 
@@ -464,8 +441,8 @@ mod tests {
 
     use super::{Gateway, GatewayConfig};
 
-    #[test]
-    fn full_delivery_queue_immediately_removes_the_failed_session_state()
+    #[tokio::test]
+    async fn full_delivery_queue_immediately_removes_the_failed_session_state()
     -> Result<(), Box<dyn std::error::Error>> {
         let gateway = Gateway::new(GatewayConfig::new([(
             "echo.shared".to_owned(),
@@ -508,7 +485,7 @@ mod tests {
             (listener, connector, offer)
         };
 
-        gateway.inner.execute_all(offer);
+        gateway.inner.execute_all(offer).await;
 
         let after_cleanup = gateway.inner.lock_state().handle(
             connector,
@@ -520,7 +497,11 @@ mod tests {
         assert!(matches!(
             after_cleanup.first().and_then(|action| match action {
                 GatewayAction::SendSdkFrame(delivery) => Some(&delivery.frame),
-                GatewayAction::PublishRegistration { .. } => None,
+                GatewayAction::PublishRegistration { .. }
+                | GatewayAction::ResolveRoute { .. }
+                | GatewayAction::OpenPeer { .. }
+                | GatewayAction::CancelPeerOpen { .. }
+                | GatewayAction::SendPeerFrame(_) => None,
             }),
             Some(Frame::OpenFailed {
                 code: ErrorCode::NotFound,

@@ -8,6 +8,8 @@ pub enum GatewayError {
     Protocol(#[from] relaygate_protocol::ProtocolError),
     #[error("Gateway RouteTable orchestration failed: {0}")]
     Routing(String),
+    #[error("Gateway peer relay failed: {0}")]
+    Peer(String),
     #[error("Gateway health check timed out")]
     HealthCheckTimeout,
     #[error("Gateway health check received an unexpected frame")]
