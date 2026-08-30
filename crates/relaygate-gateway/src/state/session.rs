@@ -2,7 +2,7 @@ use relaygate_protocol::{ErrorCode, Frame, SessionId, SessionRole};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{Delivery, GatewayState, SessionEntry};
+use super::{Delivery, GatewayAction, GatewayState, SessionEntry};
 
 impl GatewayState {
     pub(crate) fn add_session(
@@ -38,7 +38,7 @@ impl GatewayState {
         }
     }
 
-    pub(crate) fn remove_session(&mut self, session_id: SessionId) -> Vec<Delivery> {
+    pub(crate) fn remove_session(&mut self, session_id: SessionId) -> Vec<GatewayAction> {
         let Some(session) = self.sessions.remove(&session_id) else {
             return Vec::new();
         };
@@ -53,7 +53,8 @@ impl GatewayState {
             })
             .collect();
         let removed_pipes = owned.len();
-        let mut deliveries = Vec::with_capacity(owned.len());
+        let mut actions =
+            Vec::with_capacity(owned.len() + usize::from(session.role == SessionRole::Listener));
         for pipe_id in owned {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
@@ -97,7 +98,7 @@ impl GatewayState {
                 )
             };
             if let Some(delivery) = self.to(counterpart, frame) {
-                deliveries.push(delivery);
+                actions.push(GatewayAction::SendSdkFrame(delivery));
             }
         }
         tracing::debug!(
@@ -113,7 +114,10 @@ impl GatewayState {
             live_pipes = self.live_pipe_count,
             "SDK session removed"
         );
-        deliveries
+        if session.role == SessionRole::Listener {
+            actions.push(self.registration_publication(session_id));
+        }
+        actions
     }
 
     pub(super) fn to(&self, target: SessionId, frame: Frame) -> Option<Delivery> {

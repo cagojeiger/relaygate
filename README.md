@@ -37,7 +37,7 @@ let echoed = receive.await??;
 정리한다. RelayGate 오류 세부 정보가 필요한 코드는 `read_into()`와
 `write_all_bytes()` 구조화 메서드를 사용할 수 있다.
 
-현재 구현 단계는 **단일 Gateway의 local Pipe와 독립 RouteTable runtime**입니다.
+현재 구현 단계는 **단일 Gateway의 local Pipe와 RouteTable registration/resolve 경계**입니다.
 
 - Rust workspace와 Rust public SDK
 - memory-only `ListenerBinding` registry
@@ -48,7 +48,8 @@ let echoed = receive.await??;
 - exact-byte generation과 `sha256-modulo-v1`을 사용하는 immutable shard directory
 - memory-only registration lease와 `Register` / `Update` / `KeepAlive` / `Deregister` / `Resolve`
 - bounded TCP request/response와 local/CI Gateway 인증을 제공하는 RouteTable runtime
-- Gateway registration manager와 peer relay는 다음 단계
+- Gateway가 보유한 complete current snapshot을 재연결·RT restart 뒤 다시 구성하는 registration manager
+- request-local `Resolve` client 경계까지 구현; remote OPEN과 Gateway peer relay는 다음 단계
 
 SDK는 자신의 Gateway session을 재연결하고 이미 반환된 Listener를 재등록한다. 끊어진
 Pipe나 commit된 `open` operation은 자동 재시도하지 않으며, application은
@@ -81,8 +82,18 @@ Probe는 UTF-8 payload, 65,537-byte binary payload, 32개 동시 Pipe의 byte �
 | `RELAYGATE_MAX_PENDING_OFFERS` | `10000` | 응답 대기 중인 `OFFER` 총 상한 |
 | `RELAYGATE_MAX_LIVE_PIPES` | `100000` | 열린 Pipe 총 상한 |
 | `RELAYGATE_OFFER_TIMEOUT_MS` | `5000` | Listener의 `OFFER` 응답 기한 |
+| `RELAYGATE_RT_TRUSTED_LOCAL` | routed mode에서 필수 | 로컬·CI용 plain-TCP RT key adapter를 명시적으로 사용할 때 정확히 `true` |
+| `RELAYGATE_RT_SHARD_DIRECTORY_PATH` | routed mode에서 필수 | Gateway가 process 수명 동안 고정할 exact-byte ShardDirectory JSON artifact |
+| `RELAYGATE_GATEWAY_NAME` | routed mode에서 필수 | RT allowlist의 Gateway 이름 |
+| `RELAYGATE_GATEWAY_LOCATOR` | routed mode에서 필수 | 다른 Gateway가 이 process를 찾을 stable logical endpoint |
+| `RELAYGATE_INTERNAL_GATEWAY_KEY` | routed mode에서 필수 | 이 Gateway 하나의 local·CI RT handshake key |
 
 모든 상한과 timeout은 0보다 큰 정수여야 합니다. Gateway는 시작할 때 configured `ClientId`마다 `ClientKey` 하나를 로드하고 process 수명 동안 갱신하지 않습니다. ClientKey는 최초·recovery 등록 검증에만 사용하며 RelayGate가 발급하거나 영속화하지 않습니다.
+
+RT 관련 다섯 변수가 모두 없으면 Gateway는 기존 local-only mode로 시작합니다. 하나라도 있으면
+다섯 값을 모두 요구하며, RT가 아직 시작되지 않았더라도 Gateway는 local SDK session을 받고
+manager가 background에서 bounded backoff로 연결합니다. local binding이 진실이고 RT에는 현재
+complete snapshot만 publish하므로 RT 단절은 local binding이나 이미 열린 Pipe를 제거하지 않습니다.
 
 `relaygate-server`는 standalone process의 tracing subscriber를 설치합니다. SDK나 Gateway를 application에 직접 포함하면 application이 subscriber를 하나 설치해야 합니다. 구조화 로그는 `ClientKey`와 payload를 기록하지 않으며, snapshot은 현재 Gateway-local 상태일 뿐 전달 성공을 뜻하지 않습니다.
 

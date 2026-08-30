@@ -1,5 +1,5 @@
-use super::{Delivery, GatewayLimits, GatewayState, ProtocolViolation};
-use crate::auth::ClientKeyStore;
+use super::{Delivery, GatewayAction, GatewayLimits, GatewayState, ProtocolViolation};
+use crate::{auth::ClientKeyStore, registry::Binding};
 use bytes::Bytes;
 use relaygate_protocol::{ClientKey, ErrorCode, Frame, PipeId, SessionRole};
 use std::{
@@ -64,6 +64,29 @@ fn add_session_with_cancellation(
     session_id.unwrap_or_default()
 }
 
+fn sdk_deliveries(actions: &[GatewayAction]) -> impl Iterator<Item = &Delivery> {
+    actions.iter().filter_map(|action| match action {
+        GatewayAction::SendSdkFrame(delivery) => Some(delivery),
+        GatewayAction::PublishRegistration { .. } => None,
+    })
+}
+
+fn first_sdk_delivery(actions: &[GatewayAction]) -> Option<&Delivery> {
+    sdk_deliveries(actions).next()
+}
+
+fn publications(
+    actions: &[GatewayAction],
+) -> impl Iterator<Item = (relaygate_protocol::SessionId, &[Binding])> {
+    actions.iter().filter_map(|action| match action {
+        GatewayAction::PublishRegistration {
+            session_id,
+            bindings,
+        } => Some((*session_id, bindings.as_slice())),
+        GatewayAction::SendSdkFrame(_) => None,
+    })
+}
+
 fn register_listener(
     state: &mut GatewayState,
     listener: relaygate_protocol::SessionId,
@@ -103,8 +126,7 @@ fn offer_pipe(
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    let pipe_id = deliveries
-        .iter()
+    let pipe_id = sdk_deliveries(&deliveries)
         .find_map(|delivery| match delivery.frame {
             Frame::Offer { pipe_id, .. } if delivery.target == listener => Some(pipe_id),
             _ => None,
@@ -128,13 +150,213 @@ fn invalid_key_creates_no_binding() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     assert_eq!(state.registry.binding_count(), 0);
+    assert_eq!(publications(&deliveries).count(), 0);
     assert!(matches!(
-        deliveries.first().map(|delivery| &delivery.frame),
+        first_sdk_delivery(&deliveries).map(|delivery| &delivery.frame),
         Some(Frame::RegisterFailed {
             code: ErrorCode::Unauthenticated,
             ..
         })
     ));
+    Ok(())
+}
+
+#[test]
+fn created_registration_publishes_one_complete_session_snapshot_after_response()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = limited_state(GatewayLimits::default());
+    let listener = add_session(&mut state, SessionRole::Listener);
+
+    let first = state.handle(
+        listener,
+        Frame::Register {
+            request_id: 1,
+            client_id: "echo.shared".to_owned(),
+            client_key: ClientKey::new("secret"),
+        },
+    )?;
+    assert!(matches!(
+        first.first(),
+        Some(GatewayAction::SendSdkFrame(_))
+    ));
+    let first_publications = publications(&first).collect::<Vec<_>>();
+    assert_eq!(first_publications.len(), 1);
+    assert_eq!(first_publications[0].0, listener);
+    assert_eq!(first_publications[0].1.len(), 1);
+    assert_eq!(first_publications[0].1[0].client_id, "echo.shared");
+
+    let second = state.handle(
+        listener,
+        Frame::Register {
+            request_id: 2,
+            client_id: "echo.other".to_owned(),
+            client_key: ClientKey::new("other-secret"),
+        },
+    )?;
+    assert!(matches!(
+        second.first(),
+        Some(GatewayAction::SendSdkFrame(_))
+    ));
+    let second_publications = publications(&second).collect::<Vec<_>>();
+    assert_eq!(second_publications.len(), 1);
+    assert_eq!(second_publications[0].0, listener);
+    assert_eq!(second_publications[0].1.len(), 2);
+    assert!(
+        second_publications[0]
+            .1
+            .iter()
+            .any(|binding| binding.client_id == "echo.shared")
+    );
+    assert!(
+        second_publications[0]
+            .1
+            .iter()
+            .any(|binding| binding.client_id == "echo.other")
+    );
+    Ok(())
+}
+
+#[test]
+fn idempotent_registration_does_not_republish_unchanged_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    register_listener(&mut state, listener)?;
+
+    let repeated = state.handle(
+        listener,
+        Frame::Register {
+            request_id: 2,
+            client_id: "echo.shared".to_owned(),
+            client_key: ClientKey::new("secret"),
+        },
+    )?;
+
+    assert_eq!(sdk_deliveries(&repeated).count(), 1);
+    assert_eq!(publications(&repeated).count(), 0);
+    Ok(())
+}
+
+#[test]
+fn unregister_publishes_remaining_then_empty_complete_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = limited_state(GatewayLimits::default());
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let first = state.handle(
+        listener,
+        Frame::Register {
+            request_id: 1,
+            client_id: "echo.shared".to_owned(),
+            client_key: ClientKey::new("secret"),
+        },
+    )?;
+    let first_id = sdk_deliveries(&first)
+        .find_map(|delivery| match delivery.frame {
+            Frame::Registered { binding_id, .. } => Some(binding_id),
+            _ => None,
+        })
+        .ok_or("missing first binding")?;
+    let second = state.handle(
+        listener,
+        Frame::Register {
+            request_id: 2,
+            client_id: "echo.other".to_owned(),
+            client_key: ClientKey::new("other-secret"),
+        },
+    )?;
+    let second_id = sdk_deliveries(&second)
+        .find_map(|delivery| match delivery.frame {
+            Frame::Registered { binding_id, .. } => Some(binding_id),
+            _ => None,
+        })
+        .ok_or("missing second binding")?;
+
+    let remaining = state.handle(
+        listener,
+        Frame::Unregister {
+            request_id: 3,
+            binding_id: first_id,
+        },
+    )?;
+    assert!(matches!(
+        remaining.first(),
+        Some(GatewayAction::SendSdkFrame(_))
+    ));
+    let remaining_publication = publications(&remaining)
+        .next()
+        .ok_or("missing publication")?;
+    assert_eq!(remaining_publication.1.len(), 1);
+    assert_eq!(remaining_publication.1[0].id, second_id);
+
+    let empty = state.handle(
+        listener,
+        Frame::Unregister {
+            request_id: 4,
+            binding_id: second_id,
+        },
+    )?;
+    assert!(matches!(
+        empty.first(),
+        Some(GatewayAction::SendSdkFrame(_))
+    ));
+    let empty_publication = publications(&empty).next().ok_or("missing publication")?;
+    assert!(empty_publication.1.is_empty());
+    Ok(())
+}
+
+#[test]
+fn only_listener_session_cleanup_publishes_an_empty_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+
+    let listener_cleanup = state.remove_session(listener);
+    let publication = publications(&listener_cleanup)
+        .next()
+        .ok_or("missing listener cleanup publication")?;
+    assert_eq!(publication.0, listener);
+    assert!(publication.1.is_empty());
+    assert_eq!(publications(&listener_cleanup).count(), 1);
+
+    let connector_cleanup = state.remove_session(connector);
+    assert_eq!(publications(&connector_cleanup).count(), 0);
+    Ok(())
+}
+
+#[test]
+fn stale_binding_cleanup_emits_failure_before_the_current_empty_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    state.sessions.remove(&listener).ok_or("missing listener")?;
+
+    let actions = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+
+    assert!(matches!(
+        actions.first(),
+        Some(GatewayAction::SendSdkFrame(_))
+    ));
+    assert!(matches!(
+        first_sdk_delivery(&actions).map(|delivery| &delivery.frame),
+        Some(Frame::OpenFailed {
+            code: ErrorCode::Unavailable,
+            ..
+        })
+    ));
+    let publication = publications(&actions).next().ok_or("missing publication")?;
+    assert_eq!(publication.0, listener);
+    assert!(publication.1.is_empty());
+    assert_eq!(state.registry.binding_count(), 0);
     Ok(())
 }
 
@@ -173,9 +395,11 @@ fn n_to_m_registry_offers_each_open_to_only_one_listener() -> Result<(), Box<dyn
 
     assert_eq!(first.len(), 1);
     assert_eq!(second.len(), 1);
-    assert_ne!(first[0].target, second[0].target);
-    assert!(matches!(first[0].frame, Frame::Offer { .. }));
-    assert!(matches!(second[0].frame, Frame::Offer { .. }));
+    let first_delivery = first_sdk_delivery(&first).ok_or("missing first offer")?;
+    let second_delivery = first_sdk_delivery(&second).ok_or("missing second offer")?;
+    assert_ne!(first_delivery.target, second_delivery.target);
+    assert!(matches!(first_delivery.frame, Frame::Offer { .. }));
+    assert!(matches!(second_delivery.frame, Frame::Offer { .. }));
     assert_eq!(state.pipe_count(), 2);
     Ok(())
 }
@@ -230,7 +454,7 @@ fn disconnect_removes_only_owned_state_and_terminates_pending_open()
 
     assert_eq!(state.registry.binding_count(), 1);
     assert_eq!(state.pipe_count(), 0);
-    assert!(failures.iter().any(|delivery| {
+    assert!(sdk_deliveries(&failures).any(|delivery| {
         delivery.target == connector
             && matches!(
                 delivery.frame,
@@ -408,7 +632,7 @@ fn foreign_fin_on_offered_pipe_terminates_only_offender_and_preserves_target()
 
     let opened = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
     assert!(matches!(
-        opened.first().map(|delivery| (&delivery.target, &delivery.frame)),
+        first_sdk_delivery(&opened).map(|delivery| (&delivery.target, &delivery.frame)),
         Some((target, Frame::Opened { pipe_id: opened_pipe }))
             if *target == connector && *opened_pipe == pipe_id
     ));
@@ -542,7 +766,12 @@ fn foreign_offer_responses_and_cancel_preserve_the_pending_pipe()
         assert_eq!(state.pending_offer_count(), 1);
         assert_eq!(state.pipe_count(), 1);
 
-        assert!(state.remove_session(offender).is_empty());
+        let cleanup = state.remove_session(offender);
+        assert_eq!(sdk_deliveries(&cleanup).count(), 0);
+        assert_eq!(
+            publications(&cleanup).count(),
+            usize::from(role == SessionRole::Listener)
+        );
         assert!(offender_cancellation.is_cancelled());
         assert_eq!(state.pending_offer_count(), 1);
     }
@@ -629,7 +858,7 @@ fn owner_invalid_phase_resets_only_the_target_pipe() -> Result<(), Box<dyn std::
         };
         let resets = state.handle(connector, frame)?;
         assert_eq!(resets.len(), 2);
-        assert!(resets.iter().all(|delivery| matches!(
+        assert!(sdk_deliveries(&resets).all(|delivery| matches!(
             delivery.frame,
             Frame::Reset {
                 pipe_id: reset_pipe,
@@ -656,7 +885,7 @@ fn owner_invalid_phase_resets_only_the_target_pipe() -> Result<(), Box<dyn std::
         };
         let resets = state.handle(sender, frame)?;
         assert_eq!(resets.len(), 2);
-        assert!(resets.iter().all(|delivery| matches!(
+        assert!(sdk_deliveries(&resets).all(|delivery| matches!(
             delivery.frame,
             Frame::Reset {
                 pipe_id: reset_pipe,
@@ -695,7 +924,7 @@ fn cancel_after_offer_admission_closes_only_the_cancelled_pipe()
     let resets = state.handle(connector, Frame::Cancel { pipe_id: cancelled })?;
 
     assert!(matches!(
-        resets.first().map(|delivery| (&delivery.target, &delivery.frame)),
+        first_sdk_delivery(&resets).map(|delivery| (&delivery.target, &delivery.frame)),
         Some((target, Frame::Reset {
             pipe_id,
             code: ErrorCode::Cancelled,
@@ -733,7 +962,7 @@ fn connection_history_is_a_single_high_watermark() -> Result<(), Box<dyn std::er
             },
         )?;
         assert!(matches!(
-            deliveries.first().map(|delivery| &delivery.frame),
+            first_sdk_delivery(&deliveries).map(|delivery| &delivery.frame),
             Some(Frame::OpenFailed {
                 code: ErrorCode::InvalidArgument,
                 ..
@@ -768,7 +997,7 @@ fn close_reset_and_late_frames_are_pipe_local() -> Result<(), Box<dyn std::error
     let closed = open_pipe(&mut state, connector, listener, 1)?;
     let close = state.handle(connector, Frame::Close { pipe_id: closed })?;
     assert!(matches!(
-        close.first().map(|delivery| (&delivery.target, &delivery.frame)),
+        first_sdk_delivery(&close).map(|delivery| (&delivery.target, &delivery.frame)),
         Some((target, Frame::Close { pipe_id })) if *target == listener && *pipe_id == closed
     ));
     assert_eq!(state.pipe_count(), 0);
@@ -788,7 +1017,7 @@ fn close_reset_and_late_frames_are_pipe_local() -> Result<(), Box<dyn std::error
         },
     )?;
     assert!(matches!(
-        resets.first().map(|delivery| (&delivery.target, &delivery.frame)),
+        first_sdk_delivery(&resets).map(|delivery| (&delivery.target, &delivery.frame)),
         Some((target, Frame::Reset { pipe_id, code: ErrorCode::Cancelled, .. }))
             if *target == connector && *pipe_id == reset
     ));
@@ -837,7 +1066,7 @@ fn data_after_fin_resets_only_that_pipe() -> Result<(), Box<dyn std::error::Erro
     )?;
 
     assert_eq!(resets.len(), 2);
-    assert!(resets.iter().all(|delivery| matches!(
+    assert!(sdk_deliveries(&resets).all(|delivery| matches!(
         delivery.frame,
         Frame::Reset {
             code: ErrorCode::ProtocolError,
@@ -873,8 +1102,7 @@ fn unregister_cancels_only_pending_binding_incarnation() -> Result<(), Box<dyn s
             client_key: ClientKey::new("secret"),
         },
     )?;
-    let old_binding = registered
-        .iter()
+    let old_binding = sdk_deliveries(&registered)
         .find_map(|delivery| match delivery.frame {
             Frame::Registered { binding_id, .. } => Some(binding_id),
             _ => None,
@@ -887,8 +1115,7 @@ fn unregister_cancels_only_pending_binding_incarnation() -> Result<(), Box<dyn s
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    let old_pipe = offers
-        .iter()
+    let old_pipe = sdk_deliveries(&offers)
         .find_map(|delivery| match delivery.frame {
             Frame::Offer {
                 pipe_id,
@@ -906,7 +1133,7 @@ fn unregister_cancels_only_pending_binding_incarnation() -> Result<(), Box<dyn s
             binding_id: old_binding,
         },
     )?;
-    assert!(removed.iter().any(|delivery| matches!(
+    assert!(sdk_deliveries(&removed).any(|delivery| matches!(
         delivery.frame,
         Frame::OpenFailed {
             connection_id: 1,
@@ -924,8 +1151,7 @@ fn unregister_cancels_only_pending_binding_incarnation() -> Result<(), Box<dyn s
             client_key: ClientKey::new("secret"),
         },
     )?;
-    let new_binding = renewed
-        .iter()
+    let new_binding = sdk_deliveries(&renewed)
         .find_map(|delivery| match delivery.frame {
             Frame::Registered { binding_id, .. } => Some(binding_id),
             _ => None,
@@ -947,8 +1173,7 @@ fn unregister_cancels_only_pending_binding_incarnation() -> Result<(), Box<dyn s
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    let new_pipe = new_offer
-        .iter()
+    let new_pipe = sdk_deliveries(&new_offer)
         .find_map(|delivery| match delivery.frame {
             Frame::Offer {
                 pipe_id,
@@ -974,8 +1199,7 @@ fn unregister_cancels_only_pending_binding_incarnation() -> Result<(), Box<dyn s
         },
     )?;
     assert!(
-        removed_after_open
-            .iter()
+        sdk_deliveries(&removed_after_open)
             .any(|delivery| matches!(delivery.frame, Frame::Unregistered { request_id: 4 }))
     );
     assert_eq!(state.pipe_count(), 1);
@@ -1009,8 +1233,7 @@ fn terminal_interleavings_emit_once_and_never_resurrect_pipe()
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    let pending = offered
-        .iter()
+    let pending = sdk_deliveries(&offered)
         .find_map(|delivery| match delivery.frame {
             Frame::Offer { pipe_id, .. } => Some(pipe_id),
             _ => None,
@@ -1019,11 +1242,11 @@ fn terminal_interleavings_emit_once_and_never_resurrect_pipe()
     let cancelled = state.handle(connector, Frame::Cancel { pipe_id: pending })?;
     assert_eq!(cancelled.len(), 1);
     assert!(matches!(
-        cancelled[0].frame,
-        Frame::Reset {
+        first_sdk_delivery(&cancelled).map(|delivery| &delivery.frame),
+        Some(Frame::Reset {
             code: ErrorCode::Cancelled,
             ..
-        }
+        })
     ));
     assert_eq!(state.pipe_count(), 0);
     assert!(
@@ -1046,7 +1269,10 @@ fn terminal_interleavings_emit_once_and_never_resurrect_pipe()
     let opened = open_pipe(&mut state, connector, listener, 2)?;
     let closed = state.handle(connector, Frame::Close { pipe_id: opened })?;
     assert_eq!(closed.len(), 1);
-    assert!(matches!(closed[0].frame, Frame::Close { .. }));
+    assert!(matches!(
+        first_sdk_delivery(&closed).map(|delivery| &delivery.frame),
+        Some(Frame::Close { .. })
+    ));
     for late in [
         Frame::OfferAccepted { pipe_id: opened },
         Frame::Cancel { pipe_id: opened },
@@ -1086,8 +1312,7 @@ fn session_and_binding_limits_preserve_existing_state() -> Result<(), Box<dyn st
             client_key: ClientKey::new("secret"),
         },
     )?;
-    let binding_id = registered
-        .iter()
+    let binding_id = sdk_deliveries(&registered)
         .find_map(|delivery| match delivery.frame {
             Frame::Registered { binding_id, .. } => Some(binding_id),
             _ => None,
@@ -1102,7 +1327,7 @@ fn session_and_binding_limits_preserve_existing_state() -> Result<(), Box<dyn st
         },
     )?;
     assert!(matches!(
-        repeated.first().map(|delivery| &delivery.frame),
+        first_sdk_delivery(&repeated).map(|delivery| &delivery.frame),
         Some(Frame::Registered {
             binding_id: repeated_id,
             ..
@@ -1118,7 +1343,7 @@ fn session_and_binding_limits_preserve_existing_state() -> Result<(), Box<dyn st
         },
     )?;
     assert!(matches!(
-        exhausted.first().map(|delivery| &delivery.frame),
+        first_sdk_delivery(&exhausted).map(|delivery| &delivery.frame),
         Some(Frame::RegisterFailed {
             code: ErrorCode::ResourceExhausted,
             ..
@@ -1147,7 +1372,7 @@ fn pending_offer_limit_rejects_without_observation_or_state_growth()
         },
     )?;
     assert!(matches!(
-        first.first().map(|delivery| &delivery.frame),
+        first_sdk_delivery(&first).map(|delivery| &delivery.frame),
         Some(Frame::Offer { .. })
     ));
     let second = state.handle(
@@ -1158,7 +1383,7 @@ fn pending_offer_limit_rejects_without_observation_or_state_growth()
         },
     )?;
     assert!(matches!(
-        second.first().map(|delivery| &delivery.frame),
+        first_sdk_delivery(&second).map(|delivery| &delivery.frame),
         Some(Frame::OpenFailed {
             code: ErrorCode::ResourceExhausted,
             observation: relaygate_protocol::PeerObservation::NotObserved,
@@ -1196,31 +1421,27 @@ fn live_pipe_limit_before_opened_reports_maybe_observed_failure()
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    let first_pipe = first_offer
-        .iter()
+    let first_pipe = sdk_deliveries(&first_offer)
         .find_map(|delivery| match delivery.frame {
             Frame::Offer { pipe_id, .. } => Some(pipe_id),
             _ => None,
         })
         .ok_or("missing first offer")?;
-    let second_pipe = second_offer
-        .iter()
+    let second_pipe = sdk_deliveries(&second_offer)
         .find_map(|delivery| match delivery.frame {
             Frame::Offer { pipe_id, .. } => Some(pipe_id),
             _ => None,
         })
         .ok_or("missing second offer")?;
 
+    let opened = state.handle(
+        listener,
+        Frame::OfferAccepted {
+            pipe_id: first_pipe,
+        },
+    )?;
     assert!(matches!(
-        state
-            .handle(
-                listener,
-                Frame::OfferAccepted {
-                    pipe_id: first_pipe
-                }
-            )?
-            .first()
-            .map(|delivery| &delivery.frame),
+        first_sdk_delivery(&opened).map(|delivery| &delivery.frame),
         Some(Frame::Opened { .. })
     ));
     let exhausted = state.handle(
@@ -1229,7 +1450,7 @@ fn live_pipe_limit_before_opened_reports_maybe_observed_failure()
             pipe_id: second_pipe,
         },
     )?;
-    assert!(exhausted.iter().any(|delivery| matches!(
+    assert!(sdk_deliveries(&exhausted).any(|delivery| matches!(
         delivery.frame,
         Frame::OpenFailed {
             code: ErrorCode::ResourceExhausted,
@@ -1237,7 +1458,7 @@ fn live_pipe_limit_before_opened_reports_maybe_observed_failure()
             ..
         }
     )));
-    assert!(exhausted.iter().any(|delivery| matches!(
+    assert!(sdk_deliveries(&exhausted).any(|delivery| matches!(
         delivery.frame,
         Frame::Reset {
             code: ErrorCode::ResourceExhausted,
@@ -1283,8 +1504,7 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
             client_id: "echo.other".to_owned(),
         },
     )?;
-    let live_pipe = live_offer
-        .iter()
+    let live_pipe = sdk_deliveries(&live_offer)
         .find_map(|delivery| match delivery.frame {
             Frame::Offer { pipe_id, .. } if delivery.target == listener => Some(pipe_id),
             _ => None,
@@ -1299,8 +1519,7 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    let expired_pipe = offered
-        .iter()
+    let expired_pipe = sdk_deliveries(&offered)
         .find_map(|delivery| match delivery.frame {
             Frame::Offer { pipe_id, .. } => Some(pipe_id),
             _ => None,
@@ -1308,7 +1527,7 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
         .ok_or("missing offer")?;
 
     let expired = state.expire_offers(before_open + Duration::from_millis(20));
-    assert!(expired.iter().any(|delivery| matches!(
+    assert!(sdk_deliveries(&expired).any(|delivery| matches!(
         delivery.frame,
         Frame::OpenFailed {
             connection_id: 2,
@@ -1317,7 +1536,7 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
             ..
         }
     )));
-    assert!(expired.iter().any(|delivery| {
+    assert!(sdk_deliveries(&expired).any(|delivery| {
         delivery.target == connector
             && matches!(
                 delivery.frame,
@@ -1353,7 +1572,7 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
             client_id: "echo.shared".to_owned(),
         },
     )?;
-    assert!(next.iter().any(|delivery| {
+    assert!(sdk_deliveries(&next).any(|delivery| {
         delivery.target == sibling && matches!(delivery.frame, Frame::Offer { .. })
     }));
     Ok(())

@@ -132,6 +132,59 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn routed_gateway_starts_without_route_table_and_hides_internal_key() -> Result<(), Box<dyn Error>>
+{
+    let address = unused_loopback_address()?;
+    let artifact = ShardDirectoryArtifact::create()?;
+    let secret = "must-not-appear-gateway-route-table-key";
+    let mut server = ChildGuard::spawn_captured(
+        server_command()
+            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_CLIENT_KEYS", "echo.alpha=client-key")
+            .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
+            .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
+            .env("RELAYGATE_GATEWAY_NAME", "gw-a")
+            .env("RELAYGATE_GATEWAY_LOCATOR", "gw-a.internal:27431")
+            .env("RELAYGATE_INTERNAL_GATEWAY_KEY", secret)
+            .env("RELAYGATE_LOG", "info")
+            .env("RELAYGATE_LOG_FORMAT", "json"),
+    )?;
+
+    wait_until_healthy(&address, &mut server)?;
+    let signal_status = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()?;
+    assert!(signal_status.success(), "failed to send SIGTERM to server");
+    let exit_status = server.wait_until(SHUTDOWN_DEADLINE)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "routed Gateway did not exit before the shutdown deadline",
+        )
+    })?;
+    assert!(exit_status.success(), "routed Gateway shutdown failed");
+
+    let (stdout, stderr) = server.read_captured()?;
+    assert!(!stdout.contains(secret));
+    assert!(!stderr.contains(secret));
+    let records = stdout
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let started = records
+        .iter()
+        .find(|record| record["event"] == "server.started" && record["role"] == "gateway")
+        .ok_or("missing routed Gateway server.started event")?;
+    assert_eq!(started["routing_enabled"], true);
+    let warning = records
+        .iter()
+        .find(|record| record["event"] == "gateway.route_table.trusted_local_enabled")
+        .ok_or("missing routed Gateway trusted-local warning")?;
+    assert_eq!(warning["transport"], "plain_tcp");
+    Ok(())
+}
+
 #[test]
 fn invalid_cli_arguments_fail_with_actionable_errors() -> Result<(), Box<dyn Error>> {
     assert_failure(&["unknown"], "unknown command")?;
@@ -163,6 +216,25 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
     assert_unsuccessful_output(
         &missing_route_table_directory,
         "RELAYGATE_RT_SHARD_DIRECTORY_PATH is required",
+    );
+
+    let incomplete_gateway_routing = server_command()
+        .env("RELAYGATE_GATEWAY_NAME", "gw-a")
+        .output()?;
+    assert_unsuccessful_output(
+        &incomplete_gateway_routing,
+        "RELAYGATE_RT_TRUSTED_LOCAL must be `true`",
+    );
+
+    let missing_gateway_directory = server_command()
+        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
+        .env("RELAYGATE_GATEWAY_NAME", "gw-a")
+        .env("RELAYGATE_GATEWAY_LOCATOR", "gw-a.internal:27431")
+        .env("RELAYGATE_INTERNAL_GATEWAY_KEY", "secret")
+        .output()?;
+    assert_unsuccessful_output(
+        &missing_gateway_directory,
+        "RELAYGATE_RT_SHARD_DIRECTORY_PATH is required for routed Gateway mode",
     );
 
     let malformed_keys = server_command()
@@ -263,6 +335,8 @@ fn json_logs_expose_stable_startup_and_snapshot_fields_without_secrets()
         "listener_bindings",
         "pending_offers",
         "live_pipes",
+        "route_registrations_synced",
+        "route_registrations_unsynced",
     ] {
         assert!(
             snapshot[field].is_number(),
@@ -277,6 +351,9 @@ fn server_command() -> Command {
     for name in [
         "RELAYGATE_BIND_ADDR",
         "RELAYGATE_CLIENT_KEYS",
+        "RELAYGATE_GATEWAY_LOCATOR",
+        "RELAYGATE_GATEWAY_NAME",
+        "RELAYGATE_INTERNAL_GATEWAY_KEY",
         "RELAYGATE_LOG",
         "RELAYGATE_LOG_FORMAT",
         "RELAYGATE_MAX_BINDINGS",

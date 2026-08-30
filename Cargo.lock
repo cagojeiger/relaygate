@@ -297,6 +297,8 @@ dependencies = [
  "bytes",
  "futures-util",
  "relaygate-protocol",
+ "relaygate-route-table",
+ "relaygate-route-table-transport",
  "relaygate-sdk",
  "subtle",
  "thiserror",

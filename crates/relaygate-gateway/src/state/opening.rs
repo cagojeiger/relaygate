@@ -4,7 +4,7 @@ use relaygate_protocol::{
     BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId, SessionRole,
 };
 
-use super::{Delivery, GatewayState, PipeEntry, PipePhase, ProtocolViolation};
+use super::{Delivery, GatewayAction, GatewayState, PipeEntry, PipePhase, ProtocolViolation};
 
 impl GatewayState {
     pub(super) fn open(
@@ -12,7 +12,7 @@ impl GatewayState {
         connector: SessionId,
         connection_id: u64,
         client_id: String,
-    ) -> Vec<Delivery> {
+    ) -> Vec<GatewayAction> {
         let Some(session) = self.sessions.get_mut(&connector) else {
             return Vec::new();
         };
@@ -66,13 +66,15 @@ impl GatewayState {
             .is_some_and(|session| session.role == SessionRole::Listener);
         if !listener_is_live {
             self.registry.remove_owned(binding.session_id, binding.id);
-            return self.open_failed(
+            let mut actions = self.open_failed(
                 connector,
                 connection_id,
                 ErrorCode::Unavailable,
                 PeerObservation::NotObserved,
                 "selected ListenerSession is no longer live",
             );
+            actions.push(self.registration_publication(binding.session_id));
+            return actions;
         }
 
         let pipe_id = PipeId::new(connector, connection_id);
@@ -108,6 +110,7 @@ impl GatewayState {
                 client_id,
             },
         )
+        .map(GatewayAction::SendSdkFrame)
         .into_iter()
         .collect()
     }
@@ -119,7 +122,7 @@ impl GatewayState {
         code: ErrorCode,
         observation: PeerObservation,
         message: &str,
-    ) -> Vec<Delivery> {
+    ) -> Vec<GatewayAction> {
         tracing::debug!(
             component = "gateway",
             event = "gateway.open.failed",
@@ -138,6 +141,7 @@ impl GatewayState {
                 message: message.to_owned(),
             },
         )
+        .map(GatewayAction::SendSdkFrame)
         .into_iter()
         .collect()
     }
@@ -340,7 +344,7 @@ impl GatewayState {
             .collect()
     }
 
-    pub(crate) fn expire_offers(&mut self, now: Instant) -> Vec<Delivery> {
+    pub(crate) fn expire_offers(&mut self, now: Instant) -> Vec<GatewayAction> {
         let expired: Vec<_> = self
             .pipes
             .iter()
@@ -350,7 +354,7 @@ impl GatewayState {
                     .then_some(*pipe_id)
             })
             .collect();
-        let mut deliveries = Vec::with_capacity(expired.len());
+        let mut actions = Vec::with_capacity(expired.len());
         let mut expired_listeners = std::collections::HashSet::new();
         for pipe_id in expired {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
@@ -377,12 +381,12 @@ impl GatewayState {
                     message: "Listener did not answer OFFER before the Gateway deadline".to_owned(),
                 },
             ) {
-                deliveries.push(delivery);
+                actions.push(GatewayAction::SendSdkFrame(delivery));
             }
         }
         for listener in expired_listeners {
-            deliveries.extend(self.remove_session(listener));
+            actions.extend(self.remove_session(listener));
         }
-        deliveries
+        actions
     }
 }

@@ -67,6 +67,18 @@ impl LocalRegistry {
         ids.into_iter().filter_map(|id| self.remove(id)).collect()
     }
 
+    pub(crate) fn bindings_for_session(&self, session_id: SessionId) -> Vec<Binding> {
+        let mut bindings = self
+            .by_session
+            .get(&session_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.by_id.get(id).cloned())
+            .collect::<Vec<_>>();
+        bindings.sort_unstable_by_key(|binding| binding.id.as_uuid());
+        bindings
+    }
+
     pub(crate) fn select(&mut self, client_id: &str) -> Option<Binding> {
         let ids = self.by_client.get(client_id)?;
         if ids.is_empty() {
@@ -225,5 +237,31 @@ mod tests {
         assert_eq!(registry.binding_count(), 1);
         assert_eq!(registry.client_binding_count("echo.shared"), 1);
         assert_eq!(registry.session_binding_count(second_session), 1);
+    }
+
+    #[test]
+    fn session_snapshot_contains_only_current_complete_bindings() {
+        let first_session = SessionId::new();
+        let second_session = SessionId::new();
+        let mut registry = LocalRegistry::default();
+        let first = binding_id(registry.register(first_session, "echo.shared"));
+        let second = binding_id(registry.register(first_session, "echo.other"));
+        registry.register(second_session, "echo.shared");
+
+        let snapshot = registry.bindings_for_session(first_session);
+
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.iter().any(|binding| binding.id == first));
+        assert!(snapshot.iter().any(|binding| binding.id == second));
+        assert!(registry.remove_owned(first_session, first).is_some());
+        assert_eq!(
+            registry
+                .bindings_for_session(first_session)
+                .into_iter()
+                .map(|binding| binding.id)
+                .collect::<Vec<_>>(),
+            vec![second]
+        );
+        assert!(registry.bindings_for_session(SessionId::new()).is_empty());
     }
 }

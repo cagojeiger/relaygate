@@ -90,9 +90,18 @@ connector_sessions
 listener_bindings
 pending_offers
 live_pipes
+route_registrations_synced
+route_registrations_unsynced
 ```
 
-snapshot은 한 Gateway process의 순간 관찰값이다. 누적 counter, RT mapping, application 처리 결과,
+`route_registrations_*`는 Gateway의 routing worker가 마지막으로 관찰한 session-shard
+registration 수렴 상태다. RT 전체 table이나 mapping 수가 아니다. publication 또는 RT 연결
+상태가 바뀐 직후에는 worker가 desired state를 다시 읽을 때까지 짧게 이전 값을 보일 수 있고,
+local state count와 하나의 원자적 시점으로 읽히지 않는다. worker가 단절을 관찰하면 local
+binding은 유지된 채 해당 registration이 `unsynced`로 수렴한다. 이 값은 routing 결정에 쓰는
+진실이 아니라 운영 관측값이다.
+
+snapshot은 한 Gateway process의 순간 관찰값이다. 누적 counter, application 처리 결과,
 message delivery acknowledgement가 아니다.
 
 `RELAYGATE_STATS_INTERVAL_MS`를 설정하면 `relaygate-server`는 `gateway.snapshot` event를
@@ -114,7 +123,7 @@ durable metric history
 | --- | --- |
 | `OBS-001` | 로그 형식은 `text`와 `json`만 허용하고 잘못된 값이면 serve 전에 실패해야 한다. |
 | `OBS-002` | snapshot interval은 unset 또는 0보다 큰 millisecond만 허용해야 한다. |
-| `OBS-003` | `GatewaySnapshot`은 session, binding, pending offer와 live Pipe 수를 같은 local state index에서 계산해야 한다. |
+| `OBS-003` | `GatewaySnapshot`은 session, binding, pending offer와 live Pipe 수를 같은 local state index에서 계산해야 한다. RT manager가 있으면 worker가 마지막으로 관찰한 session-shard registration의 `SYNCED/UNSYNCED` 수렴 상태를 함께 제공하되 local count와 원자적 시점을 보장하지 않는다. local-only mode의 두 registration 수는 0이어야 하며 RT 전체 mapping 수나 routing 진실로 해석해서는 안 된다. |
 | `OBS-004` | 구조화 event는 `component`, `event`와 현재 객체를 구분할 수 있는 identity field를 사용해야 한다. |
 | `OBS-005` | event는 `ClientKey`, `InternalGatewayKey`, payload, application data를 기록하지 않고 DATA hot path에 per-frame 로그를 만들지 않아야 한다. |
 | `OBS-006` | SDK와 Gateway lifecycle event는 기존 terminal code와 observation을 바꾸지 않고 관찰해야 한다. |

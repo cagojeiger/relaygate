@@ -4,7 +4,11 @@ use relaygate_protocol::{BindingId, ErrorCode, Frame, PipeId, SessionId, Session
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{GatewaySnapshot, auth::ClientKeyStore, registry::LocalRegistry};
+use crate::{
+    GatewaySnapshot,
+    auth::ClientKeyStore,
+    registry::{Binding, LocalRegistry},
+};
 
 mod opening;
 mod pipe;
@@ -40,6 +44,21 @@ impl Delivery {
             return Some(self.target);
         }
         None
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum GatewayAction {
+    SendSdkFrame(Delivery),
+    PublishRegistration {
+        session_id: SessionId,
+        bindings: Vec<Binding>,
+    },
+}
+
+impl From<Delivery> for GatewayAction {
+    fn from(delivery: Delivery) -> Self {
+        Self::SendSdkFrame(delivery)
     }
 }
 
@@ -150,7 +169,7 @@ impl GatewayState {
         &mut self,
         session_id: SessionId,
         frame: Frame,
-    ) -> Result<Vec<Delivery>, ProtocolViolation> {
+    ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
         let Some(role) = self.sessions.get(&session_id).map(|session| session.role) else {
             return Ok(Vec::new());
         };
@@ -161,7 +180,7 @@ impl GatewayState {
             });
         }
 
-        let deliveries = match frame {
+        let actions = match frame {
             Frame::Register {
                 request_id,
                 client_id,
@@ -175,23 +194,28 @@ impl GatewayState {
                 connection_id,
                 client_id,
             } => self.open(session_id, connection_id, client_id),
-            Frame::OfferAccepted { pipe_id } => self.offer_accepted(session_id, pipe_id)?,
+            Frame::OfferAccepted { pipe_id } => {
+                Self::send_actions(self.offer_accepted(session_id, pipe_id)?)
+            }
             Frame::OfferRejected {
                 pipe_id,
                 code,
                 message,
-            } => self.offer_rejected(session_id, pipe_id, code, message)?,
-            Frame::Data { pipe_id, payload } => self.data(session_id, pipe_id, payload)?,
-            Frame::Fin { pipe_id } => self.fin(session_id, pipe_id)?,
-            Frame::Close { pipe_id } => self.close(session_id, pipe_id)?,
+            } => Self::send_actions(self.offer_rejected(session_id, pipe_id, code, message)?),
+            Frame::Data { pipe_id, payload } => {
+                Self::send_actions(self.data(session_id, pipe_id, payload)?)
+            }
+            Frame::Fin { pipe_id } => Self::send_actions(self.fin(session_id, pipe_id)?),
+            Frame::Close { pipe_id } => Self::send_actions(self.close(session_id, pipe_id)?),
             Frame::Reset {
                 pipe_id,
                 code,
                 message,
-            } => self.reset(session_id, pipe_id, code, message)?,
-            Frame::Cancel { pipe_id } => self.cancel(session_id, pipe_id)?,
+            } => Self::send_actions(self.reset(session_id, pipe_id, code, message)?),
+            Frame::Cancel { pipe_id } => Self::send_actions(self.cancel(session_id, pipe_id)?),
             Frame::Ping { nonce } => self
                 .to(session_id, Frame::Pong { nonce })
+                .map(GatewayAction::SendSdkFrame)
                 .into_iter()
                 .collect(),
             Frame::Pong { .. } => Vec::new(),
@@ -204,7 +228,7 @@ impl GatewayState {
             | Frame::Opened { .. }
             | Frame::OpenFailed { .. } => Vec::new(),
         };
-        Ok(deliveries)
+        Ok(actions)
     }
 
     pub(crate) fn snapshot(&self) -> GatewaySnapshot {
@@ -261,6 +285,17 @@ impl GatewayState {
         self.sessions
             .get(&session_id)
             .and_then(|session| session.highest_connection_id)
+    }
+
+    fn send_actions(deliveries: Vec<Delivery>) -> Vec<GatewayAction> {
+        deliveries.into_iter().map(GatewayAction::from).collect()
+    }
+
+    fn registration_publication(&self, session_id: SessionId) -> GatewayAction {
+        GatewayAction::PublishRegistration {
+            session_id,
+            bindings: self.registry.bindings_for_session(session_id),
+        }
     }
 }
 

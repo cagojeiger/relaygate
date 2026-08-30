@@ -1,5 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
+    fmt,
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
@@ -15,30 +16,78 @@ use tokio::{
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use crate::{
-    GatewayConfig, GatewayError, GatewaySnapshot, auth::ClientKeyStore, state::GatewayLimits,
-    state::GatewayState, state::ProtocolViolation,
+    GatewayConfig, GatewayError, GatewayRoutingConfig, GatewaySnapshot,
+    auth::ClientKeyStore,
+    routing::{RoutingHandle, RoutingRuntime},
+    state::GatewayAction,
+    state::GatewayLimits,
+    state::GatewayState,
+    state::ProtocolViolation,
 };
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_OFFER_SWEEP_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_OFFER_SWEEP_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Gateway {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug)]
 struct Inner {
     state: Mutex<GatewayState>,
     writer_queue_capacity: usize,
     max_frame_len: usize,
     offer_timeout: Duration,
     session_slots: Arc<Semaphore>,
+    routing: Option<RoutingHandle>,
+    routing_runtime: Mutex<Option<RoutingRuntime>>,
+}
+
+impl fmt::Debug for Gateway {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Gateway")
+            .field("routing_enabled", &self.inner.routing.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Gateway {
     pub fn new(config: GatewayConfig) -> Result<Self, GatewayError> {
+        Self::build(config, None)
+    }
+
+    /// Creates a Gateway whose local ListenerBinding state is projected to
+    /// the configured memory-only RouteTable shards.
+    ///
+    /// RouteTable availability is not a startup prerequisite. The manager
+    /// reconnects in the background while local SDK sessions remain usable.
+    /// Construction must occur inside a running Tokio runtime.
+    pub fn new_routed(
+        config: GatewayConfig,
+        routing_config: GatewayRoutingConfig,
+        shutdown: CancellationToken,
+    ) -> Result<Self, GatewayError> {
+        config.validate()?;
+        tokio::runtime::Handle::try_current().map_err(|error| {
+            GatewayError::Routing(format!(
+                "routed Gateway must be constructed inside a Tokio runtime: {error}"
+            ))
+        })?;
+        let runtime = RoutingRuntime::start(
+            routing_config,
+            relaygate_route_table::GatewayId::new(),
+            shutdown,
+        )?;
+        let handle = runtime.handle();
+        Self::build(config, Some((handle, runtime)))
+    }
+
+    fn build(
+        config: GatewayConfig,
+        routing: Option<(RoutingHandle, RoutingRuntime)>,
+    ) -> Result<Self, GatewayError> {
         config.validate()?;
         let limits = GatewayLimits {
             max_sessions: config.max_sessions,
@@ -47,6 +96,9 @@ impl Gateway {
             max_live_pipes: config.max_live_pipes,
             offer_timeout: config.offer_timeout,
         };
+        let (routing, routing_runtime) = routing
+            .map(|(handle, runtime)| (Some(handle), Some(runtime)))
+            .unwrap_or((None, None));
         Ok(Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(GatewayState::new(
@@ -57,12 +109,49 @@ impl Gateway {
                 max_frame_len: config.max_frame_len,
                 offer_timeout: config.offer_timeout,
                 session_slots: Arc::new(Semaphore::new(config.max_sessions)),
+                routing,
+                routing_runtime: Mutex::new(routing_runtime),
             }),
         })
     }
 
     /// Serves SDK sessions until `shutdown` is cancelled.
     pub async fn serve(
+        &self,
+        listener: TcpListener,
+        shutdown: CancellationToken,
+    ) -> Result<(), GatewayError> {
+        let routing_runtime = self.inner.take_routing_runtime();
+        if self.inner.routing.is_some() && routing_runtime.is_none() {
+            return Err(GatewayError::Routing(
+                "a routed Gateway runtime can only be served once".to_owned(),
+            ));
+        }
+        let sdk = self.serve_sdk(listener, shutdown.clone());
+        let Some(routing_runtime) = routing_runtime else {
+            return sdk.await;
+        };
+
+        tokio::pin!(sdk);
+        let routing = routing_runtime.wait();
+        tokio::pin!(routing);
+        tokio::select! {
+            result = &mut sdk => {
+                shutdown.cancel();
+                let routing_result = routing.await;
+                result?;
+                routing_result.map_err(GatewayError::from)
+            }
+            result = &mut routing => {
+                shutdown.cancel();
+                let sdk_result = sdk.await;
+                result.map_err(GatewayError::from)?;
+                sdk_result
+            }
+        }
+    }
+
+    async fn serve_sdk(
         &self,
         listener: TcpListener,
         shutdown: CancellationToken,
@@ -145,7 +234,13 @@ impl Gateway {
     /// must not interpret it as a cluster-wide or durable view.
     #[must_use]
     pub fn snapshot(&self) -> GatewaySnapshot {
-        self.inner.lock_state().snapshot()
+        let mut snapshot = self.inner.lock_state().snapshot();
+        if let Some(routing) = &self.inner.routing {
+            let counts = routing.current_counts();
+            snapshot.route_registrations_synced = counts.synced;
+            snapshot.route_registrations_unsynced = counts.unsynced;
+        }
+        snapshot
     }
 }
 
@@ -198,31 +293,99 @@ impl Inner {
         mut source: futures_util::stream::SplitStream<Framed<TcpStream, FrameCodec>>,
     ) -> Result<(), SessionError> {
         while let Some(frame) = source.next().await {
-            let deliveries = self.lock_state().handle(session_id, frame?)?;
-            self.deliver_all(deliveries);
+            let actions = {
+                let mut state = self.lock_state();
+                let actions = state.handle(session_id, frame?)?;
+                self.commit_registration_actions(&actions);
+                actions
+            };
+            self.execute_all(actions);
         }
         Ok(())
     }
 
     fn cleanup(&self, session_id: relaygate_protocol::SessionId) {
-        let deliveries = self.lock_state().remove_session(session_id);
-        self.deliver_all(deliveries);
+        let actions = {
+            let mut state = self.lock_state();
+            let actions = state.remove_session(session_id);
+            self.commit_registration_actions(&actions);
+            actions
+        };
+        self.execute_all(actions);
     }
 
     fn expire_offers(&self) {
-        let deliveries = self.lock_state().expire_offers(std::time::Instant::now());
-        self.deliver_all(deliveries);
+        let actions = {
+            let mut state = self.lock_state();
+            let actions = state.expire_offers(std::time::Instant::now());
+            self.commit_registration_actions(&actions);
+            actions
+        };
+        self.execute_all(actions);
     }
 
-    fn deliver_all(&self, deliveries: Vec<crate::state::Delivery>) {
-        let mut pending = VecDeque::from(deliveries);
+    fn execute_all(&self, actions: Vec<GatewayAction>) {
+        let mut pending = VecDeque::from(actions);
         let mut cleaned = HashSet::new();
-        while let Some(delivery) = pending.pop_front() {
-            let Some(failed_session) = delivery.deliver() else {
+        while let Some(action) = pending.pop_front() {
+            match action {
+                GatewayAction::SendSdkFrame(delivery) => {
+                    let Some(failed_session) = delivery.deliver() else {
+                        continue;
+                    };
+                    if cleaned.insert(failed_session) {
+                        let cleanup_actions = {
+                            let mut state = self.lock_state();
+                            let actions = state.remove_session(failed_session);
+                            self.commit_registration_actions(&actions);
+                            actions
+                        };
+                        pending.extend(cleanup_actions);
+                    }
+                }
+                GatewayAction::PublishRegistration { .. } => {}
+            }
+        }
+    }
+
+    /// Commits the latest complete snapshot while the Gateway state lock still
+    /// orders the corresponding local mutation. The manager wake is bounded
+    /// and synchronous; no network I/O occurs under this lock. This prevents a
+    /// delayed action from publishing an older snapshot after session cleanup.
+    fn commit_registration_actions(&self, actions: &[GatewayAction]) {
+        let Some(routing) = &self.routing else {
+            return;
+        };
+        for action in actions {
+            let GatewayAction::PublishRegistration {
+                session_id,
+                bindings,
+            } = action
+            else {
                 continue;
             };
-            if cleaned.insert(failed_session) {
-                pending.extend(self.lock_state().remove_session(failed_session));
+            if let Err(error) = routing.publish_session(*session_id, bindings.clone()) {
+                tracing::warn!(
+                    component = "gateway",
+                    event = "gateway.registration.publish_failed",
+                    listener_session_id = %session_id.as_uuid(),
+                    %error,
+                    "local registration remains active while RouteTable publication is unavailable"
+                );
+            }
+        }
+    }
+
+    fn take_routing_runtime(&self) -> Option<RoutingRuntime> {
+        match self.routing_runtime.lock() {
+            Ok(mut runtime) => runtime.take(),
+            Err(poisoned) => {
+                tracing::error!(
+                    component = "gateway",
+                    event = "gateway.routing_runtime.lock_poisoned",
+                    "recovering poisoned routing runtime lock"
+                );
+                poisoned.into_inner().take()
             }
         }
     }
@@ -294,6 +457,7 @@ enum SessionError {
 
 #[cfg(test)]
 mod tests {
+    use crate::state::GatewayAction;
     use relaygate_protocol::{ClientKey, ErrorCode, Frame, SessionRole};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -344,7 +508,7 @@ mod tests {
             (listener, connector, offer)
         };
 
-        gateway.inner.deliver_all(offer);
+        gateway.inner.execute_all(offer);
 
         let after_cleanup = gateway.inner.lock_state().handle(
             connector,
@@ -354,7 +518,10 @@ mod tests {
             },
         )?;
         assert!(matches!(
-            after_cleanup.first().map(|delivery| &delivery.frame),
+            after_cleanup.first().and_then(|action| match action {
+                GatewayAction::SendSdkFrame(delivery) => Some(&delivery.frame),
+                GatewayAction::PublishRegistration { .. } => None,
+            }),
             Some(Frame::OpenFailed {
                 code: ErrorCode::NotFound,
                 ..

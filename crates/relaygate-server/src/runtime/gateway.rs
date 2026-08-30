@@ -8,7 +8,19 @@ use tokio_util::sync::CancellationToken;
 use crate::config::GatewayRuntimeConfig;
 
 pub(crate) async fn serve(config: GatewayRuntimeConfig, shutdown: CancellationToken) -> Result<()> {
-    let gateway = Gateway::new(config.gateway)?;
+    let routing_enabled = config.routing.is_some();
+    let gateway = match config.routing {
+        Some(routing) => {
+            tracing::warn!(
+                component = "gateway",
+                event = "gateway.route_table.trusted_local_enabled",
+                transport = "plain_tcp",
+                "local/CI RouteTable key adapter is enabled; channel security must be supplied by the deployment environment"
+            );
+            Gateway::new_routed(config.gateway, routing, shutdown.child_token())?
+        }
+        None => Gateway::new(config.gateway)?,
+    };
     let listener = TcpListener::bind(&config.bind_address)
         .await
         .with_context(|| format!("failed to bind Gateway at {}", config.bind_address))?;
@@ -19,6 +31,7 @@ pub(crate) async fn serve(config: GatewayRuntimeConfig, shutdown: CancellationTo
         role = "gateway",
         address = %local_address,
         configured_clients = config.configured_clients,
+        routing_enabled,
         "RelayGate Gateway started"
     );
 
@@ -68,6 +81,8 @@ fn log_gateway_snapshot(gateway: &Gateway) {
         listener_bindings = snapshot.listener_bindings,
         pending_offers = snapshot.pending_offers,
         live_pipes = snapshot.live_pipes,
+        route_registrations_synced = snapshot.route_registrations_synced,
+        route_registrations_unsynced = snapshot.route_registrations_unsynced,
         "Gateway current-state snapshot"
     );
 }

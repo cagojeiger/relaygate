@@ -9,6 +9,11 @@
 이 문서는 새 동작 규칙을 정의하지 않는다. SPEC 요구사항과 TEST 001 시나리오를
 `RT x 1`, `Gateway x 3`, Rust SDK, Docker Compose 실행 profile로 연결한다.
 
+이 문서의 acceptance는 전체 분산 profile이 완성된 뒤 적용한다. 중간 구현 단계인 Gateway의
+RT registration/lease/resolve manager는 registration publication, READY-empty 재수렴과
+request-local Resolve까지만 검증하며, peer OPEN과 remote Pipe가 구현되기 전에는 이 문서의
+closed-loop 완료를 주장하지 않는다.
+
 ## 구현 profile
 
 ```text
