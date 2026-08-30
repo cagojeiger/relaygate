@@ -400,6 +400,30 @@ impl ListenerRuntimeInner {
 
 impl ListenerState {
     pub(super) fn set_status(&self, status: ListenerStatus, error: Option<Error>) {
+        let previous = *self.status.borrow();
+        if previous != status {
+            if let Some(error) = error.as_ref() {
+                tracing::debug!(
+                    component = "sdk",
+                    event = "sdk.listener.status_changed",
+                    client_id = %self.client_id,
+                    previous = ?previous,
+                    status = ?status,
+                    error_code = ?error.code(),
+                    observation = ?error.observation(),
+                    "Listener status changed"
+                );
+            } else {
+                tracing::debug!(
+                    component = "sdk",
+                    event = "sdk.listener.status_changed",
+                    client_id = %self.client_id,
+                    previous = ?previous,
+                    status = ?status,
+                    "Listener status changed"
+                );
+            }
+        }
         if let Ok(mut last_error) = self.last_error.lock() {
             *last_error = error;
         }

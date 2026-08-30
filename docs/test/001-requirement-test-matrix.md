@@ -3,7 +3,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Draft |
-| 기준 | [SPEC 001](../spec/001-terminology-and-object-model.md) ~ [SPEC 007](../spec/007-error-and-state-model.md) |
+| 기준 | [SPEC 001](../spec/001-terminology-and-object-model.md) ~ [SPEC 008](../spec/008-runtime-observability-contract.md) |
 
 이 문서는 SPEC 요구사항을 검증 시나리오에 연결한다. 새로운 동작 규칙은 정의하지 않는다.
 
@@ -44,6 +44,15 @@
 | `T-SDK-15` | `SDK-026` | periodic heartbeat를 발생시키지 않아도 idle session을 그것만으로 닫지 않는다. silent blackhole은 active control operation deadline 또는 transport event에서만 실패로 수렴하고 단순 Pipe read idle은 session failure가 아니다. |
 | `T-SDK-16` | `SDK-027` | 기존 반환 Listener A·B와 최초 ListenAttempt C가 한 session에 있을 때 C의 commit된 REGISTER terminal 응답을 blackhole 처리한다. current ListenerSession 전체와 기존 Pipe가 종료되고 C는 한 번만 terminal 실패하며 reservation이 제거된다. 새 session에는 A·B만 새 request identity로 재등록되고 C나 old request는 replay되지 않는다. 별도로 최초 attempt의 명시적 transient `REGISTER_FAILED`는 terminal인 반면 A·B recovery registration의 transient 실패는 bounded backoff 뒤 새 request로 복구되는지 확인한다. TCP 연결 성공만으로 backoff를 초기화하지 않고 A·B recovery 성공 뒤 초기화한다. |
 | `T-SDK-17` | `SDK-028` | `Pipe`의 Tokio I/O trait와 consuming owned split을 public API로 사용한다. read/write half를 서로 다른 task에서 동시에 구동해 byte ordering과 half-close를 확인하고, outbound full 상태의 write가 capacity 또는 terminal failure에 깨어나는지 검증한다. half 하나의 drop은 frame을 만들지 않고 마지막 public owner drop만 cleanup을 한 번 발생시키며, `AsyncWrite::shutdown`은 `FIN`, shutdown 뒤 write는 오류이고 Tokio I/O 오류의 downcast 가능한 inner error에는 원래 RelayGate `Error`의 code와 observation이 남는다. |
+
+## 관측성
+
+| Test ID | Requirement | 시나리오와 기대 결과 |
+| --- | --- | --- |
+| `T-OBS-01` | `OBS-001`, `OBS-002` | `text`, `json`, unset과 양수 interval을 승인하고 알 수 없는 format과 0 interval은 socket을 열기 전에 거절한다. |
+| `T-OBS-02` | `OBS-003` | Listener/Connector session, binding, pending offer와 live Pipe를 생성·제거하며 `GatewaySnapshot`의 각 값이 같은 current state index와 일치하는지 확인한다. |
+| `T-OBS-03` | `OBS-004`, `OBS-005`, `OBS-006` | session·registration·open·Pipe terminal event가 고정된 `component`와 `event`, current identity와 terminal error field를 갖는지 확인한다. configured `ClientKey`와 payload marker가 출력에 없고 DATA 반복 수에 비례한 event가 생기지 않아야 한다. |
+| `T-OBS-04` | `OBS-007`, `OBS-008` | library만 포함해도 전역 subscriber나 listener가 생기지 않는다. server의 기본 설정은 snapshot event를 만들지 않고, 명시적으로 활성화하면 JSON current-state event를 남기되 Gateway protocol port 외 새 port를 열지 않는다. |
 
 ## Gateway 등록과 route registration
 
@@ -163,7 +172,7 @@
 
 ## 완료 기준
 
-1. SPEC 001~007의 모든 requirement와 state transition ID가 최소 한 test에 연결된다.
+1. SPEC 001~008의 모든 requirement와 state transition ID가 최소 한 test에 연결된다.
 2. 모든 실패 attempt와 terminal object의 live state·queue·buffer가 configured bound 안에 제거된다.
 3. 상태 크기와 memory 사용량은 현재 live Connector/Listener session, binding, attempt, Pipe와 stream 및 RT의 active lease/mapping 수에 비례한다.
 4. 테스트 결과는 application payload 처리, RT replication 또는 구현 언어의 동작을 RelayGate 보장으로 확대하지 않는다.

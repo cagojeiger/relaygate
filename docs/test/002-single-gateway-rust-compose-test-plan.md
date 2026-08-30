@@ -4,7 +4,7 @@
 | --- | --- |
 | 상태 | Phase 1 local Pipe와 SDK↔Gateway closure 구현; PR CI를 canonical verification으로 사용 |
 | 목적 | 전체 구조를 한 번에 구현하지 않고 local Pipe 경로를 먼저 증명한다. |
-| 상위 계약 | [SPEC 002](../spec/002-sdk-pipe-contract.md), [SPEC 003](../spec/003-listener-registration-contract.md), [SPEC 005](../spec/005-connection-establishment-contract.md), [SPEC 007](../spec/007-error-and-state-model.md) |
+| 상위 계약 | [SPEC 002](../spec/002-sdk-pipe-contract.md), [SPEC 003](../spec/003-listener-registration-contract.md), [SPEC 005](../spec/005-connection-establishment-contract.md), [SPEC 007](../spec/007-error-and-state-model.md), [SPEC 008](../spec/008-runtime-observability-contract.md) |
 | 전체 검증 기준 | [TEST 001](001-requirement-test-matrix.md) |
 
 이 문서는 ADR이나 SPEC을 바꾸지 않는다. 첫 구현 단계에서 검증할 subset과 실행 환경만 고정한다.
@@ -215,6 +215,8 @@ Compose E2E는 실제 container build, DNS, process startup, healthcheck와 TCP-
 | `SG-U-11` | transient error code와 세 `PeerObservation` 조합의 `Error::is_retryable()` | `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`이면서 `NOT_OBSERVED`일 때만 true; MAYBE_OBSERVED/OBSERVED는 false이고 operation 자동 실행 없음 |
 | `SG-U-12` | Offered/Open Pipe에 owner·foreign·unknown session이 `OFFER_ACCEPTED`, `OFFER_REJECTED`, `CANCEL`, `DATA`, `FIN`, `CLOSE`, `RESET` 전송 | owner만 valid phase를 변경한다. unknown/stale identity는 no-op이고 current Pipe의 foreign frame은 target을 바꾸지 않은 채 offending session만 `PROTOCOL_ERROR`로 종료한다. owner의 invalid phase는 해당 Pipe만 RESET |
 | `SG-U-13` | Tokio Pipe adapter의 outbound queue full, terminal failure, shutdown과 half drop 경쟁 | pending write는 capacity 또는 terminal failure에 정확히 깨어나고 shutdown은 FIN을 한 번 보낸다. shutdown 뒤 write는 실패하며 half 하나의 drop은 frame을 만들지 않고 마지막 public owner drop만 abandonment를 한 번 발생시킨다. `std::io::Error::get_ref()`로 원래 RelayGate Error를 downcast할 수 있다. |
+| `SG-U-14` | Gateway local state를 추가·제거하며 snapshot 조회 | session role별 수, binding, pending offer와 live Pipe 수가 같은 current state와 일치하고 별도 상태를 누적하지 않는다. |
+| `SG-U-15` | full writer queue에 ClientKey-bearing REGISTER와 DATA payload 전달 | 동일한 구조화 queue failure event와 stable session identity만 남고 ClientKey, payload와 Frame 전체 Debug 값은 출력되지 않는다. |
 
 ### Integration
 
@@ -253,6 +255,8 @@ Compose E2E는 실제 container build, DNS, process startup, healthcheck와 TCP-
 | `SG-P-01` | 유효한 설정으로 process 부팅 뒤 protocol health check와 SIGTERM | health check 성공; SIGTERM 뒤 deadline 안에 exit 0 |
 | `SG-P-02` | 알 수 없는 command, 누락·초과된 `check` 인자 | non-zero exit와 사용 가능한 오류 메시지 |
 | `SG-P-03` | 잘못된 ClientKey 형식, 중복 ClientId key와 0인 queue capacity | socket을 열기 전에 non-zero exit와 설정 항목을 식별하는 오류 메시지 |
+| `SG-P-04` | 알 수 없는 log format과 0인 snapshot interval | socket을 열기 전에 non-zero exit와 설정 항목을 식별하는 오류 메시지 |
+| `SG-P-05` | JSON format과 snapshot interval로 process 실행 | `server.started`와 `gateway.snapshot`에 안정적인 구조화 field가 있고 ClientKey는 출력되지 않으며 별도 관측성 port가 없음 |
 
 ### Docker Compose E2E
 

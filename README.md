@@ -71,6 +71,8 @@ Probe는 UTF-8 payload, 65,537-byte binary payload, 32개 동시 Pipe의 byte �
 | `RELAYGATE_BIND_ADDR` | `0.0.0.0:27420` | SDK session을 받을 주소 |
 | `RELAYGATE_CLIENT_KEYS` | 빈 값 | 쉼표로 구분한 `ClientId=ClientKey` 등록 권한 |
 | `RELAYGATE_LOG` | `info` | tracing filter |
+| `RELAYGATE_LOG_FORMAT` | `text` | `text` 또는 `json` 로그 출력 |
+| `RELAYGATE_STATS_INTERVAL_MS` | unset | 0보다 큰 millisecond. 설정하면 Gateway snapshot을 주기적으로 로그 출력 |
 | `RELAYGATE_WRITER_QUEUE_CAPACITY` | `128` | SDK session별 outbound frame 상한 |
 | `RELAYGATE_MAX_FRAME_LEN` | `1048576` | frame당 최대 byte 수 |
 | `RELAYGATE_MAX_SESSIONS` | `10000` | handshake 중인 연결을 포함한 session 상한 |
@@ -80,6 +82,10 @@ Probe는 UTF-8 payload, 65,537-byte binary payload, 32개 동시 Pipe의 byte �
 | `RELAYGATE_OFFER_TIMEOUT_MS` | `5000` | Listener의 `OFFER` 응답 기한 |
 
 모든 상한과 timeout은 0보다 큰 정수여야 합니다. Gateway는 시작할 때 configured `ClientId`마다 `ClientKey` 하나를 로드하고 process 수명 동안 갱신하지 않습니다. ClientKey는 최초·recovery 등록 검증에만 사용하며 RelayGate가 발급하거나 영속화하지 않습니다.
+
+`relaygate-server`는 standalone process의 tracing subscriber를 설치합니다. SDK나 Gateway를 application에 직접 포함하면 application이 subscriber를 하나 설치해야 합니다. 구조화 로그는 `ClientKey`와 payload를 기록하지 않으며, snapshot은 현재 Gateway-local 상태일 뿐 전달 성공을 뜻하지 않습니다.
+
+Gateway lifecycle을 자세히 볼 때는 예를 들어 `RELAYGATE_LOG=relaygate_server=info,relaygate_gateway=debug`를 사용합니다. SDK를 포함한 application은 자신의 subscriber filter에 `relaygate_sdk=debug`를 추가합니다.
 
 ## 검증
 

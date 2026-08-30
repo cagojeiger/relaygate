@@ -50,6 +50,17 @@ pub(crate) async fn establish(config: &Config, role: SessionRole) -> Result<Esta
             "first Gateway response was not WELCOME",
         ));
     };
+    let role_name = match role {
+        SessionRole::Connector => "connector",
+        SessionRole::Listener => "listener",
+    };
+    tracing::debug!(
+        component = "sdk",
+        event = "sdk.session.ready",
+        role = role_name,
+        session_id = %session_id.as_uuid(),
+        "SDK session is ready"
+    );
     Ok(EstablishedSession {
         id: session_id,
         transport,

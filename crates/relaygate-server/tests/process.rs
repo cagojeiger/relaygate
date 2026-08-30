@@ -7,6 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+use std::io::Read;
+
 const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
@@ -72,6 +75,93 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         &zero_capacity,
         "RELAYGATE_WRITER_QUEUE_CAPACITY must be greater than zero",
     );
+
+    let invalid_log_format = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_LOG_FORMAT", "xml")
+        .output()?;
+    assert_unsuccessful_output(
+        &invalid_log_format,
+        "RELAYGATE_LOG_FORMAT must be `text` or `json`",
+    );
+
+    let zero_stats_interval = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_STATS_INTERVAL_MS", "0")
+        .output()?;
+    assert_unsuccessful_output(
+        &zero_stats_interval,
+        "RELAYGATE_STATS_INTERVAL_MS must be greater than zero",
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn json_logs_expose_stable_startup_and_snapshot_fields_without_secrets()
+-> Result<(), Box<dyn Error>> {
+    let address = unused_loopback_address()?;
+    let secret = "must-not-appear-in-observability-output";
+    let mut server = ChildGuard::spawn_captured(
+        server_command()
+            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_CLIENT_KEYS", format!("echo.alpha={secret}"))
+            .env("RELAYGATE_LOG", "info")
+            .env("RELAYGATE_LOG_FORMAT", "json")
+            .env("RELAYGATE_STATS_INTERVAL_MS", "250"),
+    )?;
+
+    wait_until_healthy(&address, &mut server)?;
+
+    let signal_status = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()?;
+    assert!(signal_status.success(), "failed to send SIGTERM to server");
+
+    let exit_status = server.wait_until(SHUTDOWN_DEADLINE)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "server did not exit before the shutdown deadline",
+        )
+    })?;
+    assert!(
+        exit_status.success(),
+        "server exited unsuccessfully after SIGTERM: {exit_status}"
+    );
+
+    let (stdout, stderr) = server.read_captured()?;
+    assert!(!stdout.contains(secret));
+    assert!(!stderr.contains(secret));
+    let records = stdout
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let started = records
+        .iter()
+        .find(|record| record["event"] == "server.started")
+        .ok_or("missing server.started JSON event")?;
+    assert_eq!(started["component"], "server");
+    assert_eq!(started["configured_clients"], 1);
+
+    let snapshot = records
+        .iter()
+        .find(|record| record["event"] == "gateway.snapshot")
+        .ok_or("missing gateway.snapshot JSON event")?;
+    assert_eq!(snapshot["component"], "gateway");
+    for field in [
+        "sessions",
+        "listener_sessions",
+        "connector_sessions",
+        "listener_bindings",
+        "pending_offers",
+        "live_pipes",
+    ] {
+        assert!(
+            snapshot[field].is_number(),
+            "snapshot field {field:?} must be numeric: {snapshot}"
+        );
+    }
     Ok(())
 }
 
@@ -81,12 +171,14 @@ fn server_command() -> Command {
         "RELAYGATE_BIND_ADDR",
         "RELAYGATE_CLIENT_KEYS",
         "RELAYGATE_LOG",
+        "RELAYGATE_LOG_FORMAT",
         "RELAYGATE_MAX_BINDINGS",
         "RELAYGATE_MAX_FRAME_LEN",
         "RELAYGATE_MAX_LIVE_PIPES",
         "RELAYGATE_MAX_PENDING_OFFERS",
         "RELAYGATE_MAX_SESSIONS",
         "RELAYGATE_OFFER_TIMEOUT_MS",
+        "RELAYGATE_STATS_INTERVAL_MS",
         "RELAYGATE_WRITER_QUEUE_CAPACITY",
     ] {
         command.env_remove(name);
@@ -165,6 +257,16 @@ impl ChildGuard {
     }
 
     #[cfg(unix)]
+    fn spawn_captured(command: &mut Command) -> io::Result<Self> {
+        let child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        Ok(Self { child })
+    }
+
+    #[cfg(unix)]
     fn id(&self) -> u32 {
         self.child.id()
     }
@@ -185,6 +287,19 @@ impl ChildGuard {
             }
             thread::sleep(POLL_INTERVAL);
         }
+    }
+
+    #[cfg(unix)]
+    fn read_captured(&mut self) -> io::Result<(String, String)> {
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        if let Some(mut stream) = self.child.stdout.take() {
+            stream.read_to_string(&mut stdout)?;
+        }
+        if let Some(mut stream) = self.child.stderr.take() {
+            stream.read_to_string(&mut stderr)?;
+        }
+        Ok((stdout, stderr))
     }
 }
 

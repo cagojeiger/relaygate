@@ -123,6 +123,7 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | [SPEC 005](spec/005-connection-establishment-contract.md) | local lookup, resolve, binding 선택과 Pipe 수립 계약 |
 | [SPEC 006](spec/006-peer-relay-contract.md) | one-hop peer relay와 multiplexing 계약 |
 | [SPEC 007](spec/007-error-and-state-model.md) | canonical 오류, 상태와 failure observation |
+| [SPEC 008](spec/008-runtime-observability-contract.md) | runtime 로그, lifecycle event와 Gateway snapshot |
 
 ## TEST
 

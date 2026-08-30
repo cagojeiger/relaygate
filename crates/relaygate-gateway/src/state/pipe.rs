@@ -54,8 +54,18 @@ impl GatewayState {
                 pipe.connector_finished
             }
         };
-        if remove_after_delivery {
-            self.remove_pipe(pipe_id);
+        if remove_after_delivery && let Some(pipe) = self.remove_pipe(pipe_id) {
+            tracing::debug!(
+                component = "gateway",
+                event = "gateway.pipe.closed",
+                connector_session_id = %pipe.connector.as_uuid(),
+                listener_session_id = %pipe.listener.as_uuid(),
+                connection_id = pipe_id.connection_id(),
+                binding_id = %pipe.binding_id.as_uuid(),
+                sender_session_id = %sender.as_uuid(),
+                reason = "both_directions_finished",
+                "Pipe closed after both directions finished"
+            );
         }
         Ok(self
             .to(counterpart, Frame::Fin { pipe_id })
@@ -75,7 +85,19 @@ impl GatewayState {
         if pipe.phase != PipePhase::Open {
             return Ok(self.protocol_reset(pipe_id, "CLOSE arrived before the Pipe opened"));
         }
-        self.remove_pipe(pipe_id);
+        if let Some(pipe) = self.remove_pipe(pipe_id) {
+            tracing::debug!(
+                component = "gateway",
+                event = "gateway.pipe.closed",
+                connector_session_id = %pipe.connector.as_uuid(),
+                listener_session_id = %pipe.listener.as_uuid(),
+                connection_id = pipe_id.connection_id(),
+                binding_id = %pipe.binding_id.as_uuid(),
+                sender_session_id = %sender.as_uuid(),
+                reason = "close",
+                "Pipe closed"
+            );
+        }
         Ok(self
             .to(counterpart, Frame::Close { pipe_id })
             .into_iter()
@@ -96,7 +118,19 @@ impl GatewayState {
         if pipe.phase != PipePhase::Open {
             return Ok(self.protocol_reset(pipe_id, "RESET arrived before the Pipe opened"));
         }
-        self.remove_pipe(pipe_id);
+        if let Some(pipe) = self.remove_pipe(pipe_id) {
+            tracing::debug!(
+                component = "gateway",
+                event = "gateway.pipe.reset",
+                connector_session_id = %pipe.connector.as_uuid(),
+                listener_session_id = %pipe.listener.as_uuid(),
+                connection_id = pipe_id.connection_id(),
+                binding_id = %pipe.binding_id.as_uuid(),
+                sender_session_id = %sender.as_uuid(),
+                error_code = ?code,
+                "Pipe reset"
+            );
+        }
         Ok(self
             .to(
                 counterpart,
@@ -114,6 +148,15 @@ impl GatewayState {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Vec::new();
         };
+        tracing::debug!(
+            component = "gateway",
+            event = "gateway.pipe.protocol_reset",
+            connector_session_id = %pipe.connector.as_uuid(),
+            listener_session_id = %pipe.listener.as_uuid(),
+            connection_id = pipe_id.connection_id(),
+            binding_id = %pipe.binding_id.as_uuid(),
+            "Pipe protocol reset"
+        );
         [pipe.connector, pipe.listener]
             .into_iter()
             .filter_map(|target| {

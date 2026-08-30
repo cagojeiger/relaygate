@@ -1,10 +1,10 @@
 use std::{collections::HashMap, time::Duration};
 
-use relaygate_protocol::{BindingId, Frame, PipeId, SessionId, SessionRole};
+use relaygate_protocol::{BindingId, ErrorCode, Frame, PipeId, SessionId, SessionRole};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{auth::ClientKeyStore, registry::LocalRegistry};
+use crate::{GatewaySnapshot, auth::ClientKeyStore, registry::LocalRegistry};
 
 mod opening;
 mod pipe;
@@ -24,9 +24,16 @@ pub(crate) struct Delivery {
 impl Delivery {
     pub(crate) fn deliver(self) -> Option<SessionId> {
         if let Err(error) = self.sender.try_send(self.frame) {
+            let queue_state = match error {
+                mpsc::error::TrySendError::Full(_) => "full",
+                mpsc::error::TrySendError::Closed(_) => "closed",
+            };
             tracing::warn!(
-                session_id = ?self.target,
-                queue_error = %error,
+                component = "gateway",
+                event = "gateway.session.writer_queue_rejected",
+                session_id = %self.target.as_uuid(),
+                queue_state,
+                error_code = ?ErrorCode::ResourceExhausted,
                 "closing a session whose bounded writer queue cannot accept a frame"
             );
             self.cancellation.cancel();
@@ -198,6 +205,15 @@ impl GatewayState {
             | Frame::OpenFailed { .. } => Vec::new(),
         };
         Ok(deliveries)
+    }
+
+    pub(crate) fn snapshot(&self) -> GatewaySnapshot {
+        GatewaySnapshot::from_parts(
+            self.sessions.values().map(|session| session.role),
+            self.registry.binding_count(),
+            self.pending_offer_count,
+            self.live_pipe_count,
+        )
     }
 
     #[cfg(test)]

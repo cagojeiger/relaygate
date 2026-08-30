@@ -194,6 +194,10 @@ impl PipeState {
     }
 
     fn try_set_terminal(&self, terminal: Terminal) -> bool {
+        let terminal_event = match &terminal {
+            Terminal::Closed => None,
+            Terminal::Failed(error) => Some((error.code(), error.observation())),
+        };
         let changed = self.terminal.send_if_modified(|current| {
             if current.is_some() {
                 return false;
@@ -204,6 +208,27 @@ impl PipeState {
         if changed {
             self.read_waker.wake();
             self.write_waker.wake();
+            if let Some((error_code, observation)) = terminal_event {
+                tracing::debug!(
+                    component = "sdk",
+                    event = "sdk.pipe.terminal",
+                    connector_session_id = %self.id.connector_session_id().as_uuid(),
+                    connection_id = self.id.connection_id(),
+                    outcome = "failed",
+                    error_code = ?error_code,
+                    observation = ?observation,
+                    "Pipe reached a terminal failure"
+                );
+            } else {
+                tracing::debug!(
+                    component = "sdk",
+                    event = "sdk.pipe.terminal",
+                    connector_session_id = %self.id.connector_session_id().as_uuid(),
+                    connection_id = self.id.connection_id(),
+                    outcome = "closed",
+                    "Pipe closed"
+                );
+            }
         }
         changed
     }
