@@ -14,12 +14,13 @@
 3. terminal 결과 뒤에는 해당 attempt, session, binding, lease, stream과 buffer의 live state가 남지 않는지 확인한다.
 4. timeout, queue와 buffer의 구체적인 기본값이 아니라 configured bound 준수 여부를 검증한다.
 5. multi-index의 forward/reverse view와 Gateway local/registration view가 같은 live set을 나타내는지 확인한다.
+6. peer `StreamId` counter 할당과 ordered writer commit은 같은 actor 순서로 검증하고, commit 전·후 failure observation을 분리한다.
 
 ## 용어와 SDK
 
 | Test ID | Requirement | 시나리오와 기대 결과 |
 | --- | --- | --- |
-| `T-TERM-01` | `TERM-001`, `TERM-002`, `TERM-003`, `TERM-029` | Connector/Listener 역할, 위치와 분리된 non-empty UTF-8 ClientId, 등록 전용 ClientKey 경계가 유지된다. Gateway startup config는 configured ClientId마다 key 하나만 허용하고 process 수명 동안 바뀌지 않는다. 정규화 형태나 case가 다른 ClientId bytes를 암묵적으로 합치지 않는다. |
+| `T-TERM-01` | `TERM-001`, `TERM-002`, `TERM-003`, `TERM-029`, `TERM-030` | Connector/Listener 역할, 위치와 분리된 non-empty UTF-8 ClientId, 등록 전용 ClientKey와 local/CI component 전용 InternalGatewayKey 경계가 유지된다. Gateway startup config는 configured ClientId마다 ClientKey 하나만 허용하고 process 수명 동안 바뀌지 않는다. 두 key를 application identity나 서로의 권한으로 사용하지 않고 정규화 형태나 case가 다른 ClientId bytes를 암묵적으로 합치지 않는다. |
 | `T-TERM-02` | `TERM-004`, `TERM-011`, `TERM-025` | Listener SDK runtime은 current ListenerSession을 `0..1`개 공유한다. pending ListenAttempt는 ClientId 하나를 예약하고 반환된 각 handle은 desired ClientId 하나와 current binding `0..1`개만 가진다. pending reservation과 non-CLOSED handle 사이에서 ClientId는 unique하고 attempt의 terminal 실패 뒤 reservation이 제거된다. |
 | `T-TERM-03` | `TERM-005`, `TERM-006`, `TERM-007`, `TERM-008`, `TERM-015` | 여러 session과 ClientId를 교차 등록하고 BindingId가 같은 ListenerSession의 서로 다른 ClientId와 제거된 incarnation 사이에서 unique하며 재사용되지 않는지 확인한다. N:M cardinality, 중복 방지와 live-only BindingSet도 확인한다. |
 | `T-TERM-04` | `TERM-009`, `TERM-010` | 후보가 여러 개여도 한 open은 Listener queue admission에서 Pipe 하나만 만든다. 성공하면 같은 Pipe를 유지하고 admission 뒤 실패하면 새 Pipe를 만들지 않은 채 생성된 Pipe를 닫는다. |
@@ -51,7 +52,7 @@
 | --- | --- | --- |
 | `T-OBS-01` | `OBS-001`, `OBS-002` | `text`, `json`, unset과 양수 interval을 승인하고 알 수 없는 format과 0 interval은 socket을 열기 전에 거절한다. |
 | `T-OBS-02` | `OBS-003` | Listener/Connector session, binding, pending offer와 live Pipe를 생성·제거하며 `GatewaySnapshot`의 각 값이 같은 current state index와 일치하는지 확인한다. |
-| `T-OBS-03` | `OBS-004`, `OBS-005`, `OBS-006` | session·registration·open·Pipe terminal event가 고정된 `component`와 `event`, current identity와 terminal error field를 갖는지 확인한다. configured `ClientKey`와 payload marker가 출력에 없고 DATA 반복 수에 비례한 event가 생기지 않아야 한다. |
+| `T-OBS-03` | `OBS-004`, `OBS-005`, `OBS-006` | session·registration·open·Pipe terminal event가 고정된 `component`와 `event`, current identity와 terminal error field를 갖는지 확인한다. configured `ClientKey`, `InternalGatewayKey`와 payload marker가 출력에 없고 DATA 반복 수에 비례한 event가 생기지 않아야 한다. |
 | `T-OBS-04` | `OBS-007`, `OBS-008` | library만 포함해도 전역 subscriber나 listener가 생기지 않는다. server의 기본 설정은 snapshot event를 만들지 않고, 명시적으로 활성화하면 JSON current-state event를 남기되 Gateway protocol port 외 새 port를 열지 않는다. |
 
 ## Gateway 등록과 route registration
@@ -72,7 +73,7 @@
 
 | Test ID | Requirement | 시나리오와 기대 결과 |
 | --- | --- | --- |
-| `T-RT-01` | `RT-001`, `RT-002`, `RT-003`, `RT-004`, `RT-005`, `RT-006`, `RT-007`, `RT-008` | 동일 JSON directory bytes의 content hash와 `sha256-modulo-v1` authority 결정성, shard별 key·scope 격리를 검증한다. unknown field, empty identifier·endpoint, endpoint가 없거나 복수인 record는 invalid다. 공백·byte·순서 변경은 generation을 다시 계산하고 다른 generation operation을 거절한다. unauthenticated caller와 authenticated GatewayId가 scope와 다른 mutation은 state를 읽거나 바꾸지 않으며 replication 보장을 가정하지 않는다. |
+| `T-RT-01` | `RT-001`, `RT-002`, `RT-003`, `RT-004`, `RT-005`, `RT-006`, `RT-007`, `RT-008`, `RT-009` | 동일 JSON directory bytes의 content hash와 `sha256-modulo-v1` authority 결정성, shard별 key·scope 격리를 검증한다. unknown field, empty identifier·endpoint, endpoint가 없거나 복수인 record는 invalid다. 공백·byte·순서 변경은 generation을 다시 계산하고 다른 generation operation을 거절한다. local/CI adapter의 Gateway별 key allowlist에서 valid name/key만 fresh runtime GatewayId에 결합하고, 잘못된 key·다른 Gateway 이름·owner mismatch는 state를 읽거나 바꾸지 않는다. key가 로그와 protocol state에 없고 plain TCP를 production 보장으로 취급하지 않으며 replication 보장을 가정하지 않는다. |
 | `T-RT-02` | `RT-010`, `RT-011`, `RT-012`, `RT-013`, `RT-014`, `RT-015`, `RT-016`, `RT-017` | `Register`가 mapping 없는 RT 발급 lease를 만들고 duplicate Register가 deadline을 포함한 state를 바꾸지 않는지 확인한다. 첫 revision `1`, active lease의 full snapshot atomic replace, equal revision·equal snapshot idempotency, first revision 위반, conflicting·lower revision과 stale LeaseId 거절 및 다른 registration 보존도 검증한다. higher revision이 current `MappingIdentity`의 `ClientId`나 `GatewayLocator`를 바꾸지 못하고 새 binding incarnation만 변경을 표현하는지도 확인한다. `RegistrationAck`의 revision과 상대 TTL이 실제 state와 일치해야 한다. |
 | `T-RT-03` | `RT-020`, `RT-021`, `RT-022`, `RT-023`, `RT-024`, `RT-025` | `Update`, `KeepAlive`, `Deregister`와 expiry를 중복·재정렬한다. 종료된 lease의 operation은 registration이나 mapping을 만들지 않고 새 lease를 변경하지 않으며, tombstone이나 expiry record가 누적되지 않는다. |
 | `T-RT-04` | `RT-030`, `RT-031`, `RT-032`, `RT-033`, `RT-034` | Resolve가 active lease의 모든 current mapping만 반환하고 선택·정렬·도달성 보장을 추가하지 않으며 READY-empty와 unavailable을 구분한다. |
@@ -100,14 +101,16 @@
 | `T-OPEN-14` | `OPEN-026` | commit된 OPEN의 Gateway terminal 응답을 blackhole 처리한다. Connector operation deadline이 current ConnectorSession 전체 cleanup을 일으키고 새 session이 이전 attempt·ConnectionId·Pipe·payload를 승계하지 않는지 확인한다. |
 | `T-OPEN-15` | `OPEN-027`, `OPEN-028` | 한 ConnectorSession에서 성공·실패 open을 반복해 `PipeId`가 재사용되지 않고 각 attempt의 `OFFER`가 최대 한 번만 전달되는지 확인한다. 명확한 Pipe-local 오류는 그 Pipe만 RESET하고, unanswered OFFER는 selected ListenerSession과 Gateway 소유 registry·pending Pipe·relay state를 정리하며 sibling session으로 fallback하지 않는다. Listener SDK에는 종료 PipeId tombstone이 누적되지 않는다. |
 | `T-OPEN-16` | `OPEN-029` | `OFFER_ACCEPTED`, `OFFER_REJECTED`, `CANCEL`, `DATA`, `FIN`, `CLOSE`, `RESET`을 Offered/Open/terminal Pipe와 owner·non-owner·unknown sender 조합으로 순회한다. unknown identity는 no-op이고, known non-owner는 target Pipe를 변경하지 않은 채 offending session만 종료하며, owner의 invalid phase는 해당 Pipe만 RESET한다. |
+| `T-OPEN-17` | `OPEN-030`, `OPEN-031` | remote path를 peer connect 전, handshake 중, OPEN writer commit 전, commit 뒤, peer OPENED 수신 뒤와 Connector SDK OPENED 확인 뒤에서 각각 실패·deadline·cancel한다. pre-commit은 `NOT_OBSERVED`, post-commit 결과 불명과 Entry-to-SDK 성공 응답 유실은 `MAYBE_OBSERVED`, Connector SDK 확인만 `OBSERVED`다. commit 뒤 cancel은 같은 StreamId의 `RESET(CANCELLED)`만 보내고 별도 peer CANCEL, same-attempt fallback·replay·resume가 없으며 late terminal frame이 state를 부활시키지 않는다. |
 | `T-PEER-01` | `PEER-001` | local path는 peer를 쓰지 않고 remote path는 선택된 Owner Gateway만 한 번 경유한다. |
-| `T-PEER-02` | `PEER-002`, `PEER-003`, `PEER-004`, `PEER-005` | 같은 Gateway의 동시 OPEN은 자기 방향 candidate 하나를 공유한다. 양 Gateway가 동시에 처음 dial하면 winner 합의 없이 방향별 하나씩 최대 두 transport가 READY가 되고, 같은 방향 duplicate만 stream 전에 닫힌다. claimed GatewayId가 authenticated transport peer와 다르면 candidate는 READY가 되지 않고 해당 OPEN은 `UNAUTHENTICATED`, `NOT_OBSERVED`로 끝나며 stream이나 pair state를 남기지 않는다. |
-| `T-PEER-03` | `PEER-006`, `PEER-007`, `PEER-015`, `PEER-016` | 양 endpoint가 같은 counter로 동시에 stream을 열어 짝수·홀수 StreamId가 충돌하지 않는지 확인한다. failed·closed ID의 delayed duplicate OPEN은 bounded remote high-watermark로 거절하고 counter exhaustion은 기존 stream을 유지한 채 새 OPEN만 실패한다. |
+| `T-PEER-02` | `PEER-002`, `PEER-003`, `PEER-004`, `PEER-005`, `PEER-024` | 같은 Gateway의 동시 OPEN은 자기 방향 candidate 하나를 공유한다. 양 Gateway가 동시에 처음 dial하면 winner 합의 없이 방향별 하나씩 최대 두 transport가 READY가 되고, 같은 방향 duplicate만 stream 전에 닫힌다. local/CI adapter가 Gateway별 key와 fresh runtime GatewayId를 결합하며 unknown name·잘못된 key는 `UNAUTHENTICATED`, 인증 뒤 다른 runtime owner·pair·direction claim은 `PERMISSION_DENIED`, `NOT_OBSERVED`로 끝난다. 어느 실패도 candidate를 READY로 만들지 않고 key는 로그·stream state에 남지 않는다. |
+| `T-PEER-03` | `PEER-006`, `PEER-007`, `PEER-015`, `PEER-016`, `PEER-022` | 양 endpoint가 같은 counter로 동시에 stream을 열어 짝수·홀수 StreamId가 충돌하지 않는지 확인한다. 한 endpoint의 concurrent OPEN에서 actor가 counter 할당과 writer commit을 같은 순서로 직렬화하고 commit 실패 ID도 재사용하지 않는다. failed·closed ID의 delayed duplicate OPEN은 bounded remote high-watermark로 거절하고 counter exhaustion은 기존 stream을 유지한 채 새 OPEN만 실패한다. |
 | `T-PEER-04` | `PEER-008`, `PEER-009` | stream 및 aggregate capacity를 각각 소진해 bounded memory, backpressure와 명시적 resource failure를 확인한다. |
 | `T-PEER-05` | `PEER-010`, `PEER-017`, `PEER-018`, `PEER-019`, `PEER-020`, `PEER-021` | OPEN 결과와 DATA/FIN/CLOSE/RESET 순서를 바꾼다. FIN은 한 방향만 닫고, 양방향 FIN·CLOSE는 정상 종료, RESET은 실패 종료이며, FIN 뒤 DATA는 해당 stream만 reset한다. duplicate terminal·late frame은 재활성화나 unbounded history를 만들지 않는다. |
 | `T-PEER-06` | `PEER-011`, `PEER-012` | 한 transport 단절은 그 transport의 Pipe만 닫고 반대 방향 transport와 stream을 유지한다. 이후 새 Pipe는 surviving transport 또는 새 lazy transport만 사용한다. |
 | `T-PEER-07` | `PEER-013` | connection failure, 같은 방향 duplicate와 loss 뒤 candidate·stream·buffer가 configured bound 안에 제거되고 반대 방향 slot은 유지된다. |
 | `T-PEER-08` | `PEER-014` | 같은 PeerTransport에 서로 다른 ConnectorSession의 stream을 싣고 한 session만 끊는다. 해당 stream만 닫히고 다른 stream과 shared transport는 유지된다. |
+| `T-PEER-09` | `PEER-023` | connect·handshake deadline, OPEN commit 뒤 response deadline, OPENING cancel, peer OPENED와 Entry-to-SDK 응답 유실을 각각 주입한다. candidate/slot과 RelayStream이 정확한 scope로 닫히고 peer OPENED와 external `OBSERVED`를 구분하며 별도 peer CANCEL과 암묵적 재시도가 없다. |
 
 ## 오류와 상태
 
@@ -131,6 +134,7 @@
 | `T-STATE-PIPE` | `STATE-PIPE-001`, `STATE-PDIR-001`, `STATE-PDIR-002`, `STATE-PDIR-003`, `STATE-PIPE-002`, `STATE-PIPE-003` | Pipe lifecycle은 queue admission에서 시작한다. admission 뒤 open failure와 OPENED 확인 유실은 실패 CLOSED가 되고 old 미수락 endpoint는 queue에서 제거된다. 성공한 OPEN 뒤 양방향 FIN/CLOSE는 정상 CLOSED, RESET·transport loss·FIN 뒤 DATA는 실패 CLOSED가 된다. 모든 state mutation은 owner 확인 뒤 수행한다. |
 | `T-STATE-PAIR` | `STATE-PAIR-001`, `STATE-PAIR-002`, `STATE-PAIR-003`, `STATE-PAIR-004`, `STATE-PAIR-005` | 두 방향 slot을 독립적으로 lazy connect, 실패, loss, 재사용과 shutdown까지 순회한다. 한 slot 전이는 sibling slot을 바꾸지 않는다. |
 | `T-STATE-TRANSPORT` | `STATE-PT-001`, `STATE-PT-002`, `STATE-PT-003` | handshake 성공, 같은 방향 duplicate·실패와 READY loss에서 각 transport instance가 한 번만 terminal이 된다. |
+| `T-STATE-STREAM` | `STATE-RS-001`, `STATE-RS-002`, `STATE-RS-003`, `STATE-RS-004`, `STATE-RS-005` | local/remote OPEN으로 RelayStream을 OPENING에 만들고 OPENED, FAILED, RESET(CANCELLED), FIN/CLOSE/RESET, ConnectorSession·PeerTransport loss를 순회한다. terminal stream은 재활성화되지 않고 한 방향 FIN은 반대 방향과 sibling stream을 유지하며 cleanup 뒤 live state가 없다. |
 
 ## 조합 edge case
 
@@ -169,6 +173,9 @@
 | `T-EDGE-31` | returned Listener A·B가 L1에서 active -> L1 단절 -> L2에서 A recovery REGISTER commit, 응답 전 A close/drop -> actor가 L2 종료 -> L3 연결 | A는 CLOSED이고 재등록되지 않는다. B desired만 L3에 새 request·BindingId로 재등록된다. handle이 session token을 직접 소유하거나 old REGISTER·Pipe를 replay하지 않는다. |
 | `T-EDGE-32` | Connector C와 Listener L의 Offered/Open PipeId를 제3 SDK session F가 사용해 OFFER response/CANCEL/DATA/FIN/CLOSE/RESET 전송 | F의 frame은 target Pipe와 C·L state를 변경하지 않고 F session만 `PROTOCOL_ERROR`로 종료한다. 같은 frame의 unknown·terminal PipeId는 no-op이며 tombstone을 만들지 않는다. |
 | `T-EDGE-33` | L1 queue admission과 application accept를 L1 단절과 경쟁 -> L2 recovery에서 영구 등록 거절 | accept가 먼저면 반환된 Pipe가 failure를 관찰하고, 단절이 먼저면 old 미수락 Pipe는 제거된다. L2 거절 뒤 handle은 BLOCKED이고 pending·후속 accept는 등록 오류를 반환한다. close 뒤 새 key의 새 listen만 새 binding으로 성공한다. |
+| `T-EDGE-34` | peer OPEN writer commit 직전 cancel -> commit 직후 cancel -> peer OPENED·Connector SDK OPENED 확인과 cancel 경쟁 | Gateway가 pre-commit 미도달을 확인해 terminal 응답하면 `NOT_OBSERVED`이고 post-commit은 `RESET(CANCELLED)`과 `MAYBE_OBSERVED`다. caller가 Gateway 증명을 기다리지 않고 SDK operation을 취소하면 pre-commit이어도 보수적으로 `MAYBE_OBSERVED`일 수 있다. Connector SDK OPENED 확인이 먼저면 established Pipe의 terminal cleanup으로 끝나며 어떤 순서도 별도 peer CANCEL, fallback 또는 state resurrection을 만들지 않는다. |
+| `T-EDGE-35` | 같은 PeerTransport endpoint의 concurrent OPEN A·B에서 A counter를 먼저 할당한 뒤 A writer를 지연하고 B를 진행 | 단일 actor 때문에 A OPEN이 B보다 먼저 commit되거나 A가 terminal 실패한 뒤 B가 commit된다. receiver high-watermark가 정상 B 뒤 지연 A를 보는 순서는 생기지 않고 두 counter 모두 재사용되지 않는다. |
+| `T-EDGE-36` | gw-a key로 gw-b 이름·runtime id 주장 -> valid gw-b 연결 -> 과거 gw-b runtime id frame 지연 도착 | 잘못된 name/key 결합은 state 생성 없이 인증 실패한다. valid connection만 fresh GatewayId에 결합되고 과거 incarnation frame은 새 RT registration·PeerTransport·RelayStream을 변경하지 않으며 key는 로그에 없다. |
 
 ## 완료 기준
 

@@ -28,6 +28,7 @@ Connector application                              Listener application
 | `ListenerSession` | Listener SDK runtime이 Gateway에 현재 연결된 한 번의 live incarnation |
 | `ClientId` | 위치가 아닌 non-empty UTF-8 logical destination identifier. identity 비교와 authority hash는 정규화하지 않은 exact bytes를 사용한다. |
 | `ClientKey` | Listener가 해당 `ClientId`에 binding을 등록할 권한을 증명하는 credential. configured `ClientId`마다 Gateway startup configuration에 하나만 존재한다. |
+| `InternalGatewayKey` | 최초 local/CI adapter가 configured `GatewayName`을 internal RT/peer connection의 fresh runtime `GatewayId`에 결합할 때만 쓰는 static test credential. `ClientKey`, application identity 또는 production channel security가 아니다. |
 | `BindingId` | 하나의 `ListenerSession` 안에서 모든 `ListenerBinding` incarnation을 lifetime 전체에 걸쳐 구분하는 재사용하지 않는 opaque identifier |
 | `ListenerBinding` | 하나의 `ClientId`와 하나의 live `ListenerSession`을 연결하는 Gateway-local association |
 | `MappingEntry` | authority shard가 resolve에 사용하는 하나의 `ListenerBinding`에 대한 shard-local soft-state view |
@@ -119,6 +120,7 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 | 객체 | 소유자 | 수명 |
 | --- | --- | --- |
 | `ClientId`, `ClientKey` | external client configuration | runtime session과 독립적이며 Gateway process 수명 동안 불변 |
+| `InternalGatewayKey` | local/CI deployment configuration | process 시작부터 종료까지 불변이며 RT mapping, peer stream과 로그 state에 포함되지 않음 |
 | `Connector SDK runtime` | Connector application | runtime을 닫을 때까지 |
 | `ConnectorSession`, `ConnectorSessionId` | Entry Gateway | Connector SDK와 맺은 한 번의 live 연결 동안 |
 | `Listener SDK runtime` | Listener application | runtime을 닫을 때까지 |
@@ -183,6 +185,7 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 - **`TERM-027`**: `ShardDirectoryGeneration`은 generation 필드를 포함하지 않은 immutable shard directory artifact의 exact bytes를 SHA-256으로 계산해야 한다. 같은 bytes는 같은 generation을 만들고 artifact bytes가 바뀌면 generation을 다시 계산해야 하며, Gateway와 RT process는 시작 시 검증한 generation과 directory를 종료할 때까지 바꾸어서는 안 된다.
 - **`TERM-028`**: `PeerTransport`의 dialer는 initiator bit `0`, acceptor는 bit `1`을 가져야 한다. 각 endpoint가 새 stream을 시작할 때 `StreamId = (local_counter << 1) | initiator_bit`로 할당하며, 같은 transport 안에서 실패한 OPEN을 포함해 counter와 `StreamId`를 재사용하거나 wrap해서는 안 된다.
 - **`TERM-029`**: `ClientId`는 non-empty valid UTF-8이어야 하고 equality와 authority hash에 exact bytes를 사용해야 한다. Unicode normalization, case folding 또는 locale 변환을 암묵적으로 적용해서는 안 된다.
+- **`TERM-030`**: `InternalGatewayKey`는 local/CI internal component handshake에만 사용하고 `ClientKey`, application credential 또는 payload 권한과 동일시해서는 안 된다. startup configuration 밖의 mapping·lease·Pipe·RelayStream과 로그에 저장해서는 안 되며 plain TCP test adapter를 production confidentiality 또는 integrity 보장으로 표현해서는 안 된다.
 
 ## 이 SPEC에서 정하지 않는 것
 

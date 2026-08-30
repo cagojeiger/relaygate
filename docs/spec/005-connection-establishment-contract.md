@@ -72,6 +72,14 @@ OPEN ──► OPENED
    └──► FAILED(error)
 ```
 
+remote path에서 Entry Gateway가 아직 peer `OPEN`을 bounded writer queue에 commit하지 못한
+실패는 Listener queue 미도달이 증명되므로 `NOT_OBSERVED`다. commit 뒤 peer `OPENED` 또는
+`FAILED`를 확인하지 못한 deadline·transport loss·cancel은 `MAYBE_OBSERVED`이며,
+Entry Gateway는 `OPENING` RelayStream에 `RESET(CANCELLED)`을 보내 best-effort cleanup한다.
+별도 peer `CANCEL` frame은 두지 않는다. Connector SDK가 자신의 SDK-Gateway commit 뒤 응답을
+기다리지 않고 호출을 취소한 경우에는 이 내부 증명을 아직 받지 못하므로 기존 SDK 계약대로
+보수적인 `MAYBE_OBSERVED`를 반환할 수 있다.
+
 ## 요구사항
 
 | ID | 요구사항 |
@@ -105,6 +113,8 @@ OPEN ──► OPENED
 | `OPEN-027` | conforming Connector SDK는 한 `ConnectorSession` 안에서 `ConnectionId`를 재사용하지 않고, conforming Gateway는 그 full `PipeId`를 재사용하거나 같은 attempt의 `OFFER`를 재전송해서는 안 된다. SDK-Gateway transport의 순서 보장과 session identity를 이 계약의 전제로 삼으므로 Listener SDK에 종료된 `PipeId`별 `OFFER` tombstone 보관을 요구하지 않는다. |
 | `OPEN-028` | Gateway는 자신이 소유한 local registry, selected binding, `OFFER`, pending Pipe와 relay state를 bounded하게 정리해야 한다. 대상 SDK session이 writable이면 `OPENED`, `OPEN_FAILED` 또는 `RESET` terminal signal을 보내고, transport 상실로 보낼 수 없으면 session close가 SDK의 terminal failure 관찰로 이어져야 한다. 명확한 Pipe-local 오류는 해당 Pipe만 `RESET`하고, `OFFER` terminal 결과가 불확실하면 selected `ListenerSession`을 종료하되 sibling `ListenerSession`으로 전파하거나 같은 attempt를 fallback해서는 안 된다. |
 | `OPEN-029` | Gateway는 `OFFER_ACCEPTED`, `OFFER_REJECTED`, `CANCEL`, `DATA`, `FIN`, `CLOSE`, `RESET`을 처리할 때 frame role과 sender ownership을 Pipe phase보다 먼저 검증해야 한다. unknown/stale identity는 live state를 바꾸지 않는 no-op이고, current Pipe의 non-owner frame은 target Pipe를 바꾸지 않은 채 offending SDK session의 `PROTOCOL_ERROR`로 끝나야 한다. owner의 invalid phase frame은 해당 Pipe만 `RESET`하고 sibling Pipe와 session은 유지한다. |
+| `OPEN-030` | remote path의 peer connect·handshake·writer-queue commit 전 실패는 candidate와 attempt state를 제거하고 `UNAVAILABLE` 또는 `DEADLINE_EXCEEDED`, `NOT_OBSERVED`로 끝나야 한다. peer `OPEN` commit 뒤 terminal 결과를 확인하지 못한 deadline·transport loss는 `DEADLINE_EXCEEDED` 또는 `UNAVAILABLE`, `MAYBE_OBSERVED`로 끝나야 한다. peer `OPENED`는 Listener queue admission을 확인하지만 external `OBSERVED`는 Connector SDK가 `OPENED`를 확인했을 때만 성립한다. Entry-to-SDK 성공 응답을 잃으면 `MAYBE_OBSERVED`다. 어느 경우도 같은 attempt를 replay, reroute 또는 resume해서는 안 된다. |
+| `OPEN-031` | Entry Gateway가 `OPENING` remote attempt의 cancel을 처리할 때 peer `OPEN` commit 전이면 state만 제거하고, commit 뒤면 같은 RelayStream에 `RESET(CANCELLED)`을 보내야 한다. 별도 peer `CANCEL` frame을 만들거나 sibling binding으로 fallback해서는 안 된다. Owner Gateway는 현재 stream/Pipe가 있으면 terminal cleanup하고, 늦거나 중복된 RESET은 state를 부활시키지 않아야 한다. |
 
 ## 연결 시도 불변식
 
@@ -117,6 +127,7 @@ MAYBE_OBSERVED -> 자동 replay 또는 reroute 없음
 ConnectorSession 종료 -> 소유 attempt와 Pipe 종료, 새 session으로 이동 없음
 OFFER             -> attempt당 최대 한 번, terminal PipeId history 없음
 Pipe state mutation -> role valid + current identity + sender ownership + valid phase
+remote cancel      -> pre-commit cleanup | post-commit RESET(CANCELLED), peer CANCEL 없음
 ```
 
 timeout 값, selection algorithm과 resource limit 기본값은 배포 설정으로 정한다. 어떤 값을

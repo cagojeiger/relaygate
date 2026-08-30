@@ -70,6 +70,7 @@ error_code / observation
 
 ```text
 ClientKey value
+InternalGatewayKey value
 payload bytes
 application data
 DATA frame별 event
@@ -115,7 +116,7 @@ durable metric history
 | `OBS-002` | snapshot interval은 unset 또는 0보다 큰 millisecond만 허용해야 한다. |
 | `OBS-003` | `GatewaySnapshot`은 session, binding, pending offer와 live Pipe 수를 같은 local state index에서 계산해야 한다. |
 | `OBS-004` | 구조화 event는 `component`, `event`와 현재 객체를 구분할 수 있는 identity field를 사용해야 한다. |
-| `OBS-005` | event는 `ClientKey`, payload, application data를 기록하지 않고 DATA hot path에 per-frame 로그를 만들지 않아야 한다. |
+| `OBS-005` | event는 `ClientKey`, `InternalGatewayKey`, payload, application data를 기록하지 않고 DATA hot path에 per-frame 로그를 만들지 않아야 한다. |
 | `OBS-006` | SDK와 Gateway lifecycle event는 기존 terminal code와 observation을 바꾸지 않고 관찰해야 한다. |
 | `OBS-007` | library crate는 event만 발행하며 subscriber와 exporter는 embedding application 또는 server가 소유해야 한다. |
 | `OBS-008` | snapshot event는 기본적으로 비활성화되고 활성화해도 새 listening port를 만들지 않아야 한다. |

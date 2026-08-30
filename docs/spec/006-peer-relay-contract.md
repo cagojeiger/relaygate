@@ -36,6 +36,12 @@ acceptor가 시작한 stream = 1, 3, 5, ...
 
 두 endpoint가 동시에 같은 counter 값으로 stream을 열어도 `StreamId`는 다르다. counter는 OPEN 성공 여부와 관계없이 소비하며 같은 transport에서 wrap하거나 재사용하지 않는다.
 
+각 PeerTransport endpoint의 단일 actor가 local counter 할당과 `OPEN`의 bounded writer-queue
+commit을 함께 직렬화한다. 여기서 commit은 frame이 그 transport의 유일한 ordered writer
+queue에 수락된 시점이다. 따라서 같은 endpoint에서는 counter 순서와 wire commit 순서가 같고,
+뒤 counter의 `OPEN`이 먼저 전송되지 않는다. commit 전에 실패해도 할당한 counter는 재사용하지
+않는다.
+
 각 endpoint는 local counter 하나와 remote endpoint에서 본 가장 큰 counter 하나만 유지한다. 수신한 valid OPEN의 counter가 remote high-watermark보다 크지 않으면 늦거나 재사용된 ID로 거절한다. high-watermark는 OPEN 결과가 성공인지 실패인지와 관계없이 전진하므로 terminal StreamId별 tombstone을 보관하지 않아도 된다.
 
 ```text
@@ -48,6 +54,17 @@ CLOSE(StreamId)        # 정상적인 전체 stream 종료
 RESET(StreamId, Error) # 실패에 의한 전체 stream 종료
 ```
 
+`OPENING` stream의 `RESET(CANCELLED)`은 remote OPEN 취소와 cleanup을 함께 표현한다. 별도
+peer `CANCEL` frame은 없다. Owner가 이미 Listener queue admission을 마쳤더라도 같은 stream의
+Pipe를 실패 종료하고, 늦거나 중복된 RESET은 새 state를 만들지 않는다.
+
+최초 local/CI runtime profile은 Gateway별 `GatewayName -> InternalGatewayKey` allowlist를
+startup configuration으로 고정한다. handshake의 name/key를 constant-time으로 검증한 뒤
+connection이 제시한 fresh runtime `GatewayId`를 authenticated peer identity에 결합한다.
+claimed `GatewayId`만으로 `READY`가 될 수 없고 key는 로그나 stream state에 기록하지 않는다.
+이 trusted-local adapter는 plain TCP의 confidentiality나 production-grade integrity를 보장하지
+않으며 실제 배포 identity adapter의 대체물이 아니다.
+
 frame의 encoding과 underlying transport는 범위가 아니지만 위 frame의 상태 의미는 구현에 관계없이 동일하다.
 
 ## 요구사항
@@ -58,7 +75,7 @@ frame의 encoding과 underlying transport는 범위가 아니지만 위 frame의
 | `PEER-002` | 하나의 unordered Gateway pair에는 `DialerGatewayId`로 구분되는 방향별 `PeerTransportSlot`이 두 개 있어야 한다. 각 slot은 `READY` PeerTransport를 최대 하나만 가지므로 pair 전체에는 최대 두 개가 존재할 수 있다. transport 자체는 양방향이다. |
 | `PEER-003` | remote OPEN은 pair에 이미 있는 어느 `READY` PeerTransport든 재사용해야 한다. 하나도 없을 때만 요청을 받은 Gateway가 자기 방향 slot의 candidate를 lazy하게 연결한다. 모든 Gateway pair의 eager full mesh를 요구하지 않는다. |
 | `PEER-004` | 한 Gateway는 같은 peer를 향한 자기 slot의 candidate 생성을 직렬화해야 한다. 그 slot이 `CONNECTING` 또는 `READY`인 동안 같은 방향 duplicate candidate는 RelayStream을 받기 전에 닫는다. 서로 반대 방향의 candidate는 duplicate가 아니며 둘 다 `READY`가 될 수 있다. |
-| `PEER-005` | 각 candidate는 handshake에서 참여 Gateway identity와 `(DialerGatewayId, PeerTransportId)`를 교환하고, 그 identity가 배포 환경이 인증한 transport peer와 일치하며 양쪽이 같은 pair와 방향 slot임을 확인한 뒤에만 `READY`가 되어야 한다. claimed `GatewayId`만으로 peer를 신뢰해서는 안 된다. identity mismatch는 candidate를 stream 없이 `CLOSED`로 만들고 해당 OPEN을 `UNAUTHENTICATED`, `NOT_OBSERVED`로 실패시켜야 한다. cross-Gateway winner 합의, candidate total order 또는 도착 순서 기반 arbitration을 해서는 안 되며 handshake 완료 전 RelayStream을 실어서는 안 된다. |
+| `PEER-005` | 각 candidate는 handshake에서 참여 Gateway identity와 `(DialerGatewayId, PeerTransportId)`를 교환하고, 그 identity가 배포 환경이 인증한 transport peer와 일치하며 양쪽이 같은 pair와 방향 slot임을 확인한 뒤에만 `READY`가 되어야 한다. claimed `GatewayId`만으로 peer를 신뢰해서는 안 된다. transport credential 또는 Gateway name을 인증하지 못하면 `UNAUTHENTICATED`, 인증된 peer가 다른 runtime owner·pair·direction을 주장하면 `PERMISSION_DENIED`다. 둘 다 candidate를 stream 없이 `CLOSED`로 만들고 해당 OPEN을 `NOT_OBSERVED`로 실패시켜야 한다. cross-Gateway winner 합의, candidate total order 또는 도착 순서 기반 arbitration을 해서는 안 되며 handshake 완료 전 RelayStream을 실어서는 안 된다. |
 | `PEER-006` | 하나의 `READY` PeerTransport는 서로 구분되는 여러 bidirectional RelayStream을 multiplex한다. 각 RelayStream은 정확히 하나의 Pipe에 대응한다. |
 | `PEER-007` | `StreamId`는 해당 PeerTransport 안에서 유일해야 한다. 중복 OPEN은 기존 stream에 영향을 주지 않고 `PROTOCOL_ERROR`로 실패한다. |
 | `PEER-008` | per-stream buffer와 PeerTransport 전체 buffer·queue는 모두 bounded여야 한다. 수신 capacity가 없으면 unbounded buffering 대신 backpressure를 전달한다. |
@@ -75,6 +92,9 @@ frame의 encoding과 underlying transport는 범위가 아니지만 위 frame의
 | `PEER-019` | `CLOSE`는 정상적인 양방향 전체 종료이고 `RESET`은 error를 동반한 실패 종료여야 한다. `CLOSE`는 payload 처리나 delivery acknowledgement를 의미하지 않으며 graceful write drain은 `FIN`으로 표현해야 한다. |
 | `PEER-020` | 한 방향의 `FIN` 뒤 그 sender에서 `DATA`가 오면 해당 RelayStream을 `PROTOCOL_ERROR`로 `RESET`해야 한다. 다른 RelayStream과 PeerTransport는 유지해야 한다. transport-level frame을 안전하게 demultiplex할 수 없는 위반만 transport 전체를 닫을 수 있다. |
 | `PEER-021` | duplicate `FIN`, `CLOSE`, `RESET`과 cleanup은 idempotent해야 한다. 서로 다른 terminal 신호가 경쟁하면 각 endpoint에서 먼저 확정한 terminal 결과를 바꾸지 않는다. 이미 제거한 `StreamId`의 늦은 frame은 새 stream이나 Pipe를 만들지 않고 버려야 하며 remote counter high-watermark 외의 unbounded terminal history를 보관해서는 안 된다. |
+| `PEER-022` | 한 PeerTransport endpoint의 단일 actor는 local counter 할당과 `OPEN` writer-queue commit을 같은 순서로 직렬화해야 한다. receiver가 관찰하는 remote counter 순서는 strictly increasing이어야 하며, 할당 뒤 commit에 실패한 counter도 재사용해서는 안 된다. concurrent local OPEN이 낮은 counter를 뒤늦게 commit하여 receiver high-watermark에 거절되는 구조를 허용해서는 안 된다. |
+| `PEER-023` | connect 또는 handshake deadline은 candidate를 `CLOSED`, 해당 slot을 `IDLE`로 만들고 peer `OPEN` commit 전 attempt를 `NOT_OBSERVED`로 실패시켜야 한다. commit 뒤 terminal result deadline 또는 transport loss는 `MAYBE_OBSERVED`다. peer `OPENED` 수신은 Listener queue admission을 확인하고 RelayStream을 열지만 external `OBSERVED`는 Connector SDK의 `OPENED` 확인 뒤에만 성립한다. `OPENING` stream cancel은 `RESET(CANCELLED)`로 표현하고 별도 `CANCEL` frame, 같은 attempt replay·reroute·resume를 두어서는 안 된다. |
+| `PEER-024` | 최초 local/CI adapter는 Gateway별 `InternalGatewayKey`를 constant-time으로 검증하고 성공한 connection의 fresh runtime `GatewayId`에 peer identity를 결합해야 한다. unknown name·잘못된 key는 `UNAUTHENTICATED`, name/key 검증 뒤 다른 runtime owner·pair·direction claim은 `PERMISSION_DENIED`다. 둘 다 candidate를 stream 없이 `CLOSED`, 해당 OPEN을 `NOT_OBSERVED`로 끝내야 한다. key를 로그·RelayStream state에 기록하거나 plain TCP adapter를 production confidentiality/integrity 보장으로 표현해서는 안 된다. |
 
 ## 연결 수 증가
 

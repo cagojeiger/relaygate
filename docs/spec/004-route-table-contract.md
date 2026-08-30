@@ -42,6 +42,14 @@ MappingSnapshot
 
 `AuthenticatedGatewayId`는 request body가 주장한 값이 아니라 RT service adapter가 internal channel에서 검증한 identity다. core는 mutation의 `RegistrationKey.GatewayId`와 이 값을 다시 비교한다. `Resolve`도 authenticated internal operation이지만 특정 registration 소유권을 요구하지 않는다.
 
+최초 local/CI runtime profile의 service adapter는 Gateway별 `GatewayName -> InternalGatewayKey`
+allowlist를 startup configuration으로 고정한다. handshake의 name과 key를 constant-time으로
+검증한 뒤 그 connection이 제시한 fresh runtime `GatewayId`를 해당 authenticated identity에
+결합한다. 다른 Gateway의 key로 이름을 주장하거나 결합된 `GatewayId`와 mutation owner가
+다르면 state를 만들지 않는다. `InternalGatewayKey`는 로그와 protocol state에 남기지 않는다.
+이 adapter는 plain TCP의 confidentiality나 production-grade channel integrity를 보장하지 않으며,
+실제 배포의 mTLS 또는 service identity adapter를 대체하지 않는다.
+
 `RegistrationAck`는 active `LeaseId`, 최근 수락된 `RegistrationRevision 0..1`과 응답 시점의 `LeaseTtlRemaining`을 나타낸다. 첫 snapshot 전에는 revision이 없다. `LeaseTtlRemaining`은 Gateway가 keepalive를 예약하기 위한 상대 duration이며 RT의 절대 clock 값이나 구현 timer identity를 외부 identity로 사용하지 않는다.
 
 core의 lease 계산은 RT process가 제공하는 monotonic time만 사용한다. wire caller는 시간을 보내지 않으며, wall clock 변경은 lease 순서나 expiry를 바꾸지 않는다.
@@ -154,6 +162,7 @@ Registration 1
 | `RT-006` | `ShardDirectoryGeneration`은 generation field가 없는 exact UTF-8 JSON directory artifact bytes의 SHA-256이어야 한다. loader는 unknown field를 거절하고 artifact의 format version, `sha256-modulo-v1` 규칙, ordered shard records, non-empty unique `ShardId`와 각 record의 non-empty exactly-one stable logical endpoint를 검증해야 하며 process 시작 뒤 directory와 generation을 바꾸어서는 안 된다. |
 | `RT-007` | `sha256-modulo-v1` authority는 `ClientId`의 exact UTF-8 bytes를 SHA-256으로 계산하고 첫 8 bytes를 unsigned big-endian integer로 해석한 뒤 ordered shard count로 modulo하여 하나의 shard를 선택해야 한다. 빈 shard list는 invalid configuration이다. |
 | `RT-008` | 모든 RT operation은 배포 환경이 identity와 integrity를 보장하는 internal channel에서만 처리해야 한다. authenticated Gateway identity는 `RegistrationKey.GatewayId`와 일치해야 하며 message가 주장하는 `GatewayId`만 신뢰해서는 안 된다. 인증·일치 검증 실패는 state를 읽거나 변경하지 않고 `UNAUTHENTICATED` 또는 `PERMISSION_DENIED`로 끝나야 한다. |
+| `RT-009` | 최초 local/CI adapter는 startup configuration의 Gateway별 `InternalGatewayKey`를 constant-time으로 검증하고 성공한 connection의 fresh runtime `GatewayId`에 identity를 결합해야 한다. name/key 실패는 `UNAUTHENTICATED`, 결합된 identity와 operation owner mismatch는 `PERMISSION_DENIED`이며 state를 읽거나 만들지 않는다. key를 로그·mapping·lease에 기록하거나 claimed `GatewayId`만으로 인증해서는 안 된다. 이 adapter의 plain TCP를 production confidentiality 또는 integrity 보장으로 표현해서는 안 된다. |
 
 ## Register와 Update 요구사항
 
@@ -233,3 +242,4 @@ registration에 더 이상 binding이 없으면 Gateway는 빈 snapshot을 유�
 - lease 시간, keepalive 주기와 clock tolerance의 수치
 - wire format과 transport
 - internal channel identity와 integrity를 제공하는 TLS, mTLS 또는 service-mesh 구현
+- local/CI `InternalGatewayKey`를 production credential로 배포하는 방법

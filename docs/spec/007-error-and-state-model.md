@@ -40,6 +40,13 @@
 
 `MAYBE_OBSERVED`는 queue 적재가 실제로 일어났다는 단정이 아니라, open request commit 뒤 응답 유실·deadline·SDK-Gateway session loss 때문에 Connector가 안전하게 부정할 수 없다는 뜻이다.
 
+remote path에서도 같은 증명 기준을 사용한다. peer `OPEN`이 ordered writer queue에 commit되기
+전의 connect·handshake·queue 실패는 `NOT_OBSERVED`, commit 뒤 terminal 결과를 확인하지 못한
+deadline·transport loss·cancel은 `MAYBE_OBSERVED`다. peer `OPENED`는 Listener queue admission을
+확인하지만 external `OBSERVED`는 Connector SDK가 `OPENED`를 확인한 뒤에만 성립한다. 내부
+component가 더 강한 증명을 갖더라도 Connector SDK가 그 결과를 확인하기 전에 자신의
+SDK-Gateway operation을 취소했다면 SDK는 보수적으로 `MAYBE_OBSERVED`를 반환할 수 있다.
+
 - **`ERR-013`**: terminal open 결과는 `PeerObservation`을 함께 결정해야 한다.
 - **`ERR-014`**: `MAYBE_OBSERVED` 결과는 같은 attempt의 자동 replay, 다른 binding 선택, Pipe resume를 발생시켜서는 안 된다.
 - **`ERR-015`**: 알 수 없는 `ConnectorSessionId`, active state에 없는 terminal open/stream identity의 늦은 frame은 새 live state를 만들지 않고 제거해야 한다. current Pipe identity를 다른 session이 사용한 frame은 target state를 변경하지 않고 offending session의 `PROTOCOL_ERROR`가 된다. `ConnectionId`와 `StreamId`의 지연·재사용 OPEN은 각 소유 transport의 bounded remote high-watermark로 거절한다. 종료된 RT lease의 `Update`와 `KeepAlive`도 새 live state를 만들지 않는다.
@@ -58,6 +65,7 @@ Pipe가 열린 뒤 read EOF, write 실패와 transport close는 application payl
 | Connector SDK | commit된 `OPEN`의 terminal 결과 불확실 | current `ConnectorSession` 종료, 소유 attempt·Pipe 실패 | 새 SDK-Gateway session만 연결; 과거 OPEN·Pipe·payload replay 없음 |
 | Listener SDK | commit된 `REGISTER`의 terminal 결과 불확실, 또는 committed recovery `REGISTER` 중 returned Listener 제거 | current `ListenerSession` 종료, pending 최초 attempt 또는 closing Listener 종료 | 새 session에서 closing Listener를 제외한 이미 반환된 Listener만 재등록 |
 | Gateway | 보낸 `OFFER`의 terminal 결과 불확실 | selected `ListenerSession` 종료, 소유 binding·pending Pipe·relay cleanup | 같은 attempt fallback 없음; Listener SDK가 새 session에서 returned Listener 재등록 |
+| Entry Gateway | commit된 peer `OPEN`의 terminal 결과 불확실 | `OPENING` RelayStream `RESET`, remote attempt와 Connector-side relay cleanup | 같은 attempt replay·reroute 없음; caller가 새 open을 결정 |
 | Gateway 또는 SDK endpoint | identity로 격리 가능한 Pipe-local 오류 | 해당 Pipe `RESET`과 bounded cleanup | 기존 Pipe의 reroute·resume 없음 |
 
 Gateway 내부 registry, `OFFER`, pending Pipe와 relay cleanup은 Gateway 책임이다. SDK는 자기 SDK-Gateway session과 local Pipe endpoint를 정리한다. 애플리케이션은 terminal Pipe 오류를 받은 뒤 새 `open(ClientId)`, application handshake, payload replay와 업무 retry 여부를 결정한다.
@@ -170,6 +178,11 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | `STATE-PT-001` | PeerTransport | `CONNECTING` | pair와 방향 handshake 성공 | `READY` | RelayStream multiplex 가능 |
 | `STATE-PT-002` | PeerTransport | `CONNECTING` | 같은 slot duplicate 또는 연결·handshake 실패 | `CLOSED` | terminal, stream을 싣지 않음 |
 | `STATE-PT-003` | PeerTransport | `READY` | transport loss 또는 shutdown | `CLOSED` | terminal, 포함된 Pipe 모두 종료 |
+| `STATE-RS-001` | RelayStream | `ABSENT` | local actor가 StreamId를 할당하고 peer `OPEN`을 ordered writer queue에 commit하거나 valid remote `OPEN` 수신 | `OPENING` | full connection/binding identity와 bounded stream state 생성 |
+| `STATE-RS-002` | RelayStream | `OPENING` | peer `OPENED` 수신 | `OPEN` | Listener queue admission 확인과 Pipe byte relay 가능; external observation은 아직 `MAYBE_OBSERVED`일 수 있음 |
+| `STATE-RS-003` | RelayStream | `OPENING` | `FAILED`, `RESET(CANCELLED)`, terminal deadline 또는 PeerTransport loss | `CLOSED` | terminal cleanup. peer OPEN commit 전 실패는 `NOT_OBSERVED`, commit 뒤 결과 불명은 `MAYBE_OBSERVED` |
+| `STATE-RS-004` | RelayStream | `OPEN` | 한 방향 `FIN` | `OPEN` | 해당 Pipe direction만 `FINISHED`, 반대 방향 relay 유지 |
+| `STATE-RS-005` | RelayStream | `OPENING/OPEN` | 양방향 `FIN`, `CLOSE`, `RESET`, 소유 ConnectorSession 또는 PeerTransport 종료 | `CLOSED` | terminal, stream과 대응 Pipe state 제거; 다른 stream과 sibling transport는 유지 |
 
 ## 장애 전파
 
@@ -194,7 +207,10 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | 종료된 lease의 늦은 `Update` 또는 `KeepAlive` | RT state 불변, operation 실패 | Gateway-local state와 다른 active registration | `FAILED_PRECONDITION`; 새 mapping은 새 lease를 `Register`한 뒤 current snapshot으로만 구성 |
 | stale mapping 선택 | 해당 open attempt 실패 | local binding truth와 다른 candidate | `UNAVAILABLE`, `NOT_OBSERVED`, 같은 attempt reroute 없음 |
 | Listener queue admission 뒤 OPENED 유실 | 생성된 queued 또는 accept된 Pipe 종료와 cleanup | 다른 attempt와 binding | terminal 오류, `MAYBE_OBSERVED`, 자동 replay 없음 |
-| PeerTransport identity mismatch | candidate `CLOSED`, 해당 open attempt 실패 | 기존 PeerTransport, 다른 stream, binding과 RT mapping | `UNAUTHENTICATED`, `NOT_OBSERVED`; stream 생성 없음 |
+| PeerTransport credential/name 실패 또는 authenticated claim mismatch | candidate `CLOSED`, 해당 open attempt 실패 | 기존 PeerTransport, 다른 stream, binding과 RT mapping | credential/name 실패는 `UNAUTHENTICATED`, 인증 뒤 runtime owner·pair·direction mismatch는 `PERMISSION_DENIED`; 둘 다 `NOT_OBSERVED`, stream 생성 없음 |
+| peer connect 또는 handshake deadline | candidate `CLOSED`, 해당 방향 slot `IDLE`, attempt state 제거 | 반대 방향 slot, 기존 PeerTransport·Pipe, binding과 RT mapping | `DEADLINE_EXCEEDED`, `NOT_OBSERVED`; 이후 새 operation만 lazy connect 가능 |
+| peer `OPEN` commit 뒤 terminal 결과 deadline | 해당 RelayStream과 attempt `CLOSED`, best-effort `RESET` | 같은 transport의 다른 stream, sibling binding과 RT mapping | `DEADLINE_EXCEEDED`, `MAYBE_OBSERVED`; 같은 attempt replay·reroute 금지 |
+| `OPENING` remote attempt cancel | commit 전 state 제거 또는 commit 뒤 `RESET(CANCELLED)`과 RelayStream cleanup | 같은 transport의 다른 stream과 다른 attempt | 별도 peer `CANCEL` 없음; 늦은 OPENED/FAILED/RESET은 state를 부활시키지 않음 |
 | PeerTransport loss | 포함된 RelayStream과 Pipe 종료, 해당 방향 slot `IDLE` | RT mapping, Listener registration, 반대 방향 PeerTransport와 그 stream | 이후 open은 살아 있는 transport를 재사용하거나 새 transport 연결 |
 | stream `FIN` 뒤 같은 방향 `DATA` | 해당 RelayStream과 Pipe `RESET` | 다른 RelayStream과 PeerTransport | `PROTOCOL_ERROR`; 새 open만 가능 |
 
@@ -224,5 +240,8 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 22. Listener handle은 shared session token을 직접 취소하지 않는다. 정상 ACTIVE close는 개별 binding cleanup이고, committed recovery REGISTER 중 desired 제거처럼 wire 결과가 불확실한 경우에만 shared Listener actor가 session reset을 결정한다.
 23. Gateway는 current Pipe를 변경하기 전에 frame role과 sender ownership을 phase보다 먼저 검증한다. unknown·stale identity는 no-op이고 current identity의 non-owner frame은 target Pipe를 변경하지 않은 채 offending session을 종료한다. owner의 invalid phase frame은 해당 Pipe만 `RESET`한다.
 24. Listener `accept`와 session 종료는 dequeue 뒤 마지막 `ACTIVE` 및 Pipe non-terminal 확인을 성공 선형화점으로 삼아 한 순서로 직렬화한다. 이 확인이 먼저면 반환된 Pipe가 직후 failure를 관찰할 수 있고, session 종료가 먼저면 old session의 미수락 Pipe를 제거한다. 성공 확인 전에 관찰된 `BLOCKED/CLOSED`는 queue보다 우선하며 terminal 오류를 반환한다.
+25. PeerTransport endpoint의 단일 actor는 local `StreamId` counter 할당과 peer `OPEN` writer-queue commit을 같은 순서로 직렬화한다. 할당한 counter는 commit 실패 뒤에도 재사용하지 않는다.
+26. remote OPEN cancel은 `OPENING` RelayStream의 `RESET(CANCELLED)`로 표현하고 별도 peer `CANCEL` frame을 두지 않는다.
+27. local/CI `InternalGatewayKey`는 transport adapter의 startup credential일 뿐 mapping, lease, stream 또는 로그 state가 아니다. claimed `GatewayId`만으로 RT 또는 peer authority를 얻을 수 없고 plain TCP adapter를 production confidentiality/integrity 보장으로 취급하지 않는다.
 
 shard lease expiry나 RT restart로 mapping이 사라져도 Gateway-local `ListenerBinding`이나 live `ListenerSession`은 닫히지 않는다. `ACTIVE` local binding은 local OPEN에 계속 사용할 수 있고, Gateway가 새 lease를 `Register`한 뒤 current snapshot을 `Update`하여 RT mapping을 다시 구성한다.
