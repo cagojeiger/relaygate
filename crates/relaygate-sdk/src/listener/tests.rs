@@ -121,7 +121,7 @@ async fn closed_listener_does_not_return_an_already_queued_pipe()
 }
 
 #[tokio::test]
-async fn blocked_listener_returns_previously_admitted_pipe_then_rejects_accept()
+async fn blocked_listener_discards_queued_pipe_before_returning_registration_error()
 -> Result<(), Box<dyn std::error::Error>> {
     let state = listener_state("echo.alpha");
     let inner = Arc::new(ListenerRuntimeInner {
@@ -144,27 +144,98 @@ async fn blocked_listener_returns_previously_admitted_pipe_then_rejects_accept()
     let (outbound, _outbound_rx) = mpsc::channel(1);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 10);
-    let (pipe, _pipe_state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+    let (pipe, pipe_state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+    let pipe_state_weak = Arc::downgrade(&pipe_state);
     state
         .incoming_tx
         .send(pipe)
         .await
         .map_err(|_| "failed to enqueue test Pipe")?;
+    pipe_state.fail(Error::unavailable("old ListenerSession ended"));
+    drop(pipe_state);
     state.block(Error::new(
-        ErrorCode::PermissionDenied,
+        ErrorCode::Unauthenticated,
         PeerObservation::NotObserved,
-        "credential was revoked",
+        "credential was rejected during recovery",
     ));
 
-    let admitted = listener.accept().await?;
-    drop(admitted);
-    assert_eq!(abandoned_rx.recv().await, Some(pipe_id));
     let error = listener
         .accept()
         .await
         .err()
-        .ok_or("blocked Listener unexpectedly waited for a new Pipe")?;
-    assert_eq!(error.code(), ErrorCode::PermissionDenied);
+        .ok_or("blocked Listener unexpectedly returned its queued Pipe")?;
+    assert_eq!(error.code(), ErrorCode::Unauthenticated);
+    assert!(pipe_state_weak.upgrade().is_none());
+    assert!(abandoned_rx.try_recv().is_err());
+    assert!(state.incoming_tx.is_closed());
+    listener.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn suspended_listener_waits_for_a_pipe_from_the_recovered_session()
+-> Result<(), Box<dyn std::error::Error>> {
+    let state = listener_state("echo.alpha");
+    let inner = Arc::new(ListenerRuntimeInner {
+        config: Config::new("unused").with_operation_timeout(Duration::from_secs(2)),
+        desired: std::sync::Mutex::new(HashMap::from([(
+            state.client_id.clone(),
+            Arc::clone(&state),
+        )])),
+        reconcile: Arc::new(tokio::sync::Notify::new()),
+        cancel: CancellationToken::new(),
+        lifetime: std::sync::Weak::new(),
+    });
+    let listener = Arc::new(Listener {
+        inner,
+        _lifetime: Arc::new(crate::lifetime::RuntimeLifetime::new(
+            CancellationToken::new(),
+        )),
+        state: Arc::clone(&state),
+    });
+    let (outbound, _outbound_rx) = mpsc::channel(1);
+    let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
+    let old_pipe_id = PipeId::new(SessionId::new(), 11);
+    let (old_pipe, old_pipe_state) =
+        PipeState::pair(old_pipe_id, outbound.clone(), 1, abandoned.clone());
+    let old_pipe_state_weak = Arc::downgrade(&old_pipe_state);
+    state
+        .incoming_tx
+        .send(old_pipe)
+        .await
+        .map_err(|_| "failed to enqueue old-session test Pipe")?;
+    old_pipe_state.fail(Error::unavailable("old ListenerSession ended"));
+    drop(old_pipe_state);
+    assert!(!state.suspend_or_fail_initial(
+        Error::unavailable("ListenerSession transport ended"),
+        Error::unavailable("unused initial failure"),
+    ));
+    state.drain_unaccepted(false).await;
+    assert!(old_pipe_state_weak.upgrade().is_none());
+    assert!(abandoned_rx.try_recv().is_err());
+
+    let mut accepting = {
+        let listener = Arc::clone(&listener);
+        tokio::spawn(async move { listener.accept().await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut accepting)
+            .await
+            .is_err(),
+        "suspended Listener returned instead of waiting for recovery"
+    );
+
+    assert!(state.activate());
+    let new_pipe_id = PipeId::new(SessionId::new(), 12);
+    let (new_pipe, _new_pipe_state) = PipeState::pair(new_pipe_id, outbound, 1, abandoned);
+    state
+        .incoming_tx
+        .send(new_pipe)
+        .await
+        .map_err(|_| "failed to enqueue recovered-session test Pipe")?;
+    let accepted = tokio::time::timeout(Duration::from_secs(1), &mut accepting).await???;
+    drop(accepted);
+    assert_eq!(abandoned_rx.recv().await, Some(new_pipe_id));
     listener.close().await?;
     Ok(())
 }

@@ -27,7 +27,7 @@ Connector application                              Listener application
 | `Listener` | 최초 등록에 성공하여 애플리케이션에 반환된 뒤 desired `ClientId` 하나로 들어오는 Pipe를 받는 SDK handle |
 | `ListenerSession` | Listener SDK runtime이 Gateway에 현재 연결된 한 번의 live incarnation |
 | `ClientId` | 위치가 아닌 non-empty UTF-8 logical destination identifier. identity 비교와 authority hash는 정규화하지 않은 exact bytes를 사용한다. |
-| `ClientKey` | Listener가 해당 `ClientId`에 binding을 등록할 권한을 증명하는 credential |
+| `ClientKey` | Listener가 해당 `ClientId`에 binding을 등록할 권한을 증명하는 credential. configured `ClientId`마다 Gateway startup configuration에 하나만 존재한다. |
 | `BindingId` | 하나의 `ListenerSession` 안에서 모든 `ListenerBinding` incarnation을 lifetime 전체에 걸쳐 구분하는 재사용하지 않는 opaque identifier |
 | `ListenerBinding` | 하나의 `ClientId`와 하나의 live `ListenerSession`을 연결하는 Gateway-local association |
 | `MappingEntry` | authority shard가 resolve에 사용하는 하나의 `ListenerBinding`에 대한 shard-local soft-state view |
@@ -117,7 +117,7 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 
 | 객체 | 소유자 | 수명 |
 | --- | --- | --- |
-| `ClientId`, `ClientKey` | external client configuration | runtime session과 독립적인 configuration lifetime |
+| `ClientId`, `ClientKey` | external client configuration | runtime session과 독립적이며 Gateway process 수명 동안 불변 |
 | `Connector SDK runtime` | Connector application | runtime을 닫을 때까지 |
 | `ConnectorSession`, `ConnectorSessionId` | Entry Gateway | Connector SDK와 맺은 한 번의 live 연결 동안 |
 | `Listener SDK runtime` | Listener application | runtime을 닫을 때까지 |
@@ -154,14 +154,14 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 
 - **`TERM-001`**: SDK와 protocol은 연결을 요청하는 역할을 `Connector`, 연결을 받는 역할을 `Listener`로 표현해야 한다.
 - **`TERM-002`**: `ClientId`는 특정 Listener process, `ListenerSession` 또는 Gateway 위치와 동일시해서는 안 된다.
-- **`TERM-003`**: `ClientKey`는 binding 등록 권한에만 사용하며 Pipe peer 인증이나 payload 권한을 의미해서는 안 된다.
+- **`TERM-003`**: `ClientKey`는 binding 등록 권한에만 사용하며 Pipe peer 인증이나 payload 권한을 의미해서는 안 된다. Gateway startup configuration은 configured `ClientId`마다 정확히 하나의 `ClientKey`를 가지며 process 수명 동안 바꾸어서는 안 된다.
 - **`TERM-004`**: 하나의 Listener SDK runtime은 동시에 0개 또는 1개의 current `ListenerSession`을 가져야 한다. 각 pending `ListenAttempt`는 reserved `ClientId` 하나를, 각 반환된 `Listener` handle은 desired `ClientId` 하나와 그 shared session의 current binding 0개 또는 1개만 가리켜야 하며 session을 소유해서는 안 된다.
 - **`TERM-005`**: 하나의 `ListenerBinding`은 정확히 하나의 `ClientId`, `BindingId`, `GatewayId`, `ListenerSession`과 `GatewayLocator`를 연결해야 한다. `BindingId`는 같은 `ListenerSession`의 서로 다른 `ClientId`와 제거된 incarnation을 포함해 session lifetime 동안 unique하고 재사용하지 않아야 한다.
 - **`TERM-006`**: 같은 `(GatewayId, ListenerSessionId, ClientId)`에는 동시에 최대 하나의 live `ListenerBinding`만 존재해야 하며 제거 후 재등록은 재사용하지 않은 새 `BindingId`를 가져야 한다.
 - **`TERM-007`**: 하나의 `ClientId`와 하나의 `ListenerSession`은 각각 0개 이상의 `ListenerBinding`에 참여할 수 있어야 한다.
 - **`TERM-008`**: `BindingSet(ClientId)`은 그 `ClientId`의 active `MappingEntry`만 포함해야 하며 durable history로 취급해서는 안 된다.
 - **`TERM-009`**: 하나의 open attempt는 후보가 몇 개이든 최대 하나의 `ListenerBinding`을 선택해야 한다.
-- **`TERM-010`**: 성공한 open attempt는 정확히 하나의 Connector endpoint와 하나의 Listener endpoint로 이루어진 Pipe 하나를 만들어야 한다.
+- **`TERM-010`**: Listener queue admission은 logical Pipe 하나와 Listener endpoint 하나를 만든다. 성공한 open attempt는 그 Pipe의 Connector endpoint를 application에 반환하며, admission 뒤 실패한 attempt는 새 Pipe를 만들지 않고 이미 만든 Pipe와 relay state를 terminal로 닫아야 한다.
 - **`TERM-011`**: `ListenerBinding`은 이를 소유한 `ListenerSession`보다 오래 존재해서는 안 된다. 새 live session은 같은 `GatewayId` 범위에서 이전에 사용하지 않은 `ListenerSessionId`를 가져야 한다.
 - **`TERM-012`**: protocol identifier는 해당 protocol이 명시한 `ConnectionId` counter, `StreamId` role bit와 counter, `ShardDirectoryGeneration` content digest 외에는 opaque하게 취급해야 하며 application 의미를 부여해서는 안 된다.
 - **`TERM-013`**: `GatewayId`는 한 Gateway incarnation의 identity이고 runtime 시작마다 이전 incarnation에서 사용하지 않은 새 값을 가져야 한다. `GatewayLocator`는 재사용 가능한 routable location이며 둘을 동일한 식별자로 취급해서는 안 된다.

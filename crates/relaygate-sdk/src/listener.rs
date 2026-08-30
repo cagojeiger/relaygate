@@ -246,45 +246,66 @@ impl Listener {
     }
 
     /// Returns one incoming Pipe exactly once.
+    ///
+    /// While registration is suspended or being recovered, this waits for a
+    /// Pipe from the next active Listener session. Unaccepted Pipes owned by an
+    /// ended session are discarded. A blocked or closed Listener returns its
+    /// terminal error without yielding an older queued Pipe.
     pub async fn accept(&self) -> Result<Pipe> {
-        let mut incoming = self.state.incoming_rx.lock().await;
         let mut status = self.state.status.subscribe();
         loop {
-            if *status.borrow() == ListenerStatus::Closed {
-                return Err(Error::closed());
+            let current_status = *status.borrow();
+            match current_status {
+                ListenerStatus::Blocked => {
+                    self.state.drain_unaccepted(true).await;
+                    return Err(self.state.blocked_error());
+                }
+                ListenerStatus::Closed => {
+                    self.state.drain_unaccepted(true).await;
+                    return Err(Error::closed());
+                }
+                ListenerStatus::Registering | ListenerStatus::Suspended => {
+                    if status.changed().await.is_err() {
+                        return Err(Error::closed());
+                    }
+                    continue;
+                }
+                ListenerStatus::Active => {}
+            }
+
+            // Hold the single-consumer lane only while ACTIVE. A session-end
+            // status change wins the biased select, releases this lock, and
+            // lets the session actor drain the old queue before reconnecting.
+            let mut incoming = self.state.incoming_rx.lock().await;
+            if *status.borrow() != ListenerStatus::Active {
+                drop(incoming);
+                continue;
             }
             match incoming.try_recv() {
                 Ok(pipe) => {
-                    if let Some(error) = self.accepted_pipe_error(&status) {
-                        drop(pipe);
-                        return Err(error);
+                    drop(incoming);
+                    if let Some(result) = self.classify_received_pipe(pipe, &status) {
+                        return result;
                     }
-                    return Ok(pipe);
+                    continue;
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => return Err(Error::closed()),
                 Err(mpsc::error::TryRecvError::Empty) => {}
             }
-            match *status.borrow() {
-                ListenerStatus::Blocked => return Err(self.state.blocked_error()),
-                ListenerStatus::Closed => return Err(Error::closed()),
-                ListenerStatus::Registering
-                | ListenerStatus::Active
-                | ListenerStatus::Suspended => {}
-            }
             tokio::select! {
                 biased;
                 changed = status.changed() => {
+                    drop(incoming);
                     if changed.is_err() {
                         return Err(Error::closed());
                     }
                 }
                 pipe = incoming.recv() => {
                     let pipe = pipe.ok_or_else(Error::closed)?;
-                    if let Some(error) = self.accepted_pipe_error(&status) {
-                        drop(pipe);
-                        return Err(error);
+                    drop(incoming);
+                    if let Some(result) = self.classify_received_pipe(pipe, &status) {
+                        return result;
                     }
-                    return Ok(pipe);
                 }
             }
         }
@@ -565,26 +586,79 @@ impl ListenerState {
 }
 
 impl Listener {
-    fn accepted_pipe_error(&self, status: &watch::Receiver<ListenerStatus>) -> Option<Error> {
+    fn classify_received_pipe(
+        &self,
+        pipe: Pipe,
+        status: &watch::Receiver<ListenerStatus>,
+    ) -> Option<Result<Pipe>> {
+        // The final ACTIVE + non-terminal observation is accept's success
+        // linearization point. A later session/peer failure is observed by
+        // Pipe I/O, just like a socket may close immediately after accept.
         match *status.borrow() {
-            ListenerStatus::Closed => Some(Error::closed()),
-            ListenerStatus::Registering
-            | ListenerStatus::Active
-            | ListenerStatus::Suspended
-            | ListenerStatus::Blocked => None,
+            ListenerStatus::Active if !pipe.is_terminal() => Some(Ok(pipe)),
+            ListenerStatus::Active => {
+                drop(pipe);
+                None
+            }
+            ListenerStatus::Blocked => {
+                drop(pipe);
+                Some(Err(self.state.blocked_error()))
+            }
+            ListenerStatus::Closed => {
+                drop(pipe);
+                Some(Err(Error::closed()))
+            }
+            ListenerStatus::Registering | ListenerStatus::Suspended => {
+                drop(pipe);
+                None
+            }
         }
     }
 
     async fn drain_unaccepted(&self) -> Result<()> {
         let operation = async {
-            let mut incoming = self.state.incoming_rx.lock().await;
-            incoming.close();
-            while let Ok(pipe) = incoming.try_recv() {
-                drop(pipe);
-            }
+            self.state.drain_unaccepted(true).await;
         };
         timeout(self.inner.config.operation_timeout, operation)
             .await
             .map_err(|_| Error::deadline(PeerObservation::MaybeObserved))
+    }
+}
+
+impl ListenerState {
+    /// Drops terminal queued Pipes without waiting for an application accept.
+    ///
+    /// A busy receiver means an accept call owns the queue and will either
+    /// consume the terminal entry or release the lane before the next Offer.
+    /// Live entries are reinserted in FIFO order while the receiver lock keeps
+    /// application accepts from observing the temporary compaction.
+    pub(super) fn try_compact_terminal_queue(&self) -> bool {
+        let Ok(mut incoming) = self.incoming_rx.try_lock() else {
+            return true;
+        };
+        let mut live = Vec::new();
+        while let Ok(pipe) = incoming.try_recv() {
+            if pipe.is_terminal() {
+                drop(pipe);
+            } else {
+                live.push(pipe);
+            }
+        }
+        for pipe in live {
+            if self.incoming_tx.try_send(pipe).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(super) async fn drain_unaccepted(&self, close: bool) {
+        let mut incoming = self.incoming_rx.lock().await;
+        if close {
+            incoming.close();
+        }
+        while let Ok(pipe) = incoming.try_recv() {
+            drop(pipe);
+        }
     }
 }

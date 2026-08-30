@@ -81,7 +81,7 @@ RT는 새 registration에 `LeaseId`를 발급한다. `Update`와 `KeepAlive`는 
 | RouteTable shard | 한 `ShardDirectoryGeneration`의 현재 `ClientId -> BindingSet<MappingEntry>` mapping authority와 registration lease |
 
 ```text
-ClientKey        = ClientId binding 등록 권한
+ClientKey        = startup config의 고정 ClientId binding 등록 권한
 application data = endpoint가 해석하고 보호하는 opaque payload
 component trust  = 배포 환경이 보장하며 application peer 인증과 별개
 ```

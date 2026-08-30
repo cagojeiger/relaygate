@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+};
 
 use futures_util::StreamExt;
 use relaygate_protocol::{
@@ -74,12 +77,25 @@ struct Registration {
     binding_id: BindingId,
 }
 
+struct LivePipe {
+    state: Arc<PipeState>,
+    listener: Weak<ListenerState>,
+}
+
+impl LivePipe {
+    fn compact_listener_queue(&self) -> bool {
+        self.listener
+            .upgrade()
+            .is_none_or(|listener| listener.try_compact_terminal_queue())
+    }
+}
+
 struct ListenerSessionState {
     next_request_id: u64,
     pending: HashMap<u64, PendingRegistration>,
     pending_by_client: HashMap<String, u64>,
     registrations: HashMap<String, Registration>,
-    pipes: HashMap<PipeId, Arc<PipeState>>,
+    pipes: HashMap<PipeId, LivePipe>,
 }
 
 impl ListenerSessionState {
@@ -157,7 +173,7 @@ async fn run_listener_session(
                 let Some(frame) = frame else { break; };
                 let terminal_pipe = match &frame {
                     Frame::Close { pipe_id } | Frame::Reset { pipe_id, .. } => Some(*pipe_id),
-                    Frame::Fin { pipe_id } if state.pipes.get(pipe_id).is_some_and(|pipe| pipe.is_finished()) => Some(*pipe_id),
+                    Frame::Fin { pipe_id } if state.pipes.get(pipe_id).is_some_and(|pipe| pipe.state.is_finished()) => Some(*pipe_id),
                     _ => None,
                 };
                 if send_bounded(
@@ -198,8 +214,17 @@ async fn run_listener_session(
         }
     }
 
+    // Fail every Pipe first. Once the Listener status leaves ACTIVE, pending
+    // accept calls release the receiver lane and the old session queue can be
+    // drained before this function permits a replacement session to start.
+    for pipe in state.pipes.values() {
+        pipe.state
+            .fail(Error::unavailable("ListenerSession transport ended"));
+    }
+    let mut queues_to_drain = Vec::new();
     for (request_id, pending) in state.pending {
         if *pending.state.status.borrow() == ListenerStatus::Closed {
+            queues_to_drain.push((pending.state, true));
             continue;
         }
         if pending.committed {
@@ -226,9 +251,15 @@ async fn run_listener_session(
                     "ListenerSession ended before managed REGISTER commit",
                 ));
         }
+        let close_queue = matches!(
+            *pending.state.status.borrow(),
+            ListenerStatus::Blocked | ListenerStatus::Closed
+        );
+        queues_to_drain.push((pending.state, close_queue));
     }
     for (_, registration) in state.registrations {
         if *registration.state.status.borrow() == ListenerStatus::Closed {
+            queues_to_drain.push((registration.state, true));
             continue;
         }
         if registration.state.suspend_or_fail_initial(
@@ -241,9 +272,14 @@ async fn run_listener_session(
         ) {
             inner.remove_terminal_listener(&registration.state);
         }
+        let close_queue = matches!(
+            *registration.state.status.borrow(),
+            ListenerStatus::Blocked | ListenerStatus::Closed
+        );
+        queues_to_drain.push((registration.state, close_queue));
     }
-    for (_, pipe) in state.pipes {
-        pipe.fail(Error::unavailable("ListenerSession transport ended"));
+    for (listener, close_queue) in queues_to_drain {
+        listener.drain_unaccepted(close_queue).await;
     }
     registration_succeeded
 }
@@ -339,6 +375,7 @@ async fn reconcile_registrations(
             );
             if state.was_returned() {
                 state.block(error);
+                state.drain_unaccepted(true).await;
             } else {
                 inner.fail_initial_listener(state, error);
             }
@@ -465,6 +502,7 @@ async fn handle_listener_frame(
             if permanent_registration_failure(code) {
                 if pending.state.was_returned() {
                     pending.state.block(error);
+                    pending.state.drain_unaccepted(true).await;
                 } else {
                     inner.fail_initial_listener(&pending.state, error);
                     return ListenerFrameAction::Reconcile;
@@ -473,6 +511,7 @@ async fn handle_listener_frame(
                 pending
                     .state
                     .set_status(ListenerStatus::Suspended, Some(error));
+                pending.state.drain_unaccepted(false).await;
                 let delay = inner.config.reconnect_initial;
                 let cancel = inner.cancel.clone();
                 let inner_reconcile = inner.reconcile.clone();
@@ -493,7 +532,7 @@ async fn handle_listener_frame(
             client_id,
         } => {
             if let Some(existing) = session.pipes.get(&pipe_id) {
-                if !existing.is_finished()
+                if !existing.state.is_finished()
                     && send_bounded(
                         transport,
                         Frame::OfferAccepted { pipe_id },
@@ -551,6 +590,13 @@ async fn handle_listener_frame(
                 .await
                 .map_send_action();
             }
+            if !registration.state.try_compact_terminal_queue() {
+                tracing::error!(
+                    client_id,
+                    "Listener incoming queue compaction could not preserve live Pipes"
+                );
+                return ListenerFrameAction::Stop;
+            }
             let permit = timeout(
                 inner.config.offer_timeout,
                 registration.state.incoming_tx.reserve(),
@@ -599,7 +645,13 @@ async fn handle_listener_frame(
                         abandoned.clone(),
                         lifetime,
                     );
-                    session.pipes.insert(pipe_id, state);
+                    session.pipes.insert(
+                        pipe_id,
+                        LivePipe {
+                            state,
+                            listener: Arc::downgrade(&registration.state),
+                        },
+                    );
                     permit.send(pipe);
                     true
                 }
@@ -631,11 +683,17 @@ async fn handle_listener_frame(
             }
         }
         Frame::Data { pipe_id, payload } => {
-            if let Some(pipe) = session.pipes.get(&pipe_id)
-                && let Err(error) = pipe.push_data(payload)
-            {
-                pipe.fail(error.clone());
-                session.pipes.remove(&pipe_id);
+            let error = session
+                .pipes
+                .get(&pipe_id)
+                .and_then(|pipe| pipe.state.push_data(payload).err());
+            if let Some(error) = error {
+                if let Some(pipe) = session.pipes.remove(&pipe_id) {
+                    pipe.state.fail(error.clone());
+                    if !pipe.compact_listener_queue() {
+                        return ListenerFrameAction::Stop;
+                    }
+                }
                 let _ = send_bounded(
                     transport,
                     Frame::Reset {
@@ -651,15 +709,25 @@ async fn handle_listener_frame(
         }
         Frame::Fin { pipe_id } => {
             if let Some(pipe) = session.pipes.get(&pipe_id) {
-                pipe.remote_fin();
-                if pipe.is_finished() {
-                    session.pipes.remove(&pipe_id);
-                }
+                pipe.state.remote_fin();
+            }
+            let finished = session
+                .pipes
+                .get(&pipe_id)
+                .is_some_and(|pipe| pipe.state.is_finished());
+            if finished
+                && let Some(pipe) = session.pipes.remove(&pipe_id)
+                && !pipe.compact_listener_queue()
+            {
+                return ListenerFrameAction::Stop;
             }
         }
         Frame::Close { pipe_id } => {
             if let Some(pipe) = session.pipes.remove(&pipe_id) {
-                pipe.close_normal();
+                pipe.state.close_normal();
+                if !pipe.compact_listener_queue() {
+                    return ListenerFrameAction::Stop;
+                }
             }
         }
         Frame::Reset {
@@ -668,11 +736,14 @@ async fn handle_listener_frame(
             message,
         } => {
             if let Some(pipe) = session.pipes.remove(&pipe_id) {
-                pipe.fail(Error::new(
+                pipe.state.fail(Error::new(
                     ErrorCode::from_wire(code),
                     PeerObservation::Observed,
                     message,
                 ));
+                if !pipe.compact_listener_queue() {
+                    return ListenerFrameAction::Stop;
+                }
             }
         }
         Frame::Ping { nonce } => {

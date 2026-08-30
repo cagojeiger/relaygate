@@ -169,6 +169,10 @@ impl PipeState {
 }
 
 impl Pipe {
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.state.terminal.borrow().is_some()
+    }
+
     /// Reads ordered bytes. `0` means graceful EOF.
     pub async fn read(&mut self, destination: &mut [u8]) -> Result<usize> {
         if destination.is_empty() {

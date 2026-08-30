@@ -51,7 +51,7 @@ Probe는 UTF-8 payload, 65,537-byte binary payload, 32개 동시 Pipe의 byte �
 | `RELAYGATE_MAX_LIVE_PIPES` | `100000` | 열린 Pipe 총 상한 |
 | `RELAYGATE_OFFER_TIMEOUT_MS` | `5000` | Listener의 `OFFER` 응답 기한 |
 
-모든 상한과 timeout은 0보다 큰 정수여야 합니다. ClientKey는 process memory에서 등록 검증에만 사용하며 RelayGate가 영속화하지 않습니다.
+모든 상한과 timeout은 0보다 큰 정수여야 합니다. Gateway는 시작할 때 configured `ClientId`마다 `ClientKey` 하나를 로드하고 process 수명 동안 갱신하지 않습니다. ClientKey는 최초·recovery 등록 검증에만 사용하며 RelayGate가 발급하거나 영속화하지 않습니다.
 
 ## 검증
 

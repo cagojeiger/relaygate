@@ -231,6 +231,59 @@ async fn listener_disconnect_during_offer_fails_pending_open() -> TestResult {
 }
 
 #[tokio::test]
+async fn foreign_pipe_frame_closes_offender_and_preserves_target_pipe() -> TestResult {
+    let gateway = TestGateway::start(&[("echo.shared", "secret")]).await?;
+    let mut listener = sdk_session(gateway.address, SessionRole::Listener).await?;
+    register(&mut listener, 1).await?;
+    let mut connector = sdk_session(gateway.address, SessionRole::Connector).await?;
+    let mut offender = sdk_session(gateway.address, SessionRole::Connector).await?;
+
+    let target_pipe = request_offer(&mut connector, &mut listener, 1).await?;
+    let offender_pipe = request_offer(&mut offender, &mut listener, 1).await?;
+    listener
+        .send(Frame::OfferAccepted {
+            pipe_id: offender_pipe,
+        })
+        .await?;
+    assert!(matches!(
+        next_frame(&mut offender).await?,
+        Frame::Opened { pipe_id } if pipe_id == offender_pipe
+    ));
+
+    offender
+        .send(Frame::Fin {
+            pipe_id: target_pipe,
+        })
+        .await?;
+
+    assert!(matches!(
+        next_frame(&mut listener).await?,
+        Frame::Reset {
+            pipe_id,
+            code: ErrorCode::Unavailable,
+            ..
+        } if pipe_id == offender_pipe
+    ));
+    assert!(matches!(
+        timeout(Duration::from_secs(1), offender.next()).await,
+        Ok(None) | Ok(Some(Err(_)))
+    ));
+
+    listener
+        .send(Frame::OfferAccepted {
+            pipe_id: target_pipe,
+        })
+        .await?;
+    assert!(matches!(
+        next_frame(&mut connector).await?,
+        Frame::Opened { pipe_id } if pipe_id == target_pipe
+    ));
+
+    gateway.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn unanswered_offer_closes_selected_listener_and_preserves_sibling() -> TestResult {
     let gateway = TestGateway::start_with_config(
         GatewayConfig::new([("echo.shared".to_owned(), "secret".to_owned())])

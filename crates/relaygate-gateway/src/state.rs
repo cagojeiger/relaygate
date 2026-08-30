@@ -37,10 +37,18 @@ impl Delivery {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("frame {frame_name} is not valid for a {role:?} session")]
-pub(crate) struct ProtocolViolation {
-    role: SessionRole,
-    frame_name: &'static str,
+pub(crate) enum ProtocolViolation {
+    #[error("frame {frame_name} is not valid for a {role:?} session")]
+    InvalidFrameForRole {
+        role: SessionRole,
+        frame_name: &'static str,
+    },
+    #[error("session {sender:?} does not own existing Pipe {pipe_id:?} for frame {frame_name}")]
+    PipeOwnership {
+        sender: SessionId,
+        pipe_id: PipeId,
+        frame_name: &'static str,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +74,24 @@ struct PipeEntry {
     offered_at: std::time::Instant,
     connector_finished: bool,
     listener_finished: bool,
+}
+
+impl PipeEntry {
+    fn ensure_owner(
+        &self,
+        sender: SessionId,
+        pipe_id: PipeId,
+        frame_name: &'static str,
+    ) -> Result<(), ProtocolViolation> {
+        if self.connector == sender || self.listener == sender {
+            return Ok(());
+        }
+        Err(ProtocolViolation::PipeOwnership {
+            sender,
+            pipe_id,
+            frame_name,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,7 +148,7 @@ impl GatewayState {
             return Ok(Vec::new());
         };
         if !frame_allowed(role, &frame) {
-            return Err(ProtocolViolation {
+            return Err(ProtocolViolation::InvalidFrameForRole {
                 role,
                 frame_name: frame_name(&frame),
             });
@@ -142,21 +168,21 @@ impl GatewayState {
                 connection_id,
                 client_id,
             } => self.open(session_id, connection_id, client_id),
-            Frame::OfferAccepted { pipe_id } => self.offer_accepted(session_id, pipe_id),
+            Frame::OfferAccepted { pipe_id } => self.offer_accepted(session_id, pipe_id)?,
             Frame::OfferRejected {
                 pipe_id,
                 code,
                 message,
-            } => self.offer_rejected(session_id, pipe_id, code, message),
-            Frame::Data { pipe_id, payload } => self.data(session_id, pipe_id, payload),
-            Frame::Fin { pipe_id } => self.fin(session_id, pipe_id),
-            Frame::Close { pipe_id } => self.close(session_id, pipe_id),
+            } => self.offer_rejected(session_id, pipe_id, code, message)?,
+            Frame::Data { pipe_id, payload } => self.data(session_id, pipe_id, payload)?,
+            Frame::Fin { pipe_id } => self.fin(session_id, pipe_id)?,
+            Frame::Close { pipe_id } => self.close(session_id, pipe_id)?,
             Frame::Reset {
                 pipe_id,
                 code,
                 message,
-            } => self.reset(session_id, pipe_id, code, message),
-            Frame::Cancel { pipe_id } => self.cancel(session_id, pipe_id),
+            } => self.reset(session_id, pipe_id, code, message)?,
+            Frame::Cancel { pipe_id } => self.cancel(session_id, pipe_id)?,
             Frame::Ping { nonce } => self
                 .to(session_id, Frame::Pong { nonce })
                 .into_iter()

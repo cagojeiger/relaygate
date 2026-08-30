@@ -4,7 +4,7 @@ use relaygate_protocol::{
     BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId, SessionRole,
 };
 
-use super::{Delivery, GatewayState, PipeEntry, PipePhase};
+use super::{Delivery, GatewayState, PipeEntry, PipePhase, ProtocolViolation};
 
 impl GatewayState {
     pub(super) fn open(
@@ -121,22 +121,29 @@ impl GatewayState {
         .collect()
     }
 
-    pub(super) fn offer_accepted(&mut self, listener: SessionId, pipe_id: PipeId) -> Vec<Delivery> {
-        let connector = {
+    pub(super) fn offer_accepted(
+        &mut self,
+        listener: SessionId,
+        pipe_id: PipeId,
+    ) -> Result<Vec<Delivery>, ProtocolViolation> {
+        let (connector, phase) = {
             let Some(pipe) = self.pipes.get(&pipe_id) else {
-                return Vec::new();
+                return Ok(Vec::new());
             };
-            if pipe.listener != listener || pipe.phase != PipePhase::Offered {
-                return Vec::new();
-            }
-            pipe.connector
+            pipe.ensure_owner(listener, pipe_id, "OFFER_ACCEPTED")?;
+            (pipe.connector, pipe.phase)
         };
+        if phase != PipePhase::Offered {
+            return Ok(
+                self.protocol_reset(pipe_id, "OFFER_ACCEPTED is not valid after the Pipe opened")
+            );
+        }
         if self.live_pipe_count() >= self.limits.max_live_pipes {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
-                return Vec::new();
+                return Ok(Vec::new());
             };
             let message = "Gateway live Pipe limit reached during admission";
-            return [
+            return Ok([
                 self.to(
                     pipe.connector,
                     Frame::OpenFailed {
@@ -157,14 +164,15 @@ impl GatewayState {
             ]
             .into_iter()
             .flatten()
-            .collect();
+            .collect());
         }
         if self.promote_offer(pipe_id).is_none() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        self.to(connector, Frame::Opened { pipe_id })
+        Ok(self
+            .to(connector, Frame::Opened { pipe_id })
             .into_iter()
-            .collect()
+            .collect())
     }
 
     pub(super) fn offer_rejected(
@@ -173,49 +181,57 @@ impl GatewayState {
         pipe_id: PipeId,
         code: ErrorCode,
         message: String,
-    ) -> Vec<Delivery> {
+    ) -> Result<Vec<Delivery>, ProtocolViolation> {
         let Some(pipe) = self.pipes.get(&pipe_id) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        if pipe.listener != listener || pipe.phase != PipePhase::Offered {
-            return Vec::new();
+        pipe.ensure_owner(listener, pipe_id, "OFFER_REJECTED")?;
+        if pipe.phase != PipePhase::Offered {
+            return Ok(
+                self.protocol_reset(pipe_id, "OFFER_REJECTED is not valid after the Pipe opened")
+            );
         }
         let Some(pipe) = self.remove_pipe(pipe_id) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        self.to(
-            pipe.connector,
-            Frame::OpenFailed {
-                connection_id: pipe_id.connection_id(),
-                code,
-                observation: PeerObservation::NotObserved,
-                message,
-            },
-        )
-        .into_iter()
-        .collect()
+        Ok(self
+            .to(
+                pipe.connector,
+                Frame::OpenFailed {
+                    connection_id: pipe_id.connection_id(),
+                    code,
+                    observation: PeerObservation::NotObserved,
+                    message,
+                },
+            )
+            .into_iter()
+            .collect())
     }
 
-    pub(super) fn cancel(&mut self, connector: SessionId, pipe_id: PipeId) -> Vec<Delivery> {
+    pub(super) fn cancel(
+        &mut self,
+        connector: SessionId,
+        pipe_id: PipeId,
+    ) -> Result<Vec<Delivery>, ProtocolViolation> {
         let Some(pipe) = self.pipes.get(&pipe_id) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        if pipe.connector != connector || pipe_id.connector_session_id() != connector {
-            return Vec::new();
-        }
+        pipe.ensure_owner(connector, pipe_id, "CANCEL")?;
+        debug_assert_eq!(pipe_id.connector_session_id(), connector);
         let Some(pipe) = self.remove_pipe(pipe_id) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        self.to(
-            pipe.listener,
-            Frame::Reset {
-                pipe_id,
-                code: ErrorCode::Cancelled,
-                message: "Connector cancelled the Pipe".to_owned(),
-            },
-        )
-        .into_iter()
-        .collect()
+        Ok(self
+            .to(
+                pipe.listener,
+                Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Cancelled,
+                    message: "Connector cancelled the Pipe".to_owned(),
+                },
+            )
+            .into_iter()
+            .collect())
     }
 
     pub(super) fn cancel_pending_binding(&mut self, binding_id: BindingId) -> Vec<Delivery> {
