@@ -37,7 +37,7 @@ let echoed = receive.await??;
 정리한다. RelayGate 오류 세부 정보가 필요한 코드는 `read_into()`와
 `write_all_bytes()` 구조화 메서드를 사용할 수 있다.
 
-현재 구현 단계는 **단일 Gateway의 local Pipe**입니다.
+현재 구현 단계는 **단일 Gateway의 local Pipe와 RouteTable shard core**입니다.
 
 - Rust workspace와 Rust public SDK
 - memory-only `ListenerBinding` registry
@@ -45,7 +45,9 @@ let echoed = receive.await??;
 - `ClientId` 하나에 여러 live Listener binding을 허용하는 N:M 모델
 - bounded queue와 `FIN` / `CLOSE` / `RESET`
 - SDK session reconnect; 이미 전송된 `OPEN`과 기존 Pipe는 replay하지 않음
-- RouteTable shard와 Gateway 간 peer relay는 다음 단계
+- exact-byte generation과 `sha256-modulo-v1`을 사용하는 immutable shard directory
+- memory-only registration lease와 `Register` / `Update` / `KeepAlive` / `Deregister` / `Resolve`
+- RouteTable network service, Gateway registration manager와 peer relay는 다음 단계
 
 SDK는 자신의 Gateway session을 재연결하고 이미 반환된 Listener를 재등록한다. 끊어진
 Pipe나 commit된 `open` operation은 자동 재시도하지 않으며, application은
@@ -94,6 +96,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 crates/
 ├── relaygate-protocol/   # 내부 wire identifier, frame, codec
 ├── relaygate-gateway/    # session, local registry, OPEN, Pipe relay
+├── relaygate-route-table/ # shard directory, lease, current mapping core
 ├── relaygate-sdk/        # public Connector, Listener, Pipe API
 └── relaygate-server/     # process config, health, shutdown, wiring
 examples/
