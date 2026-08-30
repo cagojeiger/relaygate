@@ -83,7 +83,7 @@ Docker timing에 의존하면 불안정한 순서와 state cleanup은 Rust integ
 
 | ID | 시나리오 | 기대 결과 | TEST 001 연결 |
 | --- | --- | --- | --- |
-| `G3-I-RT-01` | RT service round-trip | core와 같은 `Register`, `Update`, `KeepAlive`, `Deregister`, `Resolve` 결과와 bounded queue | `T-RT-01` ~ `T-RT-05` |
+| `G3-I-RT-01` | RT service round-trip | core와 같은 `Register`, `Update`, `KeepAlive`, `Deregister`, `Resolve` 결과, bounded queue와 oversized Resolve의 명시적 `RESOURCE_EXHAUSTED` | `T-RT-01` ~ `T-RT-05` |
 | `G3-I-RT-02` | READY RT에 mapping 없음 | `NOT_FOUND`; RT down의 `UNAVAILABLE`과 구분 | `T-RT-04`, `T-ERR-03` |
 | `G3-I-AUTH-01` | unknown name·잘못된 key 또는 인증 뒤 다른 runtime owner·pair·direction 주장 | credential/name 실패는 `UNAUTHENTICATED`, authenticated claim mismatch는 `PERMISSION_DENIED`; RT·peer state 없음, valid connection만 fresh runtime identity에 결합 | `T-RT-01`, `T-PEER-02`, `T-EDGE-36` |
 | `G3-I-REG-01` | A/B/C 동시 registration | Gateway별 registration 격리, `echo.shared`의 BindingSet 2개 | `T-REG-01`, `T-REG-05`, `T-EDGE-01` |

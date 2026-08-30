@@ -16,7 +16,8 @@
 - `relaygate-sdk`는 public `Connector`, `Listener`, `Pipe` API와 managed reconnect를 소유하며 Gateway state type을 노출하지 않는다.
 - `relaygate-protocol`은 SDK–Gateway wire contract만 소유하는 workspace-internal crate이며 socket, session policy와 routing state를 소유하지 않는다.
 - Gateway와 SDK는 서로 직접 의존하지 않고 `relaygate-protocol`만 공유한다.
-- 최초 구현은 Gateway 하나의 local Pipe 경로만 다루며 RouteTable, peer relay와 persistence를 포함하지 않는다.
+- `relaygate-route-table`은 synchronous memory-only current-state core를, `relaygate-route-table-transport`는 bounded internal network/auth adapter를 소유하며 persistence를 포함하지 않는다.
+- Gateway registration, RouteTable 조회와 one-hop peer relay는 core state와 async I/O를 분리하고 단계별로 구현한다.
 - RelayGate는 payload를 opaque bytes로 취급하고 application 인증·인가, message 의미, delivery acknowledgement와 업무 retry를 소유하지 않는다.
 - `ClientId`와 binding 등록용 `ClientKey`는 external client configuration이 관리하고 RelayGate는 credential 값을 영속화하지 않는다.
 

@@ -4,6 +4,7 @@ members = [
     "crates/relaygate-gateway",
     "crates/relaygate-protocol",
     "crates/relaygate-route-table",
+    "crates/relaygate-route-table-transport",
     "crates/relaygate-sdk",
     "crates/relaygate-server",
     "examples/echo-listener",
@@ -24,6 +25,7 @@ futures-util = { version = "0.3", features = ["sink"] }
 relaygate-gateway = { path = "crates/relaygate-gateway" }
 relaygate-protocol = { path = "crates/relaygate-protocol" }
 relaygate-route-table = { path = "crates/relaygate-route-table" }
+relaygate-route-table-transport = { path = "crates/relaygate-route-table-transport" }
 relaygate-sdk = { path = "crates/relaygate-sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

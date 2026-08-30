@@ -37,7 +37,7 @@ let echoed = receive.await??;
 정리한다. RelayGate 오류 세부 정보가 필요한 코드는 `read_into()`와
 `write_all_bytes()` 구조화 메서드를 사용할 수 있다.
 
-현재 구현 단계는 **단일 Gateway의 local Pipe와 RouteTable shard core**입니다.
+현재 구현 단계는 **단일 Gateway의 local Pipe와 독립 RouteTable runtime**입니다.
 
 - Rust workspace와 Rust public SDK
 - memory-only `ListenerBinding` registry
@@ -47,7 +47,8 @@ let echoed = receive.await??;
 - SDK session reconnect; 이미 전송된 `OPEN`과 기존 Pipe는 replay하지 않음
 - exact-byte generation과 `sha256-modulo-v1`을 사용하는 immutable shard directory
 - memory-only registration lease와 `Register` / `Update` / `KeepAlive` / `Deregister` / `Resolve`
-- RouteTable network service, Gateway registration manager와 peer relay는 다음 단계
+- bounded TCP request/response와 local/CI Gateway 인증을 제공하는 RouteTable runtime
+- Gateway registration manager와 peer relay는 다음 단계
 
 SDK는 자신의 Gateway session을 재연결하고 이미 반환된 Listener를 재등록한다. 끊어진
 Pipe나 commit된 `open` operation은 자동 재시도하지 않으며, application은
@@ -87,6 +88,30 @@ Probe는 UTF-8 payload, 65,537-byte binary payload, 32개 동시 Pipe의 byte �
 
 Gateway lifecycle을 자세히 볼 때는 예를 들어 `RELAYGATE_LOG=relaygate_server=info,relaygate_gateway=debug`를 사용합니다. SDK를 포함한 application은 자신의 subscriber filter에 `relaygate_sdk=debug`를 추가합니다.
 
+## RouteTable 설정
+
+같은 `relaygate-server` image를 `route-table` 역할로 실행합니다.
+
+```bash
+relaygate-server route-table
+```
+
+| 환경변수 | 기본값 | 의미 |
+| --- | --- | --- |
+| `RELAYGATE_RT_TRUSTED_LOCAL` | 필수 | 로컬·CI용 plain-TCP key adapter를 명시적으로 사용할 때 정확히 `true` |
+| `RELAYGATE_RT_BIND_ADDR` | `127.0.0.1:27430` | Gateway 요청을 받을 주소. 기본값은 loopback 전용 |
+| `RELAYGATE_RT_SHARD_DIRECTORY_PATH` | 필수 | exact-byte ShardDirectory JSON artifact 경로 |
+| `RELAYGATE_RT_SHARD_ID` | `rt-0` | 이 process가 소유할 logical shard |
+| `RELAYGATE_RT_LEASE_TTL_MS` | `30000` | registration lease TTL |
+| `RELAYGATE_INTERNAL_GATEWAY_KEYS` | 필수 | 쉼표로 구분한 `GatewayName=InternalGatewayKey` local/CI allowlist |
+| `RELAYGATE_RT_REQUEST_QUEUE_CAPACITY` | `128` | shard actor의 pending request 상한 |
+| `RELAYGATE_RT_WRITER_QUEUE_CAPACITY` | `32` | TCP connection별 response queue 상한 |
+| `RELAYGATE_RT_MAX_CONNECTIONS` | `1024` | 동시 Gateway connection 상한 |
+| `RELAYGATE_RT_MAX_FRAME_LEN` | `1048576` | 내부 RT frame 최대 byte 수 |
+| `RELAYGATE_RT_HANDSHAKE_TIMEOUT_MS` | `3000` | Gateway 인증 handshake 기한 |
+
+RouteTable은 시작할 때 항상 빈 memory-only state이며 directory artifact와 shard를 process 수명 동안 고정합니다. `InternalGatewayKey` adapter와 plain TCP는 로컬·CI 검증용이며, 실수로 켜지지 않도록 `RELAYGATE_RT_TRUSTED_LOCAL=true`가 없으면 시작을 거부하고 활성화 시 경고를 기록합니다. 운영 channel identity와 기밀성은 배포 환경의 mTLS 또는 service identity 계층이 제공해야 합니다.
+
 ## 검증
 
 ```bash
@@ -100,9 +125,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 ```text
 crates/
-├── relaygate-protocol/   # 내부 wire identifier, frame, codec
+├── relaygate-protocol/   # SDK-Gateway wire identifier, frame, codec
 ├── relaygate-gateway/    # session, local registry, OPEN, Pipe relay
 ├── relaygate-route-table/ # shard directory, lease, current mapping core
+├── relaygate-route-table-transport/ # bounded internal TCP service/client
 ├── relaygate-sdk/        # public Connector, Listener, Pipe API
 └── relaygate-server/     # process config, health, shutdown, wiring
 examples/

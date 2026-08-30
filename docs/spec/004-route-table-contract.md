@@ -199,6 +199,7 @@ registration에 더 이상 binding이 없으면 Gateway는 빈 snapshot을 유�
 | `RT-032` | current snapshot에서 제거되었거나 deregister, expiry 또는 restart로 사라진 mapping은 결과에 포함하지 않는다. 종료된 lease의 늦은 operation으로 다시 포함되어서는 안 된다. |
 | `RT-033` | live mapping은 최근 수락한 registration update를 뜻하며 실제 Gateway 또는 Listener 도달 가능성을 보장하지 않는다. Owner Gateway가 `OPEN` 시점에 binding identity를 다시 확인한다. |
 | `RT-034` | `READY` shard에 live mapping이 없으면 `NOT_FOUND`로 끝난다. shard를 사용할 수 없는 `UNAVAILABLE`과 구분해야 한다. |
+| `RT-035` | 하나의 complete `BindingSet`이 transport frame 상한을 넘으면 `Resolve`는 partial set이나 pagination을 만들지 않고 `RESOURCE_EXHAUSTED`로 끝나야 한다. 이 결과를 connection close에 의한 `UNAVAILABLE`로 뭉개거나 RT state를 변경해서는 안 된다. |
 
 ## 재시작과 가용성
 

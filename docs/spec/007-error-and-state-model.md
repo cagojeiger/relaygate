@@ -18,7 +18,7 @@
 | `ERR-005` | `FAILED_PRECONDITION` | `ShardDirectoryGeneration` mismatch, stale `BindingId`·`LeaseId`·registration revision 또는 닫힌 object 등 현재 상태가 operation을 허용하지 않음 | compatible configuration 또는 current state로 다시 시작한 뒤 가능 |
 | `ERR-006` | `UNAVAILABLE` | RT shard, Gateway, peer path 또는 Resolve 뒤 선택한 ListenerSession을 현재 사용할 수 없음 | backoff 뒤 가능 |
 | `ERR-007` | `DEADLINE_EXCEEDED` | operation이 configured deadline 안에 terminal 결과를 내지 못함 | 새 operation으로 가능 |
-| `ERR-008` | `RESOURCE_EXHAUSTED` | queue, Pipe, stream 또는 connection의 bounded limit 초과 | 부하 감소 뒤 가능 |
+| `ERR-008` | `RESOURCE_EXHAUSTED` | queue, frame, Pipe, stream 또는 connection의 bounded limit 초과 | 부하 감소 뒤 가능 |
 | `ERR-009` | `CANCELLED` | caller가 완료 전에 operation을 취소함 | caller 결정으로 가능 |
 | `ERR-010` | `PROTOCOL_ERROR` | peer가 허용되지 않은 role, ownership 또는 상태 전이의 frame을 보냄 | owner의 Pipe-local 상태 위반은 해당 Pipe만 `RESET`; current Pipe의 non-owner frame과 role 위반은 offending session을 닫은 뒤 새 operation 가능 |
 | `ERR-011` | `INTERNAL` | 위 code로 분류할 수 없는 RelayGate 내부 실패 | backoff 뒤 새 operation으로만 가능 |

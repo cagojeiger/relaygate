@@ -329,6 +329,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "relaygate-route-table-transport"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "relaygate-route-table",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "relaygate-sdk"
 version = "0.1.0"
 dependencies = [
@@ -347,6 +364,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "relaygate-gateway",
+ "relaygate-route-table",
+ "relaygate-route-table-transport",
  "serde_json",
  "tokio",
  "tokio-util",
