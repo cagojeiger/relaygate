@@ -71,26 +71,26 @@ jobs:
       - name: Verify all local and directed remote paths
         run: |
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-          docker compose exec continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 
       - name: Verify unrelated pair continuity across Gateway B restart
         run: |
           docker compose restart gateway-b
           docker compose up -d --wait gateway-b
-          docker compose exec continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 
       - name: Verify RouteTable outage boundary
         run: |
           docker compose stop rt-0
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-rt-unavailable
-          docker compose exec continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 
       - name: Verify current-state recovery after RouteTable restart
         run: |
           docker compose up -d rt-0
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-          docker compose exec continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 
       - name: Capture logs
         if: failure()

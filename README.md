@@ -75,12 +75,13 @@ docker compose up --build --abort-on-container-exit --exit-code-from topology-pr
 docker compose down --volumes --remove-orphans
 ```
 
-Probe는 local 3경로와 Gateway 사이의 directed remote 6경로, 같은 `ClientId`의 N:M binding,
-경로별 32개 동시 Pipe와 byte 일치 여부를 검사합니다. CI는 추가로 Gateway B 재시작 중 A-C
-기존 Pipe의 연속성, RT 중단 중 local/established Pipe 유지와 신규 remote open 실패, RT 재시작
-뒤 current-state 재등록을 검사합니다. Compose의 ClientKey와 InternalGatewayKey는 로컬 검증
-전용이며 운영 credential이 아닙니다. host에는 Gateway A의 SDK port `127.0.0.1:27420`만
-노출하고 RT와 peer port는 Compose network 안에만 둡니다.
+Probe는 local 3경로와 Gateway 사이의 directed remote 6경로, shared `ClientId` 경로, 경로별
+32개 동시 Pipe와 byte 일치 여부를 검사합니다. Rust integration test는 shared `ClientId`의
+BindingSet 2개와 exact-one 선택을 직접 확인합니다. CI는 추가로 Gateway B 재시작 중 A-C 기존
+Pipe의 연속성, RT 중단 중 local/established Pipe 유지와 신규 remote open 실패, RT 재시작 뒤
+current-state 재등록을 검사합니다. Compose의 ClientKey와 InternalGatewayKey는 로컬 검증 전용이며
+운영 credential이 아닙니다. host에는 Gateway A의 SDK port `127.0.0.1:27420`만 노출하고 RT와
+peer port는 Compose network 안에만 둡니다.
 
 ## Gateway 설정
 

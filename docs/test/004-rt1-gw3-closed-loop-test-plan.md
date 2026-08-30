@@ -11,8 +11,8 @@
 
 현재 in-process 통합 검증은 RT 1개와 Gateway 3개에서 local 3경로, directed remote 6경로,
 N:M binding 단일 선택, pair별 shared PeerTransport, 양방향 bytes, RT 단절 뒤 기존 Pipe 지속과
-terminal cleanup을 결정적으로 증명한다. Docker Compose 장애 profile이 CI에서 통과하기 전에는
-이 문서의 process-level closed-loop 완료를 주장하지 않는다.
+terminal cleanup을 결정적으로 증명한다. CI의 Docker Compose profile은 실제 process에서 GW-B
+restart, RT outage와 READY-empty restart 뒤 current-state 복구를 검증한다.
 
 ## 구현 profile
 
@@ -118,23 +118,25 @@ Compose는 실제 container build, DNS, process startup, healthcheck, TCP discon
 ```text
 1. docker compose up --build -d --wait rt-0 gateway-a gateway-b gateway-c listener-a listener-b listener-c continuity-ac
 2. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-3. docker compose exec continuity-ac relaygate-echo-probe continuity-check
+3. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 4. docker compose restart gateway-b
 5. docker compose up -d --wait gateway-b
-6. docker compose exec continuity-ac relaygate-echo-probe continuity-check
+6. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 7. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 8. docker compose stop rt-0
 9. docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-rt-unavailable
-10. docker compose exec continuity-ac relaygate-echo-probe continuity-check
+10. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 11. docker compose up -d rt-0
 12. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-13. docker compose exec continuity-ac relaygate-echo-probe continuity-check
+13. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 14. docker compose down --volumes --remove-orphans
 ```
 
 `matrix`는 local 3경로, remote 6방향, 경로별 65,537-byte payload, path별 32 concurrent Pipe,
-cross-dial과 `echo.shared` 단일 전달을 검증한다. `continuity-ac`는 A에서 C로 열린 기존 Pipe가
-GW-B restart와 RT outage 중에도 freshness deadline 안에서 계속 왕복하는지 확인한다.
+cross-dial과 public SDK를 통한 `echo.shared` 도달을 검증한다. `echo.shared`의 BindingSet 2개와
+exact-one 선택·no fan-out은 Rust integration snapshot이 결정적으로 검증한다. `continuity-ac`는
+A에서 C로 열린 기존 Pipe가 GW-B restart와 RT outage 중에도 freshness deadline 안에서 계속
+왕복하는지 확인한다.
 
 `expect-rt-unavailable`에서는 local 3경로는 계속 성공하고 신규 remote 6방향만
 `UNAVAILABLE` terminal 결과인지 확인한다. RT 재시작 뒤 `matrix`의 bounded retry는 A/B/C의
