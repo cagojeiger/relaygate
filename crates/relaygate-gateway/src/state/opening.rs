@@ -76,6 +76,18 @@ impl GatewayState {
         }
 
         let pipe_id = PipeId::new(connector, connection_id);
+        tracing::debug!(
+            component = "gateway",
+            event = "gateway.offer.created",
+            connector_session_id = %connector.as_uuid(),
+            listener_session_id = %binding.session_id.as_uuid(),
+            connection_id,
+            binding_id = %binding.id.as_uuid(),
+            client_id = %client_id,
+            pending_offers = self.pending_offer_count() + 1,
+            live_pipes = self.live_pipe_count(),
+            "Pipe offer created"
+        );
         self.insert_offer(
             pipe_id,
             PipeEntry {
@@ -108,6 +120,15 @@ impl GatewayState {
         observation: PeerObservation,
         message: &str,
     ) -> Vec<Delivery> {
+        tracing::debug!(
+            component = "gateway",
+            event = "gateway.open.failed",
+            connector_session_id = %connector.as_uuid(),
+            connection_id,
+            error_code = ?code,
+            observation = ?observation,
+            "Open attempt failed"
+        );
         self.to(
             connector,
             Frame::OpenFailed {
@@ -143,6 +164,19 @@ impl GatewayState {
                 return Ok(Vec::new());
             };
             let message = "Gateway live Pipe limit reached during admission";
+            tracing::warn!(
+                component = "gateway",
+                event = "gateway.offer.admission_failed",
+                connector_session_id = %pipe.connector.as_uuid(),
+                listener_session_id = %pipe.listener.as_uuid(),
+                connection_id = pipe_id.connection_id(),
+                binding_id = %pipe.binding_id.as_uuid(),
+                error_code = ?ErrorCode::ResourceExhausted,
+                observation = ?PeerObservation::MaybeObserved,
+                pending_offers = self.pending_offer_count(),
+                live_pipes = self.live_pipe_count(),
+                "Pipe offer could not be admitted"
+            );
             return Ok([
                 self.to(
                     pipe.connector,
@@ -169,6 +203,16 @@ impl GatewayState {
         if self.promote_offer(pipe_id).is_none() {
             return Ok(Vec::new());
         }
+        tracing::debug!(
+            component = "gateway",
+            event = "gateway.pipe.opened",
+            listener_session_id = %listener.as_uuid(),
+            connector_session_id = %connector.as_uuid(),
+            connection_id = pipe_id.connection_id(),
+            pending_offers = self.pending_offer_count(),
+            live_pipes = self.live_pipe_count(),
+            "Pipe opened"
+        );
         Ok(self
             .to(connector, Frame::Opened { pipe_id })
             .into_iter()
@@ -194,6 +238,18 @@ impl GatewayState {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Ok(Vec::new());
         };
+        tracing::debug!(
+            component = "gateway",
+            event = "gateway.offer.rejected",
+            listener_session_id = %listener.as_uuid(),
+            connector_session_id = %pipe.connector.as_uuid(),
+            connection_id = pipe_id.connection_id(),
+            binding_id = %pipe.binding_id.as_uuid(),
+            error_code = ?code,
+            pending_offers = self.pending_offer_count(),
+            live_pipes = self.live_pipe_count(),
+            "Pipe offer rejected"
+        );
         Ok(self
             .to(
                 pipe.connector,
@@ -221,6 +277,18 @@ impl GatewayState {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Ok(Vec::new());
         };
+        tracing::debug!(
+            component = "gateway",
+            event = "gateway.offer.cancelled",
+            connector_session_id = %connector.as_uuid(),
+            listener_session_id = %pipe.listener.as_uuid(),
+            connection_id = pipe_id.connection_id(),
+            binding_id = %pipe.binding_id.as_uuid(),
+            reason = "connector_cancelled",
+            pending_offers = self.pending_offer_count(),
+            live_pipes = self.live_pipe_count(),
+            "Pipe offer cancelled"
+        );
         Ok(self
             .to(
                 pipe.listener,
@@ -247,6 +315,18 @@ impl GatewayState {
             .into_iter()
             .filter_map(|pipe_id| {
                 let pipe = self.remove_pipe(pipe_id)?;
+                tracing::debug!(
+                    component = "gateway",
+                    event = "gateway.offer.cancelled",
+                    connector_session_id = %pipe.connector.as_uuid(),
+                    listener_session_id = %pipe.listener.as_uuid(),
+                    connection_id = pipe_id.connection_id(),
+                    binding_id = %pipe.binding_id.as_uuid(),
+                    reason = "binding_removed",
+                    pending_offers = self.pending_offer_count(),
+                    live_pipes = self.live_pipe_count(),
+                    "Pipe offer cancelled"
+                );
                 self.to(
                     pipe.connector,
                     Frame::OpenFailed {
@@ -276,6 +356,17 @@ impl GatewayState {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
+            tracing::warn!(
+                component = "gateway",
+                event = "gateway.offer.expired",
+                connector_session_id = %pipe.connector.as_uuid(),
+                listener_session_id = %pipe.listener.as_uuid(),
+                connection_id = pipe_id.connection_id(),
+                binding_id = %pipe.binding_id.as_uuid(),
+                error_code = ?ErrorCode::DeadlineExceeded,
+                observation = ?PeerObservation::MaybeObserved,
+                "Pipe offer expired"
+            );
             expired_listeners.insert(pipe.listener);
             if let Some(delivery) = self.to(
                 pipe.connector,

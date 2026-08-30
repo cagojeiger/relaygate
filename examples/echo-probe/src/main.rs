@@ -12,6 +12,7 @@ const ECHO_DEADLINE: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    init_tracing()?;
     let address = environment("RELAYGATE_ADDR", "gateway:27420");
     let client_id = environment("RELAYGATE_CLIENT_ID", "echo.alpha");
     let connector = Connector::connect(
@@ -45,6 +46,18 @@ async fn main() -> anyhow::Result<()> {
     connector.close();
     println!("relaygate single-Gateway echo verified");
     Ok(())
+}
+
+fn init_tracing() -> anyhow::Result<()> {
+    let filter = match std::env::var("RELAYGATE_LOG") {
+        Ok(value) => tracing_subscriber::EnvFilter::try_new(value)?,
+        Err(_) => tracing_subscriber::EnvFilter::new("info"),
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .try_init()
+        .map_err(|error| anyhow::anyhow!("failed to initialize tracing: {error}"))
 }
 
 async fn assert_concurrent_echo(connector: &Connector, client_id: &str) -> anyhow::Result<()> {

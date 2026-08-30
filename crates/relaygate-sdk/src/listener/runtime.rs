@@ -36,7 +36,14 @@ pub(super) async fn listener_supervisor(
             None => match establish(&inner.config, SessionRole::Listener).await {
                 Ok(session) => session,
                 Err(error) => {
-                    tracing::debug!(%error, "Listener reconnect failed");
+                    tracing::debug!(
+                        component = "sdk",
+                        event = "sdk.session.reconnect_failed",
+                        role = "listener",
+                        error_code = ?error.code(),
+                        observation = ?error.observation(),
+                        "Listener session reconnect failed"
+                    );
                     tokio::select! {
                         _ = inner.cancel.cancelled() => return,
                         _ = tokio::time::sleep(backoff) => {}
@@ -196,6 +203,7 @@ async fn run_listener_session(
                 let Ok(frame) = incoming else { break; };
                 match handle_listener_frame(
                     frame,
+                    established.id,
                     &mut state,
                     &outbound_tx,
                     &abandoned_tx,
@@ -214,6 +222,17 @@ async fn run_listener_session(
         }
     }
 
+    tracing::debug!(
+        component = "sdk",
+        event = "sdk.session.ended",
+        role = "listener",
+        session_id = %established.id.as_uuid(),
+        pending_registrations = state.pending.len(),
+        active_registrations = state.registrations.len(),
+        live_pipes = state.pipes.len(),
+        registration_timed_out = timed_out_request.is_some(),
+        "Listener session ended"
+    );
     // Fail every Pipe first. Once the Listener status leaves ACTIVE, pending
     // accept calls release the receiver lane and the old session queue can be
     // drained before this function permits a replacement session to start.
@@ -432,6 +451,7 @@ enum ListenerFrameAction {
 #[allow(clippy::too_many_arguments)]
 async fn handle_listener_frame(
     frame: Frame,
+    session_id: relaygate_protocol::SessionId,
     session: &mut ListenerSessionState,
     outbound: &mpsc::Sender<Frame>,
     abandoned: &mpsc::UnboundedSender<PipeId>,
@@ -450,6 +470,15 @@ async fn handle_listener_frame(
             session.pending_by_client.remove(&pending.state.client_id);
             pending.state.finish_registration_attempt();
             if is_current_desired(inner, &pending.state) && pending.state.activate() {
+                tracing::debug!(
+                    component = "sdk",
+                    event = "sdk.listener_registration.active",
+                    session_id = %session_id.as_uuid(),
+                    request_id,
+                    client_id = %pending.state.client_id,
+                    binding_id = %binding_id.as_uuid(),
+                    "Listener registration is active"
+                );
                 session.registrations.insert(
                     pending.state.client_id.clone(),
                     Registration {
@@ -592,7 +621,9 @@ async fn handle_listener_frame(
             }
             if !registration.state.try_compact_terminal_queue() {
                 tracing::error!(
-                    client_id,
+                    component = "sdk",
+                    event = "sdk.listener_queue.invariant_failed",
+                    client_id = %client_id,
                     "Listener incoming queue compaction could not preserve live Pipes"
                 );
                 return ListenerFrameAction::Stop;
@@ -621,6 +652,8 @@ async fn handle_listener_frame(
                     Ok(desired) => desired,
                     Err(_) => {
                         tracing::error!(
+                            component = "sdk",
+                            event = "sdk.listener_registry.lock_poisoned",
                             "Listener desired registry lock is poisoned during Pipe admission"
                         );
                         inner.cancel.cancel();
@@ -653,6 +686,15 @@ async fn handle_listener_frame(
                         },
                     );
                     permit.send(pipe);
+                    tracing::debug!(
+                        component = "sdk",
+                        event = "sdk.pipe.admitted",
+                        client_id = %client_id,
+                        binding_id = %binding_id.as_uuid(),
+                        connector_session_id = %pipe_id.connector_session_id().as_uuid(),
+                        connection_id = pipe_id.connection_id(),
+                        "Listener admitted a Pipe"
+                    );
                     true
                 }
             };
@@ -794,7 +836,11 @@ fn snapshot_desired_by_client(
                 .collect(),
         ),
         Err(_) => {
-            tracing::error!("Listener desired registry lock is poisoned; stopping runtime");
+            tracing::error!(
+                component = "sdk",
+                event = "sdk.listener_registry.lock_poisoned",
+                "Listener desired registry lock is poisoned; stopping runtime"
+            );
             inner.cancel.cancel();
             None
         }
@@ -807,7 +853,11 @@ fn is_current_desired(inner: &ListenerRuntimeInner, state: &Arc<ListenerState>) 
             .get(&state.client_id)
             .is_some_and(|current| Arc::ptr_eq(current, state)),
         Err(_) => {
-            tracing::error!("Listener desired registry lock is poisoned; stopping runtime");
+            tracing::error!(
+                component = "sdk",
+                event = "sdk.listener_registry.lock_poisoned",
+                "Listener desired registry lock is poisoned; stopping runtime"
+            );
             inner.cancel.cancel();
             false
         }

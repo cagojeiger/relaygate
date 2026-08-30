@@ -8,9 +8,11 @@ mod auth;
 mod config;
 mod error;
 mod gateway;
+mod observation;
 mod registry;
 mod state;
 
 pub use config::GatewayConfig;
 pub use error::GatewayError;
 pub use gateway::{Gateway, check};
+pub use observation::GatewaySnapshot;

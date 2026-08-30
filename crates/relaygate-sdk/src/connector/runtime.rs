@@ -28,7 +28,14 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             None => match establish(&inner.config, SessionRole::Connector).await {
                 Ok(session) => session,
                 Err(error) => {
-                    tracing::debug!(%error, "Connector reconnect failed");
+                    tracing::debug!(
+                        component = "sdk",
+                        event = "sdk.session.reconnect_failed",
+                        role = "connector",
+                        error_code = ?error.code(),
+                        observation = ?error.observation(),
+                        "Connector session reconnect failed"
+                    );
                     tokio::select! {
                         _ = inner.cancel.cancelled() => return,
                         _ = tokio::time::sleep(backoff) => {}
@@ -207,6 +214,15 @@ async fn run_connector_session(
         }
     }
 
+    tracing::debug!(
+        component = "sdk",
+        event = "sdk.session.ended",
+        role = "connector",
+        session_id = %established.id.as_uuid(),
+        pending_opens = pending.len(),
+        live_pipes = pipes.len(),
+        "Connector session ended"
+    );
     for (_, response) in pending {
         let _ = response.send(Err(Error::maybe_observed(
             "ConnectorSession transport ended after OPEN commit",
@@ -255,6 +271,13 @@ async fn handle_connector_frame(
             );
             if response.send(Ok(pipe)).is_ok() {
                 pipes.insert(pipe_id, state);
+                tracing::debug!(
+                    component = "sdk",
+                    event = "sdk.open.succeeded",
+                    connector_session_id = %pipe_id.connector_session_id().as_uuid(),
+                    connection_id = pipe_id.connection_id(),
+                    "Connector OPEN succeeded"
+                );
             } else {
                 let _ = send_bounded(
                     transport,
@@ -272,11 +295,21 @@ async fn handle_connector_frame(
             message,
         } => {
             if let Some(response) = pending.remove(&connection_id) {
-                let _ = response.send(Err(Error::new(
+                let error = Error::new(
                     ErrorCode::from_wire(code),
                     PeerObservation::from_wire(observation),
                     message,
-                )));
+                );
+                tracing::debug!(
+                    component = "sdk",
+                    event = "sdk.open.failed",
+                    connector_session_id = %session_id.as_uuid(),
+                    connection_id,
+                    error_code = ?error.code(),
+                    observation = ?error.observation(),
+                    "Connector OPEN failed"
+                );
+                let _ = response.send(Err(error));
             }
         }
         Frame::Data { pipe_id, payload } => {
@@ -325,11 +358,21 @@ async fn handle_connector_frame(
             } else if pipe_id.connector_session_id() == session_id
                 && let Some(response) = pending.remove(&pipe_id.connection_id())
             {
-                let _ = response.send(Err(Error::new(
+                let error = Error::new(
                     ErrorCode::from_wire(code),
                     PeerObservation::MaybeObserved,
                     message,
-                )));
+                );
+                tracing::debug!(
+                    component = "sdk",
+                    event = "sdk.open.failed",
+                    connector_session_id = %pipe_id.connector_session_id().as_uuid(),
+                    connection_id = pipe_id.connection_id(),
+                    error_code = ?error.code(),
+                    observation = ?error.observation(),
+                    "Connector OPEN was reset"
+                );
+                let _ = response.send(Err(error));
             }
         }
         Frame::Ping { nonce } => {

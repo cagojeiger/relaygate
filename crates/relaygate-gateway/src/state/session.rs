@@ -25,6 +25,14 @@ impl GatewayState {
                     cancellation,
                     highest_connection_id: None,
                 });
+                tracing::debug!(
+                    component = "gateway",
+                    event = "gateway.session.added",
+                    session_id = %session_id.as_uuid(),
+                    role = role_name(role),
+                    active_sessions = self.sessions.len(),
+                    "SDK session added"
+                );
                 return Some(session_id);
             }
         }
@@ -35,7 +43,7 @@ impl GatewayState {
             return Vec::new();
         };
         session.cancellation.cancel();
-        self.registry.remove_session(session_id);
+        let removed_bindings = self.registry.remove_session(session_id).len();
 
         let owned: Vec<_> = self
             .pipes
@@ -44,11 +52,23 @@ impl GatewayState {
                 (pipe.connector == session_id || pipe.listener == session_id).then_some(*pipe_id)
             })
             .collect();
+        let removed_pipes = owned.len();
         let mut deliveries = Vec::with_capacity(owned.len());
         for pipe_id in owned {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
+            tracing::debug!(
+                component = "gateway",
+                event = "gateway.pipe.removed",
+                connector_session_id = %pipe.connector.as_uuid(),
+                listener_session_id = %pipe.listener.as_uuid(),
+                connection_id = pipe_id.connection_id(),
+                binding_id = %pipe.binding_id.as_uuid(),
+                phase = ?pipe.phase,
+                reason = "session_disconnected",
+                "Pipe removed during session cleanup"
+            );
             let (counterpart, frame) = if pipe.listener == session_id
                 && pipe.phase == super::PipePhase::Offered
             {
@@ -80,6 +100,19 @@ impl GatewayState {
                 deliveries.push(delivery);
             }
         }
+        tracing::debug!(
+            component = "gateway",
+            event = "gateway.session.removed",
+            session_id = %session_id.as_uuid(),
+            role = role_name(session.role),
+            removed_bindings,
+            removed_pipes,
+            active_sessions = self.sessions.len(),
+            listener_bindings = self.registry.binding_count(),
+            pending_offers = self.pending_offer_count,
+            live_pipes = self.live_pipe_count,
+            "SDK session removed"
+        );
         deliveries
     }
 
@@ -91,5 +124,12 @@ impl GatewayState {
             sender: session.sender.clone(),
             cancellation: session.cancellation.clone(),
         })
+    }
+}
+
+fn role_name(role: SessionRole) -> &'static str {
+    match role {
+        SessionRole::Connector => "connector",
+        SessionRole::Listener => "listener",
     }
 }

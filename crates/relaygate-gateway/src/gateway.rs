@@ -15,8 +15,8 @@ use tokio::{
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use crate::{
-    GatewayConfig, GatewayError, auth::ClientKeyStore, state::GatewayLimits, state::GatewayState,
-    state::ProtocolViolation,
+    GatewayConfig, GatewayError, GatewaySnapshot, auth::ClientKeyStore, state::GatewayLimits,
+    state::GatewayState, state::ProtocolViolation,
 };
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -78,25 +78,48 @@ impl Gateway {
                     let (stream, peer_addr) = accepted?;
                     let Ok(session_slot) = Arc::clone(&self.inner.session_slots).try_acquire_owned()
                     else {
-                        tracing::warn!(%peer_addr, "rejecting SDK connection because the session limit is reached");
+                        tracing::warn!(
+                            component = "gateway",
+                            event = "gateway.session.rejected",
+                            %peer_addr,
+                            reason = "session_limit",
+                            "rejecting SDK connection because the session limit is reached"
+                        );
                         drop(stream);
                         continue;
                     };
                     if let Err(error) = stream.set_nodelay(true) {
-                        tracing::warn!(%peer_addr, %error, "failed to enable TCP_NODELAY");
+                        tracing::warn!(
+                            component = "gateway",
+                            event = "gateway.socket.configure_failed",
+                            %peer_addr,
+                            %error,
+                            "failed to enable TCP_NODELAY"
+                        );
                     }
                     let inner = Arc::clone(&self.inner);
                     let session_shutdown = shutdown.child_token();
                     sessions.spawn(async move {
                         let _session_slot = session_slot;
                         if let Err(error) = inner.run_session(stream, session_shutdown).await {
-                            tracing::debug!(%peer_addr, %error, "SDK session ended");
+                            tracing::debug!(
+                                component = "gateway",
+                                event = "gateway.session.task_ended",
+                                %peer_addr,
+                                %error,
+                                "SDK session ended"
+                            );
                         }
                     });
                 }
                 completed = sessions.join_next(), if !sessions.is_empty() => {
                     if let Some(Err(error)) = completed {
-                        tracing::warn!(%error, "SDK session task failed");
+                        tracing::warn!(
+                            component = "gateway",
+                            event = "gateway.session.task_failed",
+                            %error,
+                            "SDK session task failed"
+                        );
                     }
                 }
             }
@@ -105,10 +128,24 @@ impl Gateway {
         shutdown.cancel();
         while let Some(result) = sessions.join_next().await {
             if let Err(error) = result {
-                tracing::warn!(%error, "SDK session task failed during shutdown");
+                tracing::warn!(
+                    component = "gateway",
+                    event = "gateway.session.shutdown_task_failed",
+                    %error,
+                    "SDK session task failed during shutdown"
+                );
             }
         }
         Ok(())
+    }
+
+    /// Returns the current counts for local SDK sessions, bindings, and Pipes.
+    ///
+    /// This is an instantaneous observation of this Gateway instance. Callers
+    /// must not interpret it as a cluster-wide or durable view.
+    #[must_use]
+    pub fn snapshot(&self) -> GatewaySnapshot {
+        self.inner.lock_state().snapshot()
     }
 }
 
@@ -142,8 +179,6 @@ impl Inner {
             self.cleanup(session_id);
             return Err(SessionError::Protocol(error));
         }
-        tracing::debug!(?session_id, ?role, "SDK session established");
-
         let (sink, source) = framed.split();
         let read = Arc::clone(&self).read_frames(session_id, source);
         let write = write_frames(receiver, sink);
@@ -172,7 +207,6 @@ impl Inner {
     fn cleanup(&self, session_id: relaygate_protocol::SessionId) {
         let deliveries = self.lock_state().remove_session(session_id);
         self.deliver_all(deliveries);
-        tracing::debug!(?session_id, "SDK session state removed");
     }
 
     fn expire_offers(&self) {
@@ -197,7 +231,11 @@ impl Inner {
         match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
-                tracing::error!("recovering poisoned Gateway state lock");
+                tracing::error!(
+                    component = "gateway",
+                    event = "gateway.state.lock_poisoned",
+                    "recovering poisoned Gateway state lock"
+                );
                 poisoned.into_inner()
             }
         }
