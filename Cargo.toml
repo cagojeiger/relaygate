@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/relaygate-gateway",
     "crates/relaygate-protocol",
+    "crates/relaygate-route-table",
     "crates/relaygate-sdk",
     "crates/relaygate-server",
     "examples/echo-listener",
@@ -22,7 +23,11 @@ bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 relaygate-gateway = { path = "crates/relaygate-gateway" }
 relaygate-protocol = { path = "crates/relaygate-protocol" }
+relaygate-route-table = { path = "crates/relaygate-route-table" }
 relaygate-sdk = { path = "crates/relaygate-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

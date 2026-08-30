@@ -21,7 +21,7 @@ Owner Gateway × G
 RouteTable shard × R
      │ immutable ShardDirectoryGeneration
      │ ClientId -> BindingSet<MappingEntry>
-     │ Resolve(Generation, ClientId)
+     │ Resolve(AuthenticatedGatewayId, Generation, ClientId)
      ▼
 Entry Gateway × G
      ├── local binding ─────────────────────► Listener SDK
@@ -130,6 +130,7 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | --- | --- |
 | [TEST 001](test/001-requirement-test-matrix.md) | 전체 SPEC requirement와 edge case 대응 |
 | [TEST 002](test/002-single-gateway-rust-compose-test-plan.md) | 단일 Gateway Rust·Docker Compose 첫 구현 profile |
+| [TEST 003](test/003-route-table-core-test-plan.md) | memory-only RouteTable shard core 구현과 결정적 검증 profile |
 
 ## 제외 범위
 

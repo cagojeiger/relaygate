@@ -22,7 +22,8 @@ Connector ── ConnectorSession ── open(ClientId) ──► Entry Gateway
                                       │
                                       ├── owned local live binding
                                       │
-                                      └── Resolve(Generation, ClientId) ──► RT shard
+                                      └── Resolve(AuthenticatedGatewayId,
+                                                  Generation, ClientId) ──► RT shard
                                                         │ BindingSet
                                                         ▼
                                                 request-local BindingSet
@@ -56,7 +57,7 @@ Gateway
               └── remotely dialed PeerTransport 0..1
 ```
 
-Gateway는 RT 전체 table을 받지 않는다. Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 그 local set에서 하나를 선택하고 RT를 조회하지 않는다. local set이 비었을 때만 불변 shard directory로 authority를 찾고 `Resolve(ShardDirectoryGeneration, ClientId)` 결과를 해당 open attempt 안에서 사용한다. 이는 최초 버전의 명시적인 local-first candidate-source 규칙이며, global N:M binding 사이의 fairness나 load-balancing 품질을 보장하지 않는다. 후보 하나를 선택한 뒤 나머지 결과를 routing cache로 보관하지 않는다. `PeerPool`은 remote mapping cache가 아니라 이미 통신하는 Gateway pair의 transport 재사용 상태다. pair의 두 방향 slot은 `DialerGatewayId`로 구분하며 각 slot에는 `READY` transport가 최대 하나다.
+Gateway는 RT 전체 table을 받지 않는다. Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 그 local set에서 하나를 선택하고 RT를 조회하지 않는다. local set이 비었을 때만 불변 shard directory로 authority를 찾고 internal channel이 검증한 자기 `AuthenticatedGatewayId`와 함께 `Resolve(AuthenticatedGatewayId, ShardDirectoryGeneration, ClientId)`를 보낸다. 결과는 해당 open attempt 안에서만 사용한다. 이는 최초 버전의 명시적인 local-first candidate-source 규칙이며, global N:M binding 사이의 fairness나 load-balancing 품질을 보장하지 않는다. 후보 하나를 선택한 뒤 나머지 결과를 routing cache로 보관하지 않는다. `PeerPool`은 remote mapping cache가 아니라 이미 통신하는 Gateway pair의 transport 재사용 상태다. pair의 두 방향 slot은 `DialerGatewayId`로 구분하며 각 slot에는 `READY` transport가 최대 하나다.
 
 Gateway는 `LocalRegistry`, `OFFER`, pending open/Pipe, relay와 terminal signal을 소유한다. 명확한 Pipe-local 오류는 해당 Pipe의 `RESET`과 bounded cleanup으로 끝내고, Gateway가 보낸 `OFFER`의 terminal 결과를 알 수 없는 경우는 selected `ListenerSession`을 종료하여 그 session의 relay state를 일괄 정리한다. SDK가 Gateway 내부 registry나 pending state를 대신 정리하지 않는다.
 
@@ -75,7 +76,7 @@ OPEN ──► OPENED
 
 | ID | 요구사항 |
 | --- | --- |
-| `OPEN-001` | Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 local set에서 후보 하나를 선택하고 RT를 조회하지 않아야 한다. local set이 비었을 때만 configured generation의 `Authority(ClientId)`인 RT shard에 `Resolve(ShardDirectoryGeneration, ClientId)`를 보내 후보를 구한다. RT mapping 상실만으로 live local binding을 제외하지 않는다. |
+| `OPEN-001` | Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 local set에서 후보 하나를 선택하고 RT를 조회하지 않아야 한다. local set이 비었을 때만 configured generation의 `Authority(ClientId)`인 RT shard에 `Resolve(AuthenticatedGatewayId, ShardDirectoryGeneration, ClientId)`를 보내 후보를 구한다. RT mapping 상실만으로 live local binding을 제외하지 않는다. |
 | `OPEN-002` | live 후보가 없으면 `open`은 `NOT_FOUND`로 끝나며 Pipe를 만들지 않는다. RT shard 자체를 사용할 수 없으면 `UNAVAILABLE`로 끝난다. |
 | `OPEN-003` | 하나의 연결 시도는 `OPEN-001`이 정한 local set 또는 RT `BindingSet` 중 하나의 candidate set에서 정확히 하나의 live binding만 선택한다. local-first 외의 selection 품질, 순서나 공정성은 보장하지 않는다. |
 | `OPEN-004` | 선택된 binding의 Owner Gateway는 `(GatewayId, ListenerSessionId, BindingId, ClientId)`가 자신의 current `ACTIVE` local binding과 일치하고 session이 살아 있는지 OPEN 처리 시점에 다시 확인한다. `GatewayLocator`만으로 identity를 판단하지 않는다. 이 revalidation과 Listener queue admission은 binding 제거·handle close와 하나의 순서로 직렬화되어야 한다. admission이 먼저면 기존 Pipe lifecycle을 따르고 제거가 먼저면 Pipe를 만들지 않는다. |

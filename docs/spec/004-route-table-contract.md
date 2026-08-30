@@ -14,13 +14,20 @@
 ## 논리 interface
 
 ```text
+AuthenticatedGatewayId = internal channel이 검증한 caller identity
+
 RouteTable {
-  Register(ShardDirectoryGeneration, RegistrationKey) -> RegistrationAck
-  Update(ShardDirectoryGeneration, RegistrationKey,
+  Register(AuthenticatedGatewayId,
+           ShardDirectoryGeneration, RegistrationKey) -> RegistrationAck
+  Update(AuthenticatedGatewayId,
+         ShardDirectoryGeneration, RegistrationKey,
          LeaseId, RegistrationRevision, MappingSnapshot) -> RegistrationAck
-  KeepAlive(ShardDirectoryGeneration, RegistrationKey, LeaseId) -> RegistrationAck
-  Deregister(ShardDirectoryGeneration, RegistrationKey, LeaseId) -> success
-  Resolve(ShardDirectoryGeneration, ClientId) -> BindingSet
+  KeepAlive(AuthenticatedGatewayId,
+            ShardDirectoryGeneration, RegistrationKey, LeaseId) -> RegistrationAck
+  Deregister(AuthenticatedGatewayId,
+             ShardDirectoryGeneration, RegistrationKey, LeaseId) -> success
+  Resolve(AuthenticatedGatewayId,
+          ShardDirectoryGeneration, ClientId) -> BindingSet
 }
 ```
 
@@ -33,7 +40,30 @@ MappingSnapshot
 
 `Register`만 새 registration lease를 만들 수 있고 `LeaseId`는 RT가 발급한다. `Update`와 `KeepAlive`는 RT가 현재 보유한 active `LeaseId`에만 적용된다. 종료되거나 알려지지 않은 lease의 operation은 registration이나 mapping을 만들지 않는다.
 
-`RegistrationAck`는 active `LeaseId`, 최근 수락된 `RegistrationRevision 0..1`과 Gateway가 다음 keepalive를 예약할 수 있는 lease 정보를 나타낸다. 첫 snapshot 전에는 revision이 없다. RT의 절대 clock 값이나 구현 timer identity를 외부 identity로 사용하지 않는다.
+`AuthenticatedGatewayId`는 request body가 주장한 값이 아니라 RT service adapter가 internal channel에서 검증한 identity다. core는 mutation의 `RegistrationKey.GatewayId`와 이 값을 다시 비교한다. `Resolve`도 authenticated internal operation이지만 특정 registration 소유권을 요구하지 않는다.
+
+`RegistrationAck`는 active `LeaseId`, 최근 수락된 `RegistrationRevision 0..1`과 응답 시점의 `LeaseTtlRemaining`을 나타낸다. 첫 snapshot 전에는 revision이 없다. `LeaseTtlRemaining`은 Gateway가 keepalive를 예약하기 위한 상대 duration이며 RT의 절대 clock 값이나 구현 timer identity를 외부 identity로 사용하지 않는다.
+
+core의 lease 계산은 RT process가 제공하는 monotonic time만 사용한다. wire caller는 시간을 보내지 않으며, wall clock 변경은 lease 순서나 expiry를 바꾸지 않는다.
+
+operation 검증은 정보 노출과 결과 차이를 막기 위해 다음 순서를 따른다.
+
+```text
+1. internal channel identity 인증
+2. mutation caller와 RegistrationKey.GatewayId 일치
+3. ShardDirectoryGeneration 일치
+4. shard authority와 request/snapshot scope
+5. monotonic time에 도달한 lease expiry 적용
+6. active LeaseId
+7. RegistrationRevision과 snapshot equality
+8. state read 결과 반환 또는 atomic mutation
+```
+
+1~4단계가 실패하면 뒤 단계의 존재 여부를 관찰 가능한 결과로 노출하지 않고 expiry도
+진행하지 않는다. 5단계의 expiry는 요청 mutation이 아니라 monotonic time으로 이미 끝난
+lease를 제거하는 state transition이다. 그 뒤 lease나 revision 검사가 실패하면 요청 자체는
+추가 state를 변경하지 않는다. `Resolve`에는 registration owner 비교와 lease·revision 검사가
+없지만 나머지 순서는 같다.
 
 ## Shard directory와 authority
 
@@ -41,7 +71,7 @@ MappingSnapshot
 ShardDirectory artifact bytes
   ├── format version
   ├── authority hash rule = sha256-modulo-v1
-  └── ordered shard records = [(ShardId, stable logical RT endpoint), ...]
+  └── ordered shard records = [(ShardId, ShardEndpoint), ...]
 
 ShardDirectoryGeneration = SHA-256(exact artifact bytes)
 
@@ -49,6 +79,21 @@ digest = SHA-256(exact UTF-8 bytes of ClientId)
 index  = unsigned-big-endian(digest[0..8]) mod shard_count
 Authority(ClientId) = ordered shard records[index]
 ```
+
+최초 artifact 형식은 UTF-8 JSON이다. generation은 parse 전 input bytes 전체에서 계산한다.
+
+```json
+{
+  "format_version": 1,
+  "authority_hash": "sha256-modulo-v1",
+  "shards": [
+    { "id": "rt-0", "endpoint": "rt-0:27430" },
+    { "id": "rt-1", "endpoint": "rt-1:27430" }
+  ]
+}
+```
+
+`format_version`, `authority_hash`, `shards`, 각 record의 `id`와 `endpoint`만 허용한다. identifier와 endpoint는 non-empty string이어야 하며 `ShardId`는 중복될 수 없다. `shards` array 순서가 authority modulo의 순서다. endpoint string의 해석과 실제 service discovery는 deployment adapter가 소유한다.
 
 artifact에는 운영자가 입력하는 generation field를 두지 않는다. loader가 exact bytes에서 generation을 계산한 뒤 parsed directory와 함께 process 수명 동안 고정한다. 공백이나 record 순서를 포함해 artifact bytes가 달라지면 generation을 다시 계산하므로 의미가 같은 configuration도 bytes가 다르면 호환되지 않을 수 있다. 이는 canonicalization이나 암묵적 configuration 합치기보다 동일 artifact 배포를 요구하는 선택이다.
 
@@ -81,7 +126,7 @@ ExpiryIndex
   (RegistrationKey, LeaseId) -> Deadline
 ```
 
-`RouteIndex`는 `Resolve(ShardDirectoryGeneration, ClientId)`를 위한 forward index다. `RegistrationIndex`는 complete snapshot replace, deregister와 expiry가 해당 registration의 mapping만 제거하기 위한 reverse index다. 하나의 canonical mapping record를 두 index가 참조할 수 있지만 외부에서 관찰되는 의미는 동일해야 한다.
+`RouteIndex`는 `Resolve(AuthenticatedGatewayId, ShardDirectoryGeneration, ClientId)`를 위한 forward index다. `RegistrationIndex`는 complete snapshot replace, deregister와 expiry가 해당 registration의 mapping만 제거하기 위한 reverse index다. 하나의 canonical mapping record를 두 index가 참조할 수 있지만 외부에서 관찰되는 의미는 동일해야 한다.
 
 `RegistrationIndex`와 `ExpiryIndex`에는 active lease만 둔다. `Deregister`, expiry 또는 restart 뒤 과거 `LeaseId`, revision과 mapping에 대한 tombstone이나 high-watermark를 보관하지 않는다. 안전성은 과거 lease를 기억하는 대신 새 state 생성과 active lease 갱신을 분리하여 얻는다.
 
@@ -106,7 +151,7 @@ Registration 1
 | `RT-003` | 각 shard는 자신이 authority인 `ClientId` mapping만 저장한다. 한 `ListenerSession`이 여러 shard에 걸치면 각 shard는 자기 부분집합만 저장한다. |
 | `RT-004` | shard partition은 mapping 용량을 분산한다. logical shard의 replica 수와 failover 보장은 이 계약에 포함되지 않는다. |
 | `RT-005` | RT process는 시작 시 하나의 `ShardDirectoryGeneration`을 고정해야 한다. 모든 operation은 같은 generation일 때만 처리하며 mismatch는 `FAILED_PRECONDITION`으로 끝내고 mapping, lease, revision과 deadline을 읽기 결과로 반환하거나 변경해서는 안 된다. |
-| `RT-006` | `ShardDirectoryGeneration`은 generation field가 없는 exact directory artifact bytes의 SHA-256이어야 한다. loader는 artifact의 format version, `sha256-modulo-v1` 규칙, ordered shard records, unique `ShardId`와 각 record의 exactly-one stable logical endpoint를 검증해야 하며 process 시작 뒤 directory와 generation을 바꾸어서는 안 된다. |
+| `RT-006` | `ShardDirectoryGeneration`은 generation field가 없는 exact UTF-8 JSON directory artifact bytes의 SHA-256이어야 한다. loader는 unknown field를 거절하고 artifact의 format version, `sha256-modulo-v1` 규칙, ordered shard records, non-empty unique `ShardId`와 각 record의 non-empty exactly-one stable logical endpoint를 검증해야 하며 process 시작 뒤 directory와 generation을 바꾸어서는 안 된다. |
 | `RT-007` | `sha256-modulo-v1` authority는 `ClientId`의 exact UTF-8 bytes를 SHA-256으로 계산하고 첫 8 bytes를 unsigned big-endian integer로 해석한 뒤 ordered shard count로 modulo하여 하나의 shard를 선택해야 한다. 빈 shard list는 invalid configuration이다. |
 | `RT-008` | 모든 RT operation은 배포 환경이 identity와 integrity를 보장하는 internal channel에서만 처리해야 한다. authenticated Gateway identity는 `RegistrationKey.GatewayId`와 일치해야 하며 message가 주장하는 `GatewayId`만 신뢰해서는 안 된다. 인증·일치 검증 실패는 state를 읽거나 변경하지 않고 `UNAUTHENTICATED` 또는 `PERMISSION_DENIED`로 끝나야 한다. |
 
@@ -118,7 +163,7 @@ Registration 1
 | `RT-011` | key에 active registration이 없으면 RT는 재사용하지 않는 새 opaque `LeaseId`를 발급하고 mapping이 없는 registration을 atomic하게 만들어야 한다. |
 | `RT-012` | 같은 authenticated Gateway가 같은 active `RegistrationKey`를 다시 `Register`하면 mapping, revision과 deadline을 변경하지 않고 current lease를 반환하는 idempotent success여야 한다. |
 | `RT-013` | `Update`는 active `LeaseId`와 일치하고 같은 shard에 속하는 하나 이상의 complete current `MappingEntry`를 포함해야 한다. 없는, expired 또는 다른 current lease의 `Update`는 mapping이나 registration을 만들지 않고 `FAILED_PRECONDITION`으로 끝나야 한다. |
-| `RT-014` | active lease의 첫 `Update` 또는 더 높은 `RegistrationRevision`은 기존 registration mapping set을 atomic하게 새 complete set으로 교체해야 한다. 생략된 mapping은 제거한다. revision은 lease 안에서만 증가하며 새 lease는 첫 revision부터 시작한다. `Update`는 lease deadline을 연장하지 않는다. |
+| `RT-014` | active lease의 첫 `Update`는 `RegistrationRevision = 1`이어야 한다. 이후 current revision보다 strictly greater인 `Update`는 기존 registration mapping set을 atomic하게 새 complete set으로 교체하고 생략된 mapping을 제거한다. current snapshot과 새 snapshot에 함께 있는 `MappingIdentity`는 동일한 `ClientId`와 `GatewayLocator`를 유지해야 하며, binding destination이나 locator가 바뀌면 새 `BindingId`가 필요하다. revision은 lease 안에서만 유효하며 `Update`는 lease deadline을 연장하지 않는다. |
 | `RT-015` | 같은 active lease와 같은 revision의 동일 snapshot 반복은 idempotent success여야 한다. 같은 revision의 다른 내용과 낮은 revision은 `FAILED_PRECONDITION`이며 state와 deadline을 바꾸지 않는다. |
 | `RT-016` | snapshot replace는 같은 `RegistrationKey`의 mapping만 변경하고 같은 `ClientId`의 다른 registration mapping이나 다른 shard state를 변경해서는 안 된다. |
 | `RT-017` | `Deregister`, expiry 또는 restart로 lease가 사라진 뒤 도착한 과거 `Update`는 새 registration 또는 mapping을 만들 수 없다. 새 mapping을 만들려면 `Register`로 RT가 발급한 새 lease를 얻은 뒤 현재 snapshot을 `Update`해야 한다. |
@@ -132,7 +177,7 @@ registration에 더 이상 binding이 없으면 Gateway는 빈 snapshot을 유�
 | `RT-020` | `KeepAlive`는 요청한 `RegistrationKey`의 active `LeaseId`가 일치할 때만 deadline을 연장해야 하며 mapping set이나 revision을 변경해서는 안 된다. |
 | `RT-021` | 없는, expired 또는 stale `LeaseId`의 `KeepAlive`는 lease나 mapping을 만들지 않고 `FAILED_PRECONDITION`으로 끝나야 한다. |
 | `RT-022` | `Deregister`는 일치하는 active lease와 그 mapping subset만 제거해야 한다. registration이 이미 없으면 idempotent success다. 같은 key에 다른 active `LeaseId`가 있으면 `FAILED_PRECONDITION`이며 그 lease와 mapping을 변경해서는 안 된다. |
-| `RT-023` | deadline이 지나면 shard는 만료 시점에도 같은 `LeaseId`가 active인지 확인하고 일치하는 mapping subset만 제거해야 한다. |
+| `RT-023` | monotonic time이 deadline에 도달하거나 지나면 shard는 만료 시점에도 같은 `LeaseId`가 active인지 확인하고 일치하는 mapping subset만 제거해야 한다. |
 | `RT-024` | 반복 `KeepAlive`는 live lease당 expiry record를 무제한 누적시켜서는 안 된다. timer와 cleanup state는 현재 active lease 수에 비례해야 한다. |
 | `RT-025` | 종료된 lease의 늦은 `Update`, `KeepAlive`와 `Deregister`는 이후 만들어진 registration과 mapping을 변경하지 못한다. RT는 이를 위해 tombstone을 저장하지 않고 active lease identity 일치만 검사한다. |
 
@@ -140,7 +185,7 @@ registration에 더 이상 binding이 없으면 Gateway는 빈 snapshot을 유�
 
 | ID | 요구사항 |
 | --- | --- |
-| `RT-030` | `Resolve(ShardDirectoryGeneration, ClientId)`는 요청 시점에 해당 shard가 active lease 아래 보유한 모든 live mapping을 하나의 `BindingSet` snapshot으로 반환한다. |
+| `RT-030` | `Resolve(AuthenticatedGatewayId, ShardDirectoryGeneration, ClientId)`는 요청 시점에 해당 shard가 active lease 아래 보유한 모든 live mapping을 하나의 `BindingSet` snapshot으로 반환한다. |
 | `RT-031` | `Resolve`는 mapping을 선택하거나 정렬 우선순위, affinity, weight 또는 health 품질을 결정하지 않는다. |
 | `RT-032` | current snapshot에서 제거되었거나 deregister, expiry 또는 restart로 사라진 mapping은 결과에 포함하지 않는다. 종료된 lease의 늦은 operation으로 다시 포함되어서는 안 된다. |
 | `RT-033` | live mapping은 최근 수락한 registration update를 뜻하며 실제 Gateway 또는 Listener 도달 가능성을 보장하지 않는다. Owner Gateway가 `OPEN` 시점에 binding identity를 다시 확인한다. |

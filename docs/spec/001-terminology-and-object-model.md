@@ -33,11 +33,12 @@ Connector application                              Listener application
 | `MappingEntry` | authority shard가 resolve에 사용하는 하나의 `ListenerBinding`에 대한 shard-local soft-state view |
 | `BindingSet` | 하나의 `ClientId`에 대해 authority shard가 가진 active `MappingEntry`의 집합 |
 | `ShardId` | 현재 shard directory 안에서 logical RT shard를 구분하는 identifier |
+| `ShardEndpoint` | 하나의 logical RT shard로 요청을 전달하는 stable deployment endpoint. Gateway 위치인 `GatewayLocator`와 다른 개념이다. |
 | `ShardDirectoryGeneration` | generation 필드를 포함하지 않은 immutable shard directory artifact exact bytes의 SHA-256 digest |
-| `ShardDirectory` | format version, authority hash 규칙과 순서가 있는 `ShardId`별 stable logical RT endpoint 하나를 담고 content hash generation이 파생되는 공통 불변 deployment configuration. route mapping 자체가 아니다. |
+| `ShardDirectory` | format version, authority hash 규칙과 순서가 있는 `ShardId`별 `ShardEndpoint` 하나를 담고 content hash generation이 파생되는 공통 불변 deployment configuration. route mapping 자체가 아니다. |
 | `RegistrationKey` | 한 Gateway session이 한 shard에 등록하는 mapping 집합을 식별하는 `(GatewayId, ListenerSessionId, ShardId)` |
 | `LeaseId` | RT가 발급하며 하나의 active registration lease를 구분하는 opaque identifier |
-| `RegistrationRevision` | 하나의 active lease 안에서 current mapping snapshot의 순서를 구분하는 단조 증가 revision |
+| `RegistrationRevision` | 하나의 active lease 안에서 current mapping snapshot의 순서를 구분하는 양의 정수 revision. 첫 accepted snapshot은 `1`이고 이후 accepted snapshot은 strictly greater여야 한다. |
 | `MappingSnapshot` | 한 active registration이 해당 revision에 소유하는 complete `MappingEntry` 집합 |
 | `ListenerSessionId` | 하나의 `GatewayId` 범위에서 `ListenerSession` incarnation마다 새로 발급하고 재사용하지 않는 식별자 |
 | `GatewayId` | Gateway runtime incarnation마다 새로 발급하고 이전 incarnation에서 재사용하지 않는 식별자 |
@@ -130,6 +131,7 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 | `MappingEntry` | authority RT shard | current snapshot에 포함된 동안 |
 | `BindingSet` | 같은 `ClientId`의 active mapping view | 원소의 추가·제거에 따라 계속 변함 |
 | `ShardDirectory`, `ShardDirectoryGeneration` | deployment configuration | process 시작부터 종료까지 불변 |
+| `ShardEndpoint` | deployment configuration | 해당 logical shard endpoint가 routable한 동안 |
 | `GatewayId` | Gateway runtime | 한 번의 live runtime incarnation 동안 |
 | `GatewayLocator` | deployment/network configuration | 해당 위치가 routable한 동안 |
 | `ConnectionId` | 하나의 `ConnectorSession` | 수립 시도 시작부터 실패 또는 Pipe 종료까지 |
@@ -169,9 +171,9 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 - **`TERM-015`**: 하나의 `MappingEntry`는 `(GatewayId, ListenerSessionId, BindingId)`로 식별되는 binding incarnation 하나를 나타내고 `ClientId`와 `GatewayLocator`를 포함해야 한다. 그 identity는 authority shard에 최대 하나의 active mapping만 가져야 하며 `ClientKey`나 payload를 포함해서는 안 된다.
 - **`TERM-016`**: peer transport candidate는 `(DialerGatewayId, PeerTransportId)`로 식별해야 한다. `PeerTransportId`는 해당 dialer Gateway incarnation 안에서 재사용하지 않는 opaque identity여야 하며 `GatewayLocator`나 연결 도착 순서에서 계산해서는 안 된다.
 - **`TERM-017`**: 한 open attempt는 `(EntryGatewayId, ConnectorSessionId, ConnectionId)`로 식별해야 한다. `ConnectorSessionId`는 해당 Entry Gateway incarnation 안에서 재사용하지 않아야 한다. Connector SDK는 session마다 증가하는 counter로 `ConnectionId`를 할당하고 전송 순서가 이전 값보다 커야 하며, Gateway는 remote high-watermark 하나로 낮거나 같은 값을 거절해야 한다.
-- **`TERM-018`**: `ShardDirectory`는 각 `ShardId`의 stable logical RT endpoint를 정확히 하나만 포함하고 `ClientId`의 remote binding mapping을 포함해서는 안 된다. 서로 독립적으로 쓰이는 복수 endpoint를 한 logical shard record에 넣어서는 안 된다.
+- **`TERM-018`**: `ShardDirectory`는 각 `ShardId`의 `ShardEndpoint`를 정확히 하나만 포함하고 `ClientId`의 remote binding mapping을 포함해서는 안 된다. `ShardEndpoint`를 `GatewayLocator`와 동일시하거나 서로 독립적으로 쓰이는 복수 endpoint를 한 logical shard record에 넣어서는 안 된다.
 - **`TERM-019`**: 하나의 `RegistrationKey`는 `(GatewayId, ListenerSessionId, ShardId)`이고 동시에 최대 하나의 active lease를 가져야 한다.
-- **`TERM-020`**: `RegistrationRevision`은 하나의 active lease 안에서만 단조 증가해야 한다. 같은 revision의 다른 snapshot과 낮은 revision은 current mapping을 대체해서는 안 되며 새 lease는 첫 revision부터 시작한다.
+- **`TERM-020`**: `RegistrationRevision`은 하나의 active lease 안에서만 증가해야 한다. 첫 accepted snapshot은 `1`이어야 하고, 이후에는 current revision보다 strictly greater여야 한다. 같은 revision의 동일 snapshot만 idempotent success이고, 같은 revision의 다른 snapshot·낮은 revision·첫 revision이 아닌 값은 current mapping을 대체해서는 안 된다.
 - **`TERM-021`**: 새 `LeaseId`는 RT의 `Register`만 발급해야 한다. `Deregister`, expiry 또는 RT restart로 종료된 lease의 `Update`와 `KeepAlive`는 새 registration이나 mapping을 만들 수 없고, 새 등록은 새 `LeaseId`를 사용해야 한다.
 - **`TERM-022`**: Gateway는 자신이 소유한 local binding과 registration 상태만 보관하고 RT 전체 mapping이나 과거 `Resolve` 결과를 current routing authority로 보관해서는 안 된다.
 - **`TERM-023`**: 하나의 Connector SDK runtime은 동시에 `0..1`개의 current `ConnectorSession`을 가져야 한다. 재연결은 이전 identity를 재사용하지 않는 새 `ConnectorSessionId`를 만들어야 한다.
