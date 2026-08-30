@@ -549,7 +549,7 @@ fn bounded_response_frame(
         Ok(()) => return Ok(frame),
         Err(CodecError::FrameTooLarge { .. }) => {}
         Err(_) => {
-            return fallback_response_frame(
+            return bounded_error_response_frame(
                 request_id,
                 ErrorCode::Internal,
                 "response encoding failed",
@@ -557,7 +557,7 @@ fn bounded_response_frame(
             );
         }
     }
-    fallback_response_frame(
+    bounded_error_response_frame(
         request_id,
         ErrorCode::ResourceExhausted,
         "response exceeds frame limit",
@@ -565,7 +565,7 @@ fn bounded_response_frame(
     )
 }
 
-fn fallback_response_frame(
+fn bounded_error_response_frame(
     request_id: u64,
     code: ErrorCode,
     message: &'static str,
