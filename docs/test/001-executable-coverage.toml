@@ -95,8 +95,8 @@ rust = ["connector::tests::precommit_closed_actor_retries_on_replacement_session
 [[case]]
 id = "T-SDK-08"
 status = "partial"
-rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::pending_accept_observes_close_before_a_racing_pipe", "cancelling_committed_open_sends_one_cancel"]
-reason = "하위 상태 전이의 terminal once와 commit된 public open future cancel은 검증하지만 public accept future cancellation과 성공의 경쟁은 없다."
+rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::pending_accept_observes_close_before_a_racing_pipe", "listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "cancelling_committed_open_sends_one_cancel"]
+reason = "하위 상태 전이의 terminal once, commit된 public open future cancel과 pending accept 취소 격리는 검증하지만 같은 public future에서 cancellation과 성공을 동시에 schedule한 행렬은 없다."
 
 [[case]]
 id = "T-SDK-09"
@@ -357,8 +357,8 @@ rust = ["state::tests::foreign_open_pipe_frames_terminate_each_offender_without_
 [[case]]
 id = "T-OPEN-17"
 status = "partial"
-rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::fast_opened_event_and_open_commit_reply_keep_exact_correlation", "state::tests::early_transport_loss_then_late_commit_callback_never_leaves_an_attempt", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
-reason = "일부 commit ordering은 검증하지만 connect, handshake, cancel과 SDK 확인 전체 행렬이 없다."
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::fast_opened_event_and_open_commit_reply_keep_exact_correlation", "peer::runtime_tests::handshake_timeout_fails_before_open_commit_and_leaves_no_transport_state", "state::tests::early_transport_loss_then_late_commit_callback_never_leaves_an_attempt", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+reason = "commit ordering과 handshake deadline은 검증하지만 connect, cancel과 SDK 확인 전체 행렬이 없다."
 
 [[case]]
 id = "T-PEER-01"
@@ -409,8 +409,8 @@ reason = "shared transport는 검증하지만 두 ConnectorSession 중 하나 cl
 [[case]]
 id = "T-PEER-09"
 status = "partial"
-rust = ["peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::runtime_tests::open_identity_is_unique_only_while_current_stream_is_active", "committed_open_timeout_closes_session_and_existing_pipes"]
-reason = "OPEN response deadline, OPENING cancel과 SDK-side timeout은 검증하지만 connect 및 handshake deadline과 Entry-to-SDK 응답 유실을 peer runtime sequence로 닫지 않는다."
+rust = ["peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::runtime_tests::open_identity_is_unique_only_while_current_stream_is_active", "peer::runtime_tests::handshake_timeout_fails_before_open_commit_and_leaves_no_transport_state", "committed_open_timeout_closes_session_and_existing_pipes"]
+reason = "OPEN response deadline, OPENING cancel, peer handshake deadline과 SDK-side timeout은 검증하지만 connect deadline과 Entry-to-SDK 응답 유실을 peer runtime sequence로 닫지 않는다."
 
 [[case]]
 id = "T-PEER-10"
