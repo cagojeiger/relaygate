@@ -93,6 +93,40 @@ impl ResetCommitGate {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct DropHeartbeatPongGate {
+    armed: Arc<AtomicBool>,
+    trips: Arc<AtomicUsize>,
+    tripped: Arc<Notify>,
+}
+
+#[cfg(test)]
+impl DropHeartbeatPongGate {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn trip(&self) -> bool {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        self.trips.fetch_add(1, Ordering::SeqCst);
+        self.tripped.notify_one();
+        true
+    }
+
+    pub(crate) async fn wait_until_tripped(&self) {
+        while self.trips.load(Ordering::SeqCst) == 0 {
+            self.tripped.notified().await;
+        }
+    }
+}
+
 /// One trusted stable peer entry for the local/CI plain-TCP adapter.
 #[derive(Clone)]
 pub struct TrustedPeerConfig {
@@ -151,6 +185,8 @@ pub struct GatewayPeerConfig {
     pub(super) inbound_admission_gate: Option<ConnectGate>,
     #[cfg(test)]
     pub(super) reset_commit_gate: Option<ResetCommitGate>,
+    #[cfg(test)]
+    pub(super) drop_dialer_heartbeat_pong_gate: Option<DropHeartbeatPongGate>,
 }
 
 impl GatewayPeerConfig {
@@ -184,6 +220,8 @@ impl GatewayPeerConfig {
             inbound_admission_gate: None,
             #[cfg(test)]
             reset_commit_gate: None,
+            #[cfg(test)]
+            drop_dialer_heartbeat_pong_gate: None,
         };
         config.validate().map_err(config_error)?;
         Ok(config)
@@ -262,6 +300,15 @@ impl GatewayPeerConfig {
     #[cfg(test)]
     pub(crate) fn with_reset_commit_gate(mut self, gate: ResetCommitGate) -> Self {
         self.reset_commit_gate = Some(gate);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_drop_dialer_heartbeat_pong_gate(
+        mut self,
+        gate: DropHeartbeatPongGate,
+    ) -> Self {
+        self.drop_dialer_heartbeat_pong_gate = Some(gate);
         self
     }
 

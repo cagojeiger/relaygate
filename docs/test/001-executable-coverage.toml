@@ -735,6 +735,6 @@ reason = "matching-PONG과 timeout cleanup은 양 endpoint에서 검증하지만
 
 [[case]]
 id = "T-EDGE-38"
-status = "partial"
-rust = ["peer::transport::liveness::tests::pending_probe_timeout_returns_heartbeat_timeout", "peer::transport::liveness::tests::zero_stream_idle_retirement_waits_then_closes", "peer::transport::liveness::tests::new_stream_cancels_zero_stream_retirement", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
-reason = "active timeout과 zero-stream retirement의 실제 socket cleanup 및 lazy reconnect는 검증한다. 같은 시나리오에서 RT mapping, Listener binding, 반대 방향 transport와 다른 Gateway pair 보존을 함께 관찰하는 RT1/GW3 통합 테스트는 남아 있다."
+status = "executable"
+rust = ["peer::transport::liveness::tests::pending_probe_timeout_returns_heartbeat_timeout", "peer::transport::liveness::tests::zero_stream_idle_retirement_waits_then_closes", "peer::transport::liveness::tests::new_stream_cancels_zero_stream_retirement", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily", "gateway::effects::tests::peer_liveness::active_heartbeat_timeout_preserves_unrelated_runtime_state", "gateway::effects::tests::peer_liveness::idle_retirement_preserves_unrelated_runtime_state"]
+reason = "실제 PeerTransport heartbeat timeout과 zero-stream idle retirement를 RT1/GW3 wiring에서 발생시켜 fault transport만 정리되고 RT mapping, Listener binding, 반대 방향 transport와 다른 Gateway pair가 유지되며 새 OPEN이 성공함을 검증한다."
