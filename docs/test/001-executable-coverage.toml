@@ -400,9 +400,9 @@ reason = "connect 취소·deadline, handshake 취소와 loss 뒤 candidate·stre
 
 [[case]]
 id = "T-PEER-08"
-status = "partial"
-rust = ["state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
-reason = "RESET 성공·commit 실패, transport loss와 state 보존은 각 책임 경계에서 검증하지만 S1 cleanup부터 RESET commit 실패, transport close와 loss cleanup까지 실제 Gateway 배선으로 연결하면서 S2·반대 slot·RT mapping·binding을 함께 관찰하는 통합 경로가 없다."
+status = "executable"
+rust = ["state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "gateway::effects::tests::peer_cleanup::reset_commit_failure_closes_only_current_peer_transport_scope"]
+reason = "RESET 성공·commit 실패, transport loss와 state 보존을 책임 경계와 실제 Gateway 배선에서 함께 검증한다. S1 cleanup부터 RESET commit 실패, transport close와 loss cleanup까지 연결하고 S2 종료, 반대 slot 생존, RT mapping과 Listener binding 보존, lazy reopen을 관찰한다."
 
 [[case]]
 id = "T-PEER-09"
@@ -469,9 +469,9 @@ reason = "실패와 마지막 owner drop은 검증하지만 성공부터 explici
 
 [[case]]
 id = "T-STATE-CONNECTOR"
-status = "partial"
-rust = ["committed_open_timeout_closes_session_and_existing_pipes", "opened_pipe_fails_when_its_session_is_replaced", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams"]
-reason = "ConnectorSession cleanup과 RESET 성공·실패 scope는 검증하지만 실제 Gateway effect 배선에서 RESET commit 실패가 shared transport loss로 수렴하는 통합 경로가 없다."
+status = "executable"
+rust = ["committed_open_timeout_closes_session_and_existing_pipes", "opened_pipe_fails_when_its_session_is_replaced", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "gateway::effects::tests::peer_cleanup::reset_commit_failure_closes_only_current_peer_transport_scope"]
+reason = "ConnectorSession cleanup과 RESET 성공·실패 scope를 검증하고, 실제 Gateway effect 배선에서 RESET commit 실패가 shared transport loss로 수렴하는 통합 경로를 검증한다."
 
 [[case]]
 id = "T-STATE-LISTENER"
@@ -602,9 +602,9 @@ reason = "session identity와 no replay는 검증하지만 S1 late OPENED가 같
 
 [[case]]
 id = "T-EDGE-14"
-status = "partial"
-rust = ["state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
-reason = "S1 RESET 성공과 실패 뒤 각 cleanup scope는 검증하지만 한 실제 Gateway sequence에서 S1 commit 실패, S2 transport-loss 종료와 반대 slot·Listener binding·RT mapping 보존을 함께 입증하지 않는다."
+status = "executable"
+rust = ["state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "gateway::effects::tests::peer_cleanup::reset_commit_failure_closes_only_current_peer_transport_scope"]
+reason = "S1 RESET 성공과 실패 뒤 각 cleanup scope를 검증하고, 한 실제 Gateway sequence에서 S1 commit 실패, S2 transport-loss 종료와 반대 slot·Listener binding·RT mapping 보존을 함께 입증한다."
 
 [[case]]
 id = "T-EDGE-15"

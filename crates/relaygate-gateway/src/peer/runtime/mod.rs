@@ -151,7 +151,13 @@ impl PeerRuntime {
         let (events, event_receiver) = mpsc::channel(config.event_queue_capacity);
         let transports = Arc::new(RwLock::new(BTreeMap::new()));
         let counts = Arc::new(SharedCounts::default());
-        let handle = PeerHandle::new(command_sender, Arc::clone(&transports), Arc::clone(&counts));
+        let handle = PeerHandle::new(
+            command_sender,
+            Arc::clone(&transports),
+            Arc::clone(&counts),
+            #[cfg(test)]
+            config.reset_commit_gate.clone(),
+        );
         let runtime = Self {
             config,
             local_gateway_id,

@@ -86,12 +86,20 @@ impl Manager {
                         self.handshakes_inflight += 1;
                         let sender = self.handshake_notice_sender.clone();
                         let config = self.config.clone();
+                        #[cfg(test)]
+                        let admission_gate = config.inbound_admission_gate.clone();
                         let local_gateway_id = self.local_gateway_id;
                         let remote_gateway_id = hello.remote_gateway_id;
                         let peer_transport_id = hello.peer_transport_id;
                         self.tasks.spawn(async move {
                             let result =
                                 complete_inbound_handshake(hello, config, local_gateway_id).await;
+                            #[cfg(test)]
+                            if result.is_ok()
+                                && let Some(gate) = admission_gate
+                            {
+                                gate.wait().await;
+                            }
                             let _ = sender
                                 .send(HandshakeNotice::InboundComplete {
                                     remote_gateway_id,
