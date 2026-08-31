@@ -36,6 +36,16 @@ const GATEWAY_B: &str = "gateway-b";
 const GATEWAY_B_KEY: &str = "gateway-b-key";
 const SHARD_ID: &str = "rt-0";
 
+struct GatewayFixture {
+    name: &'static str,
+    key: &'static str,
+    peer_name: &'static str,
+    peer_key: &'static str,
+    connect_gate: ConnectGate,
+    inbound_admission_gate: ConnectGate,
+    reset_commit_gate: Option<ResetCommitGate>,
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reset_commit_failure_closes_only_current_peer_transport_scope() -> TestResult {
     timeout(
@@ -58,25 +68,29 @@ async fn reset_commit_failure_closes_only_current_peer_transport_scope_case() ->
     let reset_gate_a = ResetCommitGate::new();
 
     let gateway_a = RunningGateway::start(
-        GATEWAY_A,
-        GATEWAY_A_KEY,
-        GATEWAY_B,
-        GATEWAY_B_KEY,
         directory.clone(),
-        Some(connect_gate_a.clone()),
-        Some(inbound_gate_a.clone()),
-        Some(reset_gate_a.clone()),
+        GatewayFixture {
+            name: GATEWAY_A,
+            key: GATEWAY_A_KEY,
+            peer_name: GATEWAY_B,
+            peer_key: GATEWAY_B_KEY,
+            connect_gate: connect_gate_a.clone(),
+            inbound_admission_gate: inbound_gate_a.clone(),
+            reset_commit_gate: Some(reset_gate_a.clone()),
+        },
     )
     .await?;
     let gateway_b = RunningGateway::start(
-        GATEWAY_B,
-        GATEWAY_B_KEY,
-        GATEWAY_A,
-        GATEWAY_A_KEY,
         directory,
-        Some(connect_gate_b.clone()),
-        Some(inbound_gate_b.clone()),
-        None,
+        GatewayFixture {
+            name: GATEWAY_B,
+            key: GATEWAY_B_KEY,
+            peer_name: GATEWAY_A,
+            peer_key: GATEWAY_A_KEY,
+            connect_gate: connect_gate_b.clone(),
+            inbound_admission_gate: inbound_gate_b.clone(),
+            reset_commit_gate: None,
+        },
     )
     .await?;
 
@@ -128,17 +142,17 @@ async fn reset_commit_failure_closes_only_current_peer_transport_scope_case() ->
     .await?;
     inbound_gate_a.release();
     inbound_gate_b.release();
-    eprintln!("stage: dual transports assigned");
 
-    let mut listener_b_pipe0 = listener_b.accept().await?;
-    let mut listener_b_pipe1 = listener_b.accept().await?;
-    let mut listener_b_pipe2 = listener_b.accept().await?;
+    let mut listener_b_pipes = [
+        listener_b.accept().await?,
+        listener_b.accept().await?,
+        listener_b.accept().await?,
+    ];
     let mut listener_a_pipe = listener_a.accept().await?;
     let mut connector_a_pipe0 = open_a0_to_b.await??;
     let mut connector_a_pipe1 = open_a1_to_b.await??;
     let mut connector_a_pipe2 = open_a2_to_b.await??;
     let mut connector_b_pipe = open_b_to_a.await??;
-    eprintln!("stage: initial pipes opened");
 
     wait_until(Duration::from_secs(2), || {
         let entry = gateway_a.gateway.snapshot();
@@ -149,7 +163,38 @@ async fn reset_commit_failure_closes_only_current_peer_transport_scope_case() ->
             && owner.peer_streams == 4
     })
     .await?;
-    eprintln!("stage: normal cleanup converged");
+
+    timeout(
+        Duration::from_secs(1),
+        connector_a_pipe0.write_all_bytes(&[0]),
+    )
+    .await??;
+    timeout(
+        Duration::from_secs(1),
+        connector_a_pipe1.write_all_bytes(&[1]),
+    )
+    .await??;
+    timeout(
+        Duration::from_secs(1),
+        connector_a_pipe2.write_all_bytes(&[2]),
+    )
+    .await??;
+    let mut listener_for_connector = [usize::MAX; 3];
+    for (listener_index, listener_pipe) in listener_b_pipes.iter_mut().enumerate() {
+        let mut connector_tag = [0_u8; 1];
+        timeout(
+            Duration::from_secs(1),
+            listener_pipe.read_exact(&mut connector_tag),
+        )
+        .await??;
+        let connector_index = usize::from(connector_tag[0]);
+        if connector_index >= listener_for_connector.len()
+            || listener_for_connector[connector_index] != usize::MAX
+        {
+            return Err(format!("invalid connector tag: {connector_tag:?}").into());
+        }
+        listener_for_connector[connector_index] = listener_index;
+    }
 
     connector_a0.close();
     wait_until(Duration::from_secs(5), || {
@@ -166,20 +211,25 @@ async fn reset_commit_failure_closes_only_current_peer_transport_scope_case() ->
     let mut normally_closed_payload = [0_u8; 1];
     let normal_cleanup = timeout(
         Duration::from_secs(1),
-        listener_b_pipe0.read_into(&mut normally_closed_payload),
+        listener_b_pipes[listener_for_connector[0]].read_into(&mut normally_closed_payload),
     )
     .await?
     .err()
     .ok_or("normal ConnectorSession cleanup did not reset its Listener Pipe")?;
     assert_eq!(normal_cleanup.code(), SdkErrorCode::Cancelled);
     assert_eq!(normal_cleanup.observation(), SdkPeerObservation::Observed);
-    connector_a_pipe1
-        .write_all_bytes(b"sibling-before-failure")
-        .await?;
+    timeout(
+        Duration::from_secs(1),
+        connector_a_pipe1.write_all_bytes(b"sibling-before-failure"),
+    )
+    .await??;
     let mut sibling_payload = [0_u8; 22];
-    listener_b_pipe1.read_exact(&mut sibling_payload).await?;
+    timeout(
+        Duration::from_secs(1),
+        listener_b_pipes[listener_for_connector[1]].read_exact(&mut sibling_payload),
+    )
+    .await??;
     assert_eq!(&sibling_payload, b"sibling-before-failure");
-    eprintln!("stage: normal sibling survived");
 
     reset_gate_a.arm();
     connector_a1.close();
@@ -210,8 +260,6 @@ async fn reset_commit_failure_closes_only_current_peer_transport_scope_case() ->
         )
         .into());
     }
-    eprintln!("stage: injected failure converged");
-
     let sibling_error = timeout(
         Duration::from_secs(1),
         connector_a_pipe2.write_all_bytes(b"sibling after transport close"),
@@ -221,41 +269,61 @@ async fn reset_commit_failure_closes_only_current_peer_transport_scope_case() ->
     .ok_or("sibling Pipe on the closed transport unexpectedly survived")?;
     assert_eq!(sibling_error.code(), SdkErrorCode::Unavailable);
     assert_eq!(sibling_error.observation(), SdkPeerObservation::Observed);
-    let mut lost_payload = [0_u8; 1];
-    let owner_error = timeout(
-        Duration::from_secs(1),
-        listener_b_pipe2.read_into(&mut lost_payload),
-    )
-    .await?
-    .err()
-    .ok_or("Listener Pipe on the closed transport unexpectedly survived")?;
-    assert_eq!(owner_error.code(), SdkErrorCode::Unavailable);
-    assert_eq!(owner_error.observation(), SdkPeerObservation::Observed);
+    for connector_index in [1, 2] {
+        let mut lost_payload = [0_u8; 1];
+        let owner_error = timeout(
+            Duration::from_secs(1),
+            listener_b_pipes[listener_for_connector[connector_index]].read_into(&mut lost_payload),
+        )
+        .await?
+        .err()
+        .ok_or("Listener Pipe on the closed transport unexpectedly survived")?;
+        assert_eq!(owner_error.code(), SdkErrorCode::Unavailable);
+        assert_eq!(owner_error.observation(), SdkPeerObservation::Observed);
+    }
 
-    connector_b_pipe.write_all(b"reverse-survives").await?;
+    timeout(
+        Duration::from_secs(1),
+        connector_b_pipe.write_all(b"reverse-survives"),
+    )
+    .await??;
     let mut reverse_payload = [0_u8; 16];
-    listener_a_pipe.read_exact(&mut reverse_payload).await?;
+    timeout(
+        Duration::from_secs(1),
+        listener_a_pipe.read_exact(&mut reverse_payload),
+    )
+    .await??;
     assert_eq!(&reverse_payload, b"reverse-survives");
-    listener_a_pipe.write_all(b"reverse-returns").await?;
+    timeout(
+        Duration::from_secs(1),
+        listener_a_pipe.write_all(b"reverse-returns"),
+    )
+    .await??;
     let mut reverse_reply = [0_u8; 15];
-    connector_b_pipe.read_exact(&mut reverse_reply).await?;
+    timeout(
+        Duration::from_secs(1),
+        connector_b_pipe.read_exact(&mut reverse_reply),
+    )
+    .await??;
     assert_eq!(&reverse_reply, b"reverse-returns");
-    eprintln!("stage: reverse pipe survived");
 
     let fresh_open = connector_a2.open(CLIENT_B);
     let fresh_accept = listener_b.accept();
     let (fresh_connector, fresh_listener) = tokio::join!(fresh_open, fresh_accept);
     let mut fresh_connector = fresh_connector?;
     let mut fresh_listener = fresh_listener?;
-    fresh_connector.write_all(b"fresh").await?;
+    timeout(Duration::from_secs(1), fresh_connector.write_all(b"fresh")).await??;
     let mut fresh_payload = [0_u8; 5];
-    fresh_listener.read_exact(&mut fresh_payload).await?;
+    timeout(
+        Duration::from_secs(1),
+        fresh_listener.read_exact(&mut fresh_payload),
+    )
+    .await??;
     assert_eq!(&fresh_payload, b"fresh");
-    eprintln!("stage: fresh pipe opened");
 
-    let _ = listener_b_pipe0.close().await;
-    let _ = listener_b_pipe1.close().await;
-    let _ = listener_b_pipe2.close().await;
+    for listener_pipe in &mut listener_b_pipes {
+        let _ = listener_pipe.close().await;
+    }
     let _ = listener_a_pipe.close().await;
     let _ = connector_a_pipe0.close().await;
     let _ = connector_a_pipe1.close().await;
@@ -272,7 +340,6 @@ async fn reset_commit_failure_closes_only_current_peer_transport_scope_case() ->
     gateway_a.stop().await?;
     gateway_b.stop().await?;
     route_table.stop().await?;
-    eprintln!("stage: shutdown complete");
     Ok(())
 }
 
@@ -285,24 +352,15 @@ struct RunningGateway {
 }
 
 impl RunningGateway {
-    async fn start(
-        name: &str,
-        key: &str,
-        peer_name: &str,
-        peer_key: &str,
-        directory: ShardDirectory,
-        connect_gate: Option<ConnectGate>,
-        inbound_admission_gate: Option<ConnectGate>,
-        reset_commit_gate: Option<ResetCommitGate>,
-    ) -> TestResult<Self> {
+    async fn start(directory: ShardDirectory, fixture: GatewayFixture) -> TestResult<Self> {
         let sdk_listener = TcpListener::bind("127.0.0.1:0").await?;
         let sdk_address = sdk_listener.local_addr()?;
         let peer_listener = TcpListener::bind("127.0.0.1:0").await?;
         let peer_address = peer_listener.local_addr()?;
         let routing = GatewayRoutingConfig::new(
             directory,
-            GatewayName::new(name)?,
-            InternalGatewayKey::new(key)?,
+            GatewayName::new(fixture.name)?,
+            InternalGatewayKey::new(fixture.key)?,
             GatewayLocator::new(peer_address.to_string())?,
             route_client_config()?,
         )
@@ -310,20 +368,19 @@ impl RunningGateway {
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(40))
         .with_desired_scan_interval(Duration::from_millis(10))
         .with_shutdown_timeout(Duration::from_millis(200));
-        let mut peer =
-            GatewayPeerConfig::new(name, key, [TrustedPeerConfig::new(peer_name, peer_key)?])?
-                .with_timeouts(
-                    Duration::from_secs(2),
-                    Duration::from_secs(1),
-                    Duration::from_secs(2),
-                );
-        if let Some(gate) = connect_gate {
-            peer = peer.with_connect_gate(gate);
-        }
-        if let Some(gate) = inbound_admission_gate {
-            peer = peer.with_inbound_admission_gate(gate);
-        }
-        if let Some(gate) = reset_commit_gate {
+        let mut peer = GatewayPeerConfig::new(
+            fixture.name,
+            fixture.key,
+            [TrustedPeerConfig::new(fixture.peer_name, fixture.peer_key)?],
+        )?
+        .with_timeouts(
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+        )
+        .with_connect_gate(fixture.connect_gate)
+        .with_inbound_admission_gate(fixture.inbound_admission_gate);
+        if let Some(gate) = fixture.reset_commit_gate {
             peer = peer.with_reset_commit_gate(gate);
         }
         let shutdown = CancellationToken::new();
@@ -346,7 +403,7 @@ impl RunningGateway {
         });
         check(sdk_address, Duration::from_secs(1)).await?;
         Ok(Self {
-            name: name.to_owned(),
+            name: fixture.name.to_owned(),
             sdk_address,
             gateway,
             shutdown,
