@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active |
 | 근거 | [ADR 001](../adr/001-relayed-pipe-responsibility-boundary.md), [ADR 002](../adr/002-application-protocol-boundary.md), [ADR 003](../adr/003-client-id-listener-binding.md), [ADR 004](../adr/004-current-state-routing-topology.md), [ADR 005](../adr/005-soft-state-registration-lifecycle.md), [ADR 006](../adr/006-one-hop-peer-multiplexing.md), [ADR 007](../adr/007-transport-liveness-and-idle-retirement.md) |
 
 이 문서는 RelayGate의 공통 용어, identity, 소유 관계와 cardinality를 정의한다. 등록, route mapping, 조회, 연결 수립과 오류는 각 후속 SPEC이 소유한다.

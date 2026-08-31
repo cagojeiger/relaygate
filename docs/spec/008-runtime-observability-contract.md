@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active |
 | 역할 | process 로그, lifecycle event, current-state snapshot의 최소 계약 |
 
 관측성은 새 상태를 만들지 않는다. Gateway와 SDK가 이미 소유한 현재 상태와 전이를

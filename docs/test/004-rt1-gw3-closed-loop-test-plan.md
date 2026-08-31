@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active |
 | 목적 | RT 1개 아래 Gateway 3개가 local, Entry, Owner 역할을 모두 수행하는 최소 분산 구성을 검증한다. |
 | 기준 | [SPEC 004](../spec/004-route-table-contract.md), [SPEC 005](../spec/005-connection-establishment-contract.md), [SPEC 006](../spec/006-peer-relay-contract.md), [SPEC 007](../spec/007-error-and-state-model.md), [TEST 001](001-requirement-test-matrix.md) |
 

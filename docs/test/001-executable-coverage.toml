@@ -95,8 +95,8 @@ rust = ["connector::tests::precommit_closed_actor_retries_on_replacement_session
 [[case]]
 id = "T-SDK-08"
 status = "partial"
-rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::pending_accept_observes_close_before_a_racing_pipe"]
-reason = "하위 상태 전이의 terminal once는 검증하지만 public open 또는 accept future cancellation과 성공의 경쟁은 없다."
+rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::pending_accept_observes_close_before_a_racing_pipe", "cancelling_committed_open_sends_one_cancel"]
+reason = "하위 상태 전이의 terminal once와 commit된 public open future cancel은 검증하지만 public accept future cancellation과 성공의 경쟁은 없다."
 
 [[case]]
 id = "T-SDK-09"

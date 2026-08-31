@@ -2,7 +2,8 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | RouteTable shard core 구현 |
+| 상태 | Active |
+| 실행 | RouteTable shard core 구현 |
 | 기준 | [SPEC 004](../spec/004-route-table-contract.md), [TEST 001](001-requirement-test-matrix.md) |
 
 ## 범위

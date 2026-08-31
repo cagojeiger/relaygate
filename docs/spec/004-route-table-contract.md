@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active |
 | 근거 | [ADR 003](../adr/003-client-id-listener-binding.md), [ADR 004](../adr/004-current-state-routing-topology.md), [ADR 005](../adr/005-soft-state-registration-lifecycle.md) |
 | 용어 | [SPEC 001](001-terminology-and-object-model.md) |
 | 상태와 오류 | [SPEC 007](007-error-and-state-model.md) |

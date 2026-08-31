@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active |
 | 역할 | 외부 오류 code, 상태·전이와 observation 의미의 단일 기준 |
 
 ## 오류 계약
@@ -50,7 +50,7 @@ SDK-Gateway operation을 취소했다면 SDK는 보수적으로 `MAYBE_OBSERVED`
 - **`ERR-013`**: terminal open 결과는 `PeerObservation`을 함께 결정해야 한다.
 - **`ERR-014`**: `MAYBE_OBSERVED` 결과는 같은 attempt의 자동 replay, 다른 binding 선택, Pipe resume를 발생시켜서는 안 된다.
 - **`ERR-015`**: 알 수 없는 `ConnectorSessionId`, active state에 없는 terminal open/stream identity의 늦은 frame은 새 live state를 만들지 않고 제거해야 한다. current Pipe identity를 다른 session이 사용한 frame은 target state를 변경하지 않고 offending session의 `PROTOCOL_ERROR`가 된다. 지연·재사용 SDK `OPEN`은 SDK→Entry `ConnectorSession`의 `ConnectionId` high-watermark로, peer `OPEN`은 `PeerTransport`의 `StreamId` high-watermark로 거절한다. Owner Gateway는 current RelayStream에 결합된 `OpenIdentity`만 조회하며 종료된 identity의 remote ConnectorSession high-watermark나 tombstone을 만들지 않는다. 종료된 RT lease의 `Update`와 `KeepAlive`도 새 live state를 만들지 않는다.
-- **`ERR-016`**: Phase 1 Rust SDK의 `Error::is_retryable()`은 code가 `UNAVAILABLE`, `DEADLINE_EXCEEDED` 또는 `RESOURCE_EXHAUSTED`이고 observation이 `NOT_OBSERVED`일 때만 `true`여야 한다. `MAYBE_OBSERVED`와 `OBSERVED`는 code와 관계없이 `false`다. 이 값은 application이 새 operation을 시작할 수 있다는 보수적 힌트이며 SDK의 자동 replay 명령이 아니다.
+- **`ERR-016`**: 현재 Rust SDK의 `Error::is_retryable()`은 code가 `UNAVAILABLE`, `DEADLINE_EXCEEDED` 또는 `RESOURCE_EXHAUSTED`이고 observation이 `NOT_OBSERVED`일 때만 `true`여야 한다. `MAYBE_OBSERVED`와 `OBSERVED`는 code와 관계없이 `false`다. 이 값은 application이 새 operation을 시작할 수 있다는 보수적 힌트이며 SDK의 자동 replay 명령이 아니다.
 
 `OFFER`는 Listener 쪽 Pipe 생성 frame이지만 conforming Gateway는 같은 open attempt에서 한 번만 보내고 같은 `PipeId`를 재사용하지 않는다. SDK-Gateway transport의 방향별 순서와 `ConnectorSessionId`를 포함한 `PipeId` incarnation을 신뢰하므로 Listener SDK는 종료된 Pipe마다 `OFFER` tombstone을 보관할 필요가 없다. `OFFER` 재전송에 대한 복구 동작은 protocol 계약이 아니며, Gateway는 결과가 불확실하면 재전송 대신 selected `ListenerSession`을 종료한다.
 

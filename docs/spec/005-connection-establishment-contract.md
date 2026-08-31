@@ -2,13 +2,13 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active |
 | 근거 | [ADR 001](../adr/001-relayed-pipe-responsibility-boundary.md), [ADR 003](../adr/003-client-id-listener-binding.md), [ADR 004](../adr/004-current-state-routing-topology.md), [ADR 006](../adr/006-one-hop-peer-multiplexing.md) |
 | 관련 계약 | [SPEC 002](002-sdk-pipe-contract.md), [SPEC 004](004-route-table-contract.md), [SPEC 007](007-error-and-state-model.md) |
 
 ## 범위
 
-이 문서는 `open(ClientId)`, 즉 Phase 1 Rust API의 `connector.open(ClientId)` 한 번이 live `ListenerBinding` 하나를 선택하고, 정확히 하나의 Listener SDK runtime과 양방향 `Pipe`를 수립하는 과정을 정의한다. `Connector::connect(Config)`는 SDK-Gateway session을 만들 뿐 이 연결 시도와 구분된다.
+이 문서는 `open(ClientId)`, 즉 현재 Rust API의 `connector.open(ClientId)` 한 번이 live `ListenerBinding` 하나를 선택하고, 정확히 하나의 Listener SDK runtime과 양방향 `Pipe`를 수립하는 과정을 정의한다. `Connector::connect(Config)`는 SDK-Gateway session을 만들 뿐 이 연결 시도와 구분된다.
 
 ```text
 registration : ClientId * <── ListenerBinding ──> * ListenerSession

@@ -614,48 +614,51 @@ async fn handle_listener_frame(
                 return ListenerFrameAction::Continue;
             }
             let Some(registration) = session.registrations.get(&client_id) else {
-                return send_bounded(
-                    transport,
-                    Frame::OfferRejected {
-                        pipe_id,
-                        code: WireErrorCode::NotFound,
-                        message: "Listener is not active".to_owned(),
-                    },
-                    inner.config.operation_timeout,
-                    session_cancel,
-                )
-                .await
-                .map_send_action();
+                return listener_frame_action(
+                    send_bounded(
+                        transport,
+                        Frame::OfferRejected {
+                            pipe_id,
+                            code: WireErrorCode::NotFound,
+                            message: "Listener is not active".to_owned(),
+                        },
+                        inner.config.operation_timeout,
+                        session_cancel,
+                    )
+                    .await,
+                );
             };
             if registration.binding_id != binding_id {
-                return send_bounded(
-                    transport,
-                    Frame::OfferRejected {
-                        pipe_id,
-                        code: WireErrorCode::FailedPrecondition,
-                        message: "Listener binding incarnation is stale".to_owned(),
-                    },
-                    inner.config.operation_timeout,
-                    session_cancel,
-                )
-                .await
-                .map_send_action();
+                return listener_frame_action(
+                    send_bounded(
+                        transport,
+                        Frame::OfferRejected {
+                            pipe_id,
+                            code: WireErrorCode::FailedPrecondition,
+                            message: "Listener binding incarnation is stale".to_owned(),
+                        },
+                        inner.config.operation_timeout,
+                        session_cancel,
+                    )
+                    .await,
+                );
             }
             if !is_current_desired(inner, &registration.state)
                 || *registration.state.status.borrow() != ListenerStatus::Active
             {
-                return send_bounded(
-                    transport,
-                    Frame::OfferRejected {
-                        pipe_id,
-                        code: WireErrorCode::Unavailable,
-                        message: "Listener is not active".to_owned(),
-                    },
-                    inner.config.operation_timeout,
-                    session_cancel,
-                )
-                .await
-                .map_send_action();
+                return listener_frame_action(
+                    send_bounded(
+                        transport,
+                        Frame::OfferRejected {
+                            pipe_id,
+                            code: WireErrorCode::Unavailable,
+                            message: "Listener is not active".to_owned(),
+                        },
+                        inner.config.operation_timeout,
+                        session_cancel,
+                    )
+                    .await,
+                );
             }
             if !registration.state.try_compact_terminal_queue() {
                 tracing::error!(
@@ -672,18 +675,19 @@ async fn handle_listener_frame(
             )
             .await;
             let Ok(Ok(permit)) = permit else {
-                return send_bounded(
-                    transport,
-                    Frame::OfferRejected {
-                        pipe_id,
-                        code: WireErrorCode::ResourceExhausted,
-                        message: "Listener incoming queue is full".to_owned(),
-                    },
-                    inner.config.operation_timeout,
-                    session_cancel,
-                )
-                .await
-                .map_send_action();
+                return listener_frame_action(
+                    send_bounded(
+                        transport,
+                        Frame::OfferRejected {
+                            pipe_id,
+                            code: WireErrorCode::ResourceExhausted,
+                            message: "Listener incoming queue is full".to_owned(),
+                        },
+                        inner.config.operation_timeout,
+                        session_cancel,
+                    )
+                    .await,
+                );
             };
             let admitted = {
                 let desired = match inner.desired.lock() {
@@ -737,18 +741,19 @@ async fn handle_listener_frame(
                 }
             };
             if !admitted {
-                return send_bounded(
-                    transport,
-                    Frame::OfferRejected {
-                        pipe_id,
-                        code: WireErrorCode::Unavailable,
-                        message: "Listener closed during Pipe admission".to_owned(),
-                    },
-                    inner.config.operation_timeout,
-                    session_cancel,
-                )
-                .await
-                .map_send_action();
+                return listener_frame_action(
+                    send_bounded(
+                        transport,
+                        Frame::OfferRejected {
+                            pipe_id,
+                            code: WireErrorCode::Unavailable,
+                            message: "Listener closed during Pipe admission".to_owned(),
+                        },
+                        inner.config.operation_timeout,
+                        session_cancel,
+                    )
+                    .await,
+                );
             }
             if send_bounded(
                 transport,
@@ -849,17 +854,11 @@ async fn handle_listener_frame(
     }
 }
 
-trait SendAction {
-    fn map_send_action(self) -> ListenerFrameAction;
-}
-
-impl<T, E> SendAction for Result<T, E> {
-    fn map_send_action(self) -> ListenerFrameAction {
-        if self.is_ok() {
-            ListenerFrameAction::Continue
-        } else {
-            ListenerFrameAction::Stop
-        }
+fn listener_frame_action<T, E>(result: Result<T, E>) -> ListenerFrameAction {
+    if result.is_ok() {
+        ListenerFrameAction::Continue
+    } else {
+        ListenerFrameAction::Stop
     }
 }
 
