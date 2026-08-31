@@ -214,21 +214,6 @@ async fn run_connector_session(
                     break;
                 }
             }
-            abandoned = abandoned_rx.recv() => {
-                let Some(pipe_id) = abandoned else { continue; };
-                if pipes.remove(&pipe_id).is_some()
-                    && send_bounded(
-                        &mut established.transport,
-                        Frame::Close { pipe_id },
-                        operation_timeout,
-                        &cancel,
-                    )
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
             frame = outbound_rx.recv() => {
                 let Some(frame) = frame else { break; };
                 let terminal_pipe = match &frame {
@@ -244,6 +229,21 @@ async fn run_connector_session(
                 }
                 if let Some(pipe_id) = terminal_pipe {
                     pipes.remove(&pipe_id);
+                }
+            }
+            abandoned = abandoned_rx.recv() => {
+                let Some(pipe_id) = abandoned else { continue; };
+                if pipes.remove(&pipe_id).is_some()
+                    && send_bounded(
+                        &mut established.transport,
+                        Frame::Close { pipe_id },
+                        operation_timeout,
+                        &cancel,
+                    )
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             }
         }
