@@ -16,6 +16,8 @@ mod runtime;
 mod stream;
 mod transport;
 
+#[cfg(test)]
+pub(crate) use config::{ConnectGate, ResetCommitGate};
 pub use config::{GatewayPeerConfig, TrustedPeerConfig};
 pub(crate) use event::{PeerEvent, PeerFailure, PeerOpenRequest, PeerStreamKey, PeerTarget};
 pub(crate) use identity::OpenIdentity;

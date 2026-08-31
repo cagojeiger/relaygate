@@ -1,6 +1,11 @@
 use std::time::Duration;
 
 #[cfg(test)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+#[cfg(test)]
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 
@@ -29,28 +34,62 @@ const DEFAULT_IDLE_RETIREMENT_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
 #[derive(Clone, Default)]
-pub(super) struct ConnectGate {
+pub(crate) struct ConnectGate {
     entered: std::sync::Arc<Notify>,
     release: std::sync::Arc<Notify>,
 }
 
 #[cfg(test)]
 impl ConnectGate {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub(super) async fn wait_until_entered(&self) {
+    pub(crate) async fn wait_until_entered(&self) {
         self.entered.notified().await;
     }
 
-    pub(super) fn release(&self) {
+    pub(crate) fn release(&self) {
         self.release.notify_one();
     }
 
     pub(super) async fn wait(&self) {
         self.entered.notify_one();
         self.release.notified().await;
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct ResetCommitGate {
+    armed: Arc<AtomicBool>,
+    trips: Arc<AtomicUsize>,
+    tripped: Arc<Notify>,
+}
+
+#[cfg(test)]
+impl ResetCommitGate {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn trip(&self) -> bool {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        self.trips.fetch_add(1, Ordering::SeqCst);
+        self.tripped.notify_one();
+        true
+    }
+
+    pub(crate) async fn wait_until_tripped(&self) {
+        while self.trips.load(Ordering::SeqCst) == 0 {
+            self.tripped.notified().await;
+        }
     }
 }
 
@@ -108,6 +147,10 @@ pub struct GatewayPeerConfig {
     pub(super) idle_retirement_timeout: Duration,
     #[cfg(test)]
     pub(super) connect_gate: Option<ConnectGate>,
+    #[cfg(test)]
+    pub(super) inbound_admission_gate: Option<ConnectGate>,
+    #[cfg(test)]
+    pub(super) reset_commit_gate: Option<ResetCommitGate>,
 }
 
 impl GatewayPeerConfig {
@@ -137,6 +180,10 @@ impl GatewayPeerConfig {
             idle_retirement_timeout: DEFAULT_IDLE_RETIREMENT_TIMEOUT,
             #[cfg(test)]
             connect_gate: None,
+            #[cfg(test)]
+            inbound_admission_gate: None,
+            #[cfg(test)]
+            reset_commit_gate: None,
         };
         config.validate().map_err(config_error)?;
         Ok(config)
@@ -201,8 +248,20 @@ impl GatewayPeerConfig {
     }
 
     #[cfg(test)]
-    pub(super) fn with_connect_gate(mut self, gate: ConnectGate) -> Self {
+    pub(crate) fn with_connect_gate(mut self, gate: ConnectGate) -> Self {
         self.connect_gate = Some(gate);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_inbound_admission_gate(mut self, gate: ConnectGate) -> Self {
+        self.inbound_admission_gate = Some(gate);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_reset_commit_gate(mut self, gate: ResetCommitGate) -> Self {
+        self.reset_commit_gate = Some(gate);
         self
     }
 

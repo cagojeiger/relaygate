@@ -33,6 +33,8 @@ use crate::gateway::{
 type ResolveResult = Result<BindingSet, RouteResolveFailure>;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+mod peer_cleanup;
+
 #[derive(Clone)]
 struct ScriptedResolver {
     results: Arc<Mutex<VecDeque<ResolveResult>>>,
