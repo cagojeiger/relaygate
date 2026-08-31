@@ -169,6 +169,117 @@ fn early_transport_loss_then_late_commit_callback_never_leaves_an_attempt()
 }
 
 #[test]
+fn connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let entry_gateway = GatewayId::new();
+    let owner_gateway = GatewayId::new();
+    let mut state = routed_state(entry_gateway);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    let resolve = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let identity = resolve_identity(&resolve).ok_or("missing resolve")?;
+    state.route_resolved(
+        identity,
+        binding_set(
+            "echo.shared",
+            owner_gateway,
+            SessionId::new(),
+            BindingId::new(),
+            "owner.internal:27421",
+        )?,
+    );
+    let pipe_id = PipeId::new(connector, 1);
+
+    let cancelled = state.handle(connector, Frame::Cancel { pipe_id })?;
+
+    assert!(cancelled.iter().any(|action| {
+        matches!(action, GatewayAction::CancelPeerOpen { open_identity } if *open_identity == identity)
+    }));
+    assert_eq!(sdk_deliveries(&cancelled).count(), 0);
+    assert_eq!(peer_deliveries(&cancelled).count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+
+    let key = peer_key(owner_gateway, 0);
+    let late_commit = state.peer_open_committed(identity, key);
+    assert!(peer_deliveries(&late_commit).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key: reset_key,
+            code: ErrorCode::Cancelled,
+            ..
+        } if *reset_key == key
+    )));
+    assert_eq!(sdk_deliveries(&late_commit).count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
+fn connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe()
+-> Result<(), Box<dyn std::error::Error>> {
+    let entry_gateway = GatewayId::new();
+    let owner_gateway = GatewayId::new();
+    let mut state = routed_state(entry_gateway);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    let resolve = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let identity = resolve_identity(&resolve).ok_or("missing resolve")?;
+    state.route_resolved(
+        identity,
+        binding_set(
+            "echo.shared",
+            owner_gateway,
+            SessionId::new(),
+            BindingId::new(),
+            "owner.internal:27421",
+        )?,
+    );
+    let key = peer_key(owner_gateway, 0);
+    state.peer_open_committed(identity, key);
+    let pipe_id = PipeId::new(connector, 1);
+
+    let cancelled = state.handle(connector, Frame::Cancel { pipe_id })?;
+
+    assert!(peer_deliveries(&cancelled).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key: reset_key,
+            code: ErrorCode::Cancelled,
+            ..
+        } if *reset_key == key
+    )));
+    assert_eq!(sdk_deliveries(&cancelled).count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+
+    let late_opened = state.peer_opened(key, identity);
+    assert!(peer_deliveries(&late_opened).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key: reset_key,
+            code: ErrorCode::Cancelled,
+            ..
+        } if *reset_key == key
+    )));
+    assert_eq!(sdk_deliveries(&late_opened).count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
 fn connector_session_cleanup_resets_committed_peer_stream_as_cancelled()
 -> Result<(), Box<dyn std::error::Error>> {
     let entry_gateway = GatewayId::new();
