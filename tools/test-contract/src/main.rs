@@ -150,10 +150,10 @@ fn read_specs(spec_dir: &Path) -> Result<Vec<(String, String)>, String> {
         let Some(prefix) = name.get(..3) else {
             continue;
         };
-        let Ok(number) = prefix.parse::<u8>() else {
+        let Ok(number) = prefix.parse::<u16>() else {
             continue;
         };
-        if !(1..=8).contains(&number) || name.as_bytes().get(3) != Some(&b'-') {
+        if number == 0 || name.as_bytes().get(3) != Some(&b'-') {
             continue;
         }
         if by_number.insert(number, path).is_some() {
@@ -165,7 +165,16 @@ fn read_specs(spec_dir: &Path) -> Result<Vec<(String, String)>, String> {
     }
 
     let mut specs = Vec::new();
-    for number in 1_u8..=8 {
+    let highest = by_number
+        .last_key_value()
+        .map(|(&number, _)| number)
+        .ok_or_else(|| {
+            format!(
+                "SPEC directory `{}` is missing document 001-*.md",
+                spec_dir.display()
+            )
+        })?;
+    for number in 1_u16..=highest {
         let path = by_number.remove(&number).ok_or_else(|| {
             format!(
                 "SPEC directory `{}` is missing document {number:03}-*.md",
@@ -208,5 +217,82 @@ fn print_details(label: &str, details: &[StatusDetail]) {
     println!("{label}: {}", details.len());
     for detail in details {
         println!("  - {}: {}", detail.id, detail.reason);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs, io,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use super::read_specs;
+
+    static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(1);
+
+    struct TempSpecDir(PathBuf);
+
+    impl TempSpecDir {
+        fn new() -> io::Result<Self> {
+            let sequence = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "relaygate-test-contract-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir(&path)?;
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn write_spec(&self, number: u16) -> io::Result<()> {
+            fs::write(
+                self.0.join(format!("{number:03}-contract.md")),
+                format!("# SPEC {number:03}\n"),
+            )
+        }
+    }
+
+    impl Drop for TempSpecDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn read_specs_discovers_canonical_documents_after_eight()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TempSpecDir::new()?;
+        for number in 1..=9 {
+            directory.write_spec(number)?;
+        }
+
+        let specs = read_specs(directory.path()).map_err(io::Error::other)?;
+
+        assert_eq!(specs.len(), 9);
+        assert_eq!(
+            specs.last().map(|(name, _)| name.as_str()),
+            Some("009-contract.md")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_specs_rejects_a_gap_before_the_highest_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TempSpecDir::new()?;
+        directory.write_spec(1)?;
+        directory.write_spec(3)?;
+
+        let Err(error) = read_specs(directory.path()) else {
+            return Err(io::Error::other("SPEC gap was accepted").into());
+        };
+
+        assert!(error.contains("missing document 002-*.md"));
+        Ok(())
     }
 }
