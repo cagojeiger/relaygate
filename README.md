@@ -48,9 +48,11 @@ let echoed = receive.await??;
 - exact-byte generation과 `sha256-modulo-v1`을 사용하는 immutable shard directory
 - memory-only registration lease와 `Register` / `Update` / `KeepAlive` / `Deregister` / `Resolve`
 - bounded TCP request/response와 local/CI Gateway 인증을 제공하는 RouteTable runtime
+- SDK-Gateway activity-aware heartbeat와 timeout 기반 session cleanup
 - Gateway가 보유한 complete current snapshot을 재연결·RT restart 뒤 다시 구성하는 registration manager
 - local-first OPEN, request-local `Resolve`, exact Owner binding 재검증
 - Gateway pair별 lazy shared PeerTransport와 Pipe별 multiplexed RelayStream
+- active PeerTransport heartbeat와 zero-stream idle retirement
 - remote `OPEN` / `DATA` / `FIN` / `CLOSE` / `RESET`; cache·fallback·reroute·replay 없음
 
 ```text
@@ -99,12 +101,17 @@ peer port는 Compose network 안에만 둡니다.
 | `RELAYGATE_MAX_PENDING_OFFERS` | `10000` | 응답 대기 중인 `OFFER` 총 상한 |
 | `RELAYGATE_MAX_LIVE_PIPES` | `100000` | 열린 Pipe 총 상한 |
 | `RELAYGATE_OFFER_TIMEOUT_MS` | `5000` | Listener의 `OFFER` 응답 기한 |
+| `RELAYGATE_SDK_HEARTBEAT_IDLE_MS` | `60000` | SDK-Gateway session에서 valid inbound activity 없이 heartbeat `PING`을 보내기 전 대기 시간 |
+| `RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS` | `20000` | SDK-Gateway heartbeat `PING` commit 뒤 기한 내 matching `PONG` 대기 시간 |
 | `RELAYGATE_RT_TRUSTED_LOCAL` | distributed mode에서 필수 | 로컬·CI용 plain-TCP RT·peer key adapter를 명시적으로 사용할 때 정확히 `true` |
 | `RELAYGATE_RT_SHARD_DIRECTORY_PATH` | distributed mode에서 필수 | Gateway가 process 수명 동안 고정할 exact-byte ShardDirectory JSON artifact |
 | `RELAYGATE_GATEWAY_NAME` | distributed mode에서 필수 | 이 Gateway를 고르는 stable configuration 이름 |
 | `RELAYGATE_GATEWAY_LOCATOR` | distributed mode에서 필수 | 다른 Gateway가 peer listener에 연결할 주소 |
 | `RELAYGATE_INTERNAL_GATEWAY_KEYS` | distributed mode에서 필수 | 쉼표로 구분한 전체 `GatewayName=InternalGatewayKey` local·CI allowlist. local 이름의 key를 자신의 handshake key로 사용 |
 | `RELAYGATE_PEER_BIND_ADDR` | `0.0.0.0:27421` | Gateway peer connection을 받을 주소 |
+| `RELAYGATE_PEER_HEARTBEAT_IDLE_MS` | `60000` | stream이 있는 PeerTransport에서 valid inbound activity 없이 heartbeat `PING`을 보내기 전 대기 시간 |
+| `RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS` | `20000` | PeerTransport heartbeat `PING` commit 뒤 기한 내 matching `PONG` 대기 시간 |
+| `RELAYGATE_PEER_IDLE_TIMEOUT_MS` | `300000` | stream 수가 0인 PeerTransport를 keepalive 없이 유지하는 최대 시간 |
 
 모든 상한과 timeout은 0보다 큰 정수여야 합니다. Gateway는 시작할 때 configured `ClientId`마다 `ClientKey` 하나를 로드하고 process 수명 동안 갱신하지 않습니다. ClientKey는 최초·recovery 등록 검증에만 사용하며 RelayGate가 발급하거나 영속화하지 않습니다.
 
@@ -142,6 +149,10 @@ relaygate-server route-table
 | `RELAYGATE_RT_HANDSHAKE_TIMEOUT_MS` | `3000` | Gateway 인증 handshake 기한 |
 
 RouteTable은 시작할 때 항상 빈 memory-only state이며 directory artifact와 shard를 process 수명 동안 고정합니다. `InternalGatewayKey` adapter와 plain TCP는 로컬·CI 검증용이며, 실수로 켜지지 않도록 `RELAYGATE_RT_TRUSTED_LOCAL=true`가 없으면 시작을 거부하고 활성화 시 경고를 기록합니다. 운영 channel identity와 기밀성은 배포 환경의 mTLS 또는 service identity 계층이 제공해야 합니다.
+
+현재 운영 준비 기준은 RT process 1개와 Gateway 여러 대입니다. RT sharding 증설, shard directory
+교체, online reconfiguration과 RT replication은 이번 배포 준비 범위가 아니며 후속 운영 절차에서
+정합니다.
 
 ## 검증
 

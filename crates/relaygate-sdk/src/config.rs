@@ -10,6 +10,8 @@ pub struct Config {
     pub(crate) gateway_addr: String,
     pub(crate) connect_timeout: Duration,
     pub(crate) operation_timeout: Duration,
+    pub(crate) heartbeat_idle_interval: Duration,
+    pub(crate) heartbeat_response_timeout: Duration,
     pub(crate) reconnect_initial: Duration,
     pub(crate) reconnect_maximum: Duration,
     pub(crate) offer_timeout: Duration,
@@ -28,6 +30,8 @@ impl Config {
             gateway_addr: gateway_addr.into(),
             connect_timeout: Duration::from_secs(5),
             operation_timeout: Duration::from_secs(10),
+            heartbeat_idle_interval: Duration::from_secs(60),
+            heartbeat_response_timeout: Duration::from_secs(20),
             reconnect_initial: Duration::from_millis(100),
             reconnect_maximum: Duration::from_secs(5),
             offer_timeout: Duration::from_millis(250),
@@ -47,6 +51,22 @@ impl Config {
     #[must_use]
     pub const fn with_operation_timeout(mut self, value: Duration) -> Self {
         self.operation_timeout = value;
+        self
+    }
+
+    /// Configures transport liveness probing for the SDK-Gateway session.
+    ///
+    /// The SDK sends `PING` after `idle_interval` without valid inbound
+    /// activity and closes the whole session if the matching `PONG` is not
+    /// received within `response_timeout`. Pipe read idleness is not a failure.
+    #[must_use]
+    pub const fn with_heartbeat(
+        mut self,
+        idle_interval: Duration,
+        response_timeout: Duration,
+    ) -> Self {
+        self.heartbeat_idle_interval = idle_interval;
+        self.heartbeat_response_timeout = response_timeout;
         self
     }
 
@@ -91,6 +111,8 @@ impl Config {
         }
         if self.connect_timeout.is_zero()
             || self.operation_timeout.is_zero()
+            || self.heartbeat_idle_interval.is_zero()
+            || self.heartbeat_response_timeout.is_zero()
             || self.offer_timeout.is_zero()
             || self.reconnect_initial.is_zero()
             || self.reconnect_maximum < self.reconnect_initial

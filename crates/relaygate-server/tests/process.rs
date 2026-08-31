@@ -17,6 +17,10 @@ use std::{
 };
 
 #[cfg(unix)]
+use futures_util::{SinkExt, StreamExt};
+#[cfg(unix)]
+use relaygate_protocol::{Frame, FrameCodec, SessionRole};
+#[cfg(unix)]
 use relaygate_route_table::{ClientId, GatewayId, ShardDirectory};
 #[cfg(unix)]
 use relaygate_route_table_transport::{
@@ -274,6 +278,67 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         &zero_stats_interval,
         "RELAYGATE_STATS_INTERVAL_MS must be greater than zero",
     );
+
+    let zero_sdk_heartbeat_idle = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_SDK_HEARTBEAT_IDLE_MS", "0")
+        .output()?;
+    assert_unsuccessful_output(
+        &zero_sdk_heartbeat_idle,
+        "RELAYGATE_SDK_HEARTBEAT_IDLE_MS must be greater than zero",
+    );
+
+    let zero_sdk_heartbeat_timeout = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS", "0")
+        .output()?;
+    assert_unsuccessful_output(
+        &zero_sdk_heartbeat_timeout,
+        "RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS must be greater than zero",
+    );
+
+    let artifact = ShardDirectoryArtifact::create()?;
+    let zero_peer_heartbeat_idle = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
+        .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
+        .env("RELAYGATE_GATEWAY_NAME", "gw-a")
+        .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
+        .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=secret")
+        .env("RELAYGATE_PEER_HEARTBEAT_IDLE_MS", "0")
+        .output()?;
+    assert_unsuccessful_output(
+        &zero_peer_heartbeat_idle,
+        "RELAYGATE_PEER_HEARTBEAT_IDLE_MS must be greater than zero",
+    );
+
+    let zero_peer_heartbeat_timeout = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
+        .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
+        .env("RELAYGATE_GATEWAY_NAME", "gw-a")
+        .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
+        .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=secret")
+        .env("RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS", "0")
+        .output()?;
+    assert_unsuccessful_output(
+        &zero_peer_heartbeat_timeout,
+        "RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS must be greater than zero",
+    );
+
+    let zero_peer_idle_retirement = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
+        .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
+        .env("RELAYGATE_GATEWAY_NAME", "gw-a")
+        .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
+        .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=secret")
+        .env("RELAYGATE_PEER_IDLE_TIMEOUT_MS", "0")
+        .output()?;
+    assert_unsuccessful_output(
+        &zero_peer_idle_retirement,
+        "RELAYGATE_PEER_IDLE_TIMEOUT_MS must be greater than zero",
+    );
     Ok(())
 }
 
@@ -352,6 +417,66 @@ fn json_logs_expose_stable_startup_and_snapshot_fields_without_secrets()
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets()
+-> Result<(), Box<dyn Error>> {
+    let address = unused_loopback_address()?;
+    let secret = "must-not-appear-heartbeat-key";
+    let mut server = ChildGuard::spawn_captured(
+        server_command()
+            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_CLIENT_KEYS", format!("echo.alpha={secret}"))
+            .env("RELAYGATE_LOG", "debug")
+            .env("RELAYGATE_LOG_FORMAT", "json")
+            .env("RELAYGATE_SDK_HEARTBEAT_IDLE_MS", "40")
+            .env("RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS", "40"),
+    )?;
+
+    wait_until_healthy(&address, &mut server)?;
+    let mut sdk = connect_sdk_session(&address, SessionRole::Connector).await?;
+    let heartbeat = tokio::time::timeout(Duration::from_secs(1), sdk.next()).await?;
+    assert!(
+        matches!(heartbeat, Some(Ok(Frame::Ping { .. }))),
+        "Gateway should send a heartbeat PING to an idle SDK session: {heartbeat:?}"
+    );
+    let ended = tokio::time::timeout(Duration::from_secs(1), sdk.next()).await?;
+    assert!(
+        ended.is_none(),
+        "Gateway should close the SDK session after heartbeat timeout: {ended:?}"
+    );
+
+    let signal_status = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()?;
+    assert!(signal_status.success(), "failed to send SIGTERM to server");
+    let exit_status = server.wait_until(SHUTDOWN_DEADLINE)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "server did not exit before the shutdown deadline",
+        )
+    })?;
+    assert!(exit_status.success(), "Gateway shutdown failed");
+
+    let (stdout, stderr) = server.read_captured()?;
+    assert!(!stdout.contains(secret));
+    assert!(!stderr.contains(secret));
+    let records = stdout
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let timeout_event = records
+        .iter()
+        .find(|record| record["event"] == "gateway.session.heartbeat_timeout")
+        .ok_or("missing gateway.session.heartbeat_timeout JSON event")?;
+    assert_eq!(timeout_event["component"], "gateway");
+    assert!(timeout_event["session_id"].is_string());
+    assert!(timeout_event.get("payload").is_none());
+    assert!(timeout_event.get("client_key").is_none());
+    assert!(timeout_event.get("secret").is_none());
+    Ok(())
+}
+
 fn server_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_relaygate-server"));
     for name in [
@@ -359,7 +484,11 @@ fn server_command() -> Command {
         "RELAYGATE_CLIENT_KEYS",
         "RELAYGATE_GATEWAY_LOCATOR",
         "RELAYGATE_GATEWAY_NAME",
+        "RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS",
         "RELAYGATE_PEER_BIND_ADDR",
+        "RELAYGATE_PEER_HEARTBEAT_IDLE_MS",
+        "RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS",
+        "RELAYGATE_PEER_IDLE_TIMEOUT_MS",
         "RELAYGATE_LOG",
         "RELAYGATE_LOG_FORMAT",
         "RELAYGATE_MAX_BINDINGS",
@@ -368,6 +497,7 @@ fn server_command() -> Command {
         "RELAYGATE_MAX_PENDING_OFFERS",
         "RELAYGATE_MAX_SESSIONS",
         "RELAYGATE_OFFER_TIMEOUT_MS",
+        "RELAYGATE_SDK_HEARTBEAT_IDLE_MS",
         "RELAYGATE_INTERNAL_GATEWAY_KEYS",
         "RELAYGATE_RT_BIND_ADDR",
         "RELAYGATE_RT_HANDSHAKE_TIMEOUT_MS",
@@ -386,6 +516,22 @@ fn server_command() -> Command {
     }
     command.env("RELAYGATE_LOG", "warn");
     command
+}
+
+#[cfg(unix)]
+async fn connect_sdk_session(
+    address: &str,
+    role: SessionRole,
+) -> Result<tokio_util::codec::Framed<tokio::net::TcpStream, FrameCodec>, Box<dyn Error>> {
+    let stream = tokio::net::TcpStream::connect(address).await?;
+    let mut framed = tokio_util::codec::Framed::new(stream, FrameCodec::default());
+    framed.send(Frame::Hello { role }).await?;
+    let welcome = tokio::time::timeout(Duration::from_secs(1), framed.next()).await?;
+    assert!(
+        matches!(welcome, Some(Ok(Frame::Welcome { .. }))),
+        "Gateway should welcome the SDK session: {welcome:?}"
+    );
+    Ok(framed)
 }
 
 fn assert_failure(arguments: &[&str], expected: &str) -> Result<(), Box<dyn Error>> {

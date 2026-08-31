@@ -1,95 +1,10 @@
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use relaygate_protocol::{Frame, FrameCodec, SessionId, SessionRole};
-use tokio::{
-    net::TcpStream,
-    time::{Instant, sleep_until, timeout},
-};
-use tokio_util::codec::Framed;
-use tokio_util::sync::CancellationToken;
-
-use crate::{Config, Error, ErrorCode, PeerObservation, Result};
-
-pub(crate) type WireTransport = Framed<TcpStream, FrameCodec>;
-
-pub(crate) struct EstablishedSession {
-    pub(crate) id: SessionId,
-    pub(crate) transport: WireTransport,
-}
-
-pub(crate) async fn establish(config: &Config, role: SessionRole) -> Result<EstablishedSession> {
-    let stream = timeout(
-        config.connect_timeout,
-        TcpStream::connect(&config.gateway_addr),
-    )
-    .await
-    .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
-    .map_err(|error| Error::unavailable(format!("Gateway connection failed: {error}")))?;
-    let _ = stream.set_nodelay(true);
-    let mut transport = Framed::new(stream, FrameCodec::new(config.max_frame_len));
-    timeout(
-        config.connect_timeout,
-        transport.send(Frame::Hello { role }),
-    )
-    .await
-    .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
-    .map_err(|error| Error::unavailable(format!("session hello failed: {error}")))?;
-    let frame = timeout(config.connect_timeout, transport.next())
-        .await
-        .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
-        .ok_or_else(|| Error::unavailable("Gateway closed before WELCOME"))?
-        .map_err(|error| {
-            Error::new(
-                ErrorCode::ProtocolError,
-                PeerObservation::NotObserved,
-                format!("WELCOME decode failed: {error}"),
-            )
-        })?;
-    let Frame::Welcome { session_id } = frame else {
-        return Err(Error::new(
-            ErrorCode::ProtocolError,
-            PeerObservation::NotObserved,
-            "first Gateway response was not WELCOME",
-        ));
-    };
-    let role_name = match role {
-        SessionRole::Connector => "connector",
-        SessionRole::Listener => "listener",
-    };
-    tracing::debug!(
-        component = "sdk",
-        event = "sdk.session.ready",
-        role = role_name,
-        session_id = %session_id.as_uuid(),
-        "SDK session is ready"
-    );
-    Ok(EstablishedSession {
-        id: session_id,
-        transport,
-    })
-}
-
-pub(crate) async fn send_bounded(
-    transport: &mut WireTransport,
-    frame: Frame,
-    duration: Duration,
-    cancel: &CancellationToken,
-) -> std::result::Result<(), ()> {
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => Err(()),
-        result = timeout(duration, transport.send(frame)) => {
-            match result {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(_)) | Err(_) => Err(()),
-            }
-        }
-    }
-}
+use relaygate_protocol::{Frame, SessionId};
+use tokio::time::Instant;
 
 #[derive(Debug)]
-pub(crate) struct SessionHeartbeat {
+pub(super) struct SessionHeartbeat {
     idle_timeout: Duration,
     response_timeout: Duration,
     last_inbound: Instant,
@@ -104,17 +19,22 @@ struct PendingHeartbeat {
 }
 
 impl SessionHeartbeat {
-    pub(crate) fn new(config: &Config, session_id: SessionId, salt: u8) -> Self {
+    pub(super) fn new(
+        idle_timeout: Duration,
+        response_timeout: Duration,
+        session_id: SessionId,
+        salt: u8,
+    ) -> Self {
         Self {
-            idle_timeout: jittered_duration(config.heartbeat_idle_interval, session_id, salt),
-            response_timeout: config.heartbeat_response_timeout,
+            idle_timeout: jittered_duration(idle_timeout, session_id, salt),
+            response_timeout,
             last_inbound: Instant::now(),
             pending: None,
             next_nonce: 1,
         }
     }
 
-    pub(crate) fn observe_inbound(&mut self, frame: &Frame) {
+    pub(super) fn observe_inbound(&mut self, frame: &Frame) {
         match (&self.pending, frame) {
             (Some(pending), Frame::Pong { nonce })
                 if pending.nonce == *nonce && Instant::now() < pending.deadline => {}
@@ -143,13 +63,13 @@ impl SessionHeartbeat {
         self.pending = None;
     }
 
-    pub(crate) fn response_timed_out(&self) -> bool {
+    pub(super) fn response_timed_out(&self) -> bool {
         self.pending
             .as_ref()
             .is_some_and(|pending| pending.deadline <= Instant::now())
     }
 
-    pub(crate) fn next_deadline(&self) -> Instant {
+    pub(super) fn next_deadline(&self) -> Instant {
         self.pending
             .as_ref()
             .map_or(self.last_inbound + self.idle_timeout, |pending| {
@@ -157,7 +77,7 @@ impl SessionHeartbeat {
             })
     }
 
-    pub(crate) fn on_deadline(&mut self) -> Option<Frame> {
+    pub(super) fn on_deadline(&mut self) -> Option<Frame> {
         let now = Instant::now();
         if self
             .pending
@@ -176,27 +96,15 @@ impl SessionHeartbeat {
     }
 }
 
-pub(crate) async fn wait_for_heartbeat(deadline: Instant) {
-    sleep_until(deadline).await;
-}
-
 fn jittered_duration(duration: Duration, session_id: SessionId, salt: u8) -> Duration {
     let mut hash = u64::from(salt);
     for byte in session_id.as_uuid().as_bytes() {
         hash = hash.wrapping_mul(16_777_619) ^ u64::from(*byte);
     }
-    let offset_per_mille = (hash % 201) as i128 - 100;
-    let factor_per_mille = 1_000_i128 + offset_per_mille;
-    let nanos = duration.as_nanos().saturating_mul(factor_per_mille as u128) / 1_000;
+    let offset_per_mille = (hash % 201) as u128;
+    let factor_per_mille = 900 + offset_per_mille;
+    let nanos = duration.as_nanos().saturating_mul(factor_per_mille) / 1_000;
     Duration::from_nanos(nanos.try_into().unwrap_or(u64::MAX)).max(Duration::from_millis(1))
-}
-
-pub(crate) fn next_backoff(current: Duration, maximum: Duration) -> Duration {
-    current.saturating_mul(2).min(maximum)
-}
-
-pub(crate) fn valid_identity(value: &str) -> bool {
-    !value.is_empty() && value.len() <= u16::MAX as usize
 }
 
 #[cfg(test)]
@@ -208,16 +116,18 @@ mod tests {
     use tokio::time::Instant;
 
     use super::SessionHeartbeat;
-    use crate::Config;
 
     fn heartbeat() -> SessionHeartbeat {
-        let config = Config::new("127.0.0.1:0")
-            .with_heartbeat(Duration::from_secs(60), Duration::from_secs(20));
-        SessionHeartbeat::new(&config, SessionId::new(), 0x43)
+        SessionHeartbeat::new(
+            Duration::from_secs(60),
+            Duration::from_secs(20),
+            SessionId::new(),
+            0x47,
+        )
     }
 
     #[test]
-    fn inbound_activity_without_pending_probe_resets_idle_deadline() {
+    fn activity_without_pending_probe_resets_idle_deadline() {
         let mut heartbeat = heartbeat();
         heartbeat.last_inbound = Instant::now() - Duration::from_secs(30);
         let previous_deadline = heartbeat.next_deadline();

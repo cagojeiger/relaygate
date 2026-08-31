@@ -27,6 +27,11 @@ x-gateway-environment: &gateway-environment
   RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
   RELAYGATE_LOG: info
   RELAYGATE_STATS_INTERVAL_MS: "1000"
+  RELAYGATE_SDK_HEARTBEAT_IDLE_MS: "60000"
+  RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS: "20000"
+  RELAYGATE_PEER_HEARTBEAT_IDLE_MS: "60000"
+  RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS: "20000"
+  RELAYGATE_PEER_IDLE_TIMEOUT_MS: "300000"
 
 x-gateway: &gateway
   <<: *runtime

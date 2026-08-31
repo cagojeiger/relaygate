@@ -3,7 +3,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Draft |
-| 근거 | [ADR 001](../adr/001-relayed-pipe-responsibility-boundary.md), [ADR 002](../adr/002-application-protocol-boundary.md), [ADR 003](../adr/003-client-id-listener-binding.md), [ADR 004](../adr/004-current-state-routing-topology.md), [ADR 005](../adr/005-soft-state-registration-lifecycle.md), [ADR 006](../adr/006-one-hop-peer-multiplexing.md) |
+| 근거 | [ADR 001](../adr/001-relayed-pipe-responsibility-boundary.md), [ADR 002](../adr/002-application-protocol-boundary.md), [ADR 003](../adr/003-client-id-listener-binding.md), [ADR 004](../adr/004-current-state-routing-topology.md), [ADR 005](../adr/005-soft-state-registration-lifecycle.md), [ADR 006](../adr/006-one-hop-peer-multiplexing.md), [ADR 007](../adr/007-transport-liveness-and-idle-retirement.md) |
 
 이 문서는 RelayGate의 공통 용어, identity, 소유 관계와 cardinality를 정의한다. 등록, route mapping, 조회, 연결 수립과 오류는 각 후속 SPEC이 소유한다.
 
@@ -52,6 +52,8 @@ Connector application                              Listener application
 | `PeerTransportId` | 하나의 dialer Gateway incarnation에서 peer transport candidate를 구분하는 식별자 |
 | `RelayStream` | remote Pipe 하나를 Gateway 간 전달하는 logical bidirectional stream |
 | `StreamId` | active `RelayStream`을 소유 `PeerTransport` 안에서 구분하는 unsigned 64-bit 식별자. 최하위 bit는 stream을 시작한 endpoint의 transport role이다. |
+| `Heartbeat` | SDK-Gateway session 또는 active `PeerTransport`의 transport liveness를 확인하는 activity-aware `PING`/`PONG` 절차. Pipe health, application health 또는 delivery acknowledgement가 아니다. |
+| `IdleRetirement` | stream 수가 0인 `PeerTransport`를 keepalive 없이 configured idle timeout 뒤 정상 종료하는 절차 |
 
 `EntryGatewayId`, `OwnerGatewayId`, `DialerGatewayId`와 `PeerGatewayId`는 서로 다른 identifier type이 아니라 해당 역할에 사용된 `GatewayId`를 뜻한다.
 
@@ -189,6 +191,7 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 - **`TERM-028`**: `PeerTransport`의 dialer는 initiator bit `0`, acceptor는 bit `1`을 가져야 한다. 각 endpoint가 새 stream을 시작할 때 `StreamId = (local_counter << 1) | initiator_bit`로 할당하며, 같은 transport 안에서 실패한 OPEN을 포함해 counter와 `StreamId`를 재사용하거나 wrap해서는 안 된다.
 - **`TERM-029`**: `ClientId`는 non-empty valid UTF-8이어야 하고 equality와 authority hash에 exact bytes를 사용해야 한다. Unicode normalization, case folding 또는 locale 변환을 암묵적으로 적용해서는 안 된다.
 - **`TERM-030`**: `InternalGatewayKey`는 local/CI internal component handshake에만 사용하고 `ClientKey`, application credential 또는 payload 권한과 동일시해서는 안 된다. startup configuration 밖의 mapping·lease·Pipe·RelayStream과 로그에 저장해서는 안 되며 plain TCP test adapter를 production confidentiality 또는 integrity 보장으로 표현해서는 안 된다.
+- **`TERM-031`**: `Heartbeat`는 transport liveness 전용이어야 하며 Pipe read idle, application response absence, payload delivery 또는 peer authorization 결과로 해석해서는 안 된다. `IdleRetirement`는 stream 수가 0인 `PeerTransport`에만 적용하고 live Pipe를 닫는 근거가 되어서는 안 된다.
 
 ## 이 SPEC에서 정하지 않는 것
 

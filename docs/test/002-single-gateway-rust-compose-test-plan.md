@@ -20,6 +20,7 @@ RouteTable     = 없음
 PeerTransport  = 없음
 Persistence    = 없음
 Data path      = local binding only
+Liveness       = SDK-Gateway activity-aware heartbeat
 ```
 
 ```text
@@ -37,6 +38,7 @@ REGISTER
   -> FIN | CLOSE | RESET
   -> bounded cleanup
   -> SDK session 재연결과 returned Listener 재등록
+  -> idle transport heartbeat timeout도 같은 cleanup/reconnect 경로
 ```
 
 RT lookup, lease, shard, Gateway 간 relay와 process-level 분산 장애는 [TEST 004](004-rt1-gw3-closed-loop-test-plan.md)가 소유한다.
@@ -64,7 +66,7 @@ Pipe::into_split()                            -> read half + write half
 | 계층 | 현재 검증 |
 | --- | --- |
 | Gateway unit | registry index, N:M binding, OPEN/OFFER state, owner 검증, timeout, bounded queue, FIN/CLOSE/RESET, cleanup, current snapshot |
-| SDK unit | managed reconnect, Listener recovery, Pipe I/O·half-close, operation deadline, error observation |
+| SDK unit | managed reconnect, Listener recovery, Pipe I/O·half-close, operation deadline, heartbeat timeout, error observation |
 | Gateway integration | local Pipe, public SDK full duplex, 같은 ClientId의 surviving Listener 선택, disconnect·queue·foreign frame edge case |
 | Server process | config validation, health check, structured log redaction, SIGTERM cleanup |
 | Docker image/process topology | [TEST 004](004-rt1-gw3-closed-loop-test-plan.md)의 RT1/GW3 Compose profile |
@@ -78,6 +80,7 @@ Pipe::into_split()                            -> read half + write half
 | `gateway_edges` | invalid key, session/offer loss, no fallback, role·owner 격리 |
 | `relaygate-sdk` unit/integration | reconnect, returned Listener 재등록, Pipe lifecycle과 observation |
 | `relaygate-server` process | boot, health, config error, secret-free logs와 graceful shutdown |
+| `sdk_gateway_liveness` | idle session heartbeat, timeout cleanup, Pipe read idle 비전파 |
 
 세부 상태·오류 조합의 canonical 목록은 이 문서에서 반복하지 않고 [TEST 001](001-requirement-test-matrix.md)을 따른다.
 
@@ -105,3 +108,4 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 3. session 단절은 해당 session의 current attempt와 Pipe만 bounded cleanup한다.
 4. managed reconnect는 returned Listener current set만 재등록하고 과거 operation을 replay하지 않는다.
 5. 상태량은 current session, binding, attempt, Pipe와 configured queue bound에 비례한다.
+6. SDK-Gateway heartbeat timeout은 transport loss와 같은 cleanup으로 닫히고 Pipe read idle은 session failure가 아니다.

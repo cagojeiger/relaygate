@@ -24,6 +24,8 @@ pub(crate) use identity::PeerTransportId;
 pub(crate) use runtime::{PeerEvents, PeerHandle, PeerRuntime};
 
 #[cfg(test)]
+mod liveness_runtime_tests;
+#[cfg(test)]
 mod runtime_tests;
 #[cfg(test)]
 mod tests;

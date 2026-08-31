@@ -388,7 +388,9 @@ name = "relaygate-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "relaygate-gateway",
+ "relaygate-protocol",
  "relaygate-route-table",
  "relaygate-route-table-transport",
  "serde_json",

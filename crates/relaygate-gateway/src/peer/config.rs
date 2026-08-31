@@ -21,6 +21,9 @@ const DEFAULT_MAX_FRAME_LEN: usize = 1024 * 1024;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_OPEN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_HEARTBEAT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
+const DEFAULT_IDLE_RETIREMENT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// One trusted stable peer entry for the local/CI plain-TCP adapter.
 #[derive(Clone)]
@@ -71,6 +74,9 @@ pub struct GatewayPeerConfig {
     pub(super) connect_timeout: Duration,
     pub(super) handshake_timeout: Duration,
     pub(super) open_response_timeout: Duration,
+    pub(super) heartbeat_idle_interval: Duration,
+    pub(super) heartbeat_response_timeout: Duration,
+    pub(super) idle_retirement_timeout: Duration,
 }
 
 impl GatewayPeerConfig {
@@ -95,6 +101,9 @@ impl GatewayPeerConfig {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             open_response_timeout: DEFAULT_OPEN_RESPONSE_TIMEOUT,
+            heartbeat_idle_interval: DEFAULT_HEARTBEAT_IDLE_INTERVAL,
+            heartbeat_response_timeout: DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT,
+            idle_retirement_timeout: DEFAULT_IDLE_RETIREMENT_TIMEOUT,
         };
         config.validate().map_err(config_error)?;
         Ok(config)
@@ -145,6 +154,34 @@ impl GatewayPeerConfig {
         self
     }
 
+    #[must_use]
+    pub const fn with_liveness(
+        mut self,
+        heartbeat_idle_interval: Duration,
+        heartbeat_response_timeout: Duration,
+        idle_retirement_timeout: Duration,
+    ) -> Self {
+        self.heartbeat_idle_interval = heartbeat_idle_interval;
+        self.heartbeat_response_timeout = heartbeat_response_timeout;
+        self.idle_retirement_timeout = idle_retirement_timeout;
+        self
+    }
+
+    #[must_use]
+    pub const fn heartbeat_idle_interval(&self) -> Duration {
+        self.heartbeat_idle_interval
+    }
+
+    #[must_use]
+    pub const fn heartbeat_response_timeout(&self) -> Duration {
+        self.heartbeat_response_timeout
+    }
+
+    #[must_use]
+    pub const fn idle_retirement_timeout(&self) -> Duration {
+        self.idle_retirement_timeout
+    }
+
     pub(super) fn validate(&self) -> Result<(), PeerError> {
         for capacity in [
             self.manager_queue_capacity,
@@ -166,6 +203,9 @@ impl GatewayPeerConfig {
         if self.connect_timeout.is_zero()
             || self.handshake_timeout.is_zero()
             || self.open_response_timeout.is_zero()
+            || self.heartbeat_idle_interval.is_zero()
+            || self.heartbeat_response_timeout.is_zero()
+            || self.idle_retirement_timeout.is_zero()
         {
             return Err(PeerError::InvalidArgument(
                 "peer runtime timeouts must be greater than zero",
@@ -214,6 +254,12 @@ impl std::fmt::Debug for GatewayPeerConfig {
             .field("connect_timeout", &self.connect_timeout)
             .field("handshake_timeout", &self.handshake_timeout)
             .field("open_response_timeout", &self.open_response_timeout)
+            .field("heartbeat_idle_interval", &self.heartbeat_idle_interval)
+            .field(
+                "heartbeat_response_timeout",
+                &self.heartbeat_response_timeout,
+            )
+            .field("idle_retirement_timeout", &self.idle_retirement_timeout)
             .finish()
     }
 }

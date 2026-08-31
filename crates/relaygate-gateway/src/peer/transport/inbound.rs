@@ -67,6 +67,18 @@ impl TransportActor {
                 self.receive_reset(stream_id, code, message).await;
                 true
             }
+            PeerFrame::Ping { nonce } => {
+                if self
+                    .aggregate_writer
+                    .try_send(PeerFrame::Pong { nonce })
+                    .is_err()
+                {
+                    self.close.cancel();
+                    return false;
+                }
+                true
+            }
+            PeerFrame::Pong { .. } => true,
             PeerFrame::Hello(_) | PeerFrame::Welcome(_) | PeerFrame::HandshakeRejected { .. } => {
                 false
             }

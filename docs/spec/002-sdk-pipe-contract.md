@@ -3,7 +3,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Draft |
-| 근거 | [ADR 001](../adr/001-relayed-pipe-responsibility-boundary.md), [ADR 002](../adr/002-application-protocol-boundary.md), [ADR 003](../adr/003-client-id-listener-binding.md) |
+| 근거 | [ADR 001](../adr/001-relayed-pipe-responsibility-boundary.md), [ADR 002](../adr/002-application-protocol-boundary.md), [ADR 003](../adr/003-client-id-listener-binding.md), [ADR 007](../adr/007-transport-liveness-and-idle-retirement.md) |
 | 용어 | [SPEC 001](001-terminology-and-object-model.md) |
 | 오류와 상태 | [SPEC 007](007-error-and-state-model.md) |
 
@@ -163,7 +163,16 @@ commit된 open request가 operation deadline까지 `OPENED` 또는 `FAILED`를 �
 
 SDK session의 outbound write는 cancellation과 configured deadline에 종속되어야 한다. frame write가 그 bound 안에 끝나지 않으면 해당 session을 재사용하지 않고 transport loss와 같은 cleanup·reconnect 경로로 수렴시킨다. 단순한 application `Pipe.read()` idle은 control operation timeout이 아니며 session을 닫는 근거가 아니다.
 
-RelayGate SDK는 periodic heartbeat를 필수로 사용하지 않는다. 아무 operation도 없는 silent network blackhole은 즉시 탐지된다고 보장하지 않으며, local close, transport event 또는 active control operation의 deadline에서 failure를 관찰한다.
+SDK-Gateway session은 activity-aware heartbeat를 사용한다.
+
+```text
+valid inbound activity 있음 -> PING 전송 전 heartbeat timer 연장 가능
+idle interval 경과          -> PING commit
+deadline 전 matching PONG  -> READY 유지
+timeout                    -> session 종료 -> 기존 cleanup/reconnect 경로
+```
+
+Heartbeat는 SDK와 Gateway 사이 transport liveness만 확인한다. application `Pipe.read()`가 조용하거나 payload 응답이 없다는 사실은 heartbeat failure가 아니다. heartbeat timeout으로 session을 닫으면 그 session의 pending operation과 Pipe는 기존 transport-loss cleanup을 따르고, SDK는 새 session으로 managed reconnect만 수행한다. commit된 `open`, 기존 Pipe와 payload는 자동 replay, reroute, resume하지 않는다.
 
 ## SDK runtime lifetime
 
@@ -198,7 +207,7 @@ Listener registration의 승인·거절·갱신 절차는 SPEC 003이, 상태와
 - **`SDK-023`**: commit된 open request가 operation deadline까지 terminal 응답을 받지 못하면 `DEADLINE_EXCEEDED`, `MAYBE_OBSERVED`로 끝내고 current `ConnectorSession`을 종료해야 한다. 그 session의 다른 attempt와 Pipe도 terminal cleanup하며 새 session으로 replay, migrate 또는 resume해서는 안 된다.
 - **`SDK-024`**: SDK session의 outbound frame write는 cancellation과 configured deadline 안에 끝나야 한다. write 실패 또는 deadline은 해당 session을 종료하고 managed reconnect 경로로 수렴시켜야 하며 pending operation과 Pipe를 무기한 붙잡아서는 안 된다.
 - **`SDK-025`**: 명시적 runtime close는 current session과 managed reconnect를 종료해야 한다. 개별 clone drop은 shared runtime을 닫지 않지만, live `Pipe`를 포함하여 runtime을 사용할 마지막 public owner가 사라지면 background task는 runtime을 자기 소유로 남기지 않고 종료해야 한다.
-- **`SDK-026`**: periodic heartbeat 없이 failure-on-use를 허용한다. idle session의 silent network failure 탐지 시간을 보장해서는 안 되며, application Pipe read idle만으로 session을 닫아서는 안 된다.
+- **`SDK-026`**: SDK-Gateway session은 activity-aware heartbeat를 수행해야 한다. idle interval 동안 valid inbound activity가 없으면 `PING`을 commit하고, configured response deadline 전에 matching `PONG`을 확인하지 못하면 current session을 transport loss와 같이 종료해야 한다. unrelated inbound frame, outbound write, nonce가 다른 `PONG`, deadline 이후의 늦은 `PONG`은 commit된 probe를 만족시키지 않는다. heartbeat는 Pipe/application health나 delivery acknowledgement가 아니며 application Pipe read idle만으로 session을 닫아서는 안 된다.
 - **`SDK-027`**: commit된 최초 `REGISTER`가 명시적 실패, response deadline 또는 session 상실로 terminal 성공을 확인하지 못하면 해당 `ListenAttempt`를 한 번만 실패시키고 reservation을 제거해야 한다. response deadline은 current `ListenerSession` 전체를 종료해야 한다. SDK는 pending attempt를 새 session으로 옮기거나 같은 request를 replay해서는 안 되며, 이미 반환된 current Listener만 bounded reconnect backoff 뒤 새 session identity와 새 registration request로 재등록해야 한다. TCP 연결 성공만으로 연속 failure backoff를 초기화해서는 안 되며 반환된 Listener의 recovery registration 성공 뒤 초기화할 수 있다.
 - **`SDK-028`**: Phase 1 Rust `Pipe`는 Tokio `AsyncRead`와 `AsyncWrite`를 구현하고, consuming owned split으로 non-clone `PipeReadHalf` 하나와 `PipeWriteHalf` 하나를 제공해야 한다. 두 half는 하나의 bounded Pipe state와 terminal 결과를 공유하며 read receiver와 cursor는 read half만, outbound sender와 write·`shutdown_write`·`close`·`reset` 순서는 write half만 소유해야 한다. `AsyncWrite` shutdown은 `FIN`과 같고 half 하나의 drop은 protocol frame을 합성하지 않으며 마지막 public owner의 drop만 전체 cleanup을 정확히 한 번 시작해야 한다. Tokio I/O 오류는 원래 RelayGate `Error`를 downcast 가능한 inner error로 보존해야 하고, 이름 충돌 없는 `read_into`·`write_all_bytes`와 trait adapter는 같은 ordering·backpressure·terminal 경로를 사용해야 한다.
 

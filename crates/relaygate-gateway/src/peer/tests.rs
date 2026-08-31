@@ -208,6 +208,8 @@ fn peer_frame_codec_round_trips_every_frame_kind() -> Result<(), Box<dyn std::er
             code: ErrorCode::Cancelled,
             message: "cancelled".to_owned(),
         },
+        PeerFrame::Ping { nonce: 11 },
+        PeerFrame::Pong { nonce: 11 },
     ];
     for frame in frames {
         let mut codec = PeerFrameCodec::new(1024);

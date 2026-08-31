@@ -69,6 +69,16 @@ impl GatewayRuntimeConfig {
         if let Some(timeout) = optional_duration_millis("RELAYGATE_OFFER_TIMEOUT_MS")? {
             gateway = gateway.with_offer_timeout(timeout);
         }
+        let heartbeat_idle = optional_duration_millis("RELAYGATE_SDK_HEARTBEAT_IDLE_MS")?;
+        let heartbeat_response = optional_duration_millis("RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS")?;
+        if heartbeat_idle.is_some() || heartbeat_response.is_some() {
+            let default_idle = gateway.heartbeat_idle_interval();
+            let default_response = gateway.heartbeat_response_timeout();
+            gateway = gateway.with_heartbeat(
+                heartbeat_idle.unwrap_or(default_idle),
+                heartbeat_response.unwrap_or(default_response),
+            );
+        }
 
         Ok(Self {
             bind_address,
@@ -125,7 +135,18 @@ fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
         .filter(|credential| credential.name != gateway_name_value)
         .map(|credential| TrustedPeerConfig::new(&credential.name, &credential.key))
         .collect::<Result<Vec<_>, _>>()?;
-    let peer = GatewayPeerConfig::new(gateway_name_value, local.key.clone(), trusted_peers)?;
+    let mut peer = GatewayPeerConfig::new(gateway_name_value, local.key.clone(), trusted_peers)?;
+    let peer_heartbeat_idle = optional_duration_millis("RELAYGATE_PEER_HEARTBEAT_IDLE_MS")?
+        .unwrap_or_else(|| peer.heartbeat_idle_interval());
+    let peer_heartbeat_response = optional_duration_millis("RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS")?
+        .unwrap_or_else(|| peer.heartbeat_response_timeout());
+    let peer_idle_retirement = optional_duration_millis("RELAYGATE_PEER_IDLE_TIMEOUT_MS")?
+        .unwrap_or_else(|| peer.idle_retirement_timeout());
+    peer = peer.with_liveness(
+        peer_heartbeat_idle,
+        peer_heartbeat_response,
+        peer_idle_retirement,
+    );
     let client = RouteTableClientConfig::new(
         DEFAULT_RT_CLIENT_QUEUE_CAPACITY,
         DEFAULT_RT_MAX_FRAME_LEN,

@@ -17,7 +17,10 @@ use super::{ListenerRuntimeInner, ListenerState, ListenerStatus};
 use crate::{
     Error, ErrorCode, PeerObservation,
     pipe::{PipeState, to_wire_code},
-    session::{EstablishedSession, establish, next_backoff, send_bounded},
+    session::{
+        EstablishedSession, SessionHeartbeat, establish, next_backoff, send_bounded,
+        wait_for_heartbeat,
+    },
 };
 
 pub(super) async fn listener_supervisor(
@@ -136,6 +139,7 @@ async fn run_listener_session(
     let mut needs_reconcile = true;
     let mut timed_out_request = None;
     let mut registration_succeeded = false;
+    let mut heartbeat = SessionHeartbeat::new(&inner.config, established.id, 0x4c);
 
     loop {
         if needs_reconcile
@@ -153,6 +157,61 @@ async fn run_listener_session(
         tokio::select! {
             biased;
             _ = session_cancel.cancelled() => break,
+            incoming = established.transport.next() => {
+                let Some(incoming) = incoming else { break; };
+                let Ok(frame) = incoming else { break; };
+                heartbeat.observe_inbound(&frame);
+                if heartbeat.response_timed_out() {
+                    tracing::debug!(
+                        component = "sdk",
+                        event = "sdk.session.heartbeat_timeout",
+                        role = "listener",
+                        session_id = %established.id.as_uuid(),
+                        "Listener session heartbeat response timed out"
+                    );
+                    break;
+                }
+                match handle_listener_frame(
+                    frame,
+                    established.id,
+                    &mut state,
+                    &outbound_tx,
+                    &abandoned_tx,
+                    inner,
+                    &mut established.transport,
+                    &session_cancel,
+                ).await {
+                    ListenerFrameAction::Continue => {}
+                    ListenerFrameAction::RegistrationSucceeded => {
+                        registration_succeeded = true;
+                    }
+                    ListenerFrameAction::Reconcile => needs_reconcile = true,
+                    ListenerFrameAction::Stop => break,
+                }
+            }
+            () = wait_for_heartbeat(heartbeat.next_deadline()) => {
+                let Some(frame) = heartbeat.on_deadline() else {
+                    tracing::debug!(
+                        component = "sdk",
+                        event = "sdk.session.heartbeat_timeout",
+                        role = "listener",
+                        session_id = %established.id.as_uuid(),
+                        "Listener session heartbeat response timed out"
+                    );
+                    break;
+                };
+                if send_bounded(
+                    &mut established.transport,
+                    frame,
+                    inner.config.operation_timeout,
+                    &session_cancel,
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
             _ = wait_for_registration_deadline(registration_deadline), if registration_deadline.is_some() => {
                 timed_out_request = registration_deadline.map(|(request_id, _)| request_id);
                 session_cancel.cancel();
@@ -196,27 +255,6 @@ async fn run_listener_session(
                 }
                 if let Some(pipe_id) = terminal_pipe {
                     state.pipes.remove(&pipe_id);
-                }
-            }
-            incoming = established.transport.next() => {
-                let Some(incoming) = incoming else { break; };
-                let Ok(frame) = incoming else { break; };
-                match handle_listener_frame(
-                    frame,
-                    established.id,
-                    &mut state,
-                    &outbound_tx,
-                    &abandoned_tx,
-                    inner,
-                    &mut established.transport,
-                    &session_cancel,
-                ).await {
-                    ListenerFrameAction::Continue => {}
-                    ListenerFrameAction::RegistrationSucceeded => {
-                        registration_succeeded = true;
-                    }
-                    ListenerFrameAction::Reconcile => needs_reconcile = true,
-                    ListenerFrameAction::Stop => break,
                 }
             }
         }

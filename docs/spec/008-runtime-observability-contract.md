@@ -62,7 +62,8 @@ error_code / observation
 | registration | Listener registration active / rejected / suspended / blocked |
 | open | OPEN succeeded / failed |
 | Pipe | close / reset / session-loss terminal cleanup |
-| peer | handshake admission, PeerTransport loss와 frame commit failure |
+| transport liveness | SDK-Gateway heartbeat timeout, active PeerTransport heartbeat timeout |
+| peer | handshake admission, PeerTransport loss, zero-stream idle retirement과 frame commit failure |
 
 성공·실패 event는 기존 protocol/state 결과를 그대로 관찰한다. 여기서 관측성 event는
 tracing/metrics event이며 Gateway 상태 전이를 전달하는 내부 `PeerEvent`가 아니다. 관측성 event
@@ -122,6 +123,9 @@ message delivery acknowledgement가 아니다.
 `RELAYGATE_STATS_INTERVAL_MS`를 설정하면 `relaygate-server`는 `gateway.snapshot` event를
 주기적으로 기록한다. 기본값은 비활성화이며 network port를 추가하지 않는다.
 
+Heartbeat와 idle-retirement event는 transport lifecycle 관찰값이다. 해당 event를 Pipe
+application health, payload delivery acknowledgement 또는 retry 명령으로 해석해서는 안 된다.
+
 ## 현재 범위 밖
 
 ```text
@@ -144,3 +148,4 @@ durable metric history
 | `OBS-006` | SDK와 Gateway lifecycle event는 기존 terminal code와 observation을 바꾸지 않고 관찰해야 한다. |
 | `OBS-007` | library crate는 event만 발행하며 subscriber와 exporter는 embedding application 또는 server가 소유해야 한다. |
 | `OBS-008` | snapshot event는 기본적으로 비활성화되고 활성화해도 새 listening port를 만들지 않아야 한다. |
+| `OBS-009` | SDK-Gateway heartbeat timeout, active PeerTransport heartbeat timeout과 zero-stream PeerTransport idle retirement는 lifecycle event로 관찰 가능해야 하며, payload bytes나 application-level delivery result를 기록해서는 안 된다. |

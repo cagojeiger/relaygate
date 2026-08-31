@@ -50,6 +50,12 @@ rust = ["exact_artifact_bytes_define_generation_and_ordered_authority", "registe
 reason = "directory와 lease 규칙은 검증하지만 Gateway가 remote Resolve 결과나 RT 전체 table을 recovery source로 보관하지 않는다는 부정 조건은 직접 검증하지 않는다."
 
 [[case]]
+id = "T-TERM-09"
+status = "partial"
+rust = ["idle_connector_session_uses_heartbeat_and_pipe_read_idle_is_not_a_timeout", "peer::transport::liveness::tests::zero_stream_idle_retirement_waits_then_closes", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
+reason = "Pipe read idle과 transport liveness를 분리하고 IdleRetirement가 zero-stream transport에만 적용되는 동작은 검증한다. application response, delivery acknowledgement와 authorization 의미를 부여하지 않는 책임 경계는 실행 테스트보다 API 및 문서 구조에 의존한다."
+
+[[case]]
 id = "T-SDK-01"
 status = "executable"
 rust = ["local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "terminal_queued_pipe_is_discarded_before_accept", "full_listener_queue_rejects_new_offer_without_replacing_old_pipe", "listener::tests::pending_accept_observes_close_before_a_racing_pipe"]
@@ -126,8 +132,9 @@ reason = "last-owner와 Pipe-only lifetime은 검증하지만 runtime clone 하�
 
 [[case]]
 id = "T-SDK-15"
-status = "executable"
-rust = ["idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout", "committed_open_timeout_closes_session_and_existing_pipes", "stalled_transport_send_times_out_and_cleans_up_session"]
+status = "partial"
+rust = ["session::tests::inbound_activity_without_pending_probe_resets_idle_deadline", "session::tests::pending_probe_requires_matching_pong", "session::tests::late_matching_pong_does_not_clear_pending_probe", "gateway::heartbeat::tests::activity_without_pending_probe_resets_idle_deadline", "gateway::heartbeat::tests::pending_probe_requires_matching_pong", "gateway::heartbeat::tests::late_matching_pong_does_not_clear_pending_probe", "idle_connector_session_uses_heartbeat_and_pipe_read_idle_is_not_a_timeout", "connector_heartbeat_timeout_closes_session_and_reconnects", "matching_pong_is_not_starved_by_sustained_outbound_frames", "idle_listener_session_uses_heartbeat_before_register", "listener_matching_pong_is_not_starved_by_sustained_outbound_frames", "gateway_idle_sdk_session_uses_matching_pong_heartbeat", "gateway_heartbeat_timeout_removes_sdk_session_state"]
+reason = "SDK와 Gateway 양쪽의 heartbeat, timeout cleanup, Pipe read idle 부정 조건은 검증한다. 다만 pending probe 중 unrelated inbound frame을 SDK-Gateway 통합 시나리오로 직접 합성하지는 않는다."
 
 [[case]]
 id = "T-SDK-16"
@@ -162,6 +169,12 @@ id = "T-OBS-04"
 status = "partial"
 rust = ["server_boots_health_checks_and_exits_on_sigterm", "json_logs_expose_stable_startup_and_snapshot_fields_without_secrets"]
 reason = "server의 port와 snapshot 설정은 검증하지만 library만 포함했을 때 전역 subscriber가 생기지 않는다는 전용 테스트가 없다."
+
+[[case]]
+id = "T-OBS-05"
+status = "partial"
+rust = ["gateway_heartbeat_timeout_removes_sdk_session_state", "gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets", "session::tests::pending_probe_requires_matching_pong", "peer::transport::liveness::tests::pending_probe_timeout_returns_heartbeat_timeout", "peer::transport::liveness::tests::zero_stream_idle_retirement_waits_then_closes", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
+reason = "SDK-Gateway timeout의 stable JSON event schema와 secret 및 payload 비노출, peer lifecycle의 실제 socket 전이는 검증한다. peer heartbeat timeout과 idle-retirement tracing event field를 process log로 capture하는 검증은 남아 있다."
 
 [[case]]
 id = "T-REG-01"
@@ -400,6 +413,12 @@ rust = ["peer::transport::tests::committed_open_timeout_is_reported_as_maybe_obs
 reason = "OPEN response deadline, OPENING cancel과 SDK-side timeout은 검증하지만 connect 및 handshake deadline과 Entry-to-SDK 응답 유실을 peer runtime sequence로 닫지 않는다."
 
 [[case]]
+id = "T-PEER-10"
+status = "partial"
+rust = ["peer::transport::liveness::tests::zero_stream_idle_retirement_waits_then_closes", "peer::transport::liveness::tests::active_inbound_activity_does_not_clear_pending_heartbeat", "peer::transport::liveness::tests::unmatched_pong_does_not_clear_pending_heartbeat", "peer::transport::liveness::tests::matching_pong_clears_pending_heartbeat", "peer::transport::liveness::tests::late_matching_pong_does_not_clear_pending_heartbeat", "peer::transport::liveness::tests::pending_probe_timeout_returns_heartbeat_timeout", "peer::transport::liveness::tests::earlier_open_deadline_does_not_trigger_lifecycle_action", "peer::transport::liveness::tests::queued_command_defers_idle_retirement_at_expiry", "peer::transport::liveness::tests::new_stream_cancels_zero_stream_retirement", "peer::transport::liveness::tests::heartbeat_interval_is_deterministically_staggered_within_ten_percent", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
+reason = "heartbeat timeout, strict matching-PONG, zero-stream retirement, queued OPEN race, deterministic stagger와 timeout 뒤 lazy reconnect를 실제 socket까지 검증한다. unrelated frame부터 timeout까지의 전체 socket sequence는 deterministic state-machine 테스트와 runtime timeout 테스트로 나뉜다."
+
+[[case]]
 id = "T-ERR-01"
 status = "partial"
 rust = ["typed_non_empty_identifiers_reject_empty_values", "invalid_snapshot_is_rejected_before_existing_state_changes", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "routing::tests::projection_rejects_a_binding_from_another_session"]
@@ -500,8 +519,8 @@ reason = "방향별 slot 격리는 검증하지만 lazy connect, fail, loss, reu
 [[case]]
 id = "T-STATE-TRANSPORT"
 status = "partial"
-rust = ["peer::runtime_tests::wrong_trusted_key_fails_before_open_commit_without_ready_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "peer::tests::peer_pool_keeps_at_most_one_transport_per_direction"]
-reason = "handshake 실패와 loss는 검증하지만 각 transport instance의 terminal exactly-once 경쟁을 닫지 않는다."
+rust = ["peer::runtime_tests::wrong_trusted_key_fails_before_open_commit_without_ready_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::transport::liveness::tests::zero_stream_idle_retirement_waits_then_closes", "peer::transport::liveness::tests::active_inbound_activity_does_not_clear_pending_heartbeat", "peer::transport::liveness::tests::pending_probe_timeout_returns_heartbeat_timeout", "peer::transport::liveness::tests::earlier_open_deadline_does_not_trigger_lifecycle_action", "peer::transport::liveness::tests::queued_command_defers_idle_retirement_at_expiry", "peer::transport::liveness::tests::new_stream_cancels_zero_stream_retirement", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
+reason = "handshake 실패, force loss, 방향 slot, active heartbeat timeout, zero-stream idle retirement와 timeout 뒤 새 transport 생성을 실제 socket에서 검증한다. 서로 다른 terminal 원인의 exactly-once 경쟁 순열은 대표 경로만 검증한다."
 
 [[case]]
 id = "T-STATE-STREAM"
@@ -711,3 +730,15 @@ id = "T-EDGE-36"
 status = "partial"
 rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer::runtime_tests::wrong_trusted_key_fails_before_open_commit_without_ready_transport", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots"]
 reason = "같은 locator의 새 incarnation과 stale handshake 차단은 검증하지만 valid G2 연결 뒤 old runtime frame 지연 도착까지 결합하지 않는다."
+
+[[case]]
+id = "T-EDGE-37"
+status = "partial"
+rust = ["session::tests::pending_probe_requires_matching_pong", "session::tests::late_matching_pong_does_not_clear_pending_probe", "gateway::heartbeat::tests::pending_probe_requires_matching_pong", "gateway::heartbeat::tests::late_matching_pong_does_not_clear_pending_probe", "connector_heartbeat_timeout_closes_session_and_reconnects", "matching_pong_is_not_starved_by_sustained_outbound_frames", "listener_matching_pong_is_not_starved_by_sustained_outbound_frames", "gateway_heartbeat_timeout_removes_sdk_session_state"]
+reason = "matching-PONG과 timeout cleanup은 양 endpoint에서 검증하지만 unrelated frame 주입부터 reconnect까지 하나의 socket sequence로 합성하지 않는다."
+
+[[case]]
+id = "T-EDGE-38"
+status = "partial"
+rust = ["peer::transport::liveness::tests::pending_probe_timeout_returns_heartbeat_timeout", "peer::transport::liveness::tests::zero_stream_idle_retirement_waits_then_closes", "peer::transport::liveness::tests::new_stream_cancels_zero_stream_retirement", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
+reason = "active timeout과 zero-stream retirement의 실제 socket cleanup 및 lazy reconnect는 검증한다. 같은 시나리오에서 RT mapping, Listener binding, 반대 방향 transport와 다른 Gateway pair 보존을 함께 관찰하는 RT1/GW3 통합 테스트는 남아 있다."

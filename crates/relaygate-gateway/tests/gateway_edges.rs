@@ -14,6 +14,70 @@ use tokio::{
 use support::{TestGateway, TestResult, next_frame, sdk_session};
 
 #[tokio::test]
+async fn gateway_idle_sdk_session_uses_matching_pong_heartbeat() -> TestResult {
+    let gateway = TestGateway::start_with_config(
+        GatewayConfig::new([]).with_heartbeat(Duration::from_millis(40), Duration::from_millis(40)),
+    )
+    .await?;
+    let mut connector = sdk_session(gateway.address, SessionRole::Connector).await?;
+
+    let heartbeat = next_frame(&mut connector).await?;
+    let nonce = match heartbeat {
+        Frame::Ping { nonce } => nonce,
+        other => return Err(format!("expected heartbeat PING, got {other:?}").into()),
+    };
+    connector.send(Frame::Pong { nonce }).await?;
+    assert!(
+        timeout(Duration::from_millis(20), connector.next())
+            .await
+            .is_err()
+    );
+
+    gateway.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_heartbeat_timeout_removes_sdk_session_state() -> TestResult {
+    let gateway = TestGateway::start_with_config(
+        GatewayConfig::new([("echo.alpha".to_owned(), "secret".to_owned())])
+            .with_heartbeat(Duration::from_millis(40), Duration::from_millis(40)),
+    )
+    .await?;
+    let mut listener = sdk_session(gateway.address, SessionRole::Listener).await?;
+    listener
+        .send(Frame::Register {
+            request_id: 1,
+            client_id: "echo.alpha".to_owned(),
+            client_key: ClientKey::new("secret"),
+        })
+        .await?;
+    assert!(matches!(
+        next_frame(&mut listener).await?,
+        Frame::Registered { request_id: 1, .. }
+    ));
+    assert_eq!(gateway.snapshot().sessions, 1);
+    assert_eq!(gateway.snapshot().listener_bindings, 1);
+
+    let heartbeat = next_frame(&mut listener).await?;
+    if !matches!(heartbeat, Frame::Ping { .. }) {
+        return Err(format!("expected heartbeat PING, got {heartbeat:?}").into());
+    }
+
+    let ended = timeout(Duration::from_secs(1), listener.next()).await?;
+    assert!(
+        ended.is_none(),
+        "Gateway should close the SDK session after heartbeat timeout"
+    );
+    let snapshot = gateway.snapshot();
+    assert_eq!(snapshot.sessions, 0);
+    assert_eq!(snapshot.listener_bindings, 0);
+
+    gateway.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn invalid_client_key_creates_no_binding() -> TestResult {
     let gateway = TestGateway::start(&[("echo.alpha", "secret")]).await?;
     let mut listener = sdk_session(gateway.address, SessionRole::Listener).await?;

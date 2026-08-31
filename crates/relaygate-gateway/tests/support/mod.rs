@@ -1,7 +1,7 @@
 use std::{error::Error, net::SocketAddr, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
-use relaygate_gateway::{Gateway, GatewayConfig, GatewayError, check};
+use relaygate_gateway::{Gateway, GatewayConfig, GatewayError, GatewaySnapshot, check};
 use relaygate_protocol::{Frame, FrameCodec, SessionRole};
 use tokio::{net::TcpStream, task::JoinHandle, time::timeout};
 use tokio_util::{codec::Framed, sync::CancellationToken};
@@ -10,6 +10,8 @@ pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 pub struct TestGateway {
     pub address: SocketAddr,
+    #[allow(dead_code)]
+    gateway: Gateway,
     shutdown: CancellationToken,
     server: JoinHandle<Result<(), GatewayError>>,
 }
@@ -35,12 +37,20 @@ impl TestGateway {
         let address = listener.local_addr()?;
         let shutdown = CancellationToken::new();
         let serve_shutdown = shutdown.clone();
-        let server = tokio::spawn(async move { gateway.serve(listener, serve_shutdown).await });
+        let server_gateway = gateway.clone();
+        let server =
+            tokio::spawn(async move { server_gateway.serve(listener, serve_shutdown).await });
         Ok(Self {
             address,
+            gateway,
             shutdown,
             server,
         })
+    }
+
+    #[allow(dead_code)]
+    pub fn snapshot(&self) -> GatewaySnapshot {
+        self.gateway.snapshot()
     }
 
     pub async fn stop(self) -> TestResult {

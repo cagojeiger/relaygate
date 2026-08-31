@@ -180,6 +180,8 @@ fn test_inner(route_resolver: Arc<dyn RouteResolver>) -> Arc<Inner> {
         writer_queue_capacity: 8,
         max_frame_len: 64 * 1024,
         offer_timeout: Duration::from_secs(1),
+        heartbeat_idle_interval: Duration::from_secs(60),
+        heartbeat_response_timeout: Duration::from_secs(20),
         session_slots: Arc::new(Semaphore::new(8)),
         routing: None,
         peer: None,

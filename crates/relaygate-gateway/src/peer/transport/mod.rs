@@ -7,6 +7,7 @@
 mod actor;
 mod command;
 mod inbound;
+mod liveness;
 mod state;
 mod writer;
 

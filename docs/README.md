@@ -66,6 +66,11 @@ one PeerTransport
   ├── dialer StreamId   = 0, 2, 4, ...
   ├── acceptor StreamId = 1, 3, 5, ...
   └── FIN(one direction) | CLOSE(normal) | RESET(failure)
+
+transport liveness
+  ├── SDK-Gateway session       = activity-aware Ping/Pong
+  ├── PeerTransport streams > 0 = activity-aware Ping/Pong
+  └── PeerTransport streams = 0 = idle-retirement timer
 ```
 
 RT는 새 registration에 `LeaseId`를 발급한다. `Update`와 `KeepAlive`는 active lease에만 적용되고, `Deregister`, expiry 또는 RT restart로 종료된 lease의 늦은 operation은 mapping을 되살리지 못한다. Owner Gateway는 mapping이 active여도 `OPEN` 시점에 `BindingId`를 다시 검증한다.
@@ -111,6 +116,7 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | [ADR 004](adr/004-current-state-routing-topology.md) | `RouteTable`은 content-hash generation의 hash-sharded mapping authority다. |
 | [ADR 005](adr/005-soft-state-registration-lifecycle.md) | Route mapping은 active registration lease에 연결된 current soft state다. |
 | [ADR 006](adr/006-one-hop-peer-multiplexing.md) | Gateway data plane은 initiator-bit StreamId를 쓰는 one-hop multiplexed relay다. |
+| [ADR 007](adr/007-transport-liveness-and-idle-retirement.md) | transport liveness와 zero-stream idle retirement를 분리한다. |
 
 ## SPEC
 
@@ -145,4 +151,5 @@ RT persistence               RT replication / consensus
 online shard reconfiguration
 TLS / mTLS / service-mesh 선택
 implementation language      module layout
+RT shard 증설 운영 절차
 ```

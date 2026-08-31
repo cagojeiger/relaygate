@@ -46,10 +46,11 @@ peer handshake의 Gateway identity는 배포 환경이 인증한 transport conte
 
 ## 이 ADR에서 정하지 않는 것
 
-- 두 READY transport 사이의 stream scheduling과 idle retirement
+- 두 READY transport 사이의 stream scheduling
 - transport protocol과 wire format
 - transport identity와 integrity를 제공하는 TLS, mTLS 또는 service-mesh 구현
 - flow-control window, scheduling과 resource limit
+- transport liveness와 zero-stream idle retirement. 이는 [ADR 007](007-transport-liveness-and-idle-retirement.md)이 정한다.
 
 ## 참고
 

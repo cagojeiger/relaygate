@@ -48,6 +48,12 @@ pub(crate) enum PeerFrame {
         code: ErrorCode,
         message: String,
     },
+    Ping {
+        nonce: u64,
+    },
+    Pong {
+        nonce: u64,
+    },
 }
 
 impl fmt::Debug for PeerFrame {
@@ -112,6 +118,14 @@ impl fmt::Debug for PeerFrame {
                 .field("stream_id", stream_id)
                 .field("code", code)
                 .field("message", message)
+                .finish(),
+            Self::Ping { nonce } => formatter
+                .debug_struct("Ping")
+                .field("nonce", nonce)
+                .finish(),
+            Self::Pong { nonce } => formatter
+                .debug_struct("Pong")
+                .field("nonce", nonce)
                 .finish(),
         }
     }

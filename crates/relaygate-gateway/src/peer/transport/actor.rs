@@ -1,11 +1,18 @@
-use std::{future::pending, sync::Arc};
+use std::{cmp::min, future::pending, sync::Arc};
 
 use futures_util::StreamExt;
-use tokio::{sync::mpsc, task::JoinSet, time::sleep_until};
+use tokio::{
+    sync::mpsc,
+    task::JoinSet,
+    time::{Instant, sleep_until},
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ActiveOpenSet, TransportCommand, TransportNotice, state::TransportActor, writer::run_writer,
+    ActiveOpenSet, TransportCommand, TransportNotice,
+    liveness::{LivenessAction, TransportLiveness, staggered_interval},
+    state::TransportActor,
+    writer::run_writer,
 };
 use crate::peer::{config::GatewayPeerConfig, handshake::EstablishedPeer};
 
@@ -23,11 +30,19 @@ pub(super) async fn run_transport_actor(
 ) {
     let peer_gateway_id = established.remote_gateway_id;
     let peer_transport_id = established.peer_transport_id;
+    let heartbeat_idle_interval = staggered_interval(
+        config.heartbeat_idle_interval,
+        peer_transport_id,
+        established.local_endpoint,
+    );
+    let heartbeat_response_timeout = config.heartbeat_response_timeout;
+    let idle_retirement_timeout = config.idle_retirement_timeout;
     let (aggregate_writer, aggregate_receiver) = mpsc::channel(config.writer_queue_capacity);
     let (writer_wake, mut writer_wakes) = mpsc::channel(1);
+    let actor_config = config.clone();
     let mut actor = TransportActor::new(
         &established,
-        config,
+        actor_config,
         aggregate_writer,
         notices.clone(),
         active_opens,
@@ -42,37 +57,95 @@ pub(super) async fn run_transport_actor(
         writer_wake,
         close.clone(),
     ));
+    let mut liveness = TransportLiveness::new(
+        heartbeat_idle_interval,
+        heartbeat_response_timeout,
+        idle_retirement_timeout,
+    );
+    liveness.sync_stream_state(actor.streams.is_empty());
 
     loop {
-        let deadline = actor.next_open_deadline();
+        let deadline = earliest_deadline(actor.next_open_deadline(), liveness.next_deadline());
         tokio::select! {
             () = close.cancelled() => break,
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 actor.handle_command(command).await;
                 actor.flush_stream_queues().await;
+                liveness.sync_stream_state(actor.streams.is_empty());
             }
             frame = source.next() => {
                 let Some(frame) = frame else { break };
                 match frame {
                     Ok(frame) => {
+                        liveness.observe_inbound(&frame);
+                        if liveness.response_timed_out() {
+                            tracing::debug!(
+                                component = "gateway",
+                                event = "gateway.peer.transport.heartbeat_timeout",
+                                peer_gateway_id = %actor.peer_gateway_id.as_uuid(),
+                                peer_transport_id = %actor.peer_transport_id.as_uuid(),
+                                streams = actor.streams.len(),
+                                "PeerTransport heartbeat response timed out"
+                            );
+                            break;
+                        }
                         if !actor.handle_frame(frame).await {
                             break;
                         }
                         actor.flush_stream_queues().await;
+                        liveness.sync_stream_state(actor.streams.is_empty());
                     }
                     Err(_) => break,
                 }
             }
             () = wait_for_deadline(deadline), if deadline.is_some() => {
+                let now = Instant::now();
                 actor.expire_open_deadlines().await;
                 actor.flush_stream_queues().await;
+                if let Some(action) = liveness.on_deadline(
+                    now,
+                    actor.streams.is_empty(),
+                    commands.is_empty(),
+                ) {
+                    match action {
+                        LivenessAction::Ping(frame) => {
+                            if actor.aggregate_writer.try_send(frame).is_err() {
+                                break;
+                            }
+                        }
+                        LivenessAction::HeartbeatTimeout => {
+                            tracing::debug!(
+                                component = "gateway",
+                                event = "gateway.peer.transport.heartbeat_timeout",
+                                peer_gateway_id = %actor.peer_gateway_id.as_uuid(),
+                                peer_transport_id = %actor.peer_transport_id.as_uuid(),
+                                streams = actor.streams.len(),
+                                "PeerTransport heartbeat response timed out"
+                            );
+                            break;
+                        }
+                        LivenessAction::IdleRetired => {
+                            tracing::debug!(
+                                component = "gateway",
+                                event = "gateway.peer.transport.idle_retired",
+                                peer_gateway_id = %actor.peer_gateway_id.as_uuid(),
+                                peer_transport_id = %actor.peer_transport_id.as_uuid(),
+                                streams = actor.streams.len(),
+                                "PeerTransport idle retirement timeout expired"
+                            );
+                            break;
+                        }
+                    }
+                }
+                liveness.sync_stream_state(actor.streams.is_empty());
             }
             wake = writer_wakes.recv() => {
                 if wake.is_none() {
                     break;
                 }
                 actor.flush_stream_queues().await;
+                liveness.sync_stream_state(actor.streams.is_empty());
             }
         }
     }
@@ -92,6 +165,14 @@ pub(super) async fn run_transport_actor(
             streams: losses,
         })
         .await;
+}
+
+fn earliest_deadline(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(min(left, right)),
+        (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+        (None, None) => None,
+    }
 }
 
 async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
