@@ -192,7 +192,9 @@ async fn run_connector_session(
             }
             cancelled = cancellations.recv() => {
                 let Some(pipe_id) = cancelled else { continue; };
+                let mut removed_current_state = false;
                 if let Some(response) = pending.remove(&pipe_id.connection_id()) {
+                    removed_current_state = true;
                     let _ = response.send(Err(Error::new(
                         ErrorCode::Cancelled,
                         PeerObservation::MaybeObserved,
@@ -200,7 +202,11 @@ async fn run_connector_session(
                     )));
                 }
                 if let Some(pipe) = pipes.remove(&pipe_id) {
+                    removed_current_state = true;
                     pipe.close_normal();
+                }
+                if !removed_current_state {
+                    continue;
                 }
                 if send_bounded(
                     &mut established.transport,
@@ -285,13 +291,6 @@ async fn handle_connector_frame(
     match frame {
         Frame::Opened { pipe_id } if pipe_id.connector_session_id() == session_id => {
             let Some(response) = pending.remove(&pipe_id.connection_id()) else {
-                let _ = send_bounded(
-                    transport,
-                    Frame::Cancel { pipe_id },
-                    operation_timeout,
-                    cancel,
-                )
-                .await;
                 return true;
             };
             let Some(lifetime) = lifetime.upgrade() else {
@@ -313,14 +312,16 @@ async fn handle_connector_frame(
                     connection_id = pipe_id.connection_id(),
                     "Connector OPEN succeeded"
                 );
-            } else {
-                let _ = send_bounded(
-                    transport,
-                    Frame::Cancel { pipe_id },
-                    operation_timeout,
-                    cancel,
-                )
-                .await;
+            } else if send_bounded(
+                transport,
+                Frame::Cancel { pipe_id },
+                operation_timeout,
+                cancel,
+            )
+            .await
+            .is_err()
+            {
+                return false;
             }
         }
         Frame::OpenFailed {

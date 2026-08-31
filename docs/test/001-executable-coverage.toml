@@ -94,9 +94,8 @@ rust = ["connector::tests::precommit_closed_actor_retries_on_replacement_session
 
 [[case]]
 id = "T-SDK-08"
-status = "partial"
-rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::pending_accept_observes_close_before_a_racing_pipe", "listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "cancelling_committed_open_sends_one_cancel"]
-reason = "하위 상태 전이의 terminal once, commit된 public open future cancel과 pending accept 취소 격리는 검증하지만 같은 public future에서 cancellation과 성공을 동시에 schedule한 행렬은 없다."
+status = "executable"
+rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::pending_accept_observes_close_before_a_racing_pipe", "listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame"]
 
 [[case]]
 id = "T-SDK-09"
@@ -302,8 +301,8 @@ reason = "RT loss와 transport loss는 검증하지만 mapping 변화 후 same-a
 [[case]]
 id = "T-OPEN-07"
 status = "partial"
-rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::early_failed_then_late_commit_callback_never_resurrects_state", "committed_open_timeout_closes_session_and_existing_pipes"]
-reason = "commit 경계 조각은 있으나 모든 pre/post queue, cancel과 deadline 순열이 없다."
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::early_failed_then_late_commit_callback_never_resurrects_state", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "committed_open_timeout_closes_session_and_existing_pipes"]
+reason = "pre/post peer OPEN commit 취소와 SDK OPENED 경쟁은 검증하지만 connect·handshake 중 취소와 deadline의 전체 runtime 순열은 없다."
 
 [[case]]
 id = "T-OPEN-08"
@@ -357,8 +356,8 @@ rust = ["state::tests::foreign_open_pipe_frames_terminate_each_offender_without_
 [[case]]
 id = "T-OPEN-17"
 status = "partial"
-rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::fast_opened_event_and_open_commit_reply_keep_exact_correlation", "peer::runtime_tests::handshake_timeout_fails_before_open_commit_and_leaves_no_transport_state", "state::tests::early_transport_loss_then_late_commit_callback_never_leaves_an_attempt", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
-reason = "commit ordering과 handshake deadline은 검증하지만 connect, cancel과 SDK 확인 전체 행렬이 없다."
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::fast_opened_event_and_open_commit_reply_keep_exact_correlation", "peer::runtime_tests::handshake_timeout_fails_before_open_commit_and_leaves_no_transport_state", "state::tests::early_transport_loss_then_late_commit_callback_never_leaves_an_attempt", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+reason = "commit 전후 취소, late OPENED와 SDK 성공 확인 경계는 검증하지만 connect·handshake 중 취소의 실제 runtime 순열은 없다."
 
 [[case]]
 id = "T-PEER-01"
@@ -501,8 +500,8 @@ rust = ["routed_gateway_republishes_current_listener_state_after_route_table_res
 [[case]]
 id = "T-STATE-OPEN"
 status = "partial"
-rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::early_failed_then_late_commit_callback_never_resurrects_state"]
-reason = "late event는 검증하지만 success, failure와 cancel의 실제 동시 schedule 전체가 없다."
+rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::early_failed_then_late_commit_callback_never_resurrects_state", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame"]
+reason = "success와 cancel의 양쪽 순서 및 late event는 검증하지만 failure·deadline까지 포함한 실제 동시 schedule 전체는 없다."
 
 [[case]]
 id = "T-STATE-PIPE"
@@ -716,8 +715,8 @@ reason = "accept와 disconnect 및 recovery rejection은 각각 검증하지만 
 [[case]]
 id = "T-EDGE-34"
 status = "partial"
-rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
-reason = "commit observation과 RESET 실패는 검증하지만 pre/post commit cancel과 SDK OPENED 경쟁 전체를 제어하지 못한다."
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+reason = "pre/post commit cancel, late OPENED와 SDK 성공 경쟁은 검증하지만 connect·handshake 중 cancel을 실제 peer runtime에서 제어하지 않는다."
 
 [[case]]
 id = "T-EDGE-35"
