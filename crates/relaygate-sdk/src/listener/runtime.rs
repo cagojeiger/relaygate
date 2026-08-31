@@ -220,21 +220,6 @@ async fn run_listener_session(
             _ = inner.reconcile.notified() => {
                 needs_reconcile = true;
             }
-            abandoned = abandoned_rx.recv() => {
-                let Some(pipe_id) = abandoned else { continue; };
-                if state.pipes.remove(&pipe_id).is_some()
-                    && send_bounded(
-                        &mut established.transport,
-                        Frame::Close { pipe_id },
-                        inner.config.operation_timeout,
-                        &session_cancel,
-                    )
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
             frame = outbound_rx.recv() => {
                 let Some(frame) = frame else { break; };
                 let terminal_pipe = match &frame {
@@ -255,6 +240,21 @@ async fn run_listener_session(
                 }
                 if let Some(pipe_id) = terminal_pipe {
                     state.pipes.remove(&pipe_id);
+                }
+            }
+            abandoned = abandoned_rx.recv() => {
+                let Some(pipe_id) = abandoned else { continue; };
+                if state.pipes.remove(&pipe_id).is_some()
+                    && send_bounded(
+                        &mut established.transport,
+                        Frame::Close { pipe_id },
+                        inner.config.operation_timeout,
+                        &session_cancel,
+                    )
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             }
         }
