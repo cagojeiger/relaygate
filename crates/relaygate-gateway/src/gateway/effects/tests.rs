@@ -34,6 +34,7 @@ type ResolveResult = Result<BindingSet, RouteResolveFailure>;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 mod peer_cleanup;
+mod peer_liveness;
 
 #[derive(Clone)]
 struct ScriptedResolver {
