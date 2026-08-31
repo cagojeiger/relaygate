@@ -13,10 +13,14 @@ use crate::{
     state::{GatewayAction, GatewayState, PeerDelivery},
 };
 
-use super::Inner;
+use super::{Inner, route_resolver::RouteResolver};
+
+#[cfg(test)]
+mod tests;
 
 pub(super) struct ControlEffects {
     slots: Arc<Semaphore>,
+    route_resolver: Arc<dyn RouteResolver>,
     tasks: TaskTracker,
     results: mpsc::Sender<Vec<GatewayAction>>,
     shutdown: CancellationToken,
@@ -43,11 +47,13 @@ enum ControlAction {
 impl ControlEffects {
     pub(super) fn new(
         capacity: usize,
+        route_resolver: Arc<dyn RouteResolver>,
         results: mpsc::Sender<Vec<GatewayAction>>,
         shutdown: CancellationToken,
     ) -> Self {
         Self {
             slots: Arc::new(Semaphore::new(capacity)),
+            route_resolver,
             tasks: TaskTracker::new(),
             results,
             shutdown,
@@ -178,7 +184,7 @@ impl Inner {
                 open_identity,
                 client_id,
             } => {
-                let Some(routing) = &self.routing else {
+                let Some(control) = &self.control_effects else {
                     return self.transition(|state| {
                         state.route_failed(
                             open_identity,
@@ -187,16 +193,12 @@ impl Inner {
                         )
                     });
                 };
-                match routing.resolve(client_id).await {
+                match control.route_resolver.resolve(client_id).await {
                     Ok(bindings) => {
                         self.transition(|state| state.route_resolved(open_identity, bindings))
                     }
                     Err(error) => self.transition(|state| {
-                        state.route_failed(
-                            open_identity,
-                            error.open_error_code(),
-                            &error.to_string(),
-                        )
+                        state.route_failed(open_identity, error.code(), error.message())
                     }),
                 }
             }

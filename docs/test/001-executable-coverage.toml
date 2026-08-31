@@ -35,9 +35,8 @@ reason = "ConnectionId와 StreamId 규칙은 검증하지만 모든 일반 ident
 
 [[case]]
 id = "T-TERM-06"
-status = "partial"
-rust = ["peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
-reason = "방향별 transport와 stream lifetime은 검증하지만 같은 locator를 재사용한 Gateway restart와 stale incarnation 차단이 없다."
+status = "executable"
+rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
 
 [[case]]
 id = "T-TERM-07"
@@ -57,8 +56,8 @@ rust = ["local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "ter
 
 [[case]]
 id = "T-SDK-02"
-status = "gap"
-reason = "pending accept future 취소 뒤 sibling accept, Listener handle과 queued Pipe 보존을 확인하는 테스트가 없다."
+status = "executable"
+rust = ["listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes"]
 
 [[case]]
 id = "T-SDK-03"
@@ -115,8 +114,9 @@ rust = ["committed_open_timeout_closes_session_and_existing_pipes", "committed_o
 
 [[case]]
 id = "T-SDK-13"
-status = "executable"
+status = "partial"
 rust = ["stalled_transport_send_times_out_and_cleans_up_session", "stalled_listener_transport_send_times_out_and_cleans_up_session"]
+reason = "Connector와 Listener의 stalled writer deadline 및 session cleanup은 검증하지만 cancellation과 stalled write의 경쟁은 직접 검증하지 않는다."
 
 [[case]]
 id = "T-SDK-14"
@@ -289,7 +289,7 @@ reason = "RT loss와 transport loss는 검증하지만 mapping 변화 후 same-a
 [[case]]
 id = "T-OPEN-07"
 status = "partial"
-rust = ["peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::early_failed_then_late_commit_callback_never_resurrects_state", "committed_open_timeout_closes_session_and_existing_pipes"]
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::early_failed_then_late_commit_callback_never_resurrects_state", "committed_open_timeout_closes_session_and_existing_pipes"]
 reason = "commit 경계 조각은 있으나 모든 pre/post queue, cancel과 deadline 순열이 없다."
 
 [[case]]
@@ -311,18 +311,19 @@ reason = "attempt 종료 후 결과 폐기는 검증하지만 다음 open의 fre
 
 [[case]]
 id = "T-OPEN-11"
-status = "gap"
-reason = "generation mismatch remote OPEN의 terminal 결과와 무상태를 검증하는 Gateway 테스트가 없다."
+status = "executable"
+rust = ["gateway::effects::tests::generation_mismatch_resolve_fails_once_without_remote_state"]
 
 [[case]]
 id = "T-OPEN-12"
-status = "gap"
-reason = "RT component identity 또는 authorization 실패를 Gateway OPEN 경로에 주입한 테스트가 없다."
+status = "executable"
+rust = ["gateway::effects::tests::component_identity_resolve_failures_never_create_peer_or_pipe_state"]
 
 [[case]]
 id = "T-OPEN-13"
-status = "executable"
+status = "partial"
 rust = ["rejected_offer_does_not_fallback_within_the_same_open", "unanswered_offer_closes_selected_listener_and_preserves_sibling", "state::tests::offer_deadline_closes_selected_listener_session_and_preserves_sibling"]
+reason = "명시적 거절과 timeout의 no-fallback 및 sibling 보존은 검증하지만 명시적 거절 시 기존 Pipe, session과 sibling을 함께 보존하는 조합은 없다."
 
 [[case]]
 id = "T-OPEN-14"
@@ -343,7 +344,7 @@ rust = ["state::tests::foreign_open_pipe_frames_terminate_each_offender_without_
 [[case]]
 id = "T-OPEN-17"
 status = "partial"
-rust = ["peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::fast_opened_event_and_open_commit_reply_keep_exact_correlation", "state::tests::early_transport_loss_then_late_commit_callback_never_leaves_an_attempt", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::fast_opened_event_and_open_commit_reply_keep_exact_correlation", "state::tests::early_transport_loss_then_late_commit_callback_never_leaves_an_attempt", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
 reason = "일부 commit ordering은 검증하지만 connect, handshake, cancel과 SDK 확인 전체 행렬이 없다."
 
 [[case]]
@@ -354,14 +355,13 @@ rust = ["state::tests::routed_local_hit_never_resolves_or_opens_a_peer", "rt_one
 [[case]]
 id = "T-PEER-02"
 status = "partial"
-rust = ["peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::runtime_tests::wrong_trusted_key_fails_before_open_commit_without_ready_transport", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway"]
+rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::runtime_tests::wrong_trusted_key_fails_before_open_commit_without_ready_transport", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway"]
 reason = "방향별 최대 둘과 auth는 검증하지만 양방향 최초 동시 dial 경쟁이 없다."
 
 [[case]]
 id = "T-PEER-03"
-status = "partial"
-rust = ["peer::tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_failed_counter", "peer::tests::remote_stream_guard_rejects_reused_or_wrong_role_stream_id", "peer::identity::identity_tests::allocator_exhausts_without_wrapping_or_reusing"]
-reason = "bit, counter와 high-watermark는 검증하지만 concurrent writer commit 순서 주입이 없다."
+status = "executable"
+rust = ["peer::tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_failed_counter", "peer::tests::remote_stream_guard_rejects_reused_or_wrong_role_stream_id", "peer::identity::identity_tests::allocator_exhausts_without_wrapping_or_reusing", "peer::transport::tests::writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter"]
 
 [[case]]
 id = "T-PEER-04"
@@ -395,8 +395,9 @@ reason = "shared transport는 검증하지만 두 ConnectorSession 중 하나 cl
 
 [[case]]
 id = "T-PEER-09"
-status = "gap"
-reason = "connect와 handshake deadline, OPEN response deadline, OPENING cancel 및 SDK 응답 유실을 결합한 peer 테스트가 없다."
+status = "partial"
+rust = ["peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::runtime_tests::open_identity_is_unique_only_while_current_stream_is_active", "committed_open_timeout_closes_session_and_existing_pipes"]
+reason = "OPEN response deadline, OPENING cancel과 SDK-side timeout은 검증하지만 connect 및 handshake deadline과 Entry-to-SDK 응답 유실을 peer runtime sequence로 닫지 않는다."
 
 [[case]]
 id = "T-ERR-01"
@@ -458,13 +459,14 @@ reason = "session cleanup과 RESET 경로는 검증하지만 shared transport si
 [[case]]
 id = "T-STATE-LISTENER"
 status = "partial"
-rust = ["permanent_recovery_rejection_blocks_only_affected_listener", "closing_listener_during_recovery_register_rebuilds_session_for_sibling", "committed_register_timeout_closes_session_without_replay"]
-reason = "주요 Listener lifecycle은 검증하지만 pending accept cancellation과 모든 recovery 경쟁을 전수하지 않는다."
+rust = ["listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "permanent_recovery_rejection_blocks_only_affected_listener", "closing_listener_during_recovery_register_rebuilds_session_for_sibling", "committed_register_timeout_closes_session_without_replay"]
+reason = "pending accept cancellation과 주요 Listener lifecycle은 검증하지만 모든 recovery 경쟁을 전수하지 않는다."
 
 [[case]]
 id = "T-STATE-BIND"
-status = "executable"
+status = "partial"
 rust = ["registry::tests::unregister_then_register_renews_binding_id", "registry::tests::indexes_describe_the_same_live_bindings", "state::tests::invalid_key_creates_no_binding"]
+reason = "binding identity, index 일관성과 ClientKey 거절은 검증하지만 RT UNSYNCED 중 local candidate 유지가 빠졌다."
 
 [[case]]
 id = "T-STATE-REGISTRATION"
@@ -536,8 +538,9 @@ reason = "key별 상태 격리는 검증하지만 한 shard KeepAlive만 유실�
 
 [[case]]
 id = "T-EDGE-06"
-status = "executable"
+status = "partial"
 rust = ["routed_gateway_republishes_current_listener_state_after_route_table_restart", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
+reason = "RT restart 뒤 republish와 RT loss 중 기존 Pipe 생존은 각각 검증하지만 restart, READY-empty, local/remote open, republish를 하나의 sequence로 닫지 않는다."
 
 [[case]]
 id = "T-EDGE-07"
@@ -626,8 +629,9 @@ rust = ["committed_open_is_not_replayed_and_reports_maybe_observed"]
 
 [[case]]
 id = "T-EDGE-22"
-status = "gap"
-reason = "같은 locator의 G1에서 G2 restart와 stale mapping, OPEN 및 peer frame을 직접 주입하는 테스트가 없다."
+status = "partial"
+rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity"]
+reason = "같은 locator의 새 GatewayId와 BindingId, stale mapping OPEN 실패는 검증하지만 G1의 지연 peer frame을 G2에 직접 주입하지 않는다."
 
 [[case]]
 id = "T-EDGE-23"
@@ -637,8 +641,8 @@ reason = "affected Listener 격리는 검증하지만 replacement Gateway와 다
 
 [[case]]
 id = "T-EDGE-24"
-status = "gap"
-reason = "RT transport identity mismatch를 Gateway OPEN 경로에 주입한 테스트가 없다."
+status = "executable"
+rust = ["gateway::effects::tests::identity_failure_preserves_local_state_and_only_new_open_resolves_again"]
 
 [[case]]
 id = "T-EDGE-25"
@@ -659,8 +663,9 @@ reason = "A와 B recovery 및 C timeout은 각각 검증하지만 한 session에
 
 [[case]]
 id = "T-EDGE-28"
-status = "gap"
-reason = "silent partition으로 old와 new Listener binding이 동시에 존재한 뒤 old OFFER가 만료되는 조합이 없다."
+status = "partial"
+rust = ["unanswered_offer_closes_selected_listener_and_preserves_sibling", "desired_listener_is_registered_again_on_new_session"]
+reason = "old/new binding 공존 뒤 selected old OFFER timeout과 SDK recovery는 각각 검증하지만 silent partition의 response loss부터 한 sequence로 합성하지 않는다."
 
 [[case]]
 id = "T-EDGE-29"
@@ -692,16 +697,17 @@ reason = "accept와 disconnect 및 recovery rejection은 각각 검증하지만 
 [[case]]
 id = "T-EDGE-34"
 status = "partial"
-rust = ["peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
 reason = "commit observation과 RESET 실패는 검증하지만 pre/post commit cancel과 SDK OPENED 경쟁 전체를 제어하지 못한다."
 
 [[case]]
 id = "T-EDGE-35"
-status = "gap"
-reason = "A counter 할당 뒤 writer를 지연한 상태에서 B를 진행하는 순서를 결정적으로 주입하는 테스트가 없다."
+status = "partial"
+rust = ["peer::transport::tests::writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter"]
+reason = "actor ordering과 failed counter 비재사용은 검증하지만 A가 counter를 할당한 뒤 writer commit 전 정지한 상태에서 B command를 경합시키지는 않는다."
 
 [[case]]
 id = "T-EDGE-36"
 status = "partial"
-rust = ["peer::runtime_tests::wrong_trusted_key_fails_before_open_commit_without_ready_transport", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots"]
-reason = "잘못된 key와 spoof는 검증하지만 valid G2 뒤 old runtime frame 지연 도착까지 결합하지 않는다."
+rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer::runtime_tests::wrong_trusted_key_fails_before_open_commit_without_ready_transport", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots"]
+reason = "같은 locator의 새 incarnation과 stale handshake 차단은 검증하지만 valid G2 연결 뒤 old runtime frame 지연 도착까지 결합하지 않는다."

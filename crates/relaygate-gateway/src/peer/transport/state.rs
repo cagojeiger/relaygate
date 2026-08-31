@@ -96,7 +96,20 @@ impl TransportActor {
     }
 
     pub(super) async fn expire_open_deadlines(&mut self) {
-        let now = Instant::now();
+        self.expire_open_deadlines_at(Instant::now()).await;
+    }
+
+    #[cfg(test)]
+    pub(super) async fn expire_open_deadlines_at(&mut self, now: Instant) {
+        self.expire_open_deadlines_before(now).await;
+    }
+
+    #[cfg(not(test))]
+    async fn expire_open_deadlines_at(&mut self, now: Instant) {
+        self.expire_open_deadlines_before(now).await;
+    }
+
+    async fn expire_open_deadlines_before(&mut self, now: Instant) {
         let expired: Vec<StreamId> = self
             .streams
             .iter()

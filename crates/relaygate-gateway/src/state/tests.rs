@@ -1573,13 +1573,14 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
         })
         .ok_or("missing live offer")?;
     state.handle(listener, Frame::OfferAccepted { pipe_id: live_pipe })?;
-    let before_open = Instant::now();
-    let offered = state.handle(
+    let offered_at = Instant::now();
+    let offered = state.handle_at(
         connector,
         Frame::Open {
             connection_id: 2,
             client_id: "echo.shared".to_owned(),
         },
+        offered_at,
     )?;
     let expired_pipe = sdk_deliveries(&offered)
         .find_map(|delivery| match delivery.frame {
@@ -1588,7 +1589,11 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
         })
         .ok_or("missing offer")?;
 
-    let expired = state.expire_offers(before_open + Duration::from_millis(20));
+    let not_expired = state.expire_offers(offered_at + Duration::from_millis(9));
+    assert!(not_expired.is_empty());
+    assert_eq!(state.pending_offer_count(), 1);
+
+    let expired = state.expire_offers(offered_at + Duration::from_millis(10));
     assert!(sdk_deliveries(&expired).any(|delivery| matches!(
         delivery.frame,
         Frame::OpenFailed {

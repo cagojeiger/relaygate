@@ -77,7 +77,7 @@ impl TransportActor {
         }
     }
 
-    fn open(&mut self, request: PeerOpenRequest) -> Result<PeerStreamKey, PeerFailure> {
+    pub(super) fn open(&mut self, request: PeerOpenRequest) -> Result<PeerStreamKey, PeerFailure> {
         if self.streams.len() >= self.config.max_streams_per_transport {
             self.active_opens.release(request.open_identity());
             return Err(PeerFailure::not_observed(
@@ -100,22 +100,9 @@ impl TransportActor {
             listener_session_id: request.listener_session_id(),
             binding_id: request.binding_id(),
         };
-        match self.aggregate_writer.try_send(frame) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                self.active_opens.release(request.open_identity());
-                return Err(PeerFailure::not_observed(
-                    ErrorCode::ResourceExhausted,
-                    "peer aggregate writer queue is full before OPEN commit",
-                ));
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.active_opens.release(request.open_identity());
-                return Err(PeerFailure::not_observed(
-                    ErrorCode::Unavailable,
-                    "peer transport closed before OPEN commit",
-                ));
-            }
+        if let Err(failure) = PeerFrameCommit::open(&self.aggregate_writer, frame) {
+            self.active_opens.release(request.open_identity());
+            return Err(failure);
         }
         self.streams.insert(
             stream_id,
@@ -315,5 +302,27 @@ impl TransportActor {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PeerFrameCommit;
+
+impl PeerFrameCommit {
+    fn open(
+        aggregate_writer: &mpsc::Sender<PeerFrame>,
+        frame: PeerFrame,
+    ) -> Result<Self, PeerFailure> {
+        match aggregate_writer.try_send(frame) {
+            Ok(()) => Ok(Self),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(PeerFailure::not_observed(
+                ErrorCode::ResourceExhausted,
+                "peer aggregate writer queue is full before OPEN commit",
+            )),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(PeerFailure::not_observed(
+                ErrorCode::Unavailable,
+                "peer transport closed before OPEN commit",
+            )),
+        }
     }
 }

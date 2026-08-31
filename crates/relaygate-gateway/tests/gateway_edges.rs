@@ -294,8 +294,11 @@ async fn unanswered_offer_closes_selected_listener_and_preserves_sibling() -> Te
     .await?;
     let mut listener = sdk_session(gateway.address, SessionRole::Listener).await?;
     let mut sibling = sdk_session(gateway.address, SessionRole::Listener).await?;
-    register(&mut listener, 1).await?;
+    // Model a silent partition where the old ListenerSession is still present
+    // while the recovered SDK has already registered a new session/binding.
+    let stale_binding = register(&mut listener, 1).await?;
     let sibling_binding = register(&mut sibling, 2).await?;
+    assert_ne!(stale_binding, sibling_binding);
     let mut connector = sdk_session(gateway.address, SessionRole::Connector).await?;
 
     let expired_pipe = request_offer(&mut connector, &mut listener, 1).await?;

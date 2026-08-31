@@ -26,6 +26,7 @@ use crate::{
 
 mod distributed;
 mod effects;
+mod route_resolver;
 
 use distributed::DistributedRuntime;
 use effects::ControlEffects;
@@ -113,6 +114,7 @@ impl Gateway {
         let control_effects = distributed.as_ref().map(|runtime| {
             ControlEffects::new(
                 config.max_pending_offers,
+                Arc::new(runtime.routing()),
                 runtime.action_results(),
                 runtime.shutdown(),
             )
