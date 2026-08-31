@@ -36,6 +36,7 @@ pub async fn accept_session(
     Ok((transport, session_id))
 }
 
+#[allow(dead_code)]
 pub async fn next_application_frame(transport: &mut TestTransport) -> TestResult<Frame> {
     loop {
         let frame = transport

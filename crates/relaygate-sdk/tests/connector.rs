@@ -6,7 +6,10 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{Frame, PipeId, SessionRole};
 use relaygate_sdk::{Config, Connector, ErrorCode, PeerObservation};
-use tokio::time::{Instant, timeout};
+use tokio::{
+    sync::oneshot,
+    time::{Instant, timeout},
+};
 
 use support::{
     TestResult, accept_session, answer_heartbeats_for, bind_gateway, next_application_frame,
@@ -339,6 +342,57 @@ async fn committed_open_is_not_replayed_and_reports_maybe_observed_case() -> Tes
         .err()
         .ok_or_else(|| io::Error::other("OPEN unexpectedly succeeded"))?;
     assert_eq!(error.observation(), PeerObservation::MaybeObserved);
+    server.await??;
+    connector.close();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_committed_open_sends_one_cancel() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        cancelling_committed_open_sends_one_cancel_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn cancelling_committed_open_sends_one_cancel_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let (open_seen_tx, open_seen_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
+        let frame = next_application_frame(&mut transport).await?;
+        let pipe_id = match frame {
+            Frame::Open { connection_id, .. } => PipeId::new(session_id, connection_id),
+            other => return Err(unexpected(other).into()),
+        };
+        let _ = open_seen_tx.send(());
+
+        let cancelled = next_application_frame(&mut transport).await?;
+        if !matches!(cancelled, Frame::Cancel { pipe_id: id } if id == pipe_id) {
+            return Err(unexpected(cancelled).into());
+        }
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                next_application_frame(&mut transport)
+            )
+            .await
+            .is_err(),
+            "cancelled OPEN emitted more than one terminal frame"
+        );
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector = Connector::connect(Config::new(address)).await?;
+    let opening = tokio::spawn({
+        let connector = connector.clone();
+        async move { connector.open("echo.alpha").await }
+    });
+    open_seen_rx.await?;
+    opening.abort();
+    assert!(opening.await.is_err());
     server.await??;
     connector.close();
     Ok(())

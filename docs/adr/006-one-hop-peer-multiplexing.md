@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Proposed |
+| 상태 | Accepted |
 | 전제 | [ADR 001](001-relayed-pipe-responsibility-boundary.md), [ADR 002](002-application-protocol-boundary.md), [ADR 004](004-current-state-routing-topology.md) |
 
 ## 맥락

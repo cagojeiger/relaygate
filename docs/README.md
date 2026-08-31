@@ -1,79 +1,12 @@
 # RelayGate 설계 문서
 
-> 상태: Proposed. ADR을 먼저 확정하고, SPEC과 TEST는 ADR에서 파생한다.
+이 디렉터리는 RelayGate의 결정, 관찰 가능한 계약과 검증 근거의 기준이다.
 
 ```text
 RelayGate = logical destination resolution
           + one-hop Pipe establishment
           + opaque bidirectional byte relay
 ```
-
-## 전체 구조
-
-```text
-Listener SDK
-     │ long-lived session + registration
-     ▼
-Owner Gateway × G
-     │ Gateway-local ListenerBinding = truth
-     │ Register lease + Update(current snapshot)
-     ▼
-RouteTable shard × R
-     │ immutable ShardDirectoryGeneration
-     │ ClientId -> BindingSet<MappingEntry>
-     │ Resolve(AuthenticatedGatewayId, Generation, ClientId)
-     ▼
-Entry Gateway × G
-     ├── local binding ─────────────────────► Listener SDK
-     └── remote binding ─► Owner Gateway ──► Listener SDK
-                            one hop
-
-Connector SDK ── ConnectorSession + open(ClientId) ──► Entry Gateway
-```
-
-Phase 1 Rust API에서 `Connector::connect(Config)`는 SDK-Gateway session을 만들고,
-`connector.open(ClientId)`가 Listener 하나를 선택하는 논리적 연결을 시작한다.
-
-```text
-Authority(Generation, ClientId) = exactly 1 logical shard
-Endpoint(Generation, ShardId)   = exactly 1 stable logical endpoint
-Mappings(ClientId)              = 0..N live mapping entries
-Payload는 RouteTable을 통과하지 않는다.
-
-Generation = SHA-256(exact ShardDirectory artifact bytes)
-```
-
-Gateway는 RT 전체 mapping을 복제하거나 구독하지 않는다. 자신이 소유한 current binding만
-active registration lease의 session-shard snapshot으로 갱신하고, 원격 연결이 필요할 때 해당 `ClientId`의 `BindingSet`만
-조회한다.
-
-등록 관계와 실제 연결은 다르다.
-
-```text
-ClientId *  ◄──── ListenerBinding ────►  * ListenerSession
-
-registration = many-to-many
-actual Pipe  = Connector 1 : 1 Listener
-
-one Listener SDK runtime
-  └── ClientId별 non-CLOSED Listener handle 0..1
-
-one unordered Gateway pair
-  ├── A가 dial한 reusable PeerTransport 0..1
-  └── B가 dial한 reusable PeerTransport 0..1
-
-one PeerTransport
-  ├── dialer StreamId   = 0, 2, 4, ...
-  ├── acceptor StreamId = 1, 3, 5, ...
-  └── FIN(one direction) | CLOSE(normal) | RESET(failure)
-
-transport liveness
-  ├── SDK-Gateway session       = activity-aware Ping/Pong
-  ├── PeerTransport streams > 0 = activity-aware Ping/Pong
-  └── PeerTransport streams = 0 = idle-retirement timer
-```
-
-RT는 새 registration에 `LeaseId`를 발급한다. `Update`와 `KeepAlive`는 active lease에만 적용되고, `Deregister`, expiry 또는 RT restart로 종료된 lease의 늦은 operation은 mapping을 되살리지 못한다. Owner Gateway는 mapping이 active여도 `OPEN` 시점에 `BindingId`를 다시 검증한다.
 
 ## 책임
 
@@ -104,7 +37,18 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | `spec/` | 외부에서 관찰되는 동작은 무엇인가? | 객체, interface, 상태, 오류, timeout, retry |
 | `test/` | 계약을 어떻게 증명하는가? | SPEC requirement와 test 대응 |
 
-같은 규칙을 여러 문서에서 다시 정의하지 않는다. 상태와 오류의 최종 권위는 SPEC이며, TEST는 새 규칙을 만들지 않는다.
+같은 규칙을 여러 문서에서 다시 정의하지 않는다. 상태와 오류의 최종 권위는 SPEC이며,
+TEST는 새 규칙을 만들지 않는다.
+
+## 현재 구현과 검증 범위
+
+현재 Rust 구현은 memory-only RouteTable 1개와 Gateway 3개의 one-hop profile에서 local/remote
+Pipe 수립, RT 단절·재시작, Gateway 재시작과 current-state 재등록의 주요 경로를 CI로 검증한다.
+[TEST 004](test/004-rt1-gw3-closed-loop-test-plan.md)가 이 profile을 정의한다.
+
+이는 [TEST 001](test/001-requirement-test-matrix.md)의 모든 경쟁 조건과 조합이 실행으로 완전히
+증명되었다는 뜻은 아니다. 전체 요구사항의 현재 실행 증거와 `partial` 범위는
+[`001-executable-coverage.toml`](test/001-executable-coverage.toml)이 기준이다.
 
 ## ADR
 

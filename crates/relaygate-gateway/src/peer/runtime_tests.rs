@@ -311,6 +311,49 @@ async fn wrong_trusted_key_fails_before_open_commit_without_ready_transport() ->
 }
 
 #[tokio::test]
+async fn handshake_timeout_fails_before_open_commit_and_leaves_no_transport_state() -> TestResult {
+    let listener_a = TcpListener::bind("127.0.0.1:0").await?;
+    let blackhole = TcpListener::bind("127.0.0.1:0").await?;
+    let gateway_a = GatewayId::new();
+    let gateway_b = GatewayId::new();
+    let locator_b = GatewayLocator::new(blackhole.local_addr()?.to_string())?;
+    let shutdown_a = CancellationToken::new();
+    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?.with_timeouts(
+        Duration::from_millis(500),
+        Duration::from_millis(40),
+        Duration::from_secs(1),
+    );
+    let (handle_a, _events_a, runtime_a) =
+        PeerRuntime::start(config_a, gateway_a, shutdown_a.clone())?;
+    let serve_a = tokio::spawn(runtime_a.serve(listener_a));
+    let blackhole_task = tokio::spawn(async move {
+        let (_stream, _) = blackhole.accept().await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    });
+
+    let request = PeerOpenRequest::new(
+        PeerTarget::new(gateway_b, locator_b),
+        OpenIdentity::new(gateway_a, SessionId::new(), 1),
+        "echo.b",
+        SessionId::new(),
+        BindingId::new(),
+    )?;
+    let failure = tokio::time::timeout(Duration::from_secs(1), handle_a.open(request))
+        .await?
+        .err()
+        .ok_or("expected peer handshake timeout")?;
+    assert_eq!(failure.code(), ErrorCode::DeadlineExceeded);
+    assert_eq!(failure.observation(), PeerObservation::NotObserved);
+    assert_eq!(handle_a.counts(), Default::default());
+
+    shutdown_a.cancel();
+    blackhole_task.await??;
+    tokio::time::timeout(Duration::from_secs(2), serve_a).await???;
+    Ok(())
+}
+
+#[tokio::test]
 async fn authenticated_peer_cannot_spoof_open_entry_gateway() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let locator = GatewayLocator::new(listener.local_addr()?.to_string())?;

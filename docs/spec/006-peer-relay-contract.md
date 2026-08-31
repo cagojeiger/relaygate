@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active |
 | 근거 | [ADR 006](../adr/006-one-hop-peer-multiplexing.md), [ADR 007](../adr/007-transport-liveness-and-idle-retirement.md) |
 | 관련 계약 | [SPEC 005](005-connection-establishment-contract.md), [SPEC 007](007-error-and-state-model.md) |
 

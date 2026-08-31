@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Proposed |
+| 상태 | Accepted |
 | 전제 | [ADR 001](001-relayed-pipe-responsibility-boundary.md) |
 
 ## 맥락

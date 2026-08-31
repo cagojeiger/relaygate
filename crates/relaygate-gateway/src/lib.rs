@@ -1,4 +1,4 @@
-//! Single-Gateway local relay runtime.
+//! Gateway runtime for local and one-hop relayed Pipes.
 //!
 //! The crate owns live SDK sessions, local listener bindings, OPEN admission,
 //! byte relay, and cleanup. Process configuration and signal handling belong to

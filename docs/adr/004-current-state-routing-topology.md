@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Proposed |
+| 상태 | Accepted |
 | 전제 | [ADR 003](003-client-id-listener-binding.md) |
 
 ## 맥락

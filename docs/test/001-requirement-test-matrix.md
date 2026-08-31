@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Draft |
+| 상태 | Active |
 | 기준 | [SPEC 001](../spec/001-terminology-and-object-model.md) ~ [SPEC 008](../spec/008-runtime-observability-contract.md) |
 
 이 문서는 SPEC 요구사항을 검증 시나리오에 연결한다. 새로운 동작 규칙은 정의하지 않는다.
