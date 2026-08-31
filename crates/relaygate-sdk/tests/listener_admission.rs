@@ -366,6 +366,89 @@ async fn stalled_listener_transport_send_times_out_and_cleans_up_session_case() 
 }
 
 #[tokio::test]
+async fn cancelling_runtime_during_stalled_listener_send_cleans_up_session() -> TestResult {
+    timeout(
+        Duration::from_secs(5),
+        cancelling_runtime_during_stalled_listener_send_cleans_up_session_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn cancelling_runtime_during_stalled_listener_send_cleans_up_session_case() -> TestResult {
+    let (gateway, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let register = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing REGISTER"))??;
+        let request_id = match register {
+            Frame::Register { request_id, .. } => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        let binding_id = BindingId::new();
+        transport
+            .send(Frame::Registered {
+                request_id,
+                binding_id,
+            })
+            .await?;
+
+        let pipe_id = PipeId::new(SessionId::new(), 1);
+        transport
+            .send(Frame::Offer {
+                pipe_id,
+                binding_id,
+                client_id: "echo.alpha".to_owned(),
+            })
+            .await?;
+        let accepted = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing OFFER_ACCEPTED"))??;
+        if !matches!(accepted, Frame::OfferAccepted { pipe_id: id } if id == pipe_id) {
+            return Err(unexpected(accepted).into());
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(transport);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_secs(1))
+            .with_outbound_capacity(1)
+            .with_reconnect_backoff(Duration::from_secs(1), Duration::from_secs(1)),
+    )
+    .await?;
+    let listener = runtime.listen("echo.alpha", "dev-key").await?;
+    let mut pipe = listener.accept().await?;
+    let mut writer = tokio::spawn(async move {
+        let payload = vec![0_u8; 32 * 1024 * 1024];
+        pipe.write_all_bytes(&payload).await
+    });
+
+    if let Ok(result) = timeout(Duration::from_millis(50), &mut writer).await {
+        return Err(io::Error::other(format!(
+            "listener write did not reach stalled state before cancellation: {result:?}"
+        ))
+        .into());
+    }
+
+    runtime.close();
+    let result = timeout(Duration::from_secs(2), writer).await??;
+    let error = result
+        .err()
+        .ok_or_else(|| io::Error::other("cancelled runtime allowed stalled write to succeed"))?;
+    assert_eq!(error.code(), ErrorCode::Unavailable);
+    assert_eq!(listener.status(), ListenerStatus::Closed);
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn stale_and_duplicate_offers_never_enqueue_a_second_pipe() -> TestResult {
     timeout(
         Duration::from_secs(3),
