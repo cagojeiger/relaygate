@@ -327,3 +327,91 @@ async fn pending_accept_observes_close_before_a_racing_pipe()
     assert_eq!(abandoned_rx.recv().await, Some(pipe_id));
     Ok(())
 }
+
+#[tokio::test]
+async fn cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let alpha_state = listener_state("echo.alpha");
+    let beta_state = listener_state("echo.beta");
+    let inner = Arc::new(ListenerRuntimeInner {
+        config: Config::new("unused").with_operation_timeout(Duration::from_secs(2)),
+        desired: std::sync::Mutex::new(HashMap::from([
+            (alpha_state.client_id.clone(), Arc::clone(&alpha_state)),
+            (beta_state.client_id.clone(), Arc::clone(&beta_state)),
+        ])),
+        reconcile: Arc::new(tokio::sync::Notify::new()),
+        cancel: CancellationToken::new(),
+        lifetime: std::sync::Weak::new(),
+    });
+    let lifetime = Arc::new(crate::lifetime::RuntimeLifetime::new(
+        CancellationToken::new(),
+    ));
+    let alpha = Arc::new(Listener {
+        inner: Arc::clone(&inner),
+        _lifetime: Arc::clone(&lifetime),
+        state: Arc::clone(&alpha_state),
+    });
+    let beta = Arc::new(Listener {
+        inner,
+        _lifetime: lifetime,
+        state: Arc::clone(&beta_state),
+    });
+
+    let (outbound, _outbound_rx) = mpsc::channel(2);
+    let (alpha_abandoned, mut alpha_abandoned_rx) = mpsc::unbounded_channel();
+    let alpha_pipe_id = PipeId::new(SessionId::new(), 13);
+    let (alpha_pipe, _alpha_pipe_state) =
+        PipeState::pair(alpha_pipe_id, outbound.clone(), 1, alpha_abandoned);
+    let (beta_abandoned, mut beta_abandoned_rx) = mpsc::unbounded_channel();
+    let beta_pipe_id = PipeId::new(SessionId::new(), 14);
+    let (beta_pipe, _beta_pipe_state) = PipeState::pair(beta_pipe_id, outbound, 1, beta_abandoned);
+    beta_state
+        .incoming_tx
+        .send(beta_pipe)
+        .await
+        .map_err(|_| "failed to enqueue sibling test Pipe")?;
+
+    let first_accept = {
+        let alpha = Arc::clone(&alpha);
+        tokio::spawn(async move { alpha.accept().await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Ok(receiver) = alpha_state.incoming_rx.try_lock() {
+            drop(receiver);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+
+    let other_accept = {
+        let alpha = Arc::clone(&alpha);
+        tokio::spawn(async move { alpha.accept().await })
+    };
+    tokio::task::yield_now().await;
+    assert!(!other_accept.is_finished());
+
+    first_accept.abort();
+    let cancellation = first_accept
+        .await
+        .err()
+        .ok_or("aborted accept unexpectedly completed")?;
+    assert!(cancellation.is_cancelled());
+    assert_eq!(alpha.status(), ListenerStatus::Active);
+    assert_eq!(beta.status(), ListenerStatus::Active);
+
+    alpha_state
+        .incoming_tx
+        .send(alpha_pipe)
+        .await
+        .map_err(|_| "failed to enqueue replacement accept test Pipe")?;
+    let accepted_alpha = tokio::time::timeout(Duration::from_secs(1), other_accept).await???;
+    let accepted_beta = tokio::time::timeout(Duration::from_secs(1), beta.accept()).await??;
+
+    drop(accepted_alpha);
+    drop(accepted_beta);
+    assert_eq!(alpha_abandoned_rx.recv().await, Some(alpha_pipe_id));
+    assert_eq!(beta_abandoned_rx.recv().await, Some(beta_pipe_id));
+    alpha.close().await?;
+    beta.close().await?;
+    Ok(())
+}

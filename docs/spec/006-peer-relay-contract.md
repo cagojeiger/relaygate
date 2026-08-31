@@ -3,7 +3,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Draft |
-| 근거 | [ADR 006](../adr/006-one-hop-peer-multiplexing.md) |
+| 근거 | [ADR 006](../adr/006-one-hop-peer-multiplexing.md), [ADR 007](../adr/007-transport-liveness-and-idle-retirement.md) |
 | 관련 계약 | [SPEC 005](005-connection-establishment-contract.md), [SPEC 007](007-error-and-state-model.md) |
 
 ## 범위
@@ -52,6 +52,8 @@ DATA(StreamId, Bytes)
 FIN(StreamId)          # sender -> receiver 방향 EOF
 CLOSE(StreamId)        # 정상적인 전체 stream 종료
 RESET(StreamId, Error) # 실패에 의한 전체 stream 종료
+PING(Nonce)            # transport liveness probe
+PONG(Nonce)            # transport liveness response
 ```
 
 `OPENING` stream의 `RESET(CANCELLED)`은 remote OPEN 취소와 cleanup을 함께 표현한다. 별도
@@ -77,7 +79,35 @@ claimed `GatewayId`만으로 `READY`가 될 수 없고 key는 로그나 stream s
 밖이다. transport-local `StreamId` 검증과 current-state cleanup을 durable replay protection으로
 확대해서는 안 된다.
 
+`PING`과 `PONG`은 transport-level control frame이다. 특정 `StreamId`나 Pipe에 속하지 않으며
+application payload 처리, delivery acknowledgement 또는 peer health score로 해석하지 않는다.
+
 frame의 encoding과 underlying transport는 범위가 아니지만 위 frame의 상태 의미는 구현에 관계없이 동일하다.
+
+## PeerTransport liveness와 idle retirement
+
+```text
+PeerTransport READY
+  ├── stream_count > 0
+  │     └── activity-aware PING/PONG
+  │           timeout -> transport close -> contained streams/Pipes fail
+  └── stream_count == 0
+        └── no keepalive
+              idle-retire timeout -> normal transport close
+```
+
+`PeerTransport` heartbeat는 stream이 하나 이상 있는 동안만 필요하다. DATA, FIN, CLOSE, RESET,
+OPEN, OPENED, FAILED, PING을 포함한 valid inbound frame은 `PING` 전송 전에는 heartbeat
+timer를 연장할 수 있다. configured idle interval 동안 inbound activity가 없으면 endpoint는
+`PING`을 commit하고, configured response deadline 전에 matching `PONG`을 확인하지 못하면 해당
+`PeerTransport`를 닫는다. unrelated inbound frame과 outbound write는 commit된 probe를
+만족시키지 않는다. pending probe가 없거나 nonce가 일치하지 않는 `PONG`도 liveness 근거로
+사용하지 않는다. response deadline 이후의 늦은 matching `PONG`도 probe를 만족시키지 않는다.
+
+stream 수가 0이 되면 endpoint는 heartbeat를 멈추고 idle-retirement timer를 시작한다. 새 stream이
+그 transport를 재사용하면 timer를 취소한다. timer가 만료되면 transport를 정상 종료하고 slot은
+이후 lazy connect 가능한 상태로 돌아간다. zero-stream transport에는 keepalive traffic을 보내지
+않는다.
 
 ## 요구사항
 
@@ -108,6 +138,8 @@ frame의 encoding과 underlying transport는 범위가 아니지만 위 frame의
 | `PEER-023` | connect 또는 handshake deadline은 candidate를 `CLOSED`, 해당 slot을 `IDLE`로 만들고 peer `OPEN` commit 전 attempt를 `NOT_OBSERVED`로 실패시켜야 한다. commit 뒤 terminal result deadline 또는 transport loss는 `MAYBE_OBSERVED`다. peer `OPENED` 수신은 Listener queue admission을 확인하고 RelayStream을 열지만 external `OBSERVED`는 Connector SDK의 `OPENED` 확인 뒤에만 성립한다. `OPENING` stream cancel은 `RESET(CANCELLED)`로 표현하고 별도 `CANCEL` frame, 같은 attempt replay·reroute·resume를 두어서는 안 된다. |
 | `PEER-024` | 최초 local/CI adapter는 Gateway별 `InternalGatewayKey`를 constant-time으로 검증하고 성공한 connection의 fresh runtime `GatewayId`에 peer identity를 결합해야 한다. unknown name·잘못된 key는 `UNAUTHENTICATED`, name/key 검증 뒤 다른 runtime owner·pair·direction claim은 `PERMISSION_DENIED`다. 둘 다 candidate를 stream 없이 `CLOSED`, 해당 OPEN을 `NOT_OBSERVED`로 끝내야 한다. key를 로그·RelayStream state에 기록하거나 plain TCP adapter를 production confidentiality/integrity 보장으로 표현해서는 안 된다. 인증을 통과한 conforming Gateway를 신뢰하며 Byzantine peer의 semantic replay 방어는 이 계약의 범위가 아니다. |
 | `PEER-025` | Gateway 상태 전이를 전달하는 bounded `PeerEvent` queue가 실행 중 Full이면 event를 버리거나 peer manager를 block하지 않고 peer runtime을 `RESOURCE_EXHAUSTED` terminal로 끝내야 한다. receiver가 실행 중 닫히면 `UNAVAILABLE` terminal이다. 두 경우 distributed Gateway는 fail-closed shutdown으로 current PeerTransport와 SDK session을 정리한다. 이미 시작된 정상 shutdown 중 Full 또는 Closed는 새 장애가 아니라 idempotent cleanup으로 처리한다. |
+| `PEER-026` | `stream_count > 0`인 READY PeerTransport는 activity-aware heartbeat를 수행해야 한다. idle interval 동안 valid inbound activity가 없으면 `PING`을 commit하고 configured response deadline 전에 matching `PONG`을 확인하지 못하면 transport loss와 같이 해당 PeerTransport를 닫아 그 안의 RelayStream과 Pipe를 terminal cleanup해야 한다. unrelated inbound frame, outbound write, nonce가 다른 `PONG`, deadline 이후의 늦은 `PONG`은 commit된 probe를 만족시키지 않는다. |
+| `PEER-027` | `stream_count == 0`인 READY PeerTransport는 keepalive를 보내지 않고 idle-retirement timer만 유지해야 한다. 새 stream이 재사용하면 timer를 취소하고, timeout까지 재사용되지 않으면 transport를 정상 종료해야 한다. 이 종료는 기존 Pipe replay, reroute 또는 payload resume을 만들지 않는다. |
 
 ## 연결 수 증가
 
@@ -121,7 +153,7 @@ Gateway 수 G의 full mesh 최악값
   전체 READY transport                 <= G(G - 1)
 ```
 
-두 READY transport 사이의 stream 선택, idle retirement, transport protocol, flow-control 수치와
+두 READY transport 사이의 stream 선택, transport protocol, flow-control 수치와
 scheduling algorithm은 이 계약의 범위가 아니다. 선택 정책은 어느 transport를 사용해도 Pipe의
 정확성이나 failure isolation 의미를 바꾸어서는 안 된다.
 

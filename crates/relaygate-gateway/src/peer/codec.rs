@@ -28,6 +28,8 @@ const DATA: u8 = 7;
 const FIN: u8 = 8;
 const CLOSE: u8 = 9;
 const RESET: u8 = 10;
+const PING: u8 = 11;
+const PONG: u8 = 12;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PeerCodecError {
@@ -171,6 +173,8 @@ fn frame_metadata(frame: &PeerFrame) -> Result<(u8, usize), PeerCodecError> {
         PeerFrame::Reset { message, .. } => {
             (RESET, checked_add(9, string_wire_len("message", message)?)?)
         }
+        PeerFrame::Ping { .. } => (PING, 8),
+        PeerFrame::Pong { .. } => (PONG, 8),
     };
     Ok(metadata)
 }
@@ -250,6 +254,9 @@ fn encode_payload(frame: PeerFrame, destination: &mut BytesMut) -> Result<(), Pe
             destination.put_u64(stream_id.raw());
             destination.put_u8(code as u8);
             put_string(destination, "message", &message)?;
+        }
+        PeerFrame::Ping { nonce } | PeerFrame::Pong { nonce } => {
+            destination.put_u64(nonce);
         }
     }
     Ok(())
@@ -355,6 +362,12 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<PeerFrame, PeerCodecError>
             stream_id: reader.stream_id()?,
             code: reader.error_code()?,
             message: reader.string("message")?,
+        },
+        PING => PeerFrame::Ping {
+            nonce: reader.u64("nonce")?,
+        },
+        PONG => PeerFrame::Pong {
+            nonce: reader.u64("nonce")?,
         },
         other => return Err(PeerCodecError::UnknownFrameKind(other)),
     };

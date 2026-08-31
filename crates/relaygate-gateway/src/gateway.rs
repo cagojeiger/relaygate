@@ -10,7 +10,7 @@ use tokio::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
     sync::{Semaphore, mpsc},
     task::JoinSet,
-    time::timeout,
+    time::{sleep_until, timeout},
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
@@ -26,9 +26,12 @@ use crate::{
 
 mod distributed;
 mod effects;
+mod heartbeat;
+mod route_resolver;
 
 use distributed::DistributedRuntime;
 use effects::ControlEffects;
+use heartbeat::SessionHeartbeat;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_OFFER_SWEEP_INTERVAL: Duration = Duration::from_millis(10);
@@ -44,6 +47,8 @@ struct Inner {
     writer_queue_capacity: usize,
     max_frame_len: usize,
     offer_timeout: Duration,
+    heartbeat_idle_interval: Duration,
+    heartbeat_response_timeout: Duration,
     session_slots: Arc<Semaphore>,
     routing: Option<RoutingHandle>,
     peer: Option<PeerHandle>,
@@ -113,6 +118,7 @@ impl Gateway {
         let control_effects = distributed.as_ref().map(|runtime| {
             ControlEffects::new(
                 config.max_pending_offers,
+                Arc::new(runtime.routing()),
                 runtime.action_results(),
                 runtime.shutdown(),
             )
@@ -130,6 +136,8 @@ impl Gateway {
                 writer_queue_capacity: config.writer_queue_capacity,
                 max_frame_len: config.max_frame_len,
                 offer_timeout: config.offer_timeout,
+                heartbeat_idle_interval: config.heartbeat_idle_interval,
+                heartbeat_response_timeout: config.heartbeat_response_timeout,
                 session_slots: Arc::new(Semaphore::new(config.max_sessions)),
                 routing,
                 peer,
@@ -272,6 +280,7 @@ impl Inner {
         };
 
         let (sender, receiver) = mpsc::channel(self.writer_queue_capacity);
+        let heartbeat_sender = sender.clone();
         let Some(session_id) = self
             .lock_state()
             .add_session(role, sender, cancellation.clone())
@@ -283,7 +292,12 @@ impl Inner {
             return Err(SessionError::Protocol(error));
         }
         let (sink, source) = framed.split();
-        let read = Arc::clone(&self).read_frames(session_id, source);
+        let read = Arc::clone(&self).read_frames(
+            session_id,
+            heartbeat_sender,
+            source,
+            cancellation.clone(),
+        );
         let write = write_frames(receiver, sink);
         let result = tokio::select! {
             _ = cancellation.cancelled() => Ok(()),
@@ -298,16 +312,56 @@ impl Inner {
     async fn read_frames(
         self: Arc<Self>,
         session_id: relaygate_protocol::SessionId,
+        sender: mpsc::Sender<Frame>,
         mut source: futures_util::stream::SplitStream<Framed<TcpStream, FrameCodec>>,
+        cancellation: CancellationToken,
     ) -> Result<(), SessionError> {
-        while let Some(frame) = source.next().await {
-            let actions = {
-                let mut state = self.lock_state();
-                let actions = state.handle(session_id, frame?)?;
-                self.commit_registration_actions(&actions);
-                actions
-            };
-            self.execute_all(actions).await;
+        let mut heartbeat = SessionHeartbeat::new(
+            self.heartbeat_idle_interval,
+            self.heartbeat_response_timeout,
+            session_id,
+            0x47,
+        );
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => break,
+                () = sleep_until(heartbeat.next_deadline()) => {
+                    let Some(frame) = heartbeat.on_deadline() else {
+                        tracing::debug!(
+                            component = "gateway",
+                            event = "gateway.session.heartbeat_timeout",
+                            session_id = %session_id.as_uuid(),
+                            "SDK session heartbeat response timed out"
+                        );
+                        break;
+                    };
+                    if sender.try_send(frame).is_err() {
+                        cancellation.cancel();
+                        break;
+                    }
+                }
+                frame = source.next() => {
+                    let Some(frame) = frame else { break; };
+                    let frame = frame?;
+                    heartbeat.observe_inbound(&frame);
+                    if heartbeat.response_timed_out() {
+                        tracing::debug!(
+                            component = "gateway",
+                            event = "gateway.session.heartbeat_timeout",
+                            session_id = %session_id.as_uuid(),
+                            "SDK session heartbeat response timed out"
+                        );
+                        break;
+                    }
+                    let actions = {
+                        let mut state = self.lock_state();
+                        let actions = state.handle(session_id, frame)?;
+                        self.commit_registration_actions(&actions);
+                        actions
+                    };
+                    self.execute_all(actions).await;
+                }
+            }
         }
         Ok(())
     }

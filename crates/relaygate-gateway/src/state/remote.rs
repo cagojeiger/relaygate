@@ -175,6 +175,25 @@ impl GatewayState {
         listener_session_id: SessionId,
         binding_id: BindingId,
     ) -> Vec<GatewayAction> {
+        self.receive_peer_open_at(
+            key,
+            open_identity,
+            client_id,
+            listener_session_id,
+            binding_id,
+            Instant::now(),
+        )
+    }
+
+    pub(crate) fn receive_peer_open_at(
+        &mut self,
+        key: PeerStreamKey,
+        open_identity: OpenIdentity,
+        client_id: String,
+        listener_session_id: SessionId,
+        binding_id: BindingId,
+        now: Instant,
+    ) -> Vec<GatewayAction> {
         if open_identity.entry_gateway() != key.peer_gateway_id() {
             return vec![
                 PeerDelivery::Failed {
@@ -266,7 +285,7 @@ impl GatewayState {
                 binding_id: binding.id,
                 open_identity: Some(open_identity),
                 phase: PipePhase::Offered,
-                offered_at: Instant::now(),
+                offered_at: now,
                 connector_finished: false,
                 listener_finished: false,
             },
@@ -288,6 +307,15 @@ impl GatewayState {
         &mut self,
         key: PeerStreamKey,
         open_identity: OpenIdentity,
+    ) -> Vec<GatewayAction> {
+        self.peer_opened_at(key, open_identity, Instant::now())
+    }
+
+    pub(crate) fn peer_opened_at(
+        &mut self,
+        key: PeerStreamKey,
+        open_identity: OpenIdentity,
+        now: Instant,
     ) -> Vec<GatewayAction> {
         let Some(attempt) = self.remote_open_attempts.get(&open_identity) else {
             if self.active_peer_opens.get(&open_identity) == Some(&key)
@@ -360,7 +388,7 @@ impl GatewayState {
                 binding_id,
                 open_identity: Some(open_identity),
                 phase: PipePhase::Open,
-                offered_at: Instant::now(),
+                offered_at: now,
                 connector_finished: false,
                 listener_finished: false,
             },

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use relaygate_protocol::{
@@ -154,7 +157,7 @@ struct PipeEntry {
     binding_id: BindingId,
     open_identity: Option<OpenIdentity>,
     phase: PipePhase,
-    offered_at: std::time::Instant,
+    offered_at: Instant,
     connector_finished: bool,
     listener_finished: bool,
 }
@@ -296,6 +299,15 @@ impl GatewayState {
         session_id: SessionId,
         frame: Frame,
     ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
+        self.handle_at(session_id, frame, Instant::now())
+    }
+
+    pub(crate) fn handle_at(
+        &mut self,
+        session_id: SessionId,
+        frame: Frame,
+        now: Instant,
+    ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
         let Some(role) = self.sessions.get(&session_id).map(|session| session.role) else {
             return Ok(Vec::new());
         };
@@ -319,7 +331,7 @@ impl GatewayState {
             Frame::Open {
                 connection_id,
                 client_id,
-            } => self.open(session_id, connection_id, client_id),
+            } => self.open(session_id, connection_id, client_id, now),
             Frame::OfferAccepted { pipe_id } => {
                 Self::send_actions(self.offer_accepted(session_id, pipe_id)?)
             }

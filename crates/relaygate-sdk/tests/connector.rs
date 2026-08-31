@@ -6,45 +6,48 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{Frame, PipeId, SessionRole};
 use relaygate_sdk::{Config, Connector, ErrorCode, PeerObservation};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
-use support::{TestResult, accept_session, bind_gateway, unexpected};
+use support::{
+    TestResult, accept_session, answer_heartbeats_for, bind_gateway, next_application_frame,
+    unexpected,
+};
 
 #[tokio::test]
-async fn idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout() -> TestResult {
+async fn idle_connector_session_uses_heartbeat_and_pipe_read_idle_is_not_a_timeout() -> TestResult {
     timeout(
         Duration::from_secs(3),
-        idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout_case(),
+        idle_connector_session_uses_heartbeat_and_pipe_read_idle_is_not_a_timeout_case(),
     )
     .await??;
     Ok(())
 }
 
-async fn idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout_case() -> TestResult {
+async fn idle_connector_session_uses_heartbeat_and_pipe_read_idle_is_not_a_timeout_case()
+-> TestResult {
     let (listener, address) = bind_gateway().await?;
     let (idle_checked_tx, idle_checked_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
-        if let Ok(frame) = timeout(Duration::from_millis(150), transport.next()).await {
-            return match frame {
-                Some(Ok(frame)) => Err(unexpected(frame).into()),
-                Some(Err(error)) => Err(error.into()),
-                None => Err(io::Error::other("idle ConnectorSession closed itself").into()),
-            };
-        }
-        let _ = idle_checked_tx.send(());
-
-        let open = transport
+        let heartbeat = transport
             .next()
             .await
-            .ok_or_else(|| io::Error::other("missing OPEN after idle period"))??;
+            .ok_or_else(|| io::Error::other("missing heartbeat PING"))??;
+        let nonce = match heartbeat {
+            Frame::Ping { nonce } => nonce,
+            other => return Err(unexpected(other).into()),
+        };
+        transport.send(Frame::Pong { nonce }).await?;
+        let _ = idle_checked_tx.send(());
+
+        let open = next_application_frame(&mut transport).await?;
         let connection_id = match open {
             Frame::Open { connection_id, .. } => connection_id,
             other => return Err(unexpected(other).into()),
         };
         let pipe_id = PipeId::new(session_id, connection_id);
         transport.send(Frame::Opened { pipe_id }).await?;
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        answer_heartbeats_for(&mut transport, Duration::from_millis(150)).await?;
         transport
             .send(Frame::Data {
                 pipe_id,
@@ -54,9 +57,12 @@ async fn idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout_case(
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     });
 
-    let connector =
-        Connector::connect(Config::new(address).with_operation_timeout(Duration::from_millis(50)))
-            .await?;
+    let connector = Connector::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_millis(50))
+            .with_heartbeat(Duration::from_millis(40), Duration::from_millis(40)),
+    )
+    .await?;
     idle_checked_rx.await?;
     let mut pipe = connector.open("echo.idle").await?;
     let mut byte = [0_u8; 1];
@@ -64,6 +70,117 @@ async fn idle_session_has_no_heartbeat_and_pipe_read_idle_is_not_a_timeout_case(
     assert_eq!(&byte, b"x");
     connector.close();
     server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn connector_heartbeat_timeout_closes_session_and_reconnects() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        connector_heartbeat_timeout_closes_session_and_reconnects_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn connector_heartbeat_timeout_closes_session_and_reconnects_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, initial_session_id) =
+            accept_session(&listener, SessionRole::Connector).await?;
+        let heartbeat = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing heartbeat PING"))??;
+        if !matches!(heartbeat, Frame::Ping { .. }) {
+            return Err(unexpected(heartbeat).into());
+        }
+        let ended = timeout(Duration::from_secs(1), transport.next()).await?;
+        if ended.is_some() {
+            return Err(
+                io::Error::other("heartbeat timeout did not close ConnectorSession").into(),
+            );
+        }
+
+        let (_replacement, replacement_session_id) =
+            accept_session(&listener, SessionRole::Connector).await?;
+        assert_ne!(initial_session_id, replacement_session_id);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector = Connector::connect(
+        Config::new(address)
+            .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20))
+            .with_heartbeat(Duration::from_millis(40), Duration::from_millis(40)),
+    )
+    .await?;
+    server.await??;
+    connector.close();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn matching_pong_is_not_starved_by_sustained_outbound_frames() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        matching_pong_is_not_starved_by_sustained_outbound_frames_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn matching_pong_is_not_starved_by_sustained_outbound_frames_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
+        let open = next_application_frame(&mut transport).await?;
+        let connection_id = match open {
+            Frame::Open { connection_id, .. } => connection_id,
+            other => return Err(unexpected(other).into()),
+        };
+        let pipe_id = PipeId::new(session_id, connection_id);
+        transport.send(Frame::Opened { pipe_id }).await?;
+
+        let mut answered_heartbeats = 0_usize;
+        loop {
+            let frame = transport
+                .next()
+                .await
+                .ok_or_else(|| io::Error::other("SDK session ended during outbound load"))??;
+            match frame {
+                Frame::Ping { nonce } => {
+                    transport.send(Frame::Pong { nonce }).await?;
+                    answered_heartbeats += 1;
+                }
+                Frame::Data {
+                    pipe_id: received, ..
+                } if received == pipe_id => {}
+                Frame::Close { pipe_id: closed } if closed == pipe_id => break,
+                other => return Err(unexpected(other).into()),
+            }
+        }
+        assert!(
+            answered_heartbeats > 0,
+            "test must overlap sustained outbound traffic with a heartbeat"
+        );
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector = Connector::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_millis(500))
+            .with_heartbeat(Duration::from_millis(30), Duration::from_millis(100))
+            .with_outbound_capacity(256),
+    )
+    .await?;
+    let mut pipe = connector.open("echo.loaded").await?;
+    let finish = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < finish {
+        pipe.write_all_bytes(b"x").await?;
+    }
+    pipe.close().await?;
+    server.await??;
+    connector.close();
     Ok(())
 }
 

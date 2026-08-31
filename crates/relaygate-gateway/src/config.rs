@@ -10,6 +10,8 @@ pub const DEFAULT_MAX_BINDINGS: usize = 100_000;
 pub const DEFAULT_MAX_PENDING_OFFERS: usize = 10_000;
 pub const DEFAULT_MAX_LIVE_PIPES: usize = 100_000;
 pub const DEFAULT_OFFER_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_HEARTBEAT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
+pub const DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Immutable runtime configuration for one Gateway process.
 #[derive(Clone)]
@@ -22,6 +24,8 @@ pub struct GatewayConfig {
     pub(crate) max_pending_offers: usize,
     pub(crate) max_live_pipes: usize,
     pub(crate) offer_timeout: Duration,
+    pub(crate) heartbeat_idle_interval: Duration,
+    pub(crate) heartbeat_response_timeout: Duration,
 }
 
 impl std::fmt::Debug for GatewayConfig {
@@ -36,6 +40,11 @@ impl std::fmt::Debug for GatewayConfig {
             .field("max_pending_offers", &self.max_pending_offers)
             .field("max_live_pipes", &self.max_live_pipes)
             .field("offer_timeout", &self.offer_timeout)
+            .field("heartbeat_idle_interval", &self.heartbeat_idle_interval)
+            .field(
+                "heartbeat_response_timeout",
+                &self.heartbeat_response_timeout,
+            )
             .finish()
     }
 }
@@ -52,6 +61,8 @@ impl GatewayConfig {
             max_pending_offers: DEFAULT_MAX_PENDING_OFFERS,
             max_live_pipes: DEFAULT_MAX_LIVE_PIPES,
             offer_timeout: DEFAULT_OFFER_TIMEOUT,
+            heartbeat_idle_interval: DEFAULT_HEARTBEAT_IDLE_INTERVAL,
+            heartbeat_response_timeout: DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT,
         }
     }
 
@@ -97,6 +108,27 @@ impl GatewayConfig {
         self
     }
 
+    #[must_use]
+    pub const fn with_heartbeat(
+        mut self,
+        idle_interval: Duration,
+        response_timeout: Duration,
+    ) -> Self {
+        self.heartbeat_idle_interval = idle_interval;
+        self.heartbeat_response_timeout = response_timeout;
+        self
+    }
+
+    #[must_use]
+    pub const fn heartbeat_idle_interval(&self) -> Duration {
+        self.heartbeat_idle_interval
+    }
+
+    #[must_use]
+    pub const fn heartbeat_response_timeout(&self) -> Duration {
+        self.heartbeat_response_timeout
+    }
+
     pub(crate) fn validate(&self) -> Result<(), GatewayError> {
         if self.writer_queue_capacity == 0 {
             return Err(GatewayError::InvalidConfig(
@@ -117,9 +149,12 @@ impl GatewayConfig {
                 "Gateway resource limits must be greater than zero".to_owned(),
             ));
         }
-        if self.offer_timeout.is_zero() {
+        if self.offer_timeout.is_zero()
+            || self.heartbeat_idle_interval.is_zero()
+            || self.heartbeat_response_timeout.is_zero()
+        {
             return Err(GatewayError::InvalidConfig(
-                "offer timeout must be greater than zero".to_owned(),
+                "Gateway timeouts must be greater than zero".to_owned(),
             ));
         }
         if self.client_keys.keys().any(String::is_empty) {

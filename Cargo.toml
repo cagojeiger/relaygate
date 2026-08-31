@@ -9,6 +9,7 @@ members = [
     "crates/relaygate-server",
     "examples/echo-listener",
     "examples/echo-probe",
+    "tools/test-contract",
 ]
 
 [workspace.package]

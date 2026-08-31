@@ -18,6 +18,7 @@ impl GatewayState {
         connector: SessionId,
         connection_id: u64,
         client_id: String,
+        now: Instant,
     ) -> Vec<GatewayAction> {
         let Some(session) = self.sessions.get_mut(&connector) else {
             return Vec::new();
@@ -60,7 +61,7 @@ impl GatewayState {
 
         let pipe_id = PipeId::new(connector, connection_id);
         if let Some(binding) = self.registry.select(&client_id) {
-            return self.offer_local(connector, pipe_id, binding, client_id);
+            return self.offer_local_at(connector, pipe_id, binding, client_id, now);
         }
 
         let Some(gateway_id) = self.gateway_id else {
@@ -104,6 +105,17 @@ impl GatewayState {
         binding: Binding,
         client_id: String,
     ) -> Vec<GatewayAction> {
+        self.offer_local_at(connector, pipe_id, binding, client_id, Instant::now())
+    }
+
+    pub(super) fn offer_local_at(
+        &mut self,
+        connector: SessionId,
+        pipe_id: PipeId,
+        binding: Binding,
+        client_id: String,
+        now: Instant,
+    ) -> Vec<GatewayAction> {
         let listener_is_live = self
             .sessions
             .get(&binding.session_id)
@@ -141,7 +153,7 @@ impl GatewayState {
                 binding_id: binding.id,
                 open_identity: None,
                 phase: PipePhase::Offered,
-                offered_at: Instant::now(),
+                offered_at: now,
                 connector_finished: false,
                 listener_finished: false,
             },

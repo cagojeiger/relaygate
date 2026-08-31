@@ -122,7 +122,7 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | `STATE-SDK-001` | SDK session | `DISCONNECTED` | 연결 시작 | `CONNECTING` | Gateway 연결 시도 |
 | `STATE-SDK-002` | SDK session | `CONNECTING` | transport 성공 | `READY` | SDK operation 가능 |
 | `STATE-SDK-003` | SDK session | `CONNECTING` | 연결 실패 | `DISCONNECTED` | managed backoff 뒤 재시도 가능 |
-| `STATE-SDK-004` | SDK session | `READY` | transport loss 또는 bounded outbound write 실패·deadline | `DISCONNECTED` | 기존 Pipe 종료, 새 session 재연결 가능 |
+| `STATE-SDK-004` | SDK session | `READY` | transport loss, heartbeat timeout 또는 bounded outbound write 실패·deadline | `DISCONNECTED` | 기존 Pipe 종료, 새 session 재연결 가능 |
 | `STATE-SDK-005` | SDK session | non-terminal | explicit close 또는 runtime의 마지막 public owner 소멸 | `CLOSED` | terminal, 자동 재연결 중단 |
 | `STATE-CS-001` | ConnectorSession | `ABSENT` | Connector SDK transport 성공 | `LIVE` | 새 ConnectorSessionId와 attempt ownership 생성 |
 | `STATE-CS-002` | ConnectorSession | `LIVE` | transport loss, explicit close, bounded outbound write failure 또는 commit된 OPEN terminal-response deadline | `CLOSED` | terminal, 소유 attempt와 Pipe 정리. current remote RelayStream마다 `RESET(CANCELLED)`을 commit하고 commit 불가 transport는 닫음 |
@@ -180,7 +180,8 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | `STATE-PAIR-005` | PeerTransportSlot | non-terminal | 참여 Gateway incarnation 종료 | `CLOSED` | terminal, 해당 slot의 candidate와 stream 정리 |
 | `STATE-PT-001` | PeerTransport | `CONNECTING` | pair와 방향 handshake 성공 | `READY` | RelayStream multiplex 가능 |
 | `STATE-PT-002` | PeerTransport | `CONNECTING` | 같은 slot duplicate 또는 연결·handshake 실패 | `CLOSED` | terminal, stream을 싣지 않음 |
-| `STATE-PT-003` | PeerTransport | `READY` | transport loss 또는 shutdown | `CLOSED` | terminal, 포함된 Pipe 모두 종료 |
+| `STATE-PT-003` | PeerTransport | `READY` | transport loss, active heartbeat timeout 또는 shutdown | `CLOSED` | terminal, 포함된 Pipe 모두 종료 |
+| `STATE-PT-004` | PeerTransport | `READY(stream_count=0)` | idle-retirement timeout | `CLOSED` | 정상 terminal, 이후 새 operation은 surviving transport를 쓰거나 lazy reconnect 가능 |
 | `STATE-RS-001` | RelayStream | `ABSENT` | local actor가 StreamId를 할당하고 peer `OPEN`을 ordered writer queue에 commit하거나 valid remote `OPEN` 수신 | `OPENING` | full connection/binding identity와 bounded stream state 생성 |
 | `STATE-RS-002` | RelayStream | `OPENING` | peer `OPENED` 수신 | `OPEN` | Listener queue admission 확인과 Pipe byte relay 가능; external observation은 아직 `MAYBE_OBSERVED`일 수 있음 |
 | `STATE-RS-003` | RelayStream | `OPENING` | `FAILED`, `RESET`, stream-local protocol violation, terminal deadline 또는 PeerTransport loss | `CLOSED` | terminal cleanup. local `OPENING`에서 받은 `RESET` 또는 stream-local protocol violation은 Entry의 current attempt를 `FAILED(code, MAYBE_OBSERVED)`로 끝낸다. peer OPEN commit 전 실패는 `NOT_OBSERVED`, commit 뒤 결과 불명은 `MAYBE_OBSERVED` |
@@ -217,6 +218,9 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | PeerTransport loss | 포함된 RelayStream과 Pipe 종료, 해당 방향 slot `IDLE` | RT mapping, Listener registration, 반대 방향 PeerTransport와 그 stream | 이후 open은 살아 있는 transport를 재사용하거나 새 transport 연결 |
 | 실행 중 `PeerEvent` queue Full 또는 receiver 종료 | peer runtime terminal, distributed Gateway fail-closed shutdown, current PeerTransport·SDK session·attempt·Pipe 정리 | 다른 Gateway process와 RT의 current state | 해당 Gateway의 새 operation은 `RESOURCE_EXHAUSTED` 또는 `UNAVAILABLE`; supervisor가 새 process를 시작하고 Listener SDK가 current state를 재등록한 뒤 새 operation 가능. 이미 시작된 정상 shutdown의 Full/Closed는 추가 장애가 아님 |
 | stream `FIN` 뒤 같은 방향 `DATA` | 해당 RelayStream과 Pipe `RESET` | 다른 RelayStream과 PeerTransport | `PROTOCOL_ERROR`; 새 open만 가능 |
+| SDK-Gateway heartbeat timeout | current SDK session과 그 session의 pending attempt·Pipe 종료 | 다른 SDK session, Gateway local binding, RT mapping | SDK runtime은 새 session으로 managed reconnect 가능. commit된 open, Pipe와 payload replay 없음 |
+| active PeerTransport heartbeat timeout | 해당 PeerTransport와 포함된 RelayStream·Pipe 종료, 해당 방향 slot `IDLE` | 반대 방향 PeerTransport, 다른 Gateway pair, RT mapping과 Listener binding | 이후 새 open은 surviving transport 또는 새 lazy transport만 사용. 기존 Pipe replay·reroute 없음 |
+| zero-stream PeerTransport idle-retirement timeout | 빈 PeerTransport 정상 종료, 해당 방향 slot `IDLE` | Listener binding, RT mapping, established Pipe 없음 | 이후 필요할 때 lazy reconnect. keepalive traffic 없음 |
 
 ## 공통 불변식
 
@@ -235,7 +239,7 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 13. internal RT mutation과 PeerTransport handshake의 `GatewayId`는 authenticated transport identity에 결합되어야 하며 claimed identifier만으로 authority를 얻지 못한다.
 14. local `ListenerBinding`의 `ACTIVE/REMOVED` 상태는 RT registration의 `SYNCED/UNSYNCED` 상태와 독립적이다. RT 장애는 remote discovery를 약화시킬 수 있지만 live local binding을 비활성화하지 않는다.
 15. 한 `ListenerSession`의 liveness failure는 그 session이 공유하는 모든 binding과 Pipe에 전파될 수 있지만 다른 ListenerSession으로 전파되어서는 안 된다.
-16. SDK-Gateway session의 periodic heartbeat는 필수 계약이 아니다. idle silent network failure는 local close, transport event 또는 active control operation deadline 전에는 감지되지 않을 수 있으며 application Pipe read idle만으로 state를 전이하지 않는다. RT registration의 `KeepAlive`는 별도 계약이다.
+16. SDK-Gateway session과 `stream_count > 0`인 PeerTransport는 activity-aware heartbeat를 사용한다. commit된 probe는 response deadline 전 matching `PONG`만 만족시킨다. heartbeat timeout은 transport loss와 같이 current session 또는 transport를 닫고 기존 cleanup 경로로 수렴한다. application Pipe read idle은 heartbeat failure가 아니며, RT registration의 `KeepAlive`는 별도 계약이다.
 17. `REGISTER` response timeout 뒤 SDK는 old session request를 replay하지 않는다. pending `ListenAttempt`는 terminal 실패하고, new session에는 이미 반환된 current Listener만 새 registration operation으로 선언한다.
 18. silent partition에서는 SDK와 Gateway가 같은 `ListenerSession`의 종료를 동시에 관찰한다고 보장하지 않는다. Gateway가 아직 보유한 old binding은 live 성공의 증명이 아니며 transport event 또는 그 binding에 대한 `OFFER` deadline에서 제거된다.
 19. 명확한 Pipe-local 오류는 해당 Pipe의 `RESET`으로 격리하고, commit된 control operation의 terminal 결과를 owner가 확정할 수 없으면 그 owner가 current session을 종료한다. session reset은 과거 OPEN, Pipe 또는 payload replay의 근거가 아니다.
@@ -251,5 +255,6 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 29. ConnectorSession 종료 cleanup의 peer `RESET`을 bounded writer queue에 commit할 수 없으면 해당 PeerTransport를 닫아 transport-loss cleanup으로 수렴한다. 이미 수립된 stream을 다른 transport로 이동하거나 replay하지 않는다.
 30. peer authentication 뒤에는 conforming Gateway가 frame과 identity scope를 지킨다고 전제한다. Byzantine Gateway의 semantic replay 방어는 범위 밖이며 `StreamId` high-watermark를 durable replay protection으로 해석하지 않는다.
 31. 실행 중 내부 `PeerEvent`는 Gateway 상태 전이 입력이므로 관측성 event처럼 버리지 않는다. bounded queue 포화나 receiver 종료는 distributed Gateway를 fail-closed로 끝내고, 정상 shutdown과 경쟁한 전달 실패만 idempotent cleanup으로 처리한다.
+32. `stream_count == 0`인 PeerTransport는 heartbeat를 보내지 않고 idle-retirement timeout 뒤 정상 종료한다. 새 stream이 재사용하면 retirement timer를 취소한다.
 
 shard lease expiry나 RT restart로 mapping이 사라져도 Gateway-local `ListenerBinding`이나 live `ListenerSession`은 닫히지 않는다. `ACTIVE` local binding은 local OPEN에 계속 사용할 수 있고, Gateway가 새 lease를 `Register`한 뒤 current snapshot을 `Update`하여 RT mapping을 다시 구성한다.

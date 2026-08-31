@@ -27,7 +27,8 @@ SPEC       = RelayGate의 관찰 가능한 계약
 | Soft state | [RFC 2205](rfc-2205-rsvp-soft-state.md) | refresh-or-expire soft state |
 | Multiplexing | [RFC 4254](rfc-4254-ssh-channel.md) | 한 connection 위의 channel multiplexing |
 | Relay lifecycle | [RFC 8656](rfc-8656-turn-lifetime.md) | relay resource의 lifetime과 refresh |
-| Flow control | [RFC 9000](rfc-9000-quic-streams.md) | stream과 connection flow control |
-| Connection | [RFC 9293](rfc-9293-tcp-connection-roles.md) | active/passive open과 byte stream |
+| Flow control / liveness | [RFC 9000](rfc-9000-quic-streams.md) | stream과 connection flow control, idle timeout |
+| Connection | [RFC 9293](rfc-9293-tcp-connection-roles.md) | active/passive open, byte stream, optional keepalive |
+| Multiplexed connection lifecycle | [RFC 9113](rfc-9113-http2-connection-lifecycle.md) | PING, GOAWAY, persistent connection과 idle close |
 | Mapping | [RFC 9299](rfc-9299-lisp-architecture.md) | identifier-to-locator mapping architecture |
 | Mapping control | [RFC 9301](rfc-9301-lisp-control-plane.md) | mapping register와 resolve control plane |

@@ -12,7 +12,10 @@ use super::{ConnectorCommand, ConnectorInner, ConnectorSession};
 use crate::{
     Error, ErrorCode, PeerObservation, Pipe, Result,
     pipe::{PipeState, to_wire_code},
-    session::{EstablishedSession, establish, next_backoff, send_bounded},
+    session::{
+        EstablishedSession, SessionHeartbeat, establish, next_backoff, send_bounded,
+        wait_for_heartbeat,
+    },
 };
 
 pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: EstablishedSession) {
@@ -50,6 +53,7 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
         let (cancellation_tx, cancellation_rx) = mpsc::unbounded_channel();
         let (outbound_tx, outbound_rx) = mpsc::channel(inner.config.outbound_capacity);
         let session_cancel = inner.cancel.child_token();
+        let heartbeat = SessionHeartbeat::new(&inner.config, next.id, 0x43);
         let session = Arc::new(ConnectorSession {
             id: next.id,
             next_connection_id: Mutex::new(1),
@@ -66,6 +70,7 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             outbound_rx,
             inner.config.pipe_inbound_capacity,
             inner.config.operation_timeout,
+            heartbeat,
             inner.lifetime.clone(),
             session_cancel,
         )
@@ -101,6 +106,7 @@ async fn run_connector_session(
     mut outbound_rx: mpsc::Receiver<Frame>,
     pipe_inbound_capacity: usize,
     operation_timeout: std::time::Duration,
+    mut heartbeat: SessionHeartbeat,
     lifetime: std::sync::Weak<crate::lifetime::RuntimeLifetime>,
     cancel: CancellationToken,
 ) {
@@ -112,6 +118,54 @@ async fn run_connector_session(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
+            incoming = established.transport.next() => {
+                let Some(incoming) = incoming else { break; };
+                let Ok(frame) = incoming else { break; };
+                heartbeat.observe_inbound(&frame);
+                if heartbeat.response_timed_out() {
+                    tracing::debug!(
+                        component = "sdk",
+                        event = "sdk.session.heartbeat_timeout",
+                        role = "connector",
+                        session_id = %established.id.as_uuid(),
+                        "Connector session heartbeat response timed out"
+                    );
+                    break;
+                }
+                if !handle_connector_frame(
+                    frame,
+                    established.id,
+                    &mut pending,
+                    &mut pipes,
+                    &outbound_tx,
+                    pipe_inbound_capacity,
+                    &abandoned_tx,
+                    &mut established.transport,
+                    operation_timeout,
+                    &lifetime,
+                    &cancel,
+                ).await {
+                    break;
+                }
+            }
+            () = wait_for_heartbeat(heartbeat.next_deadline()) => {
+                let Some(frame) = heartbeat.on_deadline() else {
+                    tracing::debug!(
+                        component = "sdk",
+                        event = "sdk.session.heartbeat_timeout",
+                        role = "connector",
+                        session_id = %established.id.as_uuid(),
+                        "Connector session heartbeat response timed out"
+                    );
+                    break;
+                };
+                if send_bounded(&mut established.transport, frame, operation_timeout, &cancel)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
             command = control.recv() => {
                 let Some(command) = command else { break; };
                 let frame = match command {
@@ -190,25 +244,6 @@ async fn run_connector_session(
                 }
                 if let Some(pipe_id) = terminal_pipe {
                     pipes.remove(&pipe_id);
-                }
-            }
-            incoming = established.transport.next() => {
-                let Some(incoming) = incoming else { break; };
-                let Ok(frame) = incoming else { break; };
-                if !handle_connector_frame(
-                    frame,
-                    established.id,
-                    &mut pending,
-                    &mut pipes,
-                    &outbound_tx,
-                    pipe_inbound_capacity,
-                    &abandoned_tx,
-                    &mut established.transport,
-                    operation_timeout,
-                    &lifetime,
-                    &cancel,
-                ).await {
-                    break;
                 }
             }
         }

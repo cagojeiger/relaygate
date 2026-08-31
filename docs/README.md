@@ -66,6 +66,11 @@ one PeerTransport
   ├── dialer StreamId   = 0, 2, 4, ...
   ├── acceptor StreamId = 1, 3, 5, ...
   └── FIN(one direction) | CLOSE(normal) | RESET(failure)
+
+transport liveness
+  ├── SDK-Gateway session       = activity-aware Ping/Pong
+  ├── PeerTransport streams > 0 = activity-aware Ping/Pong
+  └── PeerTransport streams = 0 = idle-retirement timer
 ```
 
 RT는 새 registration에 `LeaseId`를 발급한다. `Update`와 `KeepAlive`는 active lease에만 적용되고, `Deregister`, expiry 또는 RT restart로 종료된 lease의 늦은 operation은 mapping을 되살리지 못한다. Owner Gateway는 mapping이 active여도 `OPEN` 시점에 `BindingId`를 다시 검증한다.
@@ -111,6 +116,7 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | [ADR 004](adr/004-current-state-routing-topology.md) | `RouteTable`은 content-hash generation의 hash-sharded mapping authority다. |
 | [ADR 005](adr/005-soft-state-registration-lifecycle.md) | Route mapping은 active registration lease에 연결된 current soft state다. |
 | [ADR 006](adr/006-one-hop-peer-multiplexing.md) | Gateway data plane은 initiator-bit StreamId를 쓰는 one-hop multiplexed relay다. |
+| [ADR 007](adr/007-transport-liveness-and-idle-retirement.md) | transport liveness와 zero-stream idle retirement를 분리한다. |
 
 ## SPEC
 
@@ -130,6 +136,7 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 | 문서 | 검증 범위 |
 | --- | --- |
 | [TEST 001](test/001-requirement-test-matrix.md) | 전체 SPEC requirement와 edge case 대응 |
+| [TEST 001 실행 증거](test/001-executable-coverage.toml) | TEST 001 시나리오와 현재 Rust test의 기계 검증 가능한 연결 |
 | [TEST 002](test/002-single-gateway-rust-compose-test-plan.md) | 단일 Gateway local Pipe Rust 회귀 profile |
 | [TEST 003](test/003-route-table-core-test-plan.md) | memory-only RouteTable shard core 구현과 결정적 검증 profile |
 | [TEST 004](test/004-rt1-gw3-closed-loop-test-plan.md) | RT 1개와 Gateway 3개의 one-hop closed-loop 구현 profile |
@@ -144,4 +151,5 @@ RT persistence               RT replication / consensus
 online shard reconfiguration
 TLS / mTLS / service-mesh 선택
 implementation language      module layout
+RT shard 증설 운영 절차
 ```

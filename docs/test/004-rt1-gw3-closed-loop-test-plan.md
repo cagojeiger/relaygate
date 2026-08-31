@@ -14,6 +14,9 @@ N:M binding 단일 선택, pair별 shared PeerTransport, 양방향 bytes, RT 단
 terminal cleanup을 결정적으로 증명한다. CI의 Docker Compose profile은 실제 process에서 GW-B
 restart, RT outage와 READY-empty restart 뒤 current-state 복구를 검증한다.
 
+RT sharding 증설, shard directory 교체와 online reconfiguration은 이번 profile의 목표가 아니다.
+운영 중 후속 절차로 다룬다.
+
 ## 구현 profile
 
 ```text
@@ -25,6 +28,8 @@ Persistence    = 없음
 Runtime        = Docker Compose
 Data path      = local shortcut 또는 one-hop peer relay
 Internal auth  = Gateway별 static key allowlist, local/CI only
+Liveness       = SDK-Gateway heartbeat, active PeerTransport heartbeat
+Idle cleanup   = zero-stream PeerTransport idle retirement
 ```
 
 ```text
@@ -105,6 +110,8 @@ Docker timing에 의존하면 불안정한 순서와 state cleanup은 Rust integ
 | `G3-I-PEER-02` | 한 RelayStream reset | sibling stream과 PeerTransport 유지 | `T-PEER-05`, `T-ERR-05` |
 | `G3-I-PEER-03` | 같은 transport의 ConnectorSession S1 종료, RESET writer commit 성공·실패 | 성공 시 S1 current stream만 닫고 sibling 유지, 실패 시 transport close로 해당 transport stream 전체 cleanup. 반대 slot·RT mapping·binding 유지 | `T-OPEN-09`, `T-PEER-08`, `T-STATE-CONNECTOR`, `T-EDGE-14` |
 | `G3-I-PEER-04` | capacity 1 PeerEvent queue 포화와 receiver 종료 | 실행 중에는 cyclic wait 없이 각각 `RESOURCE_EXHAUSTED`/`UNAVAILABLE` fail-closed와 count 0 수렴. 정상 shutdown과 경쟁한 Full/Closed는 새 장애가 아님 | `T-PEER-04`, `T-STATE-TRANSPORT` |
+| `G3-I-PEER-05` | active PeerTransport heartbeat timeout | 해당 transport의 stream과 Pipe만 terminal cleanup하고 반대 방향 transport, 다른 pair, RT mapping과 Listener binding을 유지 | `T-PEER-10`, `T-STATE-TRANSPORT`, `T-EDGE-38` |
+| `G3-I-PEER-06` | zero-stream PeerTransport idle retirement와 재사용 경쟁 | stream 수 0에서는 keepalive를 보내지 않고 retirement timeout 뒤 정상 종료한다. timeout 전 새 stream이 재사용하면 timer가 취소된다. | `T-PEER-10`, `T-STATE-TRANSPORT`, `T-EDGE-38` |
 | `G3-I-STATE-01` | unmapped remote open 실패 뒤 mapped remote open 성공·종료를 100회 반복 | 매 cycle은 새 application operation이며 마지막 snapshot의 pending offer, Pipe, remote attempt, connecting transport와 stream이 baseline으로 수렴한다. ConnectionId·StreamId는 재사용하지 않고 scalar high-watermark 외에 terminal history를 누적하지 않는다. | `T-TERM-07`, `T-OPEN-09`, `T-STATE-PAIR` |
 
 integration test는 RT table, Gateway snapshot, peer pool snapshot을 직접 관찰할 수 있다. public
@@ -158,6 +165,7 @@ deterministic하게 검증한다.
 | `AC-G3-PEER-01` | integration/Compose | peer pair별 shared transport가 재사용되고 RelayStream이 Pipe 단위로 분리된다. |
 | `AC-G3-PEER-02` | integration | 한 peer pair 장애가 다른 pair, RT mapping, sibling stream으로 전파되지 않는다. |
 | `AC-G3-PEER-03` | integration | concurrent StreamId 할당·commit 순서와 ConnectorSession/cancel의 RESET cleanup이 deterministic하다. RESET writer commit 실패는 해당 transport close로 수렴한다. |
+| `AC-G3-PEER-04` | integration | active PeerTransport heartbeat timeout과 zero-stream idle retirement가 서로 다른 cleanup scope로 닫힌다. |
 | `AC-G3-PIPE-01` | integration/Compose | local/remote `DATA`, `FIN`, `CLOSE`, `RESET` 의미가 동일하다. |
 | `AC-G3-FAIL-01` | Compose | GW-B restart 중 A-C established Pipe가 유지되고 B 재등록 뒤 matrix가 다시 성공한다. |
 | `AC-G3-FAIL-02` | Compose | RT outage 중 established Pipe는 유지되고 신규 remote open은 `UNAVAILABLE`로 terminal 실패한다. |
@@ -174,6 +182,7 @@ deterministic하게 검증한다.
 | RT HA, replica, consensus | 이번 profile은 RT process 1개의 memory-only 동작과 restart 후 재구성만 검증한다. |
 | RT persistence | current state만 재등록한다는 SPEC 004/007의 범위를 유지한다. |
 | RT shard 2개 이상 E2E | sharding authority는 core/integration에서 검증하고 process-level multi-shard는 후속 profile로 둔다. |
+| RT sharding 운영 증설 | 이번 profile은 RT 1개 운영 준비를 기준으로 하며 shard 증설은 운영 중 후속 절차로 정한다. |
 | Kubernetes, Helm, mTLS | 배포와 production identity adapter는 runtime profile 밖이다. |
 | delivery acknowledgement, replay, resume | RelayGate는 opaque Pipe만 제공하고 payload 의미와 업무 retry를 소유하지 않는다. |
 | selection 품질, load balancing | 한 attempt가 후보 하나를 선택한다는 정확성만 검증한다. |
