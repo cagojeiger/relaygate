@@ -114,10 +114,9 @@ impl TransportActor {
             .streams
             .iter()
             .filter_map(|(stream_id, stream)| {
-                stream
-                    .open_deadline
-                    .is_some_and(|deadline| deadline <= now)
-                    .then_some(*stream_id)
+                (!stream.terminal_queued
+                    && stream.open_deadline.is_some_and(|deadline| deadline <= now))
+                .then_some(*stream_id)
             })
             .collect();
         for stream_id in expired {
@@ -254,6 +253,7 @@ pub(super) fn enqueue_stream_frame(
 ) -> Result<(), PeerFailure> {
     if stream.terminal_queued {
         return if terminal {
+            stream.open_deadline = None;
             Ok(())
         } else {
             Err(PeerFailure::maybe_observed(
@@ -270,6 +270,9 @@ pub(super) fn enqueue_stream_frame(
     }
     stream.queued_frames.push_back(frame);
     stream.terminal_queued = terminal;
+    if terminal {
+        stream.open_deadline = None;
+    }
     Ok(())
 }
 

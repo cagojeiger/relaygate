@@ -198,6 +198,105 @@ async fn committed_open_timeout_is_reported_as_maybe_observed() -> Result<(), Bo
     ));
     assert!(actor.streams.is_empty());
     assert!(!actor.active_opens.contains(open_identity));
+    let (cancel_reply, cancel_result) = oneshot::channel();
+    actor
+        .handle_command(TransportCommand::Cancel {
+            open_identity,
+            reply: cancel_reply,
+        })
+        .await;
+    cancel_result.await??;
+    assert!(
+        actor
+            .handle_frame(PeerFrame::Opened {
+                stream_id: key.stream_id()
+            })
+            .await
+    );
+    actor.flush_stream_queues().await;
+    assert!(aggregate_receiver.try_recv().is_err());
+    assert!(notice_receiver.try_recv().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause()
+-> Result<(), Box<dyn Error>> {
+    let (mut actor, mut aggregate_receiver, mut notice_receiver, open_identity, request) =
+        actor_for_open(1)?;
+    assert!(actor.active_opens.reserve(open_identity)?);
+
+    let key = actor.open(request)?;
+    let timeout_at = actor
+        .next_open_deadline()
+        .ok_or("expected OPEN response deadline")?;
+    let (cancel_reply, cancel_result) = oneshot::channel();
+    actor
+        .handle_command(TransportCommand::Cancel {
+            open_identity,
+            reply: cancel_reply,
+        })
+        .await;
+    cancel_result.await??;
+    assert!(
+        actor
+            .handle_frame(PeerFrame::Opened {
+                stream_id: key.stream_id()
+            })
+            .await
+    );
+    actor.expire_open_deadlines_at(timeout_at).await;
+    assert!(
+        notice_receiver.try_recv().is_err(),
+        "cancelled OPEN emitted a second deadline terminal event"
+    );
+
+    let committed = aggregate_receiver
+        .recv()
+        .await
+        .ok_or("expected committed OPEN frame")?;
+    assert!(matches!(
+        committed,
+        PeerFrame::Open {
+            stream_id,
+            open_identity: identity,
+            ..
+        } if stream_id == key.stream_id() && identity == open_identity
+    ));
+    actor.flush_stream_queues().await;
+    let reset = aggregate_receiver
+        .recv()
+        .await
+        .ok_or("expected cancellation RESET frame")?;
+    assert!(matches!(
+        reset,
+        PeerFrame::Reset {
+            stream_id,
+            code: ErrorCode::Cancelled,
+            ..
+        } if stream_id == key.stream_id()
+    ));
+    let ended = notice_receiver
+        .recv()
+        .await
+        .ok_or("expected stream cleanup notice")?;
+    assert!(matches!(
+        ended,
+        TransportNotice::StreamEnded {
+            key: ended_key,
+            open_identity: identity,
+        } if ended_key == key && identity == open_identity
+    ));
+    assert!(aggregate_receiver.try_recv().is_err());
+    assert!(notice_receiver.try_recv().is_err());
+    assert!(actor.streams.is_empty());
+    assert_eq!(
+        actor
+            .stream_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert!(!actor.active_opens.contains(open_identity));
     Ok(())
 }
 
