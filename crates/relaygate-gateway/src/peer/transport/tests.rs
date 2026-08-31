@@ -1,7 +1,10 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     error::Error,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use bytes::Bytes;
@@ -79,6 +82,19 @@ fn actor_for_open(writer_capacity: usize) -> Result<TestActor, Box<dyn Error>> {
         open_identity,
         request,
     ))
+}
+
+fn opened_local_stream(open_identity: OpenIdentity) -> Result<RuntimeStream, Box<dyn Error>> {
+    let mut relay = RelayStream::owned_opening(open_identity);
+    relay.opened()?;
+    Ok(RuntimeStream {
+        relay,
+        queued_frames: VecDeque::new(),
+        terminal_queued: false,
+        progress: PeerOpenProgress::Opened,
+        origin: StreamOrigin::Local,
+        open_deadline: None,
+    })
 }
 
 #[tokio::test]
@@ -425,35 +441,31 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
 }
 
 #[tokio::test]
-async fn saturated_cleanup_reset_closes_containing_transport() -> Result<(), Box<dyn Error>> {
+async fn cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport()
+-> Result<(), Box<dyn Error>> {
     let config = GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_queue_bounds(4, 4, 4, 4, 1);
     let peer_gateway_id = GatewayId::new();
     let peer_transport_id = PeerTransportId::new();
-    let stream_id = StreamId::from_raw(0);
-    let open_identity = OpenIdentity::new(GatewayId::new(), SessionId::new(), 1);
+    let stream_ids = [
+        StreamId::from_raw(0),
+        StreamId::from_raw(2),
+        StreamId::from_raw(4),
+    ];
+    let identities = [
+        OpenIdentity::new(GatewayId::new(), SessionId::new(), 1),
+        OpenIdentity::new(GatewayId::new(), SessionId::new(), 2),
+        OpenIdentity::new(GatewayId::new(), SessionId::new(), 3),
+    ];
     let active_opens = Arc::new(ActiveOpenSet::default());
-    assert!(active_opens.reserve(open_identity)?);
-    let mut relay = RelayStream::owned_opening(open_identity);
-    relay.opened()?;
-    let mut queued_frames = VecDeque::new();
-    queued_frames.push_back(PeerFrame::Data {
-        stream_id,
-        payload: Bytes::from_static(b"already queued"),
-    });
-    let streams = BTreeMap::from([(
-        stream_id,
-        RuntimeStream {
-            relay,
-            queued_frames,
-            terminal_queued: false,
-            progress: PeerOpenProgress::Opened,
-            origin: StreamOrigin::Local,
-            open_deadline: None,
-        },
-    )]);
-    let (aggregate_writer, _aggregate_receiver) = mpsc::channel(1);
-    let (notices, _notice_receiver) = mpsc::channel(4);
+    let mut streams = BTreeMap::new();
+    for (stream_id, open_identity) in stream_ids.into_iter().zip(identities) {
+        assert!(active_opens.reserve(open_identity)?);
+        streams.insert(stream_id, opened_local_stream(open_identity)?);
+    }
+    let (aggregate_writer, mut aggregate_receiver) = mpsc::channel(3);
+    let (notices, mut notice_receiver) = mpsc::channel(4);
     let close = CancellationToken::new();
+    let stream_count = Arc::new(AtomicUsize::new(3));
     let mut actor = TransportActor {
         peer_gateway_id,
         peer_transport_id,
@@ -465,14 +477,66 @@ async fn saturated_cleanup_reset_closes_containing_transport() -> Result<(), Box
         aggregate_writer,
         notices,
         active_opens,
-        stream_count: Arc::new(AtomicUsize::new(1)),
+        stream_count: Arc::clone(&stream_count),
         close: close.clone(),
         config,
     };
 
+    actor
+        .send_reset(
+            stream_ids[0],
+            ErrorCode::Cancelled,
+            "connector session closed".to_owned(),
+        )
+        .await?;
+    actor.flush_stream_queues().await;
+
+    let reset = aggregate_receiver
+        .recv()
+        .await
+        .ok_or("expected committed RESET frame")?;
+    assert!(matches!(
+        reset,
+        PeerFrame::Reset {
+            stream_id,
+            code: ErrorCode::Cancelled,
+            ..
+        } if stream_id == stream_ids[0]
+    ));
+    let ended = notice_receiver
+        .recv()
+        .await
+        .ok_or("expected target stream cleanup notice")?;
+    assert!(matches!(
+        ended,
+        TransportNotice::StreamEnded {
+            key,
+            open_identity,
+        } if key == actor.key(stream_ids[0]) && open_identity == identities[0]
+    ));
+    assert!(!close.is_cancelled());
+    assert!(!actor.streams.contains_key(&stream_ids[0]));
+    assert!(actor.streams.contains_key(&stream_ids[1]));
+    assert!(actor.streams.contains_key(&stream_ids[2]));
+    assert!(!actor.active_opens.contains(identities[0]));
+    assert!(actor.active_opens.contains(identities[1]));
+    assert!(actor.active_opens.contains(identities[2]));
+    assert_eq!(stream_count.load(Ordering::Relaxed), 2);
+    assert!(aggregate_receiver.try_recv().is_err());
+
+    actor
+        .streams
+        .get_mut(&stream_ids[1])
+        .ok_or("missing sibling stream")?
+        .queued_frames
+        .push_back(PeerFrame::Data {
+            stream_id: stream_ids[1],
+            payload: Bytes::from_static(b"already queued"),
+        });
+
     let failure = actor
         .send_reset(
-            stream_id,
+            stream_ids[1],
             ErrorCode::Cancelled,
             "connector session closed".to_owned(),
         )
@@ -481,6 +545,20 @@ async fn saturated_cleanup_reset_closes_containing_transport() -> Result<(), Box
         .ok_or("expected saturated RESET queue failure")?;
     assert_eq!(failure.code(), ErrorCode::ResourceExhausted);
     assert!(close.is_cancelled());
+    let losses = actor.drain_losses();
+    assert_eq!(losses.len(), 2);
+    for index in [1, 2] {
+        assert!(losses.iter().any(|loss| {
+            loss.key == actor.key(stream_ids[index]) && loss.open_identity == identities[index]
+        }));
+    }
+    assert!(actor.streams.is_empty());
+    assert!(
+        identities
+            .iter()
+            .all(|identity| !actor.active_opens.contains(*identity))
+    );
+    assert_eq!(stream_count.load(Ordering::Relaxed), 0);
     Ok(())
 }
 

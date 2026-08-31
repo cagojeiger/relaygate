@@ -294,7 +294,7 @@ rust = ["local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "sha
 [[case]]
 id = "T-OPEN-06"
 status = "partial"
-rust = ["remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "state::tests::peer_transport_loss_is_scoped_to_its_current_streams"]
+rust = ["remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams"]
 reason = "RT loss와 transport loss는 검증하지만 mapping 변화 후 same-attempt no-reroute 조합이 없다."
 
 [[case]]
@@ -355,7 +355,7 @@ rust = ["state::tests::foreign_open_pipe_frames_terminate_each_offender_without_
 [[case]]
 id = "T-OPEN-17"
 status = "partial"
-rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::transport::tests::cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::fast_opened_event_and_open_commit_reply_keep_exact_correlation", "peer::runtime_tests::handshake_timeout_fails_before_open_commit_and_leaves_no_transport_state", "peer::runtime_tests::cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate", "peer::runtime_tests::tcp_connect_deadline_releases_candidate_and_open_identity_for_retry", "peer::runtime_tests::cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_transport", "peer::runtime_tests::post_commit_cancel_ignores_late_opened_and_converges_through_transport_loss", "state::tests::early_transport_loss_then_late_commit_callback_never_leaves_an_attempt", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "gateway::effects::tests::entry_opened_delivery_failure_closes_connector_and_remote_pipe", "lost_entry_opened_closes_connector_session_and_remote_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::transport::tests::cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::fast_opened_event_and_open_commit_reply_keep_exact_correlation", "peer::runtime_tests::handshake_timeout_fails_before_open_commit_and_leaves_no_transport_state", "peer::runtime_tests::cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate", "peer::runtime_tests::tcp_connect_deadline_releases_candidate_and_open_identity_for_retry", "peer::runtime_tests::cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_transport", "peer::runtime_tests::post_commit_cancel_ignores_late_opened_and_converges_through_transport_loss", "state::tests::early_transport_loss_then_late_commit_callback_never_leaves_an_attempt", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "gateway::effects::tests::entry_opened_delivery_failure_closes_connector_and_remote_pipe", "lost_entry_opened_closes_connector_session_and_remote_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport"]
 reason = "TCP connect 전 취소, connect deadline, handshake, commit 전후, late OPENED와 Entry-to-SDK 성공 응답 유실은 검증한다. 다만 모든 단계의 실패·deadline·cancel 교차곱을 하나의 exhaustive matrix로 순회하지는 않는다."
 
 [[case]]
@@ -377,7 +377,7 @@ rust = ["peer::tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_fai
 [[case]]
 id = "T-PEER-04"
 status = "partial"
-rust = ["peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait", "peer::runtime_tests::closed_event_receiver_shuts_down_and_clears_shared_counts", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+rust = ["peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait", "peer::runtime_tests::closed_event_receiver_shuts_down_and_clears_shared_counts", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport"]
 reason = "fail-closed queue는 검증하지만 per-stream과 aggregate capacity를 각각 소진하는 전체 시험이 없다."
 
 [[case]]
@@ -389,7 +389,7 @@ reason = "주요 전이는 검증하지만 OPEN 결과와 모든 terminal 재정
 [[case]]
 id = "T-PEER-06"
 status = "partial"
-rust = ["peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "state::tests::peer_transport_loss_is_scoped_to_its_current_streams"]
+rust = ["peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams"]
 reason = "transport별 loss 격리, 반대 slot 생존과 loss 뒤 새 lazy transport는 검증하지만 surviving opposite transport에 신규 Pipe를 여는 실제 runtime sequence가 없다."
 
 [[case]]
@@ -400,9 +400,8 @@ reason = "connect 취소·deadline, handshake 취소와 loss 뒤 candidate·stre
 
 [[case]]
 id = "T-PEER-08"
-status = "partial"
-rust = ["state::tests::connector_session_cleanup_resets_committed_peer_stream_as_cancelled", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
-reason = "shared transport는 검증하지만 두 ConnectorSession 중 하나 cleanup의 RESET commit 성공과 실패 양 경로가 없다."
+status = "executable"
+rust = ["state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
 
 [[case]]
 id = "T-PEER-09"
@@ -469,9 +468,8 @@ reason = "실패와 마지막 owner drop은 검증하지만 성공부터 explici
 
 [[case]]
 id = "T-STATE-CONNECTOR"
-status = "partial"
-rust = ["committed_open_timeout_closes_session_and_existing_pipes", "opened_pipe_fails_when_its_session_is_replaced", "state::tests::connector_session_cleanup_resets_committed_peer_stream_as_cancelled", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
-reason = "session cleanup과 RESET 경로는 검증하지만 shared transport sibling에 대한 RESET commit 성공과 실패 양 분기를 닫지 않는다."
+status = "executable"
+rust = ["committed_open_timeout_closes_session_and_existing_pipes", "opened_pipe_fails_when_its_session_is_replaced", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams"]
 
 [[case]]
 id = "T-STATE-LISTENER"
@@ -523,7 +521,7 @@ reason = "handshake 실패·취소, force loss, 방향 slot, active heartbeat ti
 [[case]]
 id = "T-STATE-STREAM"
 status = "partial"
-rust = ["peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_reset_is_idempotent_terminal_cleanup", "state::tests::peer_transport_loss_is_scoped_to_its_current_streams", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+rust = ["peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_reset_is_idempotent_terminal_cleanup", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport"]
 reason = "주요 stream 전이는 검증하지만 모든 origin과 cleanup commit 실패 순열이 없다."
 
 [[case]]
@@ -579,7 +577,7 @@ reason = "방향별 transport는 검증하지만 양방향 동시 최초 dial을
 [[case]]
 id = "T-EDGE-10"
 status = "partial"
-rust = ["peer::transport::tests::saturated_cleanup_reset_closes_containing_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams"]
+rust = ["peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams"]
 reason = "buffer full과 transport loss를 각각 검증하지만 같은 sequence로 연결하지 않는다."
 
 [[case]]
@@ -602,9 +600,8 @@ reason = "session identity와 no replay는 검증하지만 S1 late OPENED가 같
 
 [[case]]
 id = "T-EDGE-14"
-status = "partial"
-rust = ["state::tests::connector_session_cleanup_resets_committed_peer_stream_as_cancelled", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
-reason = "shared transport는 검증하지만 S1 cleanup RESET commit 성공과 실패 양 분기를 S2와 함께 닫지 않는다."
+status = "executable"
+rust = ["state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "state::tests::owner_transport_loss_preserves_listener_binding_and_registration", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
 
 [[case]]
 id = "T-EDGE-15"
@@ -713,7 +710,7 @@ reason = "accept와 disconnect 및 recovery rejection은 각각 검증하지만 
 [[case]]
 id = "T-EDGE-34"
 status = "executable"
-rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate", "peer::runtime_tests::post_commit_cancel_ignores_late_opened_and_converges_through_transport_loss", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "peer::transport::tests::saturated_cleanup_reset_closes_containing_transport"]
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate", "peer::runtime_tests::post_commit_cancel_ignores_late_opened_and_converges_through_transport_loss", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport"]
 
 [[case]]
 id = "T-EDGE-35"
