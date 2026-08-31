@@ -8,13 +8,19 @@ use std::{
 };
 
 use futures_util::future::BoxFuture;
-use relaygate_protocol::{ClientKey, ErrorCode, Frame, PeerObservation, SessionId, SessionRole};
-use relaygate_route_table::{BindingSet, ClientId, GatewayId};
+use relaygate_protocol::{
+    BindingId, ClientKey, ErrorCode, Frame, PeerObservation, SessionId, SessionRole,
+};
+use relaygate_route_table::{
+    BindingId as RouteBindingId, BindingSet, ClientId, GatewayId, GatewayLocator,
+    ListenerSessionId, MappingEntry,
+};
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     auth::ClientKeyStore,
+    peer::{PeerStreamKey, PeerTransportId},
     state::{GatewayAction, GatewayLimits, GatewayState},
 };
 
@@ -163,6 +169,48 @@ async fn identity_failure_preserves_local_state_and_only_new_open_resolves_again
     Ok(())
 }
 
+#[tokio::test]
+async fn entry_opened_delivery_failure_closes_connector_and_remote_pipe() -> TestResult {
+    let inner = test_inner(Arc::new(ScriptedResolver::new([])));
+    let (sender, mut receiver) = mpsc::channel(1);
+    sender.try_send(Frame::Ping { nonce: 1 })?;
+    let cancellation = CancellationToken::new();
+    let connector = inner
+        .lock_state()
+        .add_session(SessionRole::Connector, sender, cancellation.clone())
+        .ok_or("test Gateway session limit reached")?;
+    let (open_identity, _) = begin_remote_open(&inner, connector, 1, "echo.remote")?;
+    let owner_gateway = GatewayId::new();
+    let binding_id = BindingId::new();
+    let key = PeerStreamKey::for_test(owner_gateway, PeerTransportId::new(), 0);
+    let opened = {
+        let mut state = inner.lock_state();
+        state.route_resolved(
+            open_identity,
+            remote_binding_set("echo.remote", owner_gateway, binding_id)?,
+        );
+        state.peer_open_committed(open_identity, key);
+        state.peer_opened(key, open_identity)
+    };
+    assert!(opened.iter().any(|action| matches!(
+        action,
+        GatewayAction::SendSdkFrame(delivery)
+            if matches!(delivery.frame, Frame::Opened { .. })
+    )));
+
+    inner.execute_all(opened).await;
+
+    assert!(cancellation.is_cancelled());
+    let snapshot = inner.lock_state().snapshot();
+    assert_eq!(snapshot.sessions, 0);
+    assert_eq!(snapshot.connector_sessions, 0);
+    assert_eq!(snapshot.remote_open_attempts, 0);
+    assert_eq!(snapshot.live_pipes, 0);
+    assert!(matches!(receiver.try_recv(), Ok(Frame::Ping { nonce: 1 })));
+    assert!(receiver.try_recv().is_err());
+    Ok(())
+}
+
 fn test_inner(route_resolver: Arc<dyn RouteResolver>) -> Arc<Inner> {
     let (results, _result_receiver) = mpsc::channel(8);
     Arc::new(Inner {
@@ -226,6 +274,20 @@ fn begin_remote_open(
             _ => None,
         })
         .ok_or_else(|| "missing ResolveRoute action".into())
+}
+
+fn remote_binding_set(
+    client_id: &str,
+    gateway_id: GatewayId,
+    binding_id: BindingId,
+) -> TestResult<BindingSet> {
+    Ok(BindingSet::from_entries(vec![MappingEntry::new(
+        ClientId::new(client_id)?,
+        gateway_id,
+        ListenerSessionId::from_uuid(SessionId::new().as_uuid()),
+        RouteBindingId::from_uuid(binding_id.as_uuid()),
+        GatewayLocator::new("owner.internal:27421")?,
+    )])?)
 }
 
 fn establish_local_pipe(inner: &Inner, listener: SessionId, connector: SessionId) -> TestResult {

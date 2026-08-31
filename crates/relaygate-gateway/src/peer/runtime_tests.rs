@@ -16,6 +16,7 @@ use super::{
     GatewayPeerConfig, OpenIdentity, PeerEvent, PeerFailure, PeerHandle, PeerOpenRequest,
     PeerRuntime, PeerStreamKey, PeerTarget, TrustedPeerConfig,
     codec::PeerFrameCodec,
+    config::ConnectGate,
     event::PeerCounts,
     frame::PeerFrame,
     identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId, StreamId},
@@ -43,11 +44,6 @@ impl RuntimePair {
     }
 
     async fn start_with_event_capacity(event_capacity: usize) -> TestResult<Self> {
-        let listener_a = TcpListener::bind("127.0.0.1:0").await?;
-        let listener_b = TcpListener::bind("127.0.0.1:0").await?;
-        let locator_b = GatewayLocator::new(listener_b.local_addr()?.to_string())?;
-        let gateway_a = GatewayId::new();
-        let gateway_b = GatewayId::new();
         let config_a = test_config_with_event_capacity(
             "gateway-a",
             "key-a",
@@ -62,6 +58,18 @@ impl RuntimePair {
             "key-a",
             event_capacity,
         )?;
+        Self::start_with_configs(config_a, config_b).await
+    }
+
+    async fn start_with_configs(
+        config_a: GatewayPeerConfig,
+        config_b: GatewayPeerConfig,
+    ) -> TestResult<Self> {
+        let listener_a = TcpListener::bind("127.0.0.1:0").await?;
+        let listener_b = TcpListener::bind("127.0.0.1:0").await?;
+        let locator_b = GatewayLocator::new(listener_b.local_addr()?.to_string())?;
+        let gateway_a = GatewayId::new();
+        let gateway_b = GatewayId::new();
         let shutdown_a = CancellationToken::new();
         let shutdown_b = CancellationToken::new();
         let (handle_a, events_a, runtime_a) =
@@ -494,6 +502,119 @@ async fn handshake_timeout_fails_before_open_commit_and_leaves_no_transport_stat
     blackhole_task.await??;
     tokio::time::timeout(Duration::from_secs(2), serve_a).await???;
     Ok(())
+}
+
+#[tokio::test]
+async fn cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate() -> TestResult {
+    let gate = ConnectGate::new();
+    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
+        .with_connect_gate(gate.clone())
+        .with_liveness(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_millis(200),
+        );
+    let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?.with_liveness(
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+        Duration::from_millis(200),
+    );
+    let mut pair = RuntimePair::start_with_configs(config_a, config_b).await?;
+    let request = pair.request_a_to_b(1)?;
+    let identity = request.open_identity();
+    let open = {
+        let handle = pair.handle_a.clone();
+        tokio::spawn(async move { handle.open(request).await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), gate.wait_until_entered()).await?;
+    wait_for_counts(
+        &pair.handle_a,
+        PeerCounts {
+            connecting: 1,
+            ready: 0,
+            streams: 0,
+        },
+    )
+    .await?;
+
+    pair.handle_a.cancel_open(identity).await?;
+    let failure = open
+        .await?
+        .err()
+        .ok_or("pre-connect OPEN unexpectedly succeeded after cancellation")?;
+    assert_eq!(failure.code(), ErrorCode::Cancelled);
+    assert_eq!(failure.observation(), PeerObservation::NotObserved);
+    gate.release();
+
+    let idle_transport = PeerCounts {
+        connecting: 0,
+        ready: 1,
+        streams: 0,
+    };
+    wait_for_counts(&pair.handle_a, idle_transport).await?;
+    wait_for_counts(&pair.handle_b, idle_transport).await?;
+    let entry_loss = next_event(&mut pair.events_a).await?;
+    assert!(matches!(
+        entry_loss,
+        PeerEvent::TransportLost { streams, .. } if streams.is_empty()
+    ));
+    let owner_loss = next_event(&mut pair.events_b).await?;
+    assert!(matches!(
+        owner_loss,
+        PeerEvent::TransportLost { streams, .. } if streams.is_empty()
+    ));
+    wait_for_counts(&pair.handle_a, PeerCounts::default()).await?;
+    wait_for_counts(&pair.handle_b, PeerCounts::default()).await?;
+    pair.shutdown().await
+}
+
+#[tokio::test]
+async fn tcp_connect_deadline_releases_candidate_and_open_identity_for_retry() -> TestResult {
+    let gate = ConnectGate::new();
+    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
+        .with_timeouts(
+            Duration::from_millis(75),
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+        )
+        .with_connect_gate(gate.clone());
+    let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?;
+    let mut pair = RuntimePair::start_with_configs(config_a, config_b).await?;
+    let request = pair.request_a_to_b(1)?;
+    let retry = request.clone();
+    let identity = request.open_identity();
+    let open = {
+        let handle = pair.handle_a.clone();
+        tokio::spawn(async move { handle.open(request).await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), gate.wait_until_entered()).await?;
+    let failure = open
+        .await?
+        .err()
+        .ok_or("connect-deadline OPEN unexpectedly succeeded")?;
+    assert_eq!(failure.code(), ErrorCode::DeadlineExceeded);
+    assert_eq!(failure.observation(), PeerObservation::NotObserved);
+    wait_for_counts(&pair.handle_a, PeerCounts::default()).await?;
+    wait_for_counts(&pair.handle_b, PeerCounts::default()).await?;
+
+    gate.release();
+    let reopened = {
+        let handle = pair.handle_a.clone();
+        tokio::spawn(async move { handle.open(retry).await })
+    };
+    let (owner_key, retried_identity) = accept_one(&mut pair.events_b, &pair.handle_b).await?;
+    let entry_key = reopened.await??;
+    assert_eq!(retried_identity, identity);
+    let opened = next_event(&mut pair.events_a).await?;
+    assert!(matches!(
+        opened,
+        PeerEvent::Opened {
+            key,
+            open_identity,
+        } if key == entry_key && open_identity == identity
+    ));
+    pair.handle_b.send_close(owner_key).await?;
+    pair.shutdown().await
 }
 
 #[tokio::test]
