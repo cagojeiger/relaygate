@@ -5,12 +5,12 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
 use super::PipeState;
-use crate::{Error, ErrorCode};
+use crate::{Error, ErrorCode, session::session_outbound_channel};
 
 #[tokio::test]
 async fn dropped_pipe_uses_the_current_pipe_terminal_lane() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (outbound, _receiver) = mpsc::channel(1);
+    let (outbound, _receiver) = session_outbound_channel(1);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 2);
     let (pipe, _state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -24,7 +24,7 @@ async fn dropped_pipe_uses_the_current_pipe_terminal_lane() -> Result<(), Box<dy
 
 #[tokio::test]
 async fn cancelled_close_remains_drop_safe() -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, _receiver) = mpsc::channel(1);
+    let (outbound, _receiver) = session_outbound_channel(1);
     outbound
         .send(relaygate_protocol::Frame::Ping { nonce: 1 })
         .await
@@ -47,7 +47,7 @@ async fn cancelled_close_remains_drop_safe() -> Result<(), Box<dyn std::error::E
 #[tokio::test]
 async fn remote_failure_wins_while_close_waits_for_capacity()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, mut receiver) = mpsc::channel(1);
+    let (outbound, mut receiver) = session_outbound_channel(1);
     outbound
         .send(relaygate_protocol::Frame::Ping { nonce: 1 })
         .await
@@ -84,7 +84,7 @@ async fn remote_failure_wins_while_close_waits_for_capacity()
 #[tokio::test]
 async fn remote_failure_wins_while_write_waits_for_capacity()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, mut receiver) = mpsc::channel(1);
+    let (outbound, mut receiver) = session_outbound_channel(1);
     outbound
         .send(relaygate_protocol::Frame::Ping { nonce: 1 })
         .await
@@ -114,7 +114,7 @@ async fn remote_failure_wins_while_write_waits_for_capacity()
 
 #[tokio::test]
 async fn full_failure_is_not_masked_by_remote_fin() -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, _receiver) = mpsc::channel(1);
+    let (outbound, _receiver) = session_outbound_channel(1);
     let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 6);
     let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -135,7 +135,7 @@ async fn full_failure_is_not_masked_by_remote_fin() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn pipe_implements_async_read_and_write_without_changing_frame_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, mut outbound_rx) = mpsc::channel(2);
+    let (outbound, mut outbound_rx) = session_outbound_channel(2);
     let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 7);
     let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -158,7 +158,7 @@ async fn pipe_implements_async_read_and_write_without_changing_frame_semantics()
 
 #[tokio::test]
 async fn owned_halves_can_read_and_write_concurrently() -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, mut outbound_rx) = mpsc::channel(2);
+    let (outbound, mut outbound_rx) = session_outbound_channel(2);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 8);
     let (pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -191,7 +191,7 @@ async fn owned_halves_can_read_and_write_concurrently() -> Result<(), Box<dyn st
 #[tokio::test]
 async fn dropping_split_halves_signals_abandonment_only_after_the_last_owner()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, mut outbound_rx) = mpsc::channel(2);
+    let (outbound, mut outbound_rx) = session_outbound_channel(2);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 9);
     let (pipe, _state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -211,7 +211,7 @@ async fn dropping_split_halves_signals_abandonment_only_after_the_last_owner()
 #[tokio::test]
 async fn async_shutdown_sends_one_fin_and_keeps_the_read_half_alive()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, mut outbound_rx) = mpsc::channel(2);
+    let (outbound, mut outbound_rx) = session_outbound_channel(2);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 10);
     let (pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -241,7 +241,7 @@ async fn async_shutdown_sends_one_fin_and_keeps_the_read_half_alive()
 #[tokio::test]
 async fn write_half_close_terminates_the_split_read_half() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (outbound, mut outbound_rx) = mpsc::channel(2);
+    let (outbound, mut outbound_rx) = session_outbound_channel(2);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 13);
     let (pipe, _state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -262,7 +262,7 @@ async fn write_half_close_terminates_the_split_read_half() -> Result<(), Box<dyn
 #[tokio::test]
 async fn async_write_waits_for_the_existing_bounded_session_queue()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, mut outbound_rx) = mpsc::channel(1);
+    let (outbound, mut outbound_rx) = session_outbound_channel(1);
     outbound
         .send(Frame::Ping { nonce: 1 })
         .await
@@ -294,9 +294,112 @@ async fn async_write_waits_for_the_existing_bounded_session_queue()
 }
 
 #[tokio::test]
+async fn cancelled_pending_write_does_not_poison_shared_session_queue()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, mut outbound_rx) = session_outbound_channel(1);
+    outbound
+        .send(Frame::Ping { nonce: 1 })
+        .await
+        .map_err(|_| std::io::Error::other("test queue unexpectedly closed before backpressure"))?;
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let session_id = SessionId::new();
+    let pipe_a_id = PipeId::new(session_id, 21);
+    let pipe_b_id = PipeId::new(session_id, 22);
+    let (pipe_a, _state_a) = PipeState::pair(pipe_a_id, outbound.clone(), 1, abandoned.clone());
+    let (mut pipe_b, _state_b) = PipeState::pair(pipe_b_id, outbound, 1, abandoned);
+    let (_reader_a, mut writer_a) = pipe_a.into_split();
+
+    {
+        let pending = writer_a.write_all(b"cancelled-a");
+        tokio::pin!(pending);
+        assert!(
+            timeout(Duration::from_millis(10), &mut pending)
+                .await
+                .is_err()
+        );
+    }
+
+    assert_eq!(outbound_rx.recv().await, Some(Frame::Ping { nonce: 1 }));
+    timeout(Duration::from_secs(1), pipe_b.write_all(b"sibling-b")).await??;
+    assert_eq!(
+        outbound_rx.recv().await,
+        Some(Frame::Data {
+            pipe_id: pipe_b_id,
+            payload: Bytes::from_static(b"sibling-b"),
+        })
+    );
+    assert!(outbound_rx.try_recv().is_err());
+
+    timeout(Duration::from_secs(1), writer_a.write_all(b"retry-a")).await??;
+    assert_eq!(
+        outbound_rx.recv().await,
+        Some(Frame::Data {
+            pipe_id: pipe_a_id,
+            payload: Bytes::from_static(b"retry-a"),
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn closed_session_outbound_wakes_a_pending_write() -> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, outbound_rx) = session_outbound_channel(1);
+    outbound
+        .send(Frame::Ping { nonce: 1 })
+        .await
+        .map_err(|_| std::io::Error::other("test queue unexpectedly closed before backpressure"))?;
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 23);
+    let (mut pipe, _state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+
+    let pending = pipe.write_all_bytes(b"pending");
+    tokio::pin!(pending);
+    assert!(
+        timeout(Duration::from_millis(10), &mut pending)
+            .await
+            .is_err()
+    );
+
+    drop(outbound_rx);
+    let error = timeout(Duration::from_secs(1), &mut pending)
+        .await?
+        .err()
+        .ok_or("pending write unexpectedly succeeded after outbound receiver closed")?;
+    assert_eq!(error.code(), ErrorCode::Unavailable);
+    assert_eq!(error.observation(), crate::PeerObservation::MaybeObserved);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_pending_read_can_be_retried_without_losing_data()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 24);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+
+    {
+        let mut cancelled_byte = [0_u8; 1];
+        let pending = pipe.read(&mut cancelled_byte);
+        tokio::pin!(pending);
+        assert!(
+            timeout(Duration::from_millis(10), &mut pending)
+                .await
+                .is_err()
+        );
+    }
+
+    state.push_data(Bytes::from_static(b"retry"))?;
+    let mut payload = [0_u8; 5];
+    timeout(Duration::from_secs(1), pipe.read_exact(&mut payload)).await??;
+    assert_eq!(&payload, b"retry");
+    Ok(())
+}
+
+#[tokio::test]
 async fn async_io_errors_preserve_the_structured_sdk_error_as_their_payload()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, _outbound_rx) = mpsc::channel(1);
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
     let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 12);
     let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -333,7 +436,7 @@ async fn async_io_errors_preserve_the_structured_sdk_error_as_their_payload()
 #[tokio::test]
 async fn async_shutdown_reports_terminal_failure_and_preserves_its_payload()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, mut outbound_rx) = mpsc::channel(1);
+    let (outbound, mut outbound_rx) = session_outbound_channel(1);
     let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 14);
     let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);

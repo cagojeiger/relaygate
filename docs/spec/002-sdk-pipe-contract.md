@@ -116,7 +116,7 @@ RESET = 실패에 의한 전체 Pipe 종료
 SDK의 incoming queue와 Pipe buffer는 모두 bounded여야 한다.
 
 - incoming queue가 가득 차면 기존 queued Pipe를 버리거나 교체해서는 안 된다.
-- SDK의 control operation과 내부 transport frame write는 configured deadline 안에서 끝나야 한다. application의 `Pipe` read/write는 TCP와 같은 bounded backpressure이며 SDK가 임의의 I/O deadline을 부여하지 않는다. caller는 필요하면 자신의 timeout이나 cancellation을 적용할 수 있고, 취소 전 이미 queue에 수락된 bytes는 partial write로 관찰될 수 있다. session이 실패하면 capacity를 기다리는 Pipe operation도 terminal failure로 풀려야 하며 bytes를 조용히 버려서는 안 된다.
+- SDK의 control operation과 내부 transport frame write는 configured deadline 안에서 끝나야 한다. application의 `Pipe` read/write는 TCP와 같은 bounded backpressure이며 SDK가 임의의 I/O deadline을 부여하지 않는다. caller는 필요하면 자신의 timeout이나 cancellation을 적용할 수 있고, 취소 전 이미 queue에 수락된 bytes는 partial write로 관찰될 수 있다. session이 실패하면 capacity를 기다리는 Pipe operation도 terminal failure로 풀려야 하며 bytes를 조용히 버려서는 안 된다. 같은 session의 서로 다른 Pipe 사이 FIFO writer scheduling은 보장하지 않는다.
 - 느린 Listener나 Pipe 하나 때문에 memory 사용량이 무제한 증가해서는 안 된다.
 
 queue와 buffer 크기, flow-control protocol과 scheduling은 별도 SPEC 또는 configuration이 정한다.

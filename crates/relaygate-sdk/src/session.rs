@@ -11,6 +11,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Config, Error, ErrorCode, PeerObservation, Result};
 
+mod outbound;
+
+pub(crate) use outbound::{
+    FrameCommit, SessionOutbound, SessionOutboundReceiver, session_outbound_channel,
+};
+
 pub(crate) type WireTransport = Framed<TcpStream, FrameCodec>;
 
 pub(crate) struct EstablishedSession {

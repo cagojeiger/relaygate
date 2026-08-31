@@ -18,8 +18,8 @@ use crate::{
     Error, ErrorCode, PeerObservation,
     pipe::{PipeState, to_wire_code},
     session::{
-        EstablishedSession, SessionHeartbeat, establish, next_backoff, send_bounded,
-        wait_for_heartbeat,
+        EstablishedSession, SessionHeartbeat, SessionOutbound, establish, next_backoff,
+        send_bounded, session_outbound_channel, wait_for_heartbeat,
     },
 };
 
@@ -131,7 +131,7 @@ async fn run_listener_session(
     inner: &ListenerRuntimeInner,
     session_cancel: CancellationToken,
 ) -> bool {
-    let (outbound_tx, mut outbound_rx) = mpsc::channel(inner.config.outbound_capacity);
+    let (outbound_tx, mut outbound_rx) = session_outbound_channel(inner.config.outbound_capacity);
     // One unique Pipe value can abandon one current PipeId, so this lane is
     // logically bounded by the session's live Pipe map rather than history.
     let (abandoned_tx, mut abandoned_rx) = mpsc::unbounded_channel();
@@ -491,7 +491,7 @@ async fn handle_listener_frame(
     frame: Frame,
     session_id: relaygate_protocol::SessionId,
     session: &mut ListenerSessionState,
-    outbound: &mpsc::Sender<Frame>,
+    outbound: &SessionOutbound,
     abandoned: &mpsc::UnboundedSender<PipeId>,
     inner: &ListenerRuntimeInner,
     transport: &mut crate::session::WireTransport,
