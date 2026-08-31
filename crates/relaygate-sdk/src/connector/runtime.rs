@@ -13,8 +13,8 @@ use crate::{
     Error, ErrorCode, PeerObservation, Pipe, Result,
     pipe::{PipeState, to_wire_code},
     session::{
-        EstablishedSession, SessionHeartbeat, establish, next_backoff, send_bounded,
-        wait_for_heartbeat,
+        EstablishedSession, SessionHeartbeat, SessionOutbound, SessionOutboundReceiver, establish,
+        next_backoff, send_bounded, session_outbound_channel, wait_for_heartbeat,
     },
 };
 
@@ -51,7 +51,7 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
         let started_at = Instant::now();
         let (control_tx, control_rx) = mpsc::channel(inner.config.outbound_capacity);
         let (cancellation_tx, cancellation_rx) = mpsc::unbounded_channel();
-        let (outbound_tx, outbound_rx) = mpsc::channel(inner.config.outbound_capacity);
+        let (outbound_tx, outbound_rx) = session_outbound_channel(inner.config.outbound_capacity);
         let session_cancel = inner.cancel.child_token();
         let heartbeat = SessionHeartbeat::new(&inner.config, next.id, 0x43);
         let session = Arc::new(ConnectorSession {
@@ -102,8 +102,8 @@ async fn run_connector_session(
     mut established: EstablishedSession,
     mut control: mpsc::Receiver<ConnectorCommand>,
     mut cancellations: mpsc::UnboundedReceiver<PipeId>,
-    outbound_tx: mpsc::Sender<Frame>,
-    mut outbound_rx: mpsc::Receiver<Frame>,
+    outbound_tx: SessionOutbound,
+    mut outbound_rx: SessionOutboundReceiver,
     pipe_inbound_capacity: usize,
     operation_timeout: std::time::Duration,
     mut heartbeat: SessionHeartbeat,
@@ -280,7 +280,7 @@ async fn handle_connector_frame(
     session_id: SessionId,
     pending: &mut HashMap<u64, oneshot::Sender<Result<Pipe>>>,
     pipes: &mut HashMap<PipeId, Arc<PipeState>>,
-    outbound: &mpsc::Sender<Frame>,
+    outbound: &SessionOutbound,
     pipe_inbound_capacity: usize,
     abandoned: &mpsc::UnboundedSender<PipeId>,
     transport: &mut crate::session::WireTransport,

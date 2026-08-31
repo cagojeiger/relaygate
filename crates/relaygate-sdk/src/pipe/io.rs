@@ -13,7 +13,7 @@ use super::{
     DATA_CHUNK_LEN, Pipe, PipeReadHalf, PipeReader, PipeState, PipeWriteHalf, PipeWriter, Terminal,
     to_wire_code,
 };
-use crate::{Error, ErrorCode, PeerObservation, Result};
+use crate::{Error, ErrorCode, PeerObservation, Result, session::FrameCommit};
 
 impl PipeReader {
     pub(super) fn poll_read(
@@ -75,42 +75,41 @@ impl PipeWriter {
     ) -> Poll<Result<usize>> {
         state.write_waker.register(context.waker());
         if let Some(error) = state.write_error() {
-            self.outbound.abort_send();
+            self.outbound.cancel_wait();
             return Poll::Ready(Err(error));
         }
         if payload.is_empty() {
-            self.outbound.abort_send();
+            self.outbound.cancel_wait();
             return Poll::Ready(Ok(0));
         }
 
-        match self.outbound.poll_reserve(context) {
+        let count = payload.len().min(DATA_CHUNK_LEN);
+        match self.outbound.poll_send(context, || {
+            state.write_error().is_none().then(|| Frame::Data {
+                pipe_id: state.id,
+                payload: Bytes::copy_from_slice(&payload[..count]),
+            })
+        }) {
             Poll::Pending => {
                 if let Some(error) = state.write_error() {
-                    self.outbound.abort_send();
+                    self.outbound.cancel_wait();
                     Poll::Ready(Err(error))
                 } else {
                     Poll::Pending
                 }
             }
-            Poll::Ready(Err(_)) => Poll::Ready(Err(Error::maybe_observed(
+            Poll::Ready(Err(())) => Poll::Ready(Err(Error::maybe_observed(
                 "session ended while writing Pipe data",
             ))),
-            Poll::Ready(Ok(())) => {
-                if let Some(error) = state.write_error() {
-                    self.outbound.abort_send();
-                    return Poll::Ready(Err(error));
-                }
-                let count = payload.len().min(DATA_CHUNK_LEN);
-                let frame = Frame::Data {
-                    pipe_id: state.id,
-                    payload: Bytes::copy_from_slice(&payload[..count]),
-                };
-                if self.outbound.send_item(frame).is_err() {
-                    return Poll::Ready(Err(Error::maybe_observed(
-                        "session ended while writing Pipe data",
-                    )));
-                }
-                Poll::Ready(Ok(count))
+            Poll::Ready(Ok(FrameCommit::Sent)) => Poll::Ready(Ok(count)),
+            Poll::Ready(Ok(FrameCommit::Skipped)) => {
+                Poll::Ready(Err(state.write_error().unwrap_or_else(|| {
+                    Error::new(
+                        ErrorCode::Internal,
+                        PeerObservation::NotObserved,
+                        "DATA commit was skipped without a terminal Pipe state",
+                    )
+                })))
             }
         }
     }
@@ -122,50 +121,41 @@ impl PipeWriter {
     ) -> Poll<Result<()>> {
         state.write_waker.register(context.waker());
         if let Some(error) = state.terminal_failure() {
-            self.outbound.abort_send();
+            self.outbound.cancel_wait();
             return Poll::Ready(Err(error));
         }
         if state.terminal.borrow().is_some() || state.local_fin.load(Ordering::Acquire) {
-            self.outbound.abort_send();
+            self.outbound.cancel_wait();
             return Poll::Ready(Ok(()));
         }
 
-        match self.outbound.poll_reserve(context) {
+        match self.outbound.poll_send(context, || {
+            if state.terminal.borrow().is_some() || state.local_fin.swap(true, Ordering::AcqRel) {
+                None
+            } else {
+                Some(Frame::Fin { pipe_id: state.id })
+            }
+        }) {
             Poll::Pending => {
                 if let Some(error) = state.terminal_failure() {
-                    self.outbound.abort_send();
+                    self.outbound.cancel_wait();
                     Poll::Ready(Err(error))
                 } else if state.terminal.borrow().is_some()
                     || state.local_fin.load(Ordering::Acquire)
                 {
-                    self.outbound.abort_send();
+                    self.outbound.cancel_wait();
                     Poll::Ready(Ok(()))
                 } else {
                     Poll::Pending
                 }
             }
-            Poll::Ready(Err(_)) => Poll::Ready(Err(Error::maybe_observed(
+            Poll::Ready(Err(())) => Poll::Ready(Err(Error::maybe_observed(
                 "session ended while sending FIN",
             ))),
-            Poll::Ready(Ok(())) => {
-                if let Some(error) = state.terminal_failure() {
-                    self.outbound.abort_send();
-                    return Poll::Ready(Err(error));
-                }
-                if state.terminal.borrow().is_some() || state.local_fin.swap(true, Ordering::AcqRel)
-                {
-                    self.outbound.abort_send();
-                    return Poll::Ready(Ok(()));
-                }
-                if self
-                    .outbound
-                    .send_item(Frame::Fin { pipe_id: state.id })
-                    .is_err()
-                {
-                    return Poll::Ready(Err(Error::maybe_observed(
-                        "session ended while sending FIN",
-                    )));
-                }
+            Poll::Ready(Ok(FrameCommit::Skipped)) => {
+                Poll::Ready(state.terminal_failure().map_or(Ok(()), Err))
+            }
+            Poll::Ready(Ok(FrameCommit::Sent)) => {
                 if state.remote_fin.load(Ordering::Acquire) {
                     state.close_normal();
                 }
@@ -181,38 +171,27 @@ impl PipeWriter {
     ) -> Poll<Result<()>> {
         state.write_waker.register(context.waker());
         if state.terminal.borrow().is_some() {
-            self.outbound.abort_send();
+            self.outbound.cancel_wait();
             return Poll::Ready(Ok(()));
         }
 
-        match self.outbound.poll_reserve(context) {
+        match self.outbound.poll_send(context, || {
+            state
+                .close_normal()
+                .then_some(Frame::Close { pipe_id: state.id })
+        }) {
             Poll::Pending => {
                 if state.terminal.borrow().is_some() {
-                    self.outbound.abort_send();
+                    self.outbound.cancel_wait();
                     Poll::Ready(Ok(()))
                 } else {
                     Poll::Pending
                 }
             }
-            Poll::Ready(Err(_)) => Poll::Ready(Err(Error::maybe_observed(
+            Poll::Ready(Err(())) => Poll::Ready(Err(Error::maybe_observed(
                 "session ended while sending CLOSE",
             ))),
-            Poll::Ready(Ok(())) => {
-                if !state.close_normal() {
-                    self.outbound.abort_send();
-                    return Poll::Ready(Ok(()));
-                }
-                if self
-                    .outbound
-                    .send_item(Frame::Close { pipe_id: state.id })
-                    .is_err()
-                {
-                    return Poll::Ready(Err(Error::maybe_observed(
-                        "session ended while sending CLOSE",
-                    )));
-                }
-                Poll::Ready(Ok(()))
-            }
+            Poll::Ready(Ok(FrameCommit::Sent | FrameCommit::Skipped)) => Poll::Ready(Ok(())),
         }
     }
 
@@ -225,55 +204,44 @@ impl PipeWriter {
     ) -> Poll<Result<()>> {
         state.write_waker.register(context.waker());
         if state.terminal.borrow().is_some() {
-            self.outbound.abort_send();
+            self.outbound.cancel_wait();
             return Poll::Ready(Ok(()));
         }
 
-        match self.outbound.poll_reserve(context) {
+        match self.outbound.poll_send(context, || {
+            state
+                .fail(Error::new(
+                    code,
+                    PeerObservation::Observed,
+                    message.to_owned(),
+                ))
+                .then(|| Frame::Reset {
+                    pipe_id: state.id,
+                    code: to_wire_code(code),
+                    message: message.to_owned(),
+                })
+        }) {
             Poll::Pending => {
                 if state.terminal.borrow().is_some() {
-                    self.outbound.abort_send();
+                    self.outbound.cancel_wait();
                     Poll::Ready(Ok(()))
                 } else {
                     Poll::Pending
                 }
             }
-            Poll::Ready(Err(_)) => Poll::Ready(Err(Error::maybe_observed(
+            Poll::Ready(Err(())) => Poll::Ready(Err(Error::maybe_observed(
                 "session ended while sending RESET",
             ))),
-            Poll::Ready(Ok(())) => {
-                if !state.fail(Error::new(
-                    code,
-                    PeerObservation::Observed,
-                    message.to_owned(),
-                )) {
-                    self.outbound.abort_send();
-                    return Poll::Ready(Ok(()));
-                }
-                if self
-                    .outbound
-                    .send_item(Frame::Reset {
-                        pipe_id: state.id,
-                        code: to_wire_code(code),
-                        message: message.to_owned(),
-                    })
-                    .is_err()
-                {
-                    return Poll::Ready(Err(Error::maybe_observed(
-                        "session ended while sending RESET",
-                    )));
-                }
-                Poll::Ready(Ok(()))
-            }
+            Poll::Ready(Ok(FrameCommit::Sent | FrameCommit::Skipped)) => Poll::Ready(Ok(())),
         }
     }
 
     fn poll_flush(&mut self, state: &PipeState) -> Poll<Result<()>> {
         if let Some(error) = state.terminal_failure() {
-            self.outbound.abort_send();
+            self.outbound.cancel_wait();
             return Poll::Ready(Err(error));
         }
-        self.outbound.abort_send();
+        self.outbound.cancel_wait();
         Poll::Ready(Ok(()))
     }
 }

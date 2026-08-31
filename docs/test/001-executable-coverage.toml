@@ -78,9 +78,8 @@ reason = "양방향 byte 순서는 검증하지만 write 성공이 peer applicat
 
 [[case]]
 id = "T-SDK-05"
-status = "partial"
-rust = ["full_pipe_buffer_resets_only_that_pipe", "pipe::tests::async_write_waits_for_the_existing_bounded_session_queue", "pipe::tests::remote_failure_wins_while_write_waits_for_capacity"]
-reason = "bounded capacity와 terminal wake-up은 검증하지만 caller timeout으로 future를 취소한 뒤 상태 보존을 확인하지 않는다."
+status = "executable"
+rust = ["full_pipe_buffer_resets_only_that_pipe", "pipe::tests::async_write_waits_for_the_existing_bounded_session_queue", "pipe::tests::cancelled_pending_write_does_not_poison_shared_session_queue", "pipe::tests::closed_session_outbound_wakes_a_pending_write", "pipe::tests::remote_failure_wins_while_write_waits_for_capacity", "session::outbound::tests::skipped_commit_releases_capacity_and_wakes_another_writer"]
 
 [[case]]
 id = "T-SDK-06"

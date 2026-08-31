@@ -5,11 +5,12 @@ use std::sync::{
 
 use bytes::Bytes;
 use futures_util::{future::poll_fn, task::AtomicWaker};
-use relaygate_protocol::{ErrorCode as WireErrorCode, Frame, PipeId};
+use relaygate_protocol::{ErrorCode as WireErrorCode, PipeId};
 use tokio::sync::{mpsc, watch};
-use tokio_util::sync::PollSender;
 
-use crate::{Error, ErrorCode, PeerObservation, Result, lifetime::RuntimeLifetime};
+use crate::{
+    Error, ErrorCode, PeerObservation, Result, lifetime::RuntimeLifetime, session::SessionOutbound,
+};
 
 mod io;
 
@@ -41,7 +42,7 @@ struct PipeOwner {
 }
 
 struct PipeWriter {
-    outbound: PollSender<Frame>,
+    outbound: SessionOutbound,
 }
 
 struct PipeReader {
@@ -101,7 +102,7 @@ impl PipeState {
     #[cfg(test)]
     pub(crate) fn pair(
         id: PipeId,
-        outbound: mpsc::Sender<Frame>,
+        outbound: SessionOutbound,
         inbound_capacity: usize,
         abandoned: mpsc::UnboundedSender<PipeId>,
     ) -> (Pipe, Arc<Self>) {
@@ -110,7 +111,7 @@ impl PipeState {
 
     pub(crate) fn pair_with_lifetime(
         id: PipeId,
-        outbound: mpsc::Sender<Frame>,
+        outbound: SessionOutbound,
         inbound_capacity: usize,
         abandoned: mpsc::UnboundedSender<PipeId>,
         lifetime: Arc<RuntimeLifetime>,
@@ -120,7 +121,7 @@ impl PipeState {
 
     fn pair_inner(
         id: PipeId,
-        outbound: mpsc::Sender<Frame>,
+        outbound: SessionOutbound,
         inbound_capacity: usize,
         abandoned: mpsc::UnboundedSender<PipeId>,
         lifetime: Option<Arc<RuntimeLifetime>>,
@@ -148,9 +149,7 @@ impl PipeState {
                 current: Bytes::new(),
                 read_eof: false,
             },
-            writer: PipeWriter {
-                outbound: PollSender::new(outbound),
-            },
+            writer: PipeWriter { outbound },
         };
         (pipe, state)
     }
@@ -367,7 +366,7 @@ impl PipeWriteHalf {
 impl PipeWriter {
     async fn write_all(&mut self, state: &PipeState, payload: &[u8]) -> Result<()> {
         if payload.is_empty() {
-            self.outbound.abort_send();
+            self.outbound.cancel_wait();
             return state.write_error().map_or(Ok(()), Err);
         }
         let mut written = 0;

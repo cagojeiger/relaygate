@@ -5,7 +5,9 @@ use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::{Listener, ListenerRuntimeInner, ListenerState, ListenerStatus};
-use crate::{Config, Error, ErrorCode, PeerObservation, pipe::PipeState};
+use crate::{
+    Config, Error, ErrorCode, PeerObservation, pipe::PipeState, session::session_outbound_channel,
+};
 
 fn listener_state(client_id: &str) -> Arc<ListenerState> {
     let (status, _) = watch::channel(ListenerStatus::Active);
@@ -98,7 +100,7 @@ async fn closed_listener_does_not_return_an_already_queued_pipe()
         )),
         state: Arc::clone(&state),
     };
-    let (outbound, _outbound_rx) = mpsc::channel(1);
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 8);
     let (pipe, _pipe_state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -141,7 +143,7 @@ async fn blocked_listener_discards_queued_pipe_before_returning_registration_err
         )),
         state: Arc::clone(&state),
     };
-    let (outbound, _outbound_rx) = mpsc::channel(1);
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 10);
     let (pipe, pipe_state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -193,7 +195,7 @@ async fn suspended_listener_waits_for_a_pipe_from_the_recovered_session()
         )),
         state: Arc::clone(&state),
     });
-    let (outbound, _outbound_rx) = mpsc::channel(1);
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let old_pipe_id = PipeId::new(SessionId::new(), 11);
     let (old_pipe, old_pipe_state) =
@@ -261,7 +263,7 @@ async fn explicit_close_removes_desired_and_drops_unaccepted_pipes()
         )),
         state: Arc::clone(&state),
     };
-    let (outbound, _outbound_rx) = mpsc::channel(1);
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 7);
     let (pipe, _pipe_state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -308,7 +310,7 @@ async fn pending_accept_observes_close_before_a_racing_pipe()
         drop(receiver);
         tokio::task::yield_now().await;
     }
-    let (outbound, _outbound_rx) = mpsc::channel(1);
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
     let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 9);
     let (pipe, _pipe_state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
@@ -357,7 +359,7 @@ async fn cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipe
         state: Arc::clone(&beta_state),
     });
 
-    let (outbound, _outbound_rx) = mpsc::channel(2);
+    let (outbound, _outbound_rx) = session_outbound_channel(2);
     let (alpha_abandoned, mut alpha_abandoned_rx) = mpsc::unbounded_channel();
     let alpha_pipe_id = PipeId::new(SessionId::new(), 13);
     let (alpha_pipe, _alpha_pipe_state) =
