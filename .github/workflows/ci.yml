@@ -86,8 +86,9 @@ jobs:
       - name: Verify unrelated pair continuity across Gateway B restart
         run: |
           docker compose restart gateway-b
-          docker compose up -d --wait gateway-b
+          docker compose up -d --wait --no-deps gateway-b
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 
       - name: Verify RouteTable outage boundary
@@ -99,6 +100,9 @@ jobs:
       - name: Verify current-state recovery after RouteTable restart
         run: |
           docker compose up -d rt-0
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.a
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.c
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 

@@ -127,16 +127,20 @@ Compose는 실제 container build, DNS, process startup, healthcheck, TCP discon
 2. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 3. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
 4. docker compose restart gateway-b
-5. docker compose up -d --wait gateway-b
+5. docker compose up -d --wait --no-deps gateway-b
 6. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
-7. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-8. docker compose stop rt-0
-9. docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-rt-unavailable
-10. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
-11. docker compose up -d rt-0
-12. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-13. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
-14. docker compose down --volumes --remove-orphans
+7. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
+8. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+9. docker compose stop rt-0
+10. docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-rt-unavailable
+11. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+12. docker compose up -d rt-0
+13. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.a
+14. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
+15. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.c
+16. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+17. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+18. docker compose down --volumes --remove-orphans
 ```
 
 `matrix`는 local 3경로, remote 6방향, 경로별 65,537-byte payload, path별 32 concurrent Pipe,
@@ -149,6 +153,11 @@ A에서 C로 열린 기존 Pipe가 GW-B restart와 RT outage 중에도 freshness
 `UNAVAILABLE` terminal 결과인지 확인한다. RT 재시작 뒤 `matrix`의 bounded retry는 A/B/C의
 current snapshot publication을 기다리되 이전 attempt를 replay하지 않고 매번 새 `open`으로
 확인한다. configured deadline 안에 수렴하지 않으면 실패한다.
+
+`wait-client`는 full matrix 전에 특정 `ClientId`를 모든 Gateway entry에서 한 번씩 열어 RT
+publication과 Owner Gateway 도달성이 수렴했는지 확인한다. 이 단계는 새 semantic을 정의하지
+않고, full matrix 실패 원인이 재시작 직후 publication 수렴 지연인지 실제 relay 경로 장애인지
+분리하기 위한 Compose 검증 harness다.
 
 READY-empty의 `NOT_FOUND`는 Compose race로 검증하지 않는다. RT service integration test에서
 deterministic하게 검증한다.
