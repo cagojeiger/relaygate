@@ -287,6 +287,25 @@ async fn peer_liveness_scope_case(case: LivenessCase) -> TestResult {
 
     let (mut fresh_connector, mut fresh_listener) =
         open_pipe(&connector_a, CLIENT_B, &listener_b).await?;
+    wait_until(
+        "surviving opposite transport reused",
+        Duration::from_secs(2),
+        || {
+            let a = gateway_a.gateway.snapshot();
+            let b = gateway_b.gateway.snapshot();
+            let c = gateway_c.gateway.snapshot();
+            a.peer_transports_ready == 1
+                && a.peer_streams == 2
+                && a.live_pipes == 2
+                && b.peer_transports_ready == 2
+                && b.peer_streams == 3
+                && b.live_pipes == 3
+                && c.peer_transports_ready == 1
+                && c.peer_streams == 1
+                && c.live_pipes == 1
+        },
+    )
+    .await?;
     assert_bidirectional(&mut fresh_connector, &mut fresh_listener, "fresh").await?;
 
     let _ = target_connector.close().await;

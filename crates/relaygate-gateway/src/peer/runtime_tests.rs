@@ -438,7 +438,15 @@ async fn force_close_emits_one_transport_scoped_loss_and_releases_all_streams() 
 }
 
 #[tokio::test]
-async fn wrong_trusted_key_fails_before_open_commit_without_ready_transport() -> TestResult {
+async fn unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit() -> TestResult {
+    assert_untrusted_peer_fails_before_open_commit("gateway-a", "wrong-key").await?;
+    assert_untrusted_peer_fails_before_open_commit("unknown-gateway", "key-a").await
+}
+
+async fn assert_untrusted_peer_fails_before_open_commit(
+    trusted_name: &str,
+    trusted_key: &str,
+) -> TestResult {
     let listener_a = TcpListener::bind("127.0.0.1:0").await?;
     let listener_b = TcpListener::bind("127.0.0.1:0").await?;
     let gateway_a = GatewayId::new();
@@ -452,7 +460,7 @@ async fn wrong_trusted_key_fails_before_open_commit_without_ready_transport() ->
         shutdown_a.clone(),
     )?;
     let (_handle_b, _events_b, runtime_b) = PeerRuntime::start(
-        test_config("gateway-b", "key-b", "gateway-a", "wrong-key")?,
+        test_config("gateway-b", "key-b", trusted_name, trusted_key)?,
         gateway_b,
         shutdown_b.clone(),
     )?;
@@ -468,6 +476,7 @@ async fn wrong_trusted_key_fails_before_open_commit_without_ready_transport() ->
     let failure = handle_a.open(request).await.err();
     assert!(failure.is_some());
     let failure = failure.ok_or("expected handshake failure")?;
+    assert_eq!(failure.code(), ErrorCode::Unauthenticated);
     assert_eq!(failure.observation(), PeerObservation::NotObserved);
     assert_eq!(handle_a.counts().ready, 0);
     assert_eq!(handle_a.counts().streams, 0);
