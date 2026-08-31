@@ -300,8 +300,8 @@ reason = "RT loss와 transport loss는 검증하지만 mapping 변화 후 same-a
 [[case]]
 id = "T-OPEN-07"
 status = "partial"
-rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::transport::tests::cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::post_commit_cancel_ignores_late_opened_and_converges_through_transport_loss", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::early_failed_then_late_commit_callback_never_resurrects_state", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "committed_open_timeout_closes_session_and_existing_pipes"]
-reason = "pre/post peer OPEN commit 취소, cancel-deadline 경합, late OPENED와 SDK 성공 경쟁은 검증하지만 request commit부터 Owner queue admission까지 모든 실패 지점을 실제 runtime 한 계층에서 순회하지 않는다."
+rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_stream_state", "peer::transport::tests::committed_open_timeout_is_reported_as_maybe_observed", "peer::transport::tests::cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause", "peer::tests::peer_open_failure_observation_depends_on_writer_commit_point", "peer::runtime_tests::post_commit_cancel_ignores_late_opened_and_converges_through_transport_loss", "state::tests::early_opened_then_late_commit_callback_is_idempotent", "state::tests::early_failed_then_late_commit_callback_never_resurrects_state", "state::tests::connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer", "state::tests::connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_recreate_pipe", "gateway::effects::tests::entry_opened_delivery_failure_closes_connector_and_remote_pipe", "lost_entry_opened_closes_connector_session_and_remote_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "committed_open_timeout_closes_session_and_existing_pipes"]
+reason = "pre/post peer OPEN commit 취소, cancel-deadline 경합, late OPENED와 Entry-to-SDK 성공 응답 유실은 검증하지만 request commit부터 Owner queue admission까지 모든 실패 지점을 실제 runtime 한 계층에서 순회하지 않는다."
 
 [[case]]
 id = "T-OPEN-08"
@@ -505,8 +505,8 @@ reason = "success·cancel·deadline 대표 경합과 late event는 검증하지�
 [[case]]
 id = "T-STATE-PIPE"
 status = "partial"
-rust = ["state::tests::close_reset_and_late_frames_are_pipe_local", "state::tests::data_after_fin_resets_only_that_pipe", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes"]
-reason = "정상과 실패 terminal은 검증하지만 OPENED 응답 유실 뒤 양 endpoint cleanup을 완전히 연결하지 않는다."
+rust = ["state::tests::close_reset_and_late_frames_are_pipe_local", "state::tests::data_after_fin_resets_only_that_pipe", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "gateway::effects::tests::entry_opened_delivery_failure_closes_connector_and_remote_pipe", "lost_entry_opened_closes_connector_session_and_remote_pipe"]
+reason = "정상과 실패 terminal 및 application accept 뒤 OPENED 응답 유실의 양 endpoint cleanup은 검증하지만 open failure와 미수락 Listener queue cleanup을 한 sequence로 연결하지 않는다."
 
 [[case]]
 id = "T-STATE-PAIR"
@@ -567,9 +567,8 @@ reason = "stale candidate와 late Resolve는 검증하지만 Resolve 뒤 실제 
 
 [[case]]
 id = "T-EDGE-08"
-status = "partial"
-rust = ["committed_open_timeout_closes_session_and_existing_pipes", "committed_open_is_not_replayed_and_reports_maybe_observed", "state::tests::offer_deadline_closes_selected_listener_session_and_preserves_sibling"]
-reason = "응답 유실과 cleanup은 검증하지만 application accept 뒤 양 endpoint 조합을 연결하지 않는다."
+status = "executable"
+rust = ["committed_open_timeout_closes_session_and_existing_pipes", "committed_open_is_not_replayed_and_reports_maybe_observed", "gateway::effects::tests::entry_opened_delivery_failure_closes_connector_and_remote_pipe", "lost_entry_opened_closes_connector_session_and_remote_pipe", "state::tests::offer_deadline_closes_selected_listener_session_and_preserves_sibling"]
 
 [[case]]
 id = "T-EDGE-09"
