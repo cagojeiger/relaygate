@@ -6,6 +6,9 @@
 | 기준 | [SPEC 001](../spec/001-terminology-and-object-model.md) ~ [SPEC 008](../spec/008-runtime-observability-contract.md) |
 
 이 문서는 SPEC 요구사항을 검증 시나리오에 연결한다. 새로운 동작 규칙은 정의하지 않는다.
+각 시나리오의 현재 실행 증거와 공백은
+[`001-executable-coverage.toml`](001-executable-coverage.toml)에서 관리하며 CI가 실제 Rust
+test 목록과 대조한다.
 
 ## 검증 원칙
 

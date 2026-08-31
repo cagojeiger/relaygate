@@ -54,6 +54,16 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Audit requirement-test traceability
+        run: |
+          mkdir -p target/contract
+          cargo test --workspace --locked -- --list > target/contract/tests.txt
+          cargo run -p relaygate-test-contract --locked -- check \
+            --matrix docs/test/001-requirement-test-matrix.md \
+            --spec-dir docs/spec \
+            --coverage docs/test/001-executable-coverage.toml \
+            --test-list target/contract/tests.txt
+
   compose:
     name: Docker Compose RT1/GW3 E2E
     needs: [hygiene, rust]
