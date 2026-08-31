@@ -35,10 +35,13 @@ pub(super) async fn dial_and_handshake(
     target: PeerTarget,
     peer_transport_id: PeerTransportId,
 ) -> Result<EstablishedPeer, PeerFailure> {
-    let stream = tokio::time::timeout(
-        config.connect_timeout,
-        TcpStream::connect(target.gateway_locator().as_str()),
-    )
+    let stream = tokio::time::timeout(config.connect_timeout, async {
+        #[cfg(test)]
+        if let Some(gate) = &config.connect_gate {
+            gate.wait().await;
+        }
+        TcpStream::connect(target.gateway_locator().as_str()).await
+    })
     .await
     .map_err(|_| {
         PeerFailure::not_observed(

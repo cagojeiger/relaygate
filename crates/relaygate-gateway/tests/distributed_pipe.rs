@@ -1,9 +1,11 @@
 use std::{error::Error, io, net::SocketAddr, time::Duration};
 
+use futures_util::{SinkExt, StreamExt};
 use relaygate_gateway::{
     Gateway, GatewayConfig, GatewayError, GatewayPeerConfig, GatewayRoutingConfig,
     TrustedPeerConfig, check,
 };
+use relaygate_protocol::{Frame, FrameCodec};
 use relaygate_route_table::{
     GatewayLocator, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
 };
@@ -17,7 +19,8 @@ use relaygate_sdk::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
+    sync::oneshot,
     task::JoinHandle,
     time::{Instant, timeout},
 };
@@ -132,6 +135,144 @@ async fn remote_pipe_case() -> TestResult {
     gateway_a.stop().await?;
     gateway_b.stop().await?;
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lost_entry_opened_closes_connector_session_and_remote_pipe() -> TestResult {
+    timeout(Duration::from_secs(10), lost_entry_opened_case()).await??;
+    Ok(())
+}
+
+async fn lost_entry_opened_case() -> TestResult {
+    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let route_endpoint = route_listener.local_addr()?;
+    let directory = ShardDirectory::from_json_bytes(one_shard_directory(route_endpoint))?;
+    let route_table = RunningRouteTable::start(route_listener, directory.clone())?;
+
+    let gateway_a = RunningGateway::start(
+        GATEWAY_A,
+        GATEWAY_A_KEY,
+        GATEWAY_B,
+        GATEWAY_B_KEY,
+        directory.clone(),
+    )
+    .await?;
+    let gateway_b = RunningGateway::start(
+        GATEWAY_B,
+        GATEWAY_B_KEY,
+        GATEWAY_A,
+        GATEWAY_A_KEY,
+        directory,
+    )
+    .await?;
+
+    let listener_runtime = ListenerRuntime::connect(sdk_config(gateway_b.sdk_address)).await?;
+    let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_b.gateway.snapshot().route_registrations_synced == 1
+    })
+    .await?;
+
+    let proxy = OpenedDroppingProxy::start(gateway_a.sdk_address).await?;
+    let connector = Connector::connect(
+        SdkConfig::new(proxy.address.to_string())
+            .with_connect_timeout(Duration::from_millis(200))
+            .with_operation_timeout(Duration::from_millis(200))
+            .with_reconnect_backoff(Duration::from_secs(1), Duration::from_secs(1)),
+    )
+    .await?;
+    let opening = {
+        let connector = connector.clone();
+        tokio::spawn(async move { connector.open(CLIENT_ID).await })
+    };
+    let mut listener_pipe = listener.accept().await?;
+    timeout(Duration::from_secs(2), proxy.opened_dropped).await??;
+
+    let error = opening
+        .await?
+        .err()
+        .ok_or("OPEN unexpectedly succeeded after Entry OPENED was lost")?;
+    assert_eq!(error.code(), SdkErrorCode::DeadlineExceeded);
+    assert_eq!(error.observation(), SdkPeerObservation::MaybeObserved);
+    timeout(Duration::from_secs(2), proxy.task).await???;
+
+    wait_until(Duration::from_secs(2), || {
+        let entry = gateway_a.gateway.snapshot();
+        let owner = gateway_b.gateway.snapshot();
+        entry.connector_sessions == 0
+            && entry.remote_open_attempts == 0
+            && entry.live_pipes == 0
+            && entry.peer_streams == 0
+            && owner.live_pipes == 0
+            && owner.peer_streams == 0
+    })
+    .await?;
+    let mut byte = [0_u8; 1];
+    let listener_error = timeout(Duration::from_secs(1), listener_pipe.read_into(&mut byte))
+        .await?
+        .err()
+        .ok_or("Owner Listener Pipe survived the lost Entry OPENED cleanup")?;
+    assert_eq!(listener_error.code(), SdkErrorCode::Cancelled);
+
+    connector.close();
+    listener_runtime.close();
+    gateway_a.stop().await?;
+    gateway_b.stop().await?;
+    route_table.stop().await?;
+    Ok(())
+}
+
+struct OpenedDroppingProxy {
+    address: SocketAddr,
+    opened_dropped: oneshot::Receiver<()>,
+    task: JoinHandle<TestResult>,
+}
+
+impl OpenedDroppingProxy {
+    async fn start(upstream: SocketAddr) -> TestResult<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (opened_dropped_tx, opened_dropped) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (sdk_stream, _) = listener.accept().await?;
+            let gateway_stream = TcpStream::connect(upstream).await?;
+            let (mut sdk_sink, mut sdk_source) =
+                tokio_util::codec::Framed::new(sdk_stream, FrameCodec::default()).split();
+            let (mut gateway_sink, mut gateway_source) =
+                tokio_util::codec::Framed::new(gateway_stream, FrameCodec::default()).split();
+
+            let sdk_to_gateway = async {
+                while let Some(frame) = sdk_source.next().await {
+                    gateway_sink.send(frame?).await?;
+                }
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            };
+            let gateway_to_sdk = async {
+                let mut opened_dropped_tx = Some(opened_dropped_tx);
+                while let Some(frame) = gateway_source.next().await {
+                    let frame = frame?;
+                    if matches!(&frame, Frame::Opened { .. })
+                        && let Some(sender) = opened_dropped_tx.take()
+                    {
+                        let _ = sender.send(());
+                        continue;
+                    }
+                    sdk_sink.send(frame).await?;
+                }
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            };
+            tokio::select! {
+                result = sdk_to_gateway => result?,
+                result = gateway_to_sdk => result?,
+            }
+            Ok(())
+        });
+        Ok(Self {
+            address,
+            opened_dropped,
+            task,
+        })
+    }
 }
 
 struct RunningGateway {

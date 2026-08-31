@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+#[cfg(test)]
+use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 
 use crate::GatewayError;
@@ -24,6 +26,33 @@ const DEFAULT_OPEN_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_HEARTBEAT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_IDLE_RETIREMENT_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(super) struct ConnectGate {
+    entered: std::sync::Arc<Notify>,
+    release: std::sync::Arc<Notify>,
+}
+
+#[cfg(test)]
+impl ConnectGate {
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(super) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(super) fn release(&self) {
+        self.release.notify_one();
+    }
+
+    pub(super) async fn wait(&self) {
+        self.entered.notify_one();
+        self.release.notified().await;
+    }
+}
 
 /// One trusted stable peer entry for the local/CI plain-TCP adapter.
 #[derive(Clone)]
@@ -77,6 +106,8 @@ pub struct GatewayPeerConfig {
     pub(super) heartbeat_idle_interval: Duration,
     pub(super) heartbeat_response_timeout: Duration,
     pub(super) idle_retirement_timeout: Duration,
+    #[cfg(test)]
+    pub(super) connect_gate: Option<ConnectGate>,
 }
 
 impl GatewayPeerConfig {
@@ -104,6 +135,8 @@ impl GatewayPeerConfig {
             heartbeat_idle_interval: DEFAULT_HEARTBEAT_IDLE_INTERVAL,
             heartbeat_response_timeout: DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT,
             idle_retirement_timeout: DEFAULT_IDLE_RETIREMENT_TIMEOUT,
+            #[cfg(test)]
+            connect_gate: None,
         };
         config.validate().map_err(config_error)?;
         Ok(config)
@@ -164,6 +197,12 @@ impl GatewayPeerConfig {
         self.heartbeat_idle_interval = heartbeat_idle_interval;
         self.heartbeat_response_timeout = heartbeat_response_timeout;
         self.idle_retirement_timeout = idle_retirement_timeout;
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_connect_gate(mut self, gate: ConnectGate) -> Self {
+        self.connect_gate = Some(gate);
         self
     }
 
