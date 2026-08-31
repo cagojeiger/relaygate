@@ -97,6 +97,27 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) async fn wait_client_registered(client_id: &str) -> anyhow::Result<()> {
+    let connectors = connect_all(&gateway_addresses()?).await?;
+    for (entry, connector) in connectors.iter().enumerate() {
+        let payload =
+            format!("relaygate wait-client entry={entry} client={client_id}").into_bytes();
+        assert_echo(
+            open_when_registered(connector, client_id, ROUTE_WAIT).await?,
+            &payload,
+        )
+        .await
+        .with_context(|| {
+            format!("client {client_id:?} did not converge from gateway entry {entry}")
+        })?;
+    }
+    for connector in connectors {
+        connector.close();
+    }
+    println!("relaygate client {client_id:?} converged from all Gateway entries");
+    Ok(())
+}
+
 pub(crate) async fn expect_route_table_unavailable() -> anyhow::Result<()> {
     let addresses = gateway_addresses()?;
     let connectors = connect_all(&addresses).await?;
