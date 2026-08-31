@@ -119,9 +119,8 @@ rust = ["committed_open_timeout_closes_session_and_existing_pipes", "committed_o
 
 [[case]]
 id = "T-SDK-13"
-status = "partial"
-rust = ["stalled_transport_send_times_out_and_cleans_up_session", "stalled_listener_transport_send_times_out_and_cleans_up_session"]
-reason = "Connector와 Listener의 stalled writer deadline 및 session cleanup은 검증하지만 cancellation과 stalled write의 경쟁은 직접 검증하지 않는다."
+status = "executable"
+rust = ["stalled_transport_send_times_out_and_cleans_up_session", "stalled_listener_transport_send_times_out_and_cleans_up_session", "cancelling_runtime_during_stalled_connector_send_cleans_up_session", "cancelling_runtime_during_stalled_listener_send_cleans_up_session"]
 
 [[case]]
 id = "T-SDK-14"

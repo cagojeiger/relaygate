@@ -625,6 +625,69 @@ async fn stalled_transport_send_times_out_and_cleans_up_session_case() -> TestRe
 }
 
 #[tokio::test]
+async fn cancelling_runtime_during_stalled_connector_send_cleans_up_session() -> TestResult {
+    timeout(
+        Duration::from_secs(5),
+        cancelling_runtime_during_stalled_connector_send_cleans_up_session_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn cancelling_runtime_during_stalled_connector_send_cleans_up_session_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let server = tokio::spawn(async move {
+        let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
+        let open = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing OPEN"))??;
+        let connection_id = match open {
+            Frame::Open { connection_id, .. } => connection_id,
+            other => return Err(unexpected(other).into()),
+        };
+        transport
+            .send(Frame::Opened {
+                pipe_id: PipeId::new(session_id, connection_id),
+            })
+            .await?;
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(transport);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector = Connector::connect(
+        Config::new(address)
+            .with_operation_timeout(Duration::from_secs(1))
+            .with_outbound_capacity(1)
+            .with_reconnect_backoff(Duration::from_secs(1), Duration::from_secs(1)),
+    )
+    .await?;
+    let mut pipe = connector.open("echo.alpha").await?;
+    let mut writer = tokio::spawn(async move {
+        let payload = vec![0_u8; 32 * 1024 * 1024];
+        pipe.write_all_bytes(&payload).await
+    });
+
+    if let Ok(result) = timeout(Duration::from_millis(50), &mut writer).await {
+        return Err(io::Error::other(format!(
+            "connector write did not reach stalled state before cancellation: {result:?}"
+        ))
+        .into());
+    }
+
+    connector.close();
+    let result = timeout(Duration::from_secs(2), writer).await??;
+    let error = result
+        .err()
+        .ok_or_else(|| io::Error::other("cancelled runtime allowed stalled write to succeed"))?;
+    assert_eq!(error.code(), ErrorCode::Unavailable);
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn opened_pipe_fails_when_its_session_is_replaced() -> TestResult {
     let (listener, address) = bind_gateway().await?;
     let server = tokio::spawn(async move {
