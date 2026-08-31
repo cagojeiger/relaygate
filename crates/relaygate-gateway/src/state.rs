@@ -398,6 +398,11 @@ impl GatewayState {
         self.remote_open_attempts.len()
     }
 
+    #[cfg(test)]
+    fn active_peer_open_count(&self) -> usize {
+        self.active_peer_opens.len()
+    }
+
     fn insert_offer(&mut self, pipe_id: PipeId, pipe: PipeEntry) {
         debug_assert_eq!(pipe.phase, PipePhase::Offered);
         self.index_peer_pipe(pipe_id, &pipe);

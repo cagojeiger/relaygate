@@ -324,10 +324,72 @@ fn connector_session_cleanup_resets_committed_peer_stream_as_cancelled()
 }
 
 #[test]
-fn peer_transport_loss_is_scoped_to_its_current_streams() -> Result<(), Box<dyn std::error::Error>>
-{
+fn owner_transport_loss_preserves_listener_binding_and_registration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let entry_gateway = GatewayId::new();
+    let mut state = routed_state(GatewayId::new());
+    let listener = add_session(&mut state, SessionRole::Listener);
+    register_listener(&mut state, listener)?;
+    let binding = state
+        .registry
+        .bindings_for_session(listener)
+        .into_iter()
+        .next()
+        .ok_or("missing binding")?;
+    let peer_transport_id = PeerTransportId::new();
+    let identities = [
+        OpenIdentity::new(entry_gateway, SessionId::new(), 1),
+        OpenIdentity::new(entry_gateway, SessionId::new(), 1),
+    ];
+    let keys = [
+        PeerStreamKey::for_test(entry_gateway, peer_transport_id, 0),
+        PeerStreamKey::for_test(entry_gateway, peer_transport_id, 2),
+    ];
+    for (key, identity) in keys.into_iter().zip(identities) {
+        let offered = state.receive_peer_open(
+            key,
+            identity,
+            "echo.shared".to_owned(),
+            listener,
+            binding.id,
+        );
+        let pipe_id = PipeId::new(identity.connector_session(), identity.connection_id());
+        assert!(sdk_deliveries(&offered).any(|delivery| matches!(
+            delivery.frame,
+            Frame::Offer { pipe_id: offered, .. } if offered == pipe_id
+        )));
+        let accepted = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+        assert!(peer_deliveries(&accepted).any(|delivery| matches!(
+            delivery,
+            PeerDelivery::Opened { key: opened } if *opened == key
+        )));
+    }
+    assert_eq!(state.pipe_count(), 2);
+    assert_eq!(state.snapshot().listener_bindings, 1);
+
+    for (key, identity) in keys.into_iter().zip(identities) {
+        let lost = state.peer_transport_lost_stream(
+            key,
+            identity,
+            PeerObservation::MaybeObserved,
+        );
+        assert!(sdk_deliveries(&lost).any(|delivery| delivery.target == listener));
+        assert_eq!(publications(&lost).count(), 0);
+    }
+    assert_eq!(state.pipe_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.active_peer_open_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 1);
+    assert_eq!(state.snapshot().listener_sessions, 1);
+    Ok(())
+}
+
+#[test]
+fn connector_cleanup_and_transport_loss_are_scoped_to_current_streams()
+-> Result<(), Box<dyn std::error::Error>> {
     let entry_gateway = GatewayId::new();
     let owner_gateway = GatewayId::new();
+    let peer_transport_id = PeerTransportId::new();
     let mut state = routed_state(entry_gateway);
     let first_connector = add_session(&mut state, SessionRole::Connector);
     let second_connector = add_session(&mut state, SessionRole::Connector);
@@ -354,7 +416,7 @@ fn peer_transport_loss_is_scoped_to_its_current_streams() -> Result<(), Box<dyn 
                 "owner.internal:27421",
             )?,
         );
-        let key = peer_key(owner_gateway, raw_stream_id);
+        let key = PeerStreamKey::for_test(owner_gateway, peer_transport_id, raw_stream_id);
         state.peer_open_committed(identity, key);
         state.peer_opened(key, identity);
         identities.push(identity);
@@ -362,10 +424,23 @@ fn peer_transport_loss_is_scoped_to_its_current_streams() -> Result<(), Box<dyn 
     }
     assert_eq!(state.pipe_count(), 2);
 
-    let lost =
-        state.peer_transport_lost_stream(keys[0], identities[0], PeerObservation::MaybeObserved);
-    assert!(sdk_deliveries(&lost).any(|delivery| delivery.target == first_connector));
+    let cleanup = state.remove_session(first_connector);
+    assert!(peer_deliveries(&cleanup).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key: reset_key,
+            code: ErrorCode::Cancelled,
+            ..
+        } if *reset_key == keys[0]
+    )));
+    assert!(!peer_deliveries(&cleanup).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset { key, .. } if *key == keys[1]
+    )));
+    assert_eq!(publications(&cleanup).count(), 0);
     assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.active_peer_open_count(), 1);
 
     let surviving_pipe = PipeId::new(second_connector, 1);
     let relay = state.handle(
@@ -380,6 +455,20 @@ fn peer_transport_loss_is_scoped_to_its_current_streams() -> Result<(), Box<dyn 
         PeerDelivery::Data { key, payload }
             if *key == keys[1] && payload.as_ref() == b"still-live"
     )));
+
+    let stale_loss =
+        state.peer_transport_lost_stream(keys[0], identities[0], PeerObservation::MaybeObserved);
+    assert!(stale_loss.is_empty());
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+
+    let lost =
+        state.peer_transport_lost_stream(keys[1], identities[1], PeerObservation::MaybeObserved);
+    assert!(sdk_deliveries(&lost).any(|delivery| delivery.target == second_connector));
+    assert_eq!(publications(&lost).count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.active_peer_open_count(), 0);
     Ok(())
 }
 
