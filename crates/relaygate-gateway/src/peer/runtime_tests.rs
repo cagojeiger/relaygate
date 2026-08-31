@@ -6,6 +6,7 @@ use relaygate_protocol::{BindingId, ErrorCode, PeerObservation, SessionId};
 use relaygate_route_table::{GatewayId, GatewayLocator};
 use tokio::{
     net::{TcpListener, TcpStream},
+    sync::oneshot,
     task::JoinHandle,
 };
 use tokio_util::codec::Framed;
@@ -15,6 +16,7 @@ use super::{
     GatewayPeerConfig, OpenIdentity, PeerEvent, PeerFailure, PeerHandle, PeerOpenRequest,
     PeerRuntime, PeerStreamKey, PeerTarget, TrustedPeerConfig,
     codec::PeerFrameCodec,
+    event::PeerCounts,
     frame::PeerFrame,
     identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId, StreamId},
 };
@@ -138,6 +140,16 @@ async fn next_event(events: &mut super::PeerEvents) -> TestResult<PeerEvent> {
         .ok_or_else(|| "peer event stream closed".into())
 }
 
+async fn wait_for_counts(handle: &PeerHandle, expected: PeerCounts) -> TestResult {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while handle.counts() != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
 async fn accept_one(
     events: &mut super::PeerEvents,
     owner: &PeerHandle,
@@ -177,6 +189,109 @@ async fn fast_opened_event_and_open_commit_reply_keep_exact_correlation() -> Tes
     let committed_key = open.await??;
     assert_eq!(event_key, committed_key);
     assert_eq!(open_identity, identity);
+    pair.shutdown().await
+}
+
+#[tokio::test]
+async fn post_commit_cancel_ignores_late_opened_and_converges_through_transport_loss() -> TestResult
+{
+    let mut pair = RuntimePair::start().await?;
+    let request = pair.request_a_to_b(1)?;
+    let identity = request.open_identity();
+    let handle_a = pair.handle_a.clone();
+    let open = tokio::spawn(async move { handle_a.open(request).await });
+
+    let incoming = next_event(&mut pair.events_b).await?;
+    let PeerEvent::IncomingOpen {
+        key: owner_key,
+        open_identity,
+        ..
+    } = incoming
+    else {
+        return Err(format!("expected IncomingOpen, got {incoming:?}").into());
+    };
+    assert_eq!(open_identity, identity);
+    let entry_key = open.await??;
+
+    pair.handle_a.cancel_open(identity).await?;
+    let reset = next_event(&mut pair.events_b).await?;
+    assert!(matches!(
+        reset,
+        PeerEvent::Reset {
+            key,
+            code: ErrorCode::Cancelled,
+            ..
+        } if key == owner_key
+    ));
+
+    pair.handle_b.send_opened(owner_key).await?;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), pair.events_a.recv())
+            .await
+            .is_err(),
+        "late OPENED recreated the cancelled Entry stream"
+    );
+    pair.handle_a.cancel_open(identity).await?;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), pair.events_b.recv())
+            .await
+            .is_err(),
+        "duplicate cancel emitted a second Owner event"
+    );
+    let idle_transport = PeerCounts {
+        connecting: 0,
+        ready: 1,
+        streams: 0,
+    };
+    wait_for_counts(&pair.handle_a, idle_transport).await?;
+    wait_for_counts(&pair.handle_b, idle_transport).await?;
+
+    assert!(pair.handle_a.close_transport(entry_key));
+    let loss = next_event(&mut pair.events_a).await?;
+    assert!(matches!(
+        loss,
+        PeerEvent::TransportLost {
+            peer_transport_id,
+            streams,
+            ..
+        } if peer_transport_id == entry_key.peer_transport_id() && streams.is_empty()
+    ));
+    let remote_loss = next_event(&mut pair.events_b).await?;
+    assert!(matches!(
+        remote_loss,
+        PeerEvent::TransportLost { streams, .. } if streams.is_empty()
+    ));
+    wait_for_counts(&pair.handle_a, PeerCounts::default()).await?;
+    wait_for_counts(&pair.handle_b, PeerCounts::default()).await?;
+    pair.handle_a.cancel_open(identity).await?;
+
+    let reused = PeerOpenRequest::new(
+        PeerTarget::new(pair.gateway_b, pair.locator_b.clone()),
+        identity,
+        "echo.b",
+        SessionId::new(),
+        BindingId::new(),
+    )?;
+    let reopened = {
+        let handle = pair.handle_a.clone();
+        tokio::spawn(async move { handle.open(reused).await })
+    };
+    let (new_owner_key, new_identity) = accept_one(&mut pair.events_b, &pair.handle_b).await?;
+    let new_entry_key = reopened.await??;
+    assert_eq!(new_identity, identity);
+    assert_ne!(
+        new_entry_key.peer_transport_id(),
+        entry_key.peer_transport_id()
+    );
+    let reopened_event = next_event(&mut pair.events_a).await?;
+    assert!(matches!(
+        reopened_event,
+        PeerEvent::Opened {
+            key: event_key,
+            open_identity,
+        } if event_key == new_entry_key && open_identity == identity
+    ));
+    pair.handle_b.send_close(new_owner_key).await?;
     pair.shutdown().await
 }
 
@@ -230,6 +345,7 @@ async fn force_close_emits_one_transport_scoped_loss_and_releases_all_streams() 
     let mut pair = RuntimePair::start().await?;
     let handle_a = pair.handle_a.clone();
     let request = pair.request_a_to_b(1)?;
+    let identity = request.open_identity();
     let open = tokio::spawn(async move { handle_a.open(request).await });
     let _ = accept_one(&mut pair.events_b, &pair.handle_b).await?;
     let key = open.await??;
@@ -259,12 +375,39 @@ async fn force_close_emits_one_transport_scoped_loss_and_releases_all_streams() 
         PeerObservation::MaybeObserved
     );
 
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while pair.handle_a.counts().ready != 0 || pair.handle_a.counts().streams != 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
+    let remote_loss = next_event(&mut pair.events_b).await?;
+    assert!(matches!(
+        remote_loss,
+        PeerEvent::TransportLost { streams, .. } if streams.len() == 1
+    ));
+    wait_for_counts(&pair.handle_a, PeerCounts::default()).await?;
+    wait_for_counts(&pair.handle_b, PeerCounts::default()).await?;
+
+    pair.handle_a.cancel_open(identity).await?;
+    let reused = PeerOpenRequest::new(
+        PeerTarget::new(pair.gateway_b, pair.locator_b.clone()),
+        identity,
+        "echo.b",
+        SessionId::new(),
+        BindingId::new(),
+    )?;
+    let reopened = {
+        let handle = pair.handle_a.clone();
+        tokio::spawn(async move { handle.open(reused).await })
+    };
+    let (new_owner_key, new_identity) = accept_one(&mut pair.events_b, &pair.handle_b).await?;
+    let new_entry_key = reopened.await??;
+    assert_eq!(new_identity, identity);
+    assert_ne!(new_entry_key.peer_transport_id(), key.peer_transport_id());
+    let reopened_event = next_event(&mut pair.events_a).await?;
+    assert!(matches!(
+        reopened_event,
+        PeerEvent::Opened {
+            key: event_key,
+            open_identity,
+        } if event_key == new_entry_key && open_identity == identity
+    ));
+    pair.handle_b.send_close(new_owner_key).await?;
     pair.shutdown().await
 }
 
@@ -349,6 +492,119 @@ async fn handshake_timeout_fails_before_open_commit_and_leaves_no_transport_stat
 
     shutdown_a.cancel();
     blackhole_task.await??;
+    tokio::time::timeout(Duration::from_secs(2), serve_a).await???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_transport()
+-> TestResult {
+    let listener_a = TcpListener::bind("127.0.0.1:0").await?;
+    let delayed_peer = TcpListener::bind("127.0.0.1:0").await?;
+    let gateway_a = GatewayId::new();
+    let gateway_b = GatewayId::new();
+    let locator_b = GatewayLocator::new(delayed_peer.local_addr()?.to_string())?;
+    let shutdown_a = CancellationToken::new();
+    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
+        .with_timeouts(
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .with_liveness(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_millis(200),
+        );
+    let (handle_a, mut events_a, runtime_a) =
+        PeerRuntime::start(config_a, gateway_a, shutdown_a.clone())?;
+    let serve_a = tokio::spawn(runtime_a.serve(listener_a));
+    let (hello_seen_tx, hello_seen_rx) = oneshot::channel();
+    let (welcome_release_tx, welcome_release_rx) = oneshot::channel();
+    let delayed_peer_task = tokio::spawn(async move {
+        let (stream, _) = delayed_peer.accept().await?;
+        stream.set_nodelay(true)?;
+        let mut framed = Framed::new(stream, PeerFrameCodec::new(64 * 1024));
+        let hello = tokio::time::timeout(Duration::from_secs(1), framed.next())
+            .await?
+            .ok_or("peer closed before HELLO")??;
+        let PeerFrame::Hello(hello) = hello else {
+            return Err(format!("expected HELLO, got {hello:?}").into());
+        };
+        let _ = hello_seen_tx.send(());
+        welcome_release_rx
+            .await
+            .map_err(|_| "WELCOME release signal was dropped")?;
+        framed
+            .send(PeerFrame::Welcome(PeerHandshake {
+                gateway_name: PeerGatewayName::new("gateway-b")?,
+                internal_gateway_key: PeerGatewayKey::new("key-b")?,
+                gateway_id: gateway_b,
+                expected_peer_gateway_id: gateway_a,
+                dialer_gateway_id: gateway_a,
+                peer_transport_id: hello.peer_transport_id,
+            }))
+            .await?;
+
+        let next = tokio::time::timeout(Duration::from_secs(1), framed.next()).await?;
+        match next {
+            None => Ok::<_, Box<dyn Error + Send + Sync>>(()),
+            Some(Ok(frame)) => {
+                Err(format!("cancelled OPEN was flushed after WELCOME: {frame:?}").into())
+            }
+            Some(Err(error)) => Err(error.into()),
+        }
+    });
+
+    let identity = OpenIdentity::new(gateway_a, SessionId::new(), 1);
+    let request = PeerOpenRequest::new(
+        PeerTarget::new(gateway_b, locator_b),
+        identity,
+        "echo.b",
+        SessionId::new(),
+        BindingId::new(),
+    )?;
+    let open = {
+        let handle = handle_a.clone();
+        tokio::spawn(async move { handle.open(request).await })
+    };
+    hello_seen_rx.await?;
+    wait_for_counts(
+        &handle_a,
+        PeerCounts {
+            connecting: 1,
+            ready: 0,
+            streams: 0,
+        },
+    )
+    .await?;
+
+    handle_a.cancel_open(identity).await?;
+    let failure = open
+        .await?
+        .err()
+        .ok_or("handshake-pending OPEN unexpectedly succeeded")?;
+    assert_eq!(failure.code(), ErrorCode::Cancelled);
+    assert_eq!(failure.observation(), PeerObservation::NotObserved);
+    let _ = welcome_release_tx.send(());
+    wait_for_counts(
+        &handle_a,
+        PeerCounts {
+            connecting: 0,
+            ready: 1,
+            streams: 0,
+        },
+    )
+    .await?;
+
+    let retired = next_event(&mut events_a).await?;
+    assert!(matches!(
+        retired,
+        PeerEvent::TransportLost { streams, .. } if streams.is_empty()
+    ));
+    delayed_peer_task.await??;
+    wait_for_counts(&handle_a, PeerCounts::default()).await?;
+    shutdown_a.cancel();
     tokio::time::timeout(Duration::from_secs(2), serve_a).await???;
     Ok(())
 }

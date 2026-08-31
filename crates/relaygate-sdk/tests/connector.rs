@@ -373,6 +373,7 @@ async fn cancelling_committed_open_sends_one_cancel_case() -> TestResult {
         if !matches!(cancelled, Frame::Cancel { pipe_id: id } if id == pipe_id) {
             return Err(unexpected(cancelled).into());
         }
+        transport.send(Frame::Opened { pipe_id }).await?;
         assert!(
             timeout(
                 Duration::from_millis(100),
@@ -393,6 +394,95 @@ async fn cancelling_committed_open_sends_one_cancel_case() -> TestResult {
     open_seen_rx.await?;
     opening.abort();
     assert!(opening.await.is_err());
+    server.await??;
+    connector.close();
+    Ok(())
+}
+
+#[tokio::test]
+async fn opened_and_public_open_cancel_emit_one_terminal_frame() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        opened_and_public_open_cancel_emit_one_terminal_frame_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn opened_and_public_open_cancel_emit_one_terminal_frame_case() -> TestResult {
+    let (listener, address) = bind_gateway().await?;
+    let (open_seen_tx, open_seen_rx) = oneshot::channel();
+    let (send_opened_tx, send_opened_rx) = oneshot::channel();
+    let (opened_processed_tx, opened_processed_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut transport, session_id) = accept_session(&listener, SessionRole::Connector).await?;
+        let frame = next_application_frame(&mut transport).await?;
+        let pipe_id = match frame {
+            Frame::Open { connection_id, .. } => PipeId::new(session_id, connection_id),
+            other => return Err(unexpected(other).into()),
+        };
+        let _ = open_seen_tx.send(());
+        send_opened_rx
+            .await
+            .map_err(|_| io::Error::other("OPENED release signal was dropped"))?;
+
+        transport.send(Frame::Opened { pipe_id }).await?;
+        let barrier_nonce = 0xfeed_cafe;
+        transport
+            .send(Frame::Ping {
+                nonce: barrier_nonce,
+            })
+            .await?;
+        loop {
+            let frame = transport
+                .next()
+                .await
+                .ok_or_else(|| io::Error::other("SDK session closed before OPENED barrier"))??;
+            match frame {
+                Frame::Pong { nonce } if nonce == barrier_nonce => break,
+                Frame::Ping { nonce } => transport.send(Frame::Pong { nonce }).await?,
+                other => return Err(unexpected(other).into()),
+            }
+        }
+        let _ = opened_processed_tx.send(());
+
+        let terminal = next_application_frame(&mut transport).await?;
+        if !matches!(
+            terminal,
+            Frame::Cancel { pipe_id: id } | Frame::Close { pipe_id: id } if id == pipe_id
+        ) {
+            return Err(unexpected(terminal).into());
+        }
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                next_application_frame(&mut transport)
+            )
+            .await
+            .is_err(),
+            "OPENED and public cancellation emitted more than one terminal frame"
+        );
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let connector = Connector::connect(Config::new(address)).await?;
+    let mut opening = Box::pin(connector.open("echo.alpha"));
+    tokio::select! {
+        result = &mut opening => {
+            return Err(io::Error::other(format!(
+                "OPEN completed before the cancellation race was released: {result:?}"
+            )).into());
+        }
+        seen = open_seen_rx => {
+            seen.map_err(|_| io::Error::other("Gateway dropped the OPEN observation"))?;
+        }
+    }
+    let _ = send_opened_tx.send(());
+    opened_processed_rx
+        .await
+        .map_err(|_| io::Error::other("Gateway dropped the OPENED barrier"))?;
+    drop(opening);
+
     server.await??;
     connector.close();
     Ok(())
