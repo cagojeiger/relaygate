@@ -256,9 +256,42 @@ async fn post_commit_cancel_ignores_late_opened_and_converges_through_transport_
             ..
         } if peer_transport_id == entry_key.peer_transport_id() && streams.is_empty()
     ));
+    let remote_loss = next_event(&mut pair.events_b).await?;
+    assert!(matches!(
+        remote_loss,
+        PeerEvent::TransportLost { streams, .. } if streams.is_empty()
+    ));
     wait_for_counts(&pair.handle_a, PeerCounts::default()).await?;
     wait_for_counts(&pair.handle_b, PeerCounts::default()).await?;
     pair.handle_a.cancel_open(identity).await?;
+
+    let reused = PeerOpenRequest::new(
+        PeerTarget::new(pair.gateway_b, pair.locator_b.clone()),
+        identity,
+        "echo.b",
+        SessionId::new(),
+        BindingId::new(),
+    )?;
+    let reopened = {
+        let handle = pair.handle_a.clone();
+        tokio::spawn(async move { handle.open(reused).await })
+    };
+    let (new_owner_key, new_identity) = accept_one(&mut pair.events_b, &pair.handle_b).await?;
+    let new_entry_key = reopened.await??;
+    assert_eq!(new_identity, identity);
+    assert_ne!(
+        new_entry_key.peer_transport_id(),
+        entry_key.peer_transport_id()
+    );
+    let reopened_event = next_event(&mut pair.events_a).await?;
+    assert!(matches!(
+        reopened_event,
+        PeerEvent::Opened {
+            key: event_key,
+            open_identity,
+        } if event_key == new_entry_key && open_identity == identity
+    ));
+    pair.handle_b.send_close(new_owner_key).await?;
     pair.shutdown().await
 }
 

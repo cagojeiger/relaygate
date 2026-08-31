@@ -389,8 +389,9 @@ reason = "주요 전이는 검증하지만 OPEN 결과와 모든 terminal 재정
 
 [[case]]
 id = "T-PEER-06"
-status = "executable"
+status = "partial"
 rust = ["peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "peer::runtime_tests::force_close_emits_one_transport_scoped_loss_and_releases_all_streams", "state::tests::peer_transport_loss_is_scoped_to_its_current_streams"]
+reason = "transport별 loss 격리, 반대 slot 생존과 loss 뒤 새 lazy transport는 검증하지만 surviving opposite transport에 신규 Pipe를 여는 실제 runtime sequence가 없다."
 
 [[case]]
 id = "T-PEER-07"
