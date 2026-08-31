@@ -371,6 +371,32 @@ async fn closed_session_outbound_wakes_a_pending_write() -> Result<(), Box<dyn s
 }
 
 #[tokio::test]
+async fn cancelled_pending_read_can_be_retried_without_losing_data()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 24);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+
+    {
+        let mut cancelled_byte = [0_u8; 1];
+        let pending = pipe.read(&mut cancelled_byte);
+        tokio::pin!(pending);
+        assert!(
+            timeout(Duration::from_millis(10), &mut pending)
+                .await
+                .is_err()
+        );
+    }
+
+    state.push_data(Bytes::from_static(b"retry"))?;
+    let mut payload = [0_u8; 5];
+    timeout(Duration::from_secs(1), pipe.read_exact(&mut payload)).await??;
+    assert_eq!(&payload, b"retry");
+    Ok(())
+}
+
+#[tokio::test]
 async fn async_io_errors_preserve_the_structured_sdk_error_as_their_payload()
 -> Result<(), Box<dyn std::error::Error>> {
     let (outbound, _outbound_rx) = session_outbound_channel(1);
