@@ -5,6 +5,7 @@ WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY examples ./examples
+COPY tools/test-contract ./tools/test-contract
 
 RUN cargo build --locked --release \
     --bin relaygate-server \
