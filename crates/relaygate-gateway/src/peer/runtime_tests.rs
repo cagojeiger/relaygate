@@ -26,6 +26,7 @@ use super::{
     identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId, StreamId},
 };
 
+mod duplicate_cleanup;
 mod transport_terminal;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
