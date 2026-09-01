@@ -432,7 +432,7 @@ fn owner_invalid_phase_resets_only_the_target_pipe() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn cancel_after_offer_admission_closes_only_the_cancelled_pipe()
+fn connector_cancel_after_open_is_cancelled_cleanup_and_preserves_sibling_pipe()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
     let listener = add_session(&mut state, SessionRole::Listener);
