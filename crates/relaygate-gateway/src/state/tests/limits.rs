@@ -326,10 +326,24 @@ fn explicit_offer_rejection_closes_only_attempt_and_preserves_sessions()
         },
     )?;
 
-    let live_pipe = open_pipe(&mut state, connector, listener, 1)?;
-    let rejected_pipe = offer_pipe(&mut state, connector, sibling, 2)?;
+    let live_offer = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.other".to_owned(),
+        },
+    )?;
+    let live_pipe = sdk_deliveries(&live_offer)
+        .find_map(|delivery| match delivery.frame {
+            Frame::Offer { pipe_id, .. } if delivery.target == listener => Some(pipe_id),
+            _ => None,
+        })
+        .ok_or("missing live offer")?;
+    state.handle(listener, Frame::OfferAccepted { pipe_id: live_pipe })?;
+
+    let rejected_pipe = offer_pipe(&mut state, connector, listener, 2)?;
     let rejected = state.handle(
-        sibling,
+        listener,
         Frame::OfferRejected {
             pipe_id: rejected_pipe,
             code: ErrorCode::Unavailable,
@@ -366,10 +380,30 @@ fn explicit_offer_rejection_closes_only_attempt_and_preserves_sessions()
     assert_eq!(state.pending_offer_count(), 0);
     assert_eq!(state.live_pipe_count(), 1);
     assert_eq!(state.pipe_count(), 1);
+
+    let payload = Bytes::from_static(b"existing pipe remains live");
+    let relayed = state.handle(
+        connector,
+        Frame::Data {
+            pipe_id: live_pipe,
+            payload: payload.clone(),
+        },
+    )?;
+    assert!(sdk_deliveries(&relayed).any(|delivery| {
+        delivery.target == listener
+            && matches!(
+                &delivery.frame,
+                Frame::Data {
+                    pipe_id,
+                    payload: delivered,
+                } if *pipe_id == live_pipe && delivered == &payload
+            )
+    }));
+
     assert!(
         state
             .handle(
-                sibling,
+                listener,
                 Frame::OfferAccepted {
                     pipe_id: rejected_pipe,
                 },
@@ -385,7 +419,7 @@ fn explicit_offer_rejection_closes_only_attempt_and_preserves_sessions()
         },
     )?;
     assert!(sdk_deliveries(&next).any(|delivery| {
-        delivery.target == listener && matches!(delivery.frame, Frame::Offer { .. })
+        delivery.target == sibling && matches!(delivery.frame, Frame::Offer { .. })
     }));
     assert_eq!(state.live_pipe_count(), 1);
     Ok(())

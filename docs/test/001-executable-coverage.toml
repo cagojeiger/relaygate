@@ -335,8 +335,9 @@ rust = ["committed_open_timeout_closes_session_and_existing_pipes", "committed_o
 
 [[case]]
 id = "T-OPEN-15"
-status = "executable"
-rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::connection_history_is_a_single_high_watermark", "state::tests::repeated_terminal_opens_leave_only_connection_high_watermark", "stale_and_duplicate_offers_never_enqueue_a_second_pipe"]
+status = "partial"
+rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::connection_history_is_a_single_high_watermark", "stale_and_duplicate_offers_never_enqueue_a_second_pipe"]
+reason = "late frame과 duplicate OFFER는 검증하지만 성공과 실패 반복에서 tombstone 비누적을 함께 검증하지 않는다."
 
 [[case]]
 id = "T-OPEN-16"
