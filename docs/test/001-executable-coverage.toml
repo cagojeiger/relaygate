@@ -631,9 +631,9 @@ rust = ["committed_open_is_not_replayed_and_reports_maybe_observed"]
 
 [[case]]
 id = "T-EDGE-22"
-status = "partial"
-rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity"]
-reason = "같은 locator의 새 GatewayId와 BindingId, stale mapping OPEN 실패는 검증하지만 G1의 지연 peer frame을 G2에 직접 주입하지 않는다."
+status = "executable"
+rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "state::tests::stale_peer_open_identity_cannot_enter_a_reused_locator_gateway"]
+reason = "같은 locator를 재사용한 Gateway restart 뒤 새 GatewayId와 BindingId가 publish되고 stale mapping OPEN은 성공하지 못한다. 별도 state test가 current peer transport 위로 들어온 stale OpenIdentity peer OPEN을 PERMISSION_DENIED로 거절하며 current ListenerBinding, Pipe, remote attempt와 active peer open이 변하지 않음을 검증한다."
 
 [[case]]
 id = "T-EDGE-23"

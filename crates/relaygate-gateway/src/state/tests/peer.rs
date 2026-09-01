@@ -35,6 +35,48 @@ fn peer_open_identity_must_match_authenticated_peer_gateway()
 }
 
 #[test]
+fn stale_peer_open_identity_cannot_enter_a_reused_locator_gateway()
+-> Result<(), Box<dyn std::error::Error>> {
+    let current_owner = GatewayId::new();
+    let current_entry = GatewayId::new();
+    let stale_entry = GatewayId::new();
+    let mut state = routed_state(current_owner);
+    let listener = add_session(&mut state, SessionRole::Listener);
+    register_listener(&mut state, listener)?;
+    let binding = state
+        .registry
+        .bindings_for_session(listener)
+        .into_iter()
+        .next()
+        .ok_or("missing binding")?;
+
+    let actions = state.receive_peer_open(
+        peer_key(current_entry, 0),
+        OpenIdentity::new(stale_entry, SessionId::new(), 1),
+        "echo.shared".to_owned(),
+        listener,
+        binding.id,
+    );
+
+    assert!(peer_deliveries(&actions).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Failed {
+            code: ErrorCode::PermissionDenied,
+            observation: PeerObservation::NotObserved,
+            ..
+        }
+    )));
+    assert!(state
+        .registry
+        .exact(listener, binding.id, "echo.shared")
+        .is_some());
+    assert_eq!(state.pipe_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.active_peer_open_count(), 0);
+    Ok(())
+}
+
+#[test]
 fn early_opened_then_late_commit_callback_is_idempotent() -> Result<(), Box<dyn std::error::Error>>
 {
     let entry_gateway = GatewayId::new();
