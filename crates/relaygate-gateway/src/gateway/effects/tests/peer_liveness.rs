@@ -218,12 +218,15 @@ async fn peer_liveness_scope_case(case: LivenessCase) -> TestResult {
             let a = gateway_a.gateway.snapshot();
             let b = gateway_b.gateway.snapshot();
             let c = gateway_c.gateway.snapshot();
-            a.peer_transports_ready == 2
+            a.peer_transports_connecting == 0
+                && a.peer_transports_ready == 2
                 && a.peer_streams == 2
                 && a.live_pipes == 2
+                && b.peer_transports_connecting == 0
                 && b.peer_transports_ready == 3
                 && b.peer_streams == 3
                 && b.live_pipes == 3
+                && c.peer_transports_connecting == 0
                 && c.peer_transports_ready == 1
                 && c.peer_streams == 1
                 && c.live_pipes == 1
@@ -254,14 +257,17 @@ async fn peer_liveness_scope_case(case: LivenessCase) -> TestResult {
         let a = gateway_a.gateway.snapshot();
         let b = gateway_b.gateway.snapshot();
         let c = gateway_c.gateway.snapshot();
-        a.peer_transports_ready == 1
+        a.peer_transports_connecting == 0
+            && a.peer_transports_ready == 1
             && a.peer_streams == 1
             && a.live_pipes == 1
             && a.remote_open_attempts == 0
+            && b.peer_transports_connecting == 0
             && b.peer_transports_ready == 2
             && b.peer_streams == 2
             && b.live_pipes == 2
             && b.remote_open_attempts == 0
+            && c.peer_transports_connecting == 0
             && c.peer_transports_ready == 1
             && c.peer_streams == 1
             && c.live_pipes == 1
@@ -294,12 +300,15 @@ async fn peer_liveness_scope_case(case: LivenessCase) -> TestResult {
             let a = gateway_a.gateway.snapshot();
             let b = gateway_b.gateway.snapshot();
             let c = gateway_c.gateway.snapshot();
-            a.peer_transports_ready == 1
+            a.peer_transports_connecting == 0
+                && a.peer_transports_ready == 1
                 && a.peer_streams == 2
                 && a.live_pipes == 2
+                && b.peer_transports_connecting == 0
                 && b.peer_transports_ready == 2
                 && b.peer_streams == 3
                 && b.live_pipes == 3
+                && c.peer_transports_connecting == 0
                 && c.peer_transports_ready == 1
                 && c.peer_streams == 1
                 && c.live_pipes == 1
@@ -308,14 +317,89 @@ async fn peer_liveness_scope_case(case: LivenessCase) -> TestResult {
     .await?;
     assert_bidirectional(&mut fresh_connector, &mut fresh_listener, "fresh").await?;
 
+    reverse_connector.close().await?;
+    reverse_listener.close().await?;
+    fresh_connector.close().await?;
+    fresh_listener.close().await?;
+    wait_until("drained peer pair retires", Duration::from_secs(3), || {
+        let a = gateway_a.gateway.snapshot();
+        let b = gateway_b.gateway.snapshot();
+        let c = gateway_c.gateway.snapshot();
+        a.peer_transports_connecting == 0
+            && a.peer_transports_ready == 0
+            && a.peer_streams == 0
+            && a.live_pipes == 0
+            && b.peer_transports_connecting == 0
+            && b.peer_transports_ready == 1
+            && b.peer_streams == 1
+            && b.live_pipes == 1
+            && c.peer_transports_connecting == 0
+            && c.peer_transports_ready == 1
+            && c.peer_streams == 1
+            && c.live_pipes == 1
+    })
+    .await?;
+
+    let recovered_open = {
+        let connector = connector_a.clone();
+        tokio::spawn(async move { connector.open(CLIENT_B).await })
+    };
+    timeout(Duration::from_secs(2), connect_gate_a.wait_until_entered()).await?;
+    wait_until(
+        "retired peer transport reconnecting",
+        Duration::from_secs(2),
+        || {
+            let a = gateway_a.gateway.snapshot();
+            a.remote_open_attempts == 1
+                && a.peer_transports_connecting == 1
+                && a.peer_transports_ready == 0
+                && a.peer_streams == 0
+        },
+    )
+    .await?;
+    connect_gate_a.release();
+    timeout(Duration::from_secs(2), inbound_gate_b.wait_until_entered()).await?;
+    inbound_gate_b.release();
+    let mut recovered_listener = timeout(Duration::from_secs(2), listener_b.accept()).await??;
+    let mut recovered_connector = timeout(Duration::from_secs(2), recovered_open).await???;
+    wait_until(
+        "retired peer transport ready again",
+        Duration::from_secs(2),
+        || {
+            let a = gateway_a.gateway.snapshot();
+            let b = gateway_b.gateway.snapshot();
+            let c = gateway_c.gateway.snapshot();
+            a.remote_open_attempts == 0
+                && a.peer_transports_connecting == 0
+                && a.peer_transports_ready == 1
+                && a.peer_streams == 1
+                && a.live_pipes == 1
+                && b.remote_open_attempts == 0
+                && b.peer_transports_connecting == 0
+                && b.peer_transports_ready == 2
+                && b.peer_streams == 2
+                && b.live_pipes == 2
+                && c.remote_open_attempts == 0
+                && c.peer_transports_connecting == 0
+                && c.peer_transports_ready == 1
+                && c.peer_streams == 1
+                && c.live_pipes == 1
+        },
+    )
+    .await?;
+    assert_bidirectional(
+        &mut recovered_connector,
+        &mut recovered_listener,
+        "recovered",
+    )
+    .await?;
+
     let _ = target_connector.close().await;
     let _ = target_listener.close().await;
-    let _ = reverse_connector.close().await;
-    let _ = reverse_listener.close().await;
     let _ = other_connector.close().await;
     let _ = other_listener.close().await;
-    let _ = fresh_connector.close().await;
-    let _ = fresh_listener.close().await;
+    let _ = recovered_connector.close().await;
+    let _ = recovered_listener.close().await;
     connector_a.close();
     connector_b.close();
     listener_runtime_a.close();
@@ -348,6 +432,23 @@ async fn open_opposite_pair(
     timeout(
         Duration::from_secs(2),
         fixture.connect_gate_b.wait_until_entered(),
+    )
+    .await?;
+    wait_until(
+        "opposite outbound transports connecting",
+        Duration::from_secs(2),
+        || {
+            let a = fixture.gateway_a.gateway.snapshot();
+            let b = fixture.gateway_b.gateway.snapshot();
+            a.remote_open_attempts == 1
+                && a.peer_transports_connecting == 1
+                && a.peer_transports_ready == 0
+                && a.peer_streams == 0
+                && b.remote_open_attempts == 1
+                && b.peer_transports_connecting == 1
+                && b.peer_transports_ready == 0
+                && b.peer_streams == 0
+        },
     )
     .await?;
     fixture.connect_gate_a.release();
@@ -385,8 +486,10 @@ async fn open_opposite_pair(
     wait_until("opposite directions ready", Duration::from_secs(2), || {
         let a = fixture.gateway_a.gateway.snapshot();
         let b = fixture.gateway_b.gateway.snapshot();
-        a.peer_transports_ready == 2
+        a.peer_transports_connecting == 0
+            && a.peer_transports_ready == 2
             && a.peer_streams == 2
+            && b.peer_transports_connecting == 0
             && b.peer_transports_ready == 2
             && b.peer_streams == 2
     })

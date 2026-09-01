@@ -50,6 +50,14 @@ async fn local_pipe_opens_only_after_listener_acceptance_and_relays_bytes() -> T
         Frame::Opened { pipe_id: opened } if opened == pipe_id
     ));
 
+    let snapshot = gateway.snapshot();
+    assert_eq!(snapshot.route_registrations_synced, 0);
+    assert_eq!(snapshot.route_registrations_unsynced, 0);
+    assert_eq!(snapshot.remote_open_attempts, 0);
+    assert_eq!(snapshot.peer_transports_connecting, 0);
+    assert_eq!(snapshot.peer_transports_ready, 0);
+    assert_eq!(snapshot.peer_streams, 0);
+
     let request = Bytes::from_static(b"hello relaygate");
     connector
         .send(Frame::Data {
