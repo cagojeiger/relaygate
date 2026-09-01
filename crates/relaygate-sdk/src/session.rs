@@ -180,6 +180,12 @@ impl SessionHeartbeat {
         });
         Some(Frame::Ping { nonce })
     }
+
+    pub(crate) fn mark_probe_committed(&mut self) {
+        if let Some(pending) = self.pending.as_mut() {
+            pending.deadline = Instant::now() + self.response_timeout;
+        }
+    }
 }
 
 pub(crate) async fn wait_for_heartbeat(deadline: Instant) {
@@ -256,6 +262,25 @@ mod tests {
 
         heartbeat.observe_inbound(&Frame::Pong { nonce: 1 });
         assert!(heartbeat.pending.is_none());
+    }
+
+    #[test]
+    fn probe_commit_starts_full_response_window() {
+        let mut heartbeat = heartbeat();
+        heartbeat.last_inbound = Instant::now() - Duration::from_secs(60);
+        assert!(matches!(
+            heartbeat.on_deadline(),
+            Some(Frame::Ping { nonce: 1 })
+        ));
+        if let Some(pending) = heartbeat.pending.as_mut() {
+            pending.deadline = Instant::now() - Duration::from_millis(1);
+        }
+
+        let committed_at = Instant::now();
+        heartbeat.mark_probe_committed();
+
+        assert!(!heartbeat.response_timed_out());
+        assert!(heartbeat.next_deadline() >= committed_at + heartbeat.response_timeout);
     }
 
     #[test]

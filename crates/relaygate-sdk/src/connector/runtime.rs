@@ -165,6 +165,7 @@ async fn run_connector_session(
                 {
                     break;
                 }
+                heartbeat.mark_probe_committed();
             }
             command = control.recv() => {
                 let Some(command) = command else { break; };

@@ -211,6 +211,7 @@ async fn run_listener_session(
                 {
                     break;
                 }
+                heartbeat.mark_probe_committed();
             }
             _ = wait_for_registration_deadline(registration_deadline), if registration_deadline.is_some() => {
                 timed_out_request = registration_deadline.map(|(request_id, _)| request_id);
