@@ -1,4 +1,12 @@
-use std::{error::Error, net::SocketAddr, time::Duration};
+use std::{
+    error::Error,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use relaygate_gateway::{
     Gateway, GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, GatewaySnapshot, check,
@@ -12,8 +20,12 @@ use relaygate_route_table_transport::{
     RouteTableService, RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
 };
 use relaygate_sdk::{Config as SdkConfig, Connector, ListenerRuntime};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::{net::TcpListener, task::JoinHandle, time::Instant};
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    task::JoinHandle,
+    time::Instant,
+};
 use tokio_util::sync::CancellationToken;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -151,12 +163,170 @@ async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn lost_deregister_response_removes_local_binding_and_route_table_mapping() -> TestResult {
+    tokio::time::timeout(Duration::from_secs(5), lost_deregister_response_case()).await??;
+    Ok(())
+}
+
+async fn lost_deregister_response_case() -> TestResult {
+    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let route_endpoint = route_listener.local_addr()?;
+    let proxy = DeregisterResponseDroppingProxy::start(route_endpoint).await?;
+    let directory_bytes = one_shard_directory(proxy.endpoint);
+    let directory = ShardDirectory::from_json_bytes(&directory_bytes)?;
+    let generation = directory.generation();
+    let route_table = RunningRouteTable::serve(
+        route_listener,
+        directory.clone(),
+        Duration::from_millis(250),
+    )?;
+
+    let gateway = RunningGateway::start(directory).await?;
+    let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
+    let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    let probe = connect_probe(route_endpoint, generation).await?;
+    wait_for_mapping(&probe, generation, CLIENT_ID, &gateway.peer_locator, 1).await?;
+
+    listener_runtime.close();
+    wait_for_gateway_snapshot(&gateway, |snapshot| {
+        snapshot.listener_sessions == 0
+            && snapshot.listener_bindings == 0
+            && snapshot.live_pipes == 0
+    })
+    .await?;
+    wait_for_not_found(&probe, generation, CLIENT_ID).await?;
+    assert!(proxy.dropped_deregistered());
+
+    assert_eq!(listener.client_id(), CLIENT_ID);
+    gateway.stop().await?;
+    proxy.stop().await?;
+    route_table.stop().await?;
+    Ok(())
+}
+
 struct RunningGateway {
     endpoint: SocketAddr,
     peer_locator: String,
     gateway: Gateway,
     shutdown: CancellationToken,
     task: JoinHandle<Result<(), relaygate_gateway::GatewayError>>,
+}
+
+struct DeregisterResponseDroppingProxy {
+    endpoint: SocketAddr,
+    shutdown: CancellationToken,
+    dropped_deregistered: Arc<AtomicBool>,
+    task: JoinHandle<io::Result<()>>,
+}
+
+impl DeregisterResponseDroppingProxy {
+    async fn start(target: SocketAddr) -> io::Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = listener.local_addr()?;
+        let shutdown = CancellationToken::new();
+        let task_shutdown = shutdown.clone();
+        let dropped_deregistered = Arc::new(AtomicBool::new(false));
+        let task_dropped_deregistered = Arc::clone(&dropped_deregistered);
+        let task = tokio::spawn(async move {
+            let (client, _) = tokio::select! {
+                accepted = listener.accept() => accepted?,
+                () = task_shutdown.cancelled() => return Ok(()),
+            };
+            let server = TcpStream::connect(target).await?;
+            forward_and_drop_first_deregistered(
+                client,
+                server,
+                task_shutdown,
+                task_dropped_deregistered,
+            )
+            .await
+        });
+        Ok(Self {
+            endpoint,
+            shutdown,
+            dropped_deregistered,
+            task,
+        })
+    }
+
+    fn dropped_deregistered(&self) -> bool {
+        self.dropped_deregistered.load(Ordering::Acquire)
+    }
+
+    async fn stop(self) -> TestResult {
+        self.shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(1), self.task)
+            .await
+            .map_err(|_| "Deregister response dropping proxy shutdown timed out")???;
+        Ok(())
+    }
+}
+
+async fn forward_and_drop_first_deregistered(
+    client: TcpStream,
+    server: TcpStream,
+    shutdown: CancellationToken,
+    dropped_deregistered: Arc<AtomicBool>,
+) -> io::Result<()> {
+    let (mut client_reader, mut client_writer) = client.into_split();
+    let (mut server_reader, mut server_writer) = server.into_split();
+    let mut deregister_request_id = None;
+
+    loop {
+        tokio::select! {
+            frame = read_rt_frame(&mut client_reader) => {
+                let Some(frame) = frame? else {
+                    return Ok(());
+                };
+                if deregister_request_id.is_none() && frame_contains(&frame, br#""operation":"DEREGISTER""#) {
+                    deregister_request_id = frame_request_id(&frame);
+                }
+                server_writer.write_all(&frame).await?;
+            }
+            frame = read_rt_frame(&mut server_reader) => {
+                let Some(frame) = frame? else {
+                    return Ok(());
+                };
+                let drops_deregistered = deregister_request_id.is_some_and(|request_id| {
+                    frame_request_id(&frame) == Some(request_id)
+                        && frame_contains(&frame, br#""operation":"DEREGISTERED""#)
+                });
+                if drops_deregistered {
+                    dropped_deregistered.store(true, Ordering::Release);
+                    deregister_request_id = None;
+                    continue;
+                }
+                client_writer.write_all(&frame).await?;
+            }
+            () = shutdown.cancelled() => return Ok(()),
+        }
+    }
+}
+
+async fn read_rt_frame(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<Option<Vec<u8>>> {
+    let mut header = [0_u8; 7];
+    match reader.read_exact(&mut header).await {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let payload_len = u32::from_be_bytes([header[3], header[4], header[5], header[6]]) as usize;
+    let mut frame = header.to_vec();
+    frame.resize(7 + payload_len, 0);
+    reader.read_exact(&mut frame[7..]).await?;
+    Ok(Some(frame))
+}
+
+fn frame_contains(frame: &[u8], needle: &[u8]) -> bool {
+    frame.windows(needle.len()).any(|window| window == needle)
+}
+
+fn frame_request_id(frame: &[u8]) -> Option<u64> {
+    let payload = std::str::from_utf8(frame.get(7..)?).ok()?;
+    let (_, tail) = payload.split_once(r#""request_id":"#)?;
+    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 impl RunningGateway {

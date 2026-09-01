@@ -204,9 +204,8 @@ reason = "shard projection과 revision은 검증하지만 두 shard의 실제 �
 
 [[case]]
 id = "T-REG-06"
-status = "partial"
-rust = ["ended_lease_operations_cannot_change_a_new_lease", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "routed_gateway_republishes_current_listener_state_after_route_table_restart"]
-reason = "stale lease와 RT loss 및 current snapshot 복구는 검증하지만 Deregister 응답 유실과 local remove를 같은 lifecycle에서 닫지 않는다."
+status = "executable"
+rust = ["ended_lease_operations_cannot_change_a_new_lease", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "routed_gateway_republishes_current_listener_state_after_route_table_restart", "lost_deregister_response_removes_local_binding_and_route_table_mapping"]
 
 [[case]]
 id = "T-REG-07"
@@ -583,9 +582,8 @@ reason = "aggregate와 per-stream buffer 포화 뒤 terminal commit 실패, tran
 
 [[case]]
 id = "T-EDGE-11"
-status = "partial"
-rust = ["state::tests::only_listener_session_cleanup_publishes_an_empty_snapshot", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease"]
-reason = "local cleanup과 lease loss는 검증하지만 Deregister 응답 유실 후 retry 또는 expiry 수렴을 합성하지 않는다."
+status = "executable"
+rust = ["state::tests::only_listener_session_cleanup_publishes_an_empty_snapshot", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "lost_deregister_response_removes_local_binding_and_route_table_mapping"]
 
 [[case]]
 id = "T-EDGE-12"
