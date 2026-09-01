@@ -187,6 +187,12 @@ async fn queued_open_cannot_overtake_paused_pre_commit_open() -> Result<(), Box<
         request: second_request,
         reply: second_reply,
     })?;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        commands.capacity(),
+        2,
+        "the queued OPEN must remain in the actor mailbox until the first commit finishes"
+    );
     assert!(matches!(
         first_result.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
