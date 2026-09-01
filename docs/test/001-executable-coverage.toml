@@ -537,9 +537,9 @@ rust = ["state::tests::unregister_cancels_only_pending_binding_incarnation", "re
 
 [[case]]
 id = "T-EDGE-05"
-status = "partial"
-rust = ["routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "routing::tests::projection_splits_one_complete_session_across_directory_shards"]
-reason = "key별 상태 격리는 검증하지만 한 shard KeepAlive만 유실하는 runtime sequence가 없다."
+status = "executable"
+rust = ["routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "routing::tests::projection_splits_one_complete_session_across_directory_shards", "routing::tests::multi_shard::keep_alive_partition::keep_alive_response_loss_isolated_to_shard_and_recovers_current_desired_state"]
+reason = "두 shard와 같은 shard의 별도 session을 실제 runtime에 구성한다. rt-0 KeepAlive 응답 하나를 버리고 연결 복구를 막아 3 SYNCED/0 UNSYNCED에서 1/2와 lease expiry로 전이한 뒤, 추가 publish 없이 3/0과 세 mapping으로 복구되는지 검증한다."
 
 [[case]]
 id = "T-EDGE-06"

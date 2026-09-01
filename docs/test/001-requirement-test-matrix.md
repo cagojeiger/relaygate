@@ -150,7 +150,7 @@ test 목록과 대조한다.
 | `T-EDGE-02` | revision 8 snapshot 적용 뒤 revision 7 지연 도착 | 낮은 revision은 current set, lease deadline과 Resolve 결과를 바꾸지 않는다. |
 | `T-EDGE-03` | lease L1 deregister 뒤 새 lease L2를 register/update하고 과거 L1 Update/KeepAlive/Deregister가 재정렬되어 도착 | L1 operation은 실패하거나 idempotent하게 끝나며 L2와 그 mapping을 변경하지 않는다. |
 | `T-EDGE-04` | unregister B1, 같은 ClientId를 B2로 재등록, 과거 B1 snapshot/OPEN 도착 | B1은 B2를 제거하거나 선택할 수 없고 Owner는 stale B1 OPEN을 거절한다. |
-| `T-EDGE-05` | 한 session이 여러 shard에 등록된 채 한 shard KeepAlive 유실 | 해당 key만 UNSYNCED/expired가 되고 local binding, 다른 shard와 다른 session은 유지된다. |
+| `T-EDGE-05` | 한 session이 여러 shard에 등록된 채 한 shard의 `KeepAlive` 응답이 유실되어 RT 연결 종료 | 해당 shard의 registration은 보수적으로 `UNSYNCED`가 될 수 있지만 local binding과 current desired state, 다른 shard와 다른 session은 제거되지 않는다. 연결 복구 뒤 current state를 다시 검증·publish한다. |
 | `T-EDGE-06` | RT restart -> READY-empty -> Gateway 새 lease Register -> current snapshot Update | 기존 Pipe와 local OPEN은 유지되고 remote open은 수렴 중 NOT_FOUND일 수 있으며 Update 뒤 복구된다. |
 | `T-EDGE-07` | Resolve -> 선택된 ListenerSession 종료 -> OPEN 도착 | `UNAVAILABLE`, `NOT_OBSERVED`로 끝나며 다른 후보에 자동 reroute하지 않는다. |
 | `T-EDGE-08` | Listener queue admission으로 Pipe 생성 -> application accept -> OPENED 유실 | Connector 결과는 `MAYBE_OBSERVED`이고 생성된 Pipe는 bound 안에 종료되며 자동 replay하지 않는다. |

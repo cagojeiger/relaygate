@@ -18,6 +18,8 @@ use super::{
 };
 use crate::routing::{RoutingHandle, RoutingRuntime, projection::project_session_id};
 
+mod keep_alive_partition;
+
 #[tokio::test]
 async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> TestResult {
     let listener_0 = TcpListener::bind("127.0.0.1:0").await?;
