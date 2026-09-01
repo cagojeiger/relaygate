@@ -639,6 +639,55 @@ fn close_reset_and_late_frames_are_pipe_local() -> Result<(), Box<dyn std::error
 }
 
 #[test]
+fn opposite_direction_data_survives_first_fin_from_each_endpoint()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+
+    for (connection_id, first_sender, surviving_sender) in
+        [(1, connector, listener), (2, listener, connector)]
+    {
+        let pipe_id = open_pipe(&mut state, connector, listener, connection_id)?;
+        let first_fin = state.handle(first_sender, Frame::Fin { pipe_id })?;
+        assert_eq!(first_fin.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&first_fin).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Fin { pipe_id: finished }))
+                if *target == surviving_sender && *finished == pipe_id
+        ));
+
+        let reverse = state.handle(
+            surviving_sender,
+            Frame::Data {
+                pipe_id,
+                payload: Bytes::from_static(b"surviving direction"),
+            },
+        )?;
+        assert_eq!(reverse.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&reverse).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Data { pipe_id: relayed, payload }))
+                if *target == first_sender
+                    && *relayed == pipe_id
+                    && payload.as_ref() == b"surviving direction"
+        ));
+        assert_eq!(state.pipe_count(), 1);
+
+        let second_fin = state.handle(surviving_sender, Frame::Fin { pipe_id })?;
+        assert_eq!(second_fin.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&second_fin).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Fin { pipe_id: finished }))
+                if *target == first_sender && *finished == pipe_id
+        ));
+        assert_eq!(state.pipe_count(), 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn data_after_fin_resets_only_that_pipe() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
     let listener = add_session(&mut state, SessionRole::Listener);
