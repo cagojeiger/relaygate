@@ -637,10 +637,12 @@ async fn repeated_terminal_offers_leave_no_listener_pipe_history_case() -> TestR
         if connection_id.is_multiple_of(2) {
             assert_eq!(pipe.read_into(&mut byte).await?, 0);
         } else {
-            let error = pipe
-                .read_into(&mut byte)
-                .await
-                .expect_err("RESET must terminate the current Pipe");
+            let error = match pipe.read_into(&mut byte).await {
+                Ok(_) => {
+                    return Err(io::Error::other("RESET did not terminate the current Pipe").into());
+                }
+                Err(error) => error,
+            };
             assert_eq!(error.code(), ErrorCode::Cancelled);
         }
     }
