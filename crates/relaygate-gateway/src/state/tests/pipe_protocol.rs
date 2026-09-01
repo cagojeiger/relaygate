@@ -410,6 +410,154 @@ fn connection_history_is_a_single_high_watermark() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn repeated_accepted_opens_leave_only_current_state_and_connection_high_watermark()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let mut seen_pipes = std::collections::HashSet::new();
+
+    for connection_id in 1..=100 {
+        let pipe_id = single_offer(&mut state, connector, listener, connection_id)?;
+        assert!(seen_pipes.insert(pipe_id), "PipeId must not be reused");
+        assert_eq!(state.pending_offer_count(), 1);
+        assert_eq!(state.live_pipe_count(), 0);
+        assert_eq!(state.pipe_count(), 1);
+
+        let opened = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+        assert!(sdk_deliveries(&opened).any(|delivery| matches!(
+            delivery.frame,
+            Frame::Opened { pipe_id: opened } if opened == pipe_id
+        )));
+        assert_eq!(state.live_pipe_count(), 1);
+
+        let closed = state.handle(connector, Frame::Close { pipe_id })?;
+        assert!(sdk_deliveries(&closed).any(|delivery| matches!(
+            delivery.frame,
+            Frame::Close { pipe_id: closed } if closed == pipe_id
+        )));
+        assert!(
+            state
+                .handle(listener, Frame::Close { pipe_id })?
+                .is_empty(),
+            "late CLOSE must not recreate terminal Pipe state"
+        );
+        assert_current_pipe_state_is_empty(&state, connector, listener, connection_id);
+    }
+
+    assert_eq!(seen_pipes.len(), 100);
+    assert_replayed_open_is_ignored(&mut state, connector)?;
+    Ok(())
+}
+
+#[test]
+fn repeated_rejected_opens_leave_only_current_state_and_connection_high_watermark()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let mut seen_pipes = std::collections::HashSet::new();
+
+    for connection_id in 1..=100 {
+        let pipe_id = single_offer(&mut state, connector, listener, connection_id)?;
+        assert!(seen_pipes.insert(pipe_id), "PipeId must not be reused");
+        assert_eq!(state.pending_offer_count(), 1);
+        assert_eq!(state.live_pipe_count(), 0);
+        assert_eq!(state.pipe_count(), 1);
+
+        let rejected = state.handle(
+            listener,
+            Frame::OfferRejected {
+                pipe_id,
+                code: ErrorCode::Unavailable,
+                message: "listener rejected".to_owned(),
+            },
+        )?;
+        assert!(sdk_deliveries(&rejected).any(|delivery| matches!(
+            delivery.frame,
+            Frame::OpenFailed {
+                connection_id: failed,
+                code: ErrorCode::Unavailable,
+                observation: relaygate_protocol::PeerObservation::NotObserved,
+                ..
+            } if failed == connection_id
+        )));
+        assert!(
+            state
+                .handle(listener, Frame::OfferAccepted { pipe_id })?
+                .is_empty(),
+            "late OFFER_ACCEPTED must not recreate rejected Pipe state"
+        );
+        assert_current_pipe_state_is_empty(&state, connector, listener, connection_id);
+    }
+
+    assert_eq!(seen_pipes.len(), 100);
+    assert_replayed_open_is_ignored(&mut state, connector)?;
+    Ok(())
+}
+
+fn single_offer(
+    state: &mut GatewayState,
+    connector: SessionId,
+    listener: SessionId,
+    connection_id: u64,
+) -> Result<PipeId, Box<dyn std::error::Error>> {
+    let offered = state.handle(
+        connector,
+        Frame::Open {
+            connection_id,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let mut offers = sdk_deliveries(&offered).filter_map(|delivery| match delivery.frame {
+        Frame::Offer { pipe_id, .. } if delivery.target == listener => Some(pipe_id),
+        _ => None,
+    });
+    let pipe_id = offers.next().ok_or("missing offer")?;
+    assert!(offers.next().is_none(), "OPEN must emit at most one OFFER");
+    Ok(pipe_id)
+}
+
+fn assert_current_pipe_state_is_empty(
+    state: &GatewayState,
+    connector: SessionId,
+    listener: SessionId,
+    connection_id: u64,
+) {
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.live_pipe_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+    assert_eq!(state.registry.binding_count(), 1);
+    assert_eq!(state.registry.session_binding_count(listener), 1);
+    assert_eq!(state.connection_high_watermark(connector), Some(connection_id));
+}
+
+fn assert_replayed_open_is_ignored(
+    state: &mut GatewayState,
+    connector: SessionId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(
+        state
+            .handle(
+                connector,
+                Frame::Open {
+                    connection_id: 50,
+                    client_id: "echo.shared".to_owned(),
+                },
+            )?
+            .is_empty()
+    );
+    assert_eq!(state.connection_high_watermark(connector), Some(100));
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.live_pipe_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+    assert_eq!(state.registry.binding_count(), 1);
+    Ok(())
+}
+
+#[test]
 fn close_reset_and_late_frames_are_pipe_local() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
     let listener = add_session(&mut state, SessionRole::Listener);
