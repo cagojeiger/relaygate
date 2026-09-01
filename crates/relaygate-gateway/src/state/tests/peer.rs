@@ -504,6 +504,135 @@ fn owner_transport_loss_preserves_listener_binding_and_registration()
 }
 
 #[test]
+fn owner_listener_session_loss_resets_only_owned_peer_stream_and_preserves_sibling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let entry_gateway = GatewayId::new();
+    let mut state = routed_state(GatewayId::new());
+    let lost_listener = add_session(&mut state, SessionRole::Listener);
+    let sibling_listener = add_session(&mut state, SessionRole::Listener);
+    register_listener(&mut state, lost_listener)?;
+    register_listener(&mut state, sibling_listener)?;
+    let lost_binding = state
+        .registry
+        .bindings_for_session(lost_listener)
+        .into_iter()
+        .next()
+        .ok_or("missing lost listener binding")?;
+    let sibling_binding = state
+        .registry
+        .bindings_for_session(sibling_listener)
+        .into_iter()
+        .next()
+        .ok_or("missing sibling listener binding")?;
+    let peer_transport_id = PeerTransportId::new();
+    let identities = [
+        OpenIdentity::new(entry_gateway, SessionId::new(), 1),
+        OpenIdentity::new(entry_gateway, SessionId::new(), 1),
+    ];
+    let keys = [
+        PeerStreamKey::for_test(entry_gateway, peer_transport_id, 0),
+        PeerStreamKey::for_test(entry_gateway, peer_transport_id, 2),
+    ];
+    let listeners = [lost_listener, sibling_listener];
+    let binding_ids = [lost_binding.id, sibling_binding.id];
+    let mut pipe_ids = Vec::new();
+
+    for (((listener, binding_id), key), identity) in listeners
+        .into_iter()
+        .zip(binding_ids)
+        .zip(keys)
+        .zip(identities)
+    {
+        let offered = state.receive_peer_open(
+            key,
+            identity,
+            "echo.shared".to_owned(),
+            listener,
+            binding_id,
+        );
+        let pipe_id = PipeId::new(identity.connector_session(), identity.connection_id());
+        assert!(sdk_deliveries(&offered).any(|delivery| matches!(
+            delivery,
+            Delivery {
+                target,
+                frame: Frame::Offer {
+                    pipe_id: offered_pipe,
+                    ..
+                },
+                ..
+            } if *target == listener && *offered_pipe == pipe_id
+        )));
+        let accepted = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+        assert!(peer_deliveries(&accepted).any(|delivery| matches!(
+            delivery,
+            PeerDelivery::Opened { key: opened_key } if *opened_key == key
+        )));
+        pipe_ids.push(pipe_id);
+    }
+    assert_eq!(state.pipe_count(), 2);
+    assert_eq!(state.peer_pipe_count(), 2);
+    assert_eq!(state.active_peer_open_count(), 2);
+    assert_eq!(state.live_pipe_count(), 2);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 2);
+
+    let cleanup = state.remove_session(lost_listener);
+
+    assert!(peer_deliveries(&cleanup).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key,
+            code: ErrorCode::Unavailable,
+            ..
+        } if *key == keys[0]
+    )));
+    assert!(!peer_deliveries(&cleanup).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset { key, .. } if *key == keys[1]
+    )));
+    assert_eq!(sdk_deliveries(&cleanup).count(), 0);
+    let published = publications(&cleanup).collect::<Vec<_>>();
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].0, lost_listener);
+    assert!(published[0].1.is_empty());
+    assert!(!state.sessions.contains_key(&lost_listener));
+    assert!(state.sessions.contains_key(&sibling_listener));
+    assert_eq!(state.registry.session_binding_count(lost_listener), 0);
+    assert_eq!(state.registry.session_binding_count(sibling_listener), 1);
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.peer_pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 1);
+
+    assert!(state
+        .peer_data(keys[0], Bytes::from_static(b"late target data"))
+        .is_empty());
+    let sibling = state.peer_data(
+        keys[1],
+        Bytes::from_static(b"sibling survives listener loss"),
+    );
+    assert!(sdk_deliveries(&sibling).any(|delivery| matches!(
+        delivery,
+        Delivery {
+            target,
+            frame: Frame::Data { pipe_id, payload },
+            ..
+        } if *target == sibling_listener
+            && *pipe_id == pipe_ids[1]
+            && payload.as_ref() == b"sibling survives listener loss"
+    )));
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.peer_pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+    Ok(())
+}
+
+#[test]
 fn owner_offer_timeout_clears_peer_indexes_and_preserves_sibling()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = routed_state(GatewayId::new());

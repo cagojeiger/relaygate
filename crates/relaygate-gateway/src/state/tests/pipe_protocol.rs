@@ -469,6 +469,78 @@ fn connector_cancel_after_open_is_cancelled_cleanup_and_preserves_sibling_pipe()
 }
 
 #[test]
+fn local_connector_session_loss_resets_only_owned_pipe_and_preserves_sibling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let lost_connector = add_session(&mut state, SessionRole::Connector);
+    let sibling_connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let lost_pipe = open_pipe(&mut state, lost_connector, listener, 1)?;
+    let sibling_pipe = open_pipe(&mut state, sibling_connector, listener, 1)?;
+
+    assert_eq!(state.pipe_count(), 2);
+    assert_eq!(state.live_pipe_count(), 2);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 1);
+
+    let cleanup = state.remove_session(lost_connector);
+
+    assert_eq!(cleanup.len(), 1);
+    assert!(sdk_deliveries(&cleanup).any(|delivery| matches!(
+        delivery,
+        Delivery {
+            target,
+            frame: Frame::Reset {
+                pipe_id,
+                code: ErrorCode::Unavailable,
+                ..
+            },
+            ..
+        } if *target == listener && *pipe_id == lost_pipe
+    )));
+    assert_eq!(peer_deliveries(&cleanup).count(), 0);
+    assert_eq!(publications(&cleanup).count(), 0);
+    assert!(!state.sessions.contains_key(&lost_connector));
+    assert!(state.sessions.contains_key(&sibling_connector));
+    assert!(state.sessions.contains_key(&listener));
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 1);
+
+    assert!(state
+        .handle(
+            listener,
+            Frame::Data {
+                pipe_id: lost_pipe,
+                payload: Bytes::from_static(b"late target data"),
+            },
+        )?
+        .is_empty());
+    let sibling = state.handle(
+        sibling_connector,
+        Frame::Data {
+            pipe_id: sibling_pipe,
+            payload: Bytes::from_static(b"sibling survives connector loss"),
+        },
+    )?;
+    assert!(sdk_deliveries(&sibling).any(|delivery| matches!(
+        delivery,
+        Delivery {
+            target,
+            frame: Frame::Data { pipe_id, payload },
+            ..
+        } if *target == listener
+            && *pipe_id == sibling_pipe
+            && payload.as_ref() == b"sibling survives connector loss"
+    )));
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+    Ok(())
+}
+
+#[test]
 fn connection_history_is_a_single_high_watermark() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
     let connector = add_session(&mut state, SessionRole::Connector);
