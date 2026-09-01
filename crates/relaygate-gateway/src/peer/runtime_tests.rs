@@ -26,6 +26,8 @@ use super::{
     identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId, StreamId},
 };
 
+mod transport_terminal;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 struct RuntimePair {
@@ -572,95 +574,6 @@ async fn simultaneous_opens_share_ready_transport_after_candidate_timeout() -> T
     assert_eq!(handle_a.counts(), PeerCounts::default());
     assert_eq!(handle_b.counts(), PeerCounts::default());
     Ok(())
-}
-
-#[tokio::test]
-async fn force_close_emits_one_transport_scoped_loss_and_releases_all_streams() -> TestResult {
-    let mut pair = RuntimePair::start().await?;
-    let handle_a = pair.handle_a.clone();
-    let first_request = pair.request_a_to_b(1)?;
-    let first_identity = first_request.open_identity();
-    let first_open = tokio::spawn(async move { handle_a.open(first_request).await });
-    let _ = accept_one(&mut pair.events_b, &pair.handle_b).await?;
-    let first_key = first_open.await??;
-    let _ = next_event(&mut pair.events_a).await?;
-
-    let handle_a = pair.handle_a.clone();
-    let second_request = pair.request_a_to_b(2)?;
-    let second_identity = second_request.open_identity();
-    let second_open = tokio::spawn(async move { handle_a.open(second_request).await });
-    let _ = accept_one(&mut pair.events_b, &pair.handle_b).await?;
-    let second_key = second_open.await??;
-    let _ = next_event(&mut pair.events_a).await?;
-    assert_eq!(
-        first_key.peer_transport_id(),
-        second_key.peer_transport_id()
-    );
-
-    assert!(pair.handle_a.close_transport(first_key));
-    let loss = loop {
-        let event = next_event(&mut pair.events_a).await?;
-        if let PeerEvent::TransportLost { .. } = event {
-            break event;
-        }
-    };
-    let PeerEvent::TransportLost {
-        peer_gateway_id,
-        peer_transport_id,
-        streams,
-    } = loss
-    else {
-        return Err("expected transport loss".into());
-    };
-    assert_eq!(peer_gateway_id, pair.gateway_b);
-    assert_eq!(peer_transport_id, first_key.peer_transport_id());
-    assert_eq!(streams.len(), 2);
-    assert!(streams.iter().any(|stream| stream.key == first_key));
-    assert!(streams.iter().any(|stream| stream.key == second_key));
-    assert!(
-        streams.iter().all(|stream| {
-            stream.progress.failure_observation() == PeerObservation::MaybeObserved
-        })
-    );
-
-    let remote_loss = next_event(&mut pair.events_b).await?;
-    assert!(matches!(
-        remote_loss,
-        PeerEvent::TransportLost { streams, .. } if streams.len() == 2
-    ));
-    wait_for_counts(&pair.handle_a, PeerCounts::default()).await?;
-    wait_for_counts(&pair.handle_b, PeerCounts::default()).await?;
-
-    pair.handle_a.cancel_open(first_identity).await?;
-    pair.handle_a.cancel_open(second_identity).await?;
-    let reused = PeerOpenRequest::new(
-        PeerTarget::new(pair.gateway_b, pair.locator_b.clone()),
-        first_identity,
-        "echo.b",
-        SessionId::new(),
-        BindingId::new(),
-    )?;
-    let reopened = {
-        let handle = pair.handle_a.clone();
-        tokio::spawn(async move { handle.open(reused).await })
-    };
-    let (new_owner_key, new_identity) = accept_one(&mut pair.events_b, &pair.handle_b).await?;
-    let new_entry_key = reopened.await??;
-    assert_eq!(new_identity, first_identity);
-    assert_ne!(
-        new_entry_key.peer_transport_id(),
-        first_key.peer_transport_id()
-    );
-    let reopened_event = next_event(&mut pair.events_a).await?;
-    assert!(matches!(
-        reopened_event,
-        PeerEvent::Opened {
-            key: event_key,
-            open_identity,
-        } if event_key == new_entry_key && open_identity == first_identity
-    ));
-    pair.handle_b.send_close(new_owner_key).await?;
-    pair.shutdown().await
 }
 
 #[tokio::test]

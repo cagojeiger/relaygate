@@ -29,6 +29,7 @@ use crate::peer::{
 };
 
 mod capacity;
+mod lifecycle;
 mod remote;
 mod terminal;
 
