@@ -670,9 +670,9 @@ rust = ["silent_recovery_partition_is_cleaned_by_offer_timeout_without_same_open
 
 [[case]]
 id = "T-EDGE-29"
-status = "partial"
-rust = ["register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle", "routing::tests::late_register_result_cannot_replace_newer_desired_state"]
-reason = "duplicate Register와 late result는 각각 검증하지만 응답 유실 뒤 같은 lease 반환과 current attempt correlation을 한 sequence로 닫지 않는다."
+status = "executable"
+rust = ["routing::tests::register_retry::lost_register_response_retry_uses_only_the_current_attempt"]
+reason = "응답이 유실된 REGISTER의 동일-key retry가 같은 lease와 줄어든 잔여 TTL을 받고, 늦은 이전 attempt 결과를 무시한 뒤 current attempt만 첫 snapshot을 Update하는 한 sequence를 검증한다."
 
 [[case]]
 id = "T-EDGE-30"
