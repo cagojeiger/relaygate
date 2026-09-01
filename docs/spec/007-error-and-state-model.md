@@ -7,7 +7,7 @@
 
 ## 오류 계약
 
-모든 operation은 하나의 성공 또는 하나의 오류로 끝난다. 아래의 재시도는 같은 attempt를 되살리는 것이 아니라 새로운 operation을 시작한다는 뜻이다.
+끝까지 await한 operation은 하나의 성공 또는 하나의 오류로 끝난다. Rust future를 drop 또는 abort하면 해당 호출에는 SDK 반환값이 없지만 operation owner는 내부 attempt를 정확히 한 번 terminal로 정리해야 한다. 아래의 재시도는 같은 attempt를 되살리는 것이 아니라 새로운 operation을 시작한다는 뜻이다.
 
 | ID | Code | 의미 | 새 operation 재시도 |
 | --- | --- | --- | --- |
@@ -19,7 +19,7 @@
 | `ERR-006` | `UNAVAILABLE` | RT shard, Gateway, peer path 또는 Resolve 뒤 선택한 ListenerSession을 현재 사용할 수 없음 | backoff 뒤 가능 |
 | `ERR-007` | `DEADLINE_EXCEEDED` | operation이 configured deadline 안에 terminal 결과를 내지 못함 | 새 operation으로 가능 |
 | `ERR-008` | `RESOURCE_EXHAUSTED` | queue, frame, Pipe, stream 또는 connection의 bounded limit 초과 | 부하 감소 뒤 가능 |
-| `ERR-009` | `CANCELLED` | caller가 완료 전에 operation을 취소함 | caller 결정으로 가능 |
+| `ERR-009` | `CANCELLED` | await 중인 operation이 명시적으로 닫힌 runtime·object 또는 terminal cancellation을 관찰함. future drop·abort의 내부 취소에는 사용자 반환값이 없음 | caller 결정으로 새 object 또는 새 operation 가능 |
 | `ERR-010` | `PROTOCOL_ERROR` | peer가 허용되지 않은 role, ownership 또는 상태 전이의 frame을 보냄 | owner의 Pipe-local 상태 위반은 해당 Pipe만 `RESET`; current Pipe의 non-owner frame과 role 위반은 offending session을 닫은 뒤 새 operation 가능 |
 | `ERR-011` | `INTERNAL` | 위 code로 분류할 수 없는 RelayGate 내부 실패 | backoff 뒤 새 operation으로만 가능 |
 | `ERR-012` | `ALREADY_EXISTS` | 같은 Listener SDK runtime에 동일 `ClientId`의 pending `ListenAttempt` 또는 non-`CLOSED` Listener handle이 이미 존재함 | attempt가 terminal로 끝나거나 기존 handle이 `CLOSED`가 된 뒤 가능 |
@@ -44,8 +44,9 @@ remote path에서도 같은 증명 기준을 사용한다. peer `OPEN`이 ordere
 전의 connect·handshake·queue 실패는 `NOT_OBSERVED`, commit 뒤 terminal 결과를 확인하지 못한
 deadline·transport loss·cancel은 `MAYBE_OBSERVED`다. peer `OPENED`는 Listener queue admission을
 확인하지만 external `OBSERVED`는 Connector SDK가 `OPENED`를 확인한 뒤에만 성립한다. 내부
-component가 더 강한 증명을 갖더라도 Connector SDK가 그 결과를 확인하기 전에 자신의
-SDK-Gateway operation을 취소했다면 SDK는 보수적으로 `MAYBE_OBSERVED`를 반환할 수 있다.
+component가 더 강한 증명을 갖더라도 Connector SDK가 그 결과를 확인하기 전에 caller가
+future를 drop 또는 abort했다면 해당 호출에는 SDK 반환값이 없다. 다만 commit 뒤 내부 attempt는
+cleanup과 replay 금지를 위해 보수적으로 `MAYBE_OBSERVED`로 분류한다.
 
 - **`ERR-013`**: terminal open 결과는 `PeerObservation`을 함께 결정해야 한다.
 - **`ERR-014`**: `MAYBE_OBSERVED` 결과는 같은 attempt의 자동 replay, 다른 binding 선택, Pipe resume를 발생시켜서는 안 된다.
@@ -130,8 +131,8 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | `STATE-LA-001` | ListenAttempt | `ABSENT` | 같은 runtime에 동일 ClientId reservation/handle 없음 | `PENDING` | ClientId reservation 생성, live session의 bounded outbound path 대기 가능 |
 | `STATE-LA-002` | ListenAttempt | `PENDING` | `REGISTER`가 current ListenerSession에 commit | `COMMITTED` | 같은 attempt를 다른 session으로 이동하거나 replay하지 않음 |
 | `STATE-LA-003` | ListenAttempt | `COMMITTED` | ClientKey 승인과 local binding 설치 확인 | `SUCCEEDED` | terminal, reservation을 returned Listener handle로 승계 |
-| `STATE-LA-004` | ListenAttempt | `PENDING` | commit 전 deadline·취소 또는 runtime close | `FAILED` | terminal, reservation과 내부 state 제거 |
-| `STATE-LA-005` | ListenAttempt | `COMMITTED` | 등록 거절, response deadline, session 상실 또는 caller 취소 | `FAILED` | terminal, reservation 제거, 자동 재등록 금지; response deadline이나 미확정 취소는 current ListenerSession 종료 |
+| `STATE-LA-004` | ListenAttempt | `PENDING` | commit 전 deadline, future drop·abort 또는 runtime close | `FAILED` | terminal, reservation과 내부 state 제거. future drop·abort이면 사용자 반환값 없음 |
+| `STATE-LA-005` | ListenAttempt | `COMMITTED` | 등록 거절, response deadline, session 상실 또는 future drop·abort | `FAILED` | terminal, reservation 제거, 자동 재등록 금지; response deadline이나 미확정 내부 취소는 current ListenerSession 종료. future drop·abort이면 사용자 반환값 없음 |
 | `STATE-LA-006` | ListenAttempt | `ABSENT` | 같은 runtime에 동일 ClientId reservation/handle 존재 | `FAILED` | `ALREADY_EXISTS`, object·registration·queue 생성 없음 |
 | `STATE-LH-001` | returned Listener handle | `ABSENT` | ListenAttempt 성공과 handle 반환 | `ACTIVE` | local incoming Pipe 수신 가능, RT registration은 별도 상태 |
 | `STATE-LH-002` | returned Listener handle | `ACTIVE` | SDK session 상실 | `SUSPENDED` | local binding이 있으면 제거, 신규 incoming 중단, accepted Pipe 실패와 old session의 미수락 queue 제거; RT registration 실패만으로는 전이하지 않음 |
@@ -167,7 +168,7 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | `STATE-OPEN-002` | Open attempt | `RESOLVING` | live binding 하나 선택 | `OPENING` | selected Owner Gateway에 OPEN |
 | `STATE-OPEN-003` | Open attempt | `OPENING` | Listener incoming queue admission | `QUEUED` | Pipe 생성, Listener endpoint는 queue 또는 application에 존재 |
 | `STATE-OPEN-004` | Open attempt | `QUEUED` | Connector가 OPENED 확인 | `SUCCEEDED` | `OBSERVED`, Connector Pipe 반환 |
-| `STATE-OPEN-005` | Open attempt | non-terminal | FAILED, cancel 또는 deadline | `FAILED` | terminal 오류와 observation. `QUEUED`에서 실패하면 생성된 Pipe도 bounded cleanup |
+| `STATE-OPEN-005` | Open attempt | non-terminal | FAILED, future drop·abort에 따른 내부 cancel 또는 deadline | `FAILED` | terminal 오류와 observation. future drop·abort이면 사용자 반환값 없이 내부 state만 terminal이 되며, `QUEUED`에서 실패하면 생성된 Pipe도 bounded cleanup |
 | `STATE-PIPE-001` | Pipe | creation | Listener incoming queue admission | `OPEN` | Listener endpoint 사용 가능, Connector endpoint는 OPENED 확인 뒤 application에 반환 |
 | `STATE-PDIR-001` | Pipe sender direction | `OPEN` | local `shutdown(write)` 또는 remote `FIN` | `FINISHED` | 먼저 수락한 bytes 뒤 peer read EOF, 반대 방향 불변 |
 | `STATE-PDIR-002` | Pipe sender direction | `FINISHED` | duplicate `FIN` | `FINISHED` | idempotent no-op |
@@ -226,7 +227,7 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 ## 공통 불변식
 
 1. SDK와 Gateway의 `CLOSED`, `REMOVED`, `SUCCEEDED`, `FAILED` object는 다시 활성화하지 않는다. RT의 종료된 lease도 `Update`나 `KeepAlive`로 다시 활성화하지 않는다.
-2. 하나의 operation은 terminal 결과를 한 번만 외부에 노출한다.
+2. 끝까지 await한 operation은 terminal 결과를 한 번만 외부에 노출한다. future를 drop 또는 abort하면 외부 결과는 없고 내부 attempt만 정확히 한 번 terminal이 된다.
 3. close, cancel, deregister, expiry와 cleanup은 중복·순서 변경에도 다른 live identity를 변경하지 않는다.
 4. 다른 ListenerSession의 같은 `ClientId` binding은 서로 충돌하지 않는다.
 5. established Pipe는 RT, registration 또는 peer transport 재구성의 복구 대상이 아니다.
