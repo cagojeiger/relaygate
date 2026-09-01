@@ -23,6 +23,8 @@ use super::{
     runtime::{is_connection_error, is_terminal_control_error},
 };
 
+mod multi_shard;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[test]
