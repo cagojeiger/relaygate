@@ -1,5 +1,6 @@
 use std::{error::Error, time::Duration};
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{BindingId, PeerObservation, SessionId};
 use relaygate_route_table::{GatewayId, GatewayLocator};
@@ -17,6 +18,9 @@ use super::{
     frame::PeerFrame,
     identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId},
 };
+use observation::{PAYLOAD_SENTINEL, assert_transport_lifecycle_event, captured_dispatch};
+
+mod observation;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -97,8 +101,10 @@ async fn wait_peer_counts(handle: &PeerHandle, expected: PeerCounts) -> TestResu
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily() -> TestResult {
+    let (captured, dispatch) = captured_dispatch();
+    let _guard = tracing::dispatcher::set_default(&dispatch);
     let listener_a = TcpListener::bind("127.0.0.1:0").await?;
     let listener_b = TcpListener::bind("127.0.0.1:0").await?;
     let locator_b = GatewayLocator::new(listener_b.local_addr()?.to_string())?;
@@ -132,11 +138,20 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
                 stream_id: first_stream_id,
             })
             .await?;
-        let heartbeat_nonce = loop {
-            if let PeerFrame::Ping { nonce } = next_fake_frame(&mut framed).await? {
-                break nonce;
+        let mut heartbeat_nonce = None;
+        let mut payload_observed = false;
+        while heartbeat_nonce.is_none() || !payload_observed {
+            match next_fake_frame(&mut framed).await? {
+                PeerFrame::Data { stream_id, payload } => {
+                    assert_eq!(stream_id, first_stream_id);
+                    assert_eq!(payload.as_ref(), PAYLOAD_SENTINEL);
+                    payload_observed = true;
+                }
+                PeerFrame::Ping { nonce } => heartbeat_nonce = Some(nonce),
+                frame => return Err(format!("expected DATA or PING, got {frame:?}").into()),
             }
-        };
+        }
+        let heartbeat_nonce = heartbeat_nonce.ok_or("missing heartbeat PING")?;
         let unrelated_nonce = heartbeat_nonce ^ u64::MAX;
         framed
             .send(PeerFrame::Ping {
@@ -184,6 +199,9 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
     let first_key = handle_a.open(first_request).await?;
     let opened = next_event(&mut events_a).await?;
     assert!(matches!(opened, PeerEvent::Opened { key, .. } if key == first_key));
+    handle_a
+        .send_data(first_key, Bytes::from_static(PAYLOAD_SENTINEL))
+        .await?;
 
     let loss = loop {
         let event = next_event(&mut events_a).await?;
@@ -207,6 +225,13 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
         streams[0].progress.failure_observation(),
         PeerObservation::MaybeObserved
     );
+    assert_transport_lifecycle_event(
+        &captured,
+        "gateway.peer.transport.heartbeat_timeout",
+        gateway_b,
+        first_key.peer_transport_id(),
+        1,
+    )?;
     wait_peer_counts(&handle_a, Default::default()).await?;
     let _ = release_first.send(());
 
@@ -236,8 +261,10 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily() -> TestResult {
+    let (captured, dispatch) = captured_dispatch();
+    let _guard = tracing::dispatcher::set_default(&dispatch);
     let listener_a = TcpListener::bind("127.0.0.1:0").await?;
     let listener_b = TcpListener::bind("127.0.0.1:0").await?;
     let locator_b = GatewayLocator::new(listener_b.local_addr()?.to_string())?;
@@ -338,6 +365,13 @@ async fn zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazi
     assert_eq!(peer_gateway_id, gateway_b);
     assert_eq!(peer_transport_id, first_key.peer_transport_id());
     assert!(streams.is_empty());
+    assert_transport_lifecycle_event(
+        &captured,
+        "gateway.peer.transport.idle_retired",
+        gateway_b,
+        first_key.peer_transport_id(),
+        0,
+    )?;
     wait_peer_counts(&handle_a, Default::default()).await?;
 
     let second_request = PeerOpenRequest::new(
