@@ -23,6 +23,8 @@ use super::{
     runtime::{is_connection_error, is_terminal_control_error},
 };
 
+mod multi_shard;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[test]
@@ -144,6 +146,72 @@ fn late_register_result_cannot_replace_newer_desired_state() -> TestResult {
         current.action,
         RegistrationAction::Register { .. }
     ));
+    Ok(())
+}
+
+#[test]
+fn one_registration_key_serializes_every_lease_operation() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "client-a")?;
+
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    assert!(matches!(
+        register.action,
+        RegistrationAction::Register { .. }
+    ));
+    assert!(state.begin_next(now)?.is_none());
+    state.register_succeeded(&register, registration_ack(10, None), now);
+
+    let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+    assert!(matches!(update.action, RegistrationAction::Update { .. }));
+    assert!(state.begin_next(now)?.is_none());
+    state.update_succeeded(
+        &update,
+        registration_ack(10, Some(relaygate_route_table::RegistrationRevision::FIRST)),
+        now,
+    );
+
+    let keep_alive_at = now + Duration::from_secs(3);
+    let keep_alive = state
+        .begin_next(keep_alive_at)?
+        .ok_or("missing KEEP_ALIVE")?;
+    assert!(matches!(
+        keep_alive.action,
+        RegistrationAction::KeepAlive { .. }
+    ));
+    assert!(state.begin_next(keep_alive_at)?.is_none());
+    state.keep_alive_succeeded(
+        &keep_alive,
+        registration_ack(10, Some(relaygate_route_table::RegistrationRevision::FIRST)),
+        keep_alive_at,
+    );
+
+    state.publish(2, None, keep_alive_at);
+    let deregister = state
+        .begin_next(keep_alive_at)?
+        .ok_or("missing DEREGISTER")?;
+    assert!(matches!(
+        deregister.action,
+        RegistrationAction::Deregister { .. }
+    ));
+    assert!(state.begin_next(keep_alive_at)?.is_none());
+    state.finish_deregister(&deregister);
+    assert!(state.is_removable());
+    Ok(())
+}
+
+#[test]
+fn terminal_failed_register_ignores_late_success() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "client-a")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+
+    state.terminal_failure(&register);
+    state.register_succeeded(&register, registration_ack(10, None), now);
+
+    assert!(state.active_lease().is_none());
+    assert!(!state.is_synced());
+    assert!(state.begin_next(now + Duration::from_secs(60))?.is_none());
     Ok(())
 }
 
