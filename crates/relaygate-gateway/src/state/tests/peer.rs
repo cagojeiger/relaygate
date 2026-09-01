@@ -169,6 +169,134 @@ fn early_transport_loss_then_late_commit_callback_never_leaves_an_attempt()
 }
 
 #[test]
+fn committed_open_transport_loss_fails_once_and_late_opened_cannot_resurrect()
+-> Result<(), Box<dyn std::error::Error>> {
+    let entry_gateway = GatewayId::new();
+    let target_owner = GatewayId::new();
+    let sibling_owner = GatewayId::new();
+    let mut state = routed_state(entry_gateway);
+    let target_connector = add_session(&mut state, SessionRole::Connector);
+    let sibling_connector = add_session(&mut state, SessionRole::Connector);
+
+    let target_resolve = state.handle(
+        target_connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let target_identity = resolve_identity(&target_resolve).ok_or("missing target resolve")?;
+    state.route_resolved(
+        target_identity,
+        binding_set(
+            "echo.shared",
+            target_owner,
+            SessionId::new(),
+            BindingId::new(),
+            "target.internal:27421",
+        )?,
+    );
+    let target_key = peer_key(target_owner, 0);
+    assert!(
+        state
+            .peer_open_committed(target_identity, target_key)
+            .is_empty()
+    );
+
+    let sibling_resolve = state.handle(
+        sibling_connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let sibling_identity = resolve_identity(&sibling_resolve).ok_or("missing sibling resolve")?;
+    state.route_resolved(
+        sibling_identity,
+        binding_set(
+            "echo.shared",
+            sibling_owner,
+            SessionId::new(),
+            BindingId::new(),
+            "sibling.internal:27421",
+        )?,
+    );
+    let sibling_key = peer_key(sibling_owner, 0);
+    assert!(
+        state
+            .peer_open_committed(sibling_identity, sibling_key)
+            .is_empty()
+    );
+    assert_eq!(state.remote_open_attempt_count(), 2);
+    assert_eq!(state.active_peer_open_count(), 2);
+    assert_eq!(state.pipe_count(), 0);
+
+    let lost = state.peer_transport_lost_stream(
+        target_key,
+        target_identity,
+        PeerObservation::MaybeObserved,
+    );
+    assert_eq!(lost.len(), 1);
+    assert!(sdk_deliveries(&lost).any(|delivery| matches!(
+        delivery,
+        Delivery {
+            target,
+            frame: Frame::OpenFailed {
+                connection_id: 1,
+                code: ErrorCode::Unavailable,
+                observation: PeerObservation::MaybeObserved,
+                ..
+            },
+            ..
+        } if *target == target_connector
+    )));
+    assert_eq!(peer_deliveries(&lost).count(), 0);
+    assert_eq!(publications(&lost).count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.pipe_count(), 0);
+
+    let duplicate_loss = state.peer_transport_lost_stream(
+        target_key,
+        target_identity,
+        PeerObservation::MaybeObserved,
+    );
+    assert!(duplicate_loss.is_empty());
+    assert_eq!(state.remote_open_attempt_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+
+    let late_opened = state.peer_opened(target_key, target_identity);
+    assert_eq!(late_opened.len(), 1);
+    assert!(peer_deliveries(&late_opened).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key,
+            code: ErrorCode::Cancelled,
+            ..
+        } if *key == target_key
+    )));
+    assert_eq!(sdk_deliveries(&late_opened).count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.pipe_count(), 0);
+
+    let sibling_opened = state.peer_opened(sibling_key, sibling_identity);
+    assert_eq!(sibling_opened.len(), 1);
+    assert!(sdk_deliveries(&sibling_opened).any(|delivery| matches!(
+        delivery,
+        Delivery {
+            target,
+            frame: Frame::Opened { .. },
+            ..
+        } if *target == sibling_connector
+    )));
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.pipe_count(), 1);
+    Ok(())
+}
+
+#[test]
 fn connector_cancel_before_peer_open_commit_sends_cancel_and_late_commit_only_resets_peer()
 -> Result<(), Box<dyn std::error::Error>> {
     let entry_gateway = GatewayId::new();
