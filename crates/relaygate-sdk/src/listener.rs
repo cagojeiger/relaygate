@@ -211,12 +211,12 @@ impl ListenerRuntime {
             tokio::select! {
                 _ = self.inner.cancel.cancelled() => return Err(Error::closed()),
                 _ = sleep_until(deadline) => {
-                    let observation = self.inner.terminate_initial_listener(
+                    let error = self.inner.terminate_initial_listener(
                         &state,
                         ErrorCode::DeadlineExceeded,
                         "operation deadline exceeded",
                     );
-                    return Err(Error::deadline(observation));
+                    return Err(error);
                 }
                 changed = status.changed() => {
                     if changed.is_err() {
@@ -372,12 +372,13 @@ impl ListenerRuntimeInner {
         state: &Arc<ListenerState>,
         code: ErrorCode,
         message: &str,
-    ) -> PeerObservation {
-        let observation = state
+    ) -> Error {
+        let error = state
             .terminate_initial_operation(code, message)
-            .unwrap_or(PeerObservation::NotObserved);
+            .or_else(|| state.last_error())
+            .unwrap_or_else(|| Error::new(code, PeerObservation::NotObserved, message));
         self.remove_terminal_listener(state);
-        observation
+        error
     }
 
     pub(super) fn remove_terminal_listener(&self, state: &Arc<ListenerState>) {
@@ -579,11 +580,7 @@ impl ListenerState {
         }
     }
 
-    fn terminate_initial_operation(
-        &self,
-        code: ErrorCode,
-        message: &str,
-    ) -> Option<PeerObservation> {
+    fn terminate_initial_operation(&self, code: ErrorCode, message: &str) -> Option<Error> {
         let Ok(mut lifecycle) = self.lifecycle.lock() else {
             return None;
         };
@@ -601,11 +598,9 @@ impl ListenerState {
             },
         );
         *lifecycle = ListenerLifecycle::Terminal;
-        self.set_status(
-            ListenerStatus::Closed,
-            Some(Error::new(code, observation, message)),
-        );
-        Some(observation)
+        let error = Error::new(code, observation, message);
+        self.set_status(ListenerStatus::Closed, Some(error.clone()));
+        Some(error)
     }
 }
 

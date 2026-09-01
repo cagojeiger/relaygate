@@ -79,6 +79,52 @@ fn return_and_session_end_share_one_lifecycle_linearization()
     Ok(())
 }
 
+#[test]
+fn late_public_deadline_preserves_committed_registration_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let state = listener_state("echo.alpha");
+    {
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .map_err(|_| std::io::Error::other("lifecycle lock is poisoned"))?;
+        *lifecycle = super::ListenerLifecycle::Pending;
+    }
+    assert!(state.begin_registration_commit());
+    assert!(state.suspend_or_fail_initial(
+        Error::deadline(PeerObservation::MaybeObserved),
+        Error::deadline(PeerObservation::MaybeObserved),
+    ));
+
+    let inner = ListenerRuntimeInner {
+        config: Config::new("unused").with_operation_timeout(Duration::from_secs(2)),
+        desired: std::sync::Mutex::new(HashMap::from([(
+            state.client_id.clone(),
+            Arc::clone(&state),
+        )])),
+        reconcile: Arc::new(tokio::sync::Notify::new()),
+        cancel: CancellationToken::new(),
+        lifetime: std::sync::Weak::new(),
+    };
+    let error = inner.terminate_initial_listener(
+        &state,
+        ErrorCode::DeadlineExceeded,
+        "operation deadline exceeded",
+    );
+
+    assert_eq!(error.code(), ErrorCode::DeadlineExceeded);
+    assert_eq!(error.observation(), PeerObservation::MaybeObserved);
+    assert!(!error.is_retryable());
+    assert!(
+        inner
+            .desired
+            .lock()
+            .map_err(|_| std::io::Error::other("desired lock is poisoned"))?
+            .is_empty()
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn closed_listener_does_not_return_an_already_queued_pipe()
 -> Result<(), Box<dyn std::error::Error>> {
