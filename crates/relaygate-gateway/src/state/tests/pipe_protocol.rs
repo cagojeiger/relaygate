@@ -355,33 +355,36 @@ fn owner_invalid_phase_resets_only_the_target_pipe() -> Result<(), Box<dyn std::
     register_listener(&mut state, listener)?;
     let healthy = open_pipe(&mut state, connector, listener, 1)?;
 
-    for invalid_case in 0..4 {
-        let pipe_id = offer_pipe(&mut state, connector, listener, 10 + invalid_case)?;
-        let frame = match invalid_case {
-            0 => Frame::Data {
-                pipe_id,
-                payload: Bytes::from_static(b"too-early"),
-            },
-            1 => Frame::Fin { pipe_id },
-            2 => Frame::Close { pipe_id },
-            3 => Frame::Reset {
-                pipe_id,
-                code: ErrorCode::Cancelled,
-                message: "too early".to_owned(),
-            },
-            _ => return Err("invalid offered-phase test case".into()),
-        };
-        let resets = state.handle(connector, frame)?;
-        assert_eq!(resets.len(), 2);
-        assert!(sdk_deliveries(&resets).all(|delivery| matches!(
-            delivery.frame,
-            Frame::Reset {
-                pipe_id: reset_pipe,
-                code: ErrorCode::ProtocolError,
-                ..
-            } if reset_pipe == pipe_id
-        )));
-        assert_eq!(state.pipe_count(), 1);
+    for (owner_index, sender) in [connector, listener].into_iter().enumerate() {
+        for invalid_case in 0..4 {
+            let connection_id = 10 + (owner_index as u64 * 4) + invalid_case;
+            let pipe_id = offer_pipe(&mut state, connector, listener, connection_id)?;
+            let frame = match invalid_case {
+                0 => Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"too-early"),
+                },
+                1 => Frame::Fin { pipe_id },
+                2 => Frame::Close { pipe_id },
+                3 => Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Cancelled,
+                    message: "too early".to_owned(),
+                },
+                _ => return Err("invalid offered-phase test case".into()),
+            };
+            let resets = state.handle(sender, frame)?;
+            assert_eq!(resets.len(), 2);
+            assert!(sdk_deliveries(&resets).all(|delivery| matches!(
+                delivery.frame,
+                Frame::Reset {
+                    pipe_id: reset_pipe,
+                    code: ErrorCode::ProtocolError,
+                    ..
+                } if reset_pipe == pipe_id
+            )));
+            assert_eq!(state.pipe_count(), 1);
+        }
     }
 
     for invalid_case in 0..2 {
