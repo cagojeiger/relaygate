@@ -25,7 +25,7 @@ use relaygate_route_table_transport::{
     RouteTableClientConfig, RouteTableService, RouteTableServiceConfig, TransportError,
     TrustedGatewayKeys,
 };
-use relaygate_sdk::{Config as SdkConfig, Connector, ListenerRuntime};
+use relaygate_sdk::{Config as SdkConfig, Connector, ListenerRuntime, ListenerStatus};
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -131,16 +131,12 @@ async fn recovery_case() -> TestResult {
 }
 
 #[tokio::test]
-async fn failed_initial_route_registration_keeps_local_pipe_available() -> TestResult {
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        local_pipe_after_initial_registration_failure_case(),
-    )
-    .await??;
+async fn generation_mismatch_recovers_only_after_coordinated_restart() -> TestResult {
+    tokio::time::timeout(Duration::from_secs(10), generation_mismatch_recovery_case()).await??;
     Ok(())
 }
 
-async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
+async fn generation_mismatch_recovery_case() -> TestResult {
     let route_listener = TcpListener::bind("127.0.0.1:0").await?;
     let route_endpoint = route_listener.local_addr()?;
     let proxy = RegistrationCountingProxy::start(route_endpoint).await?;
@@ -150,13 +146,20 @@ async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
     let mut gateway_directory_bytes = route_directory_bytes;
     gateway_directory_bytes.push(b'\n');
     let gateway_directory = ShardDirectory::from_json_bytes(&gateway_directory_bytes)?;
-    assert_ne!(gateway_directory.generation(), route_generation);
+    let gateway_generation = gateway_directory.generation();
+    assert_ne!(gateway_generation, route_generation);
 
-    let route_table =
-        RunningRouteTable::serve(route_listener, route_directory, Duration::from_millis(250))?;
+    let route_table = RunningRouteTable::serve(
+        route_listener,
+        route_directory.clone(),
+        Duration::from_millis(250),
+    )?;
+    assert!(route_table.started_empty());
     let probe = connect_probe(route_endpoint, route_generation).await?;
 
     let gateway = RunningGateway::start(gateway_directory).await?;
+    let gateway_endpoint = gateway.endpoint;
+    let peer_endpoint = gateway.peer_locator.parse()?;
     let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
     let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
 
@@ -171,6 +174,14 @@ async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
     assert_eq!(unsynced.listener_bindings, 1);
     assert_eq!(unsynced.route_registrations_synced, 0);
     assert_eq!(unsynced.route_registrations_unsynced, 1);
+    wait_for_not_found(&probe, route_generation, CLIENT_ID).await?;
+    let mismatched_resolve = probe
+        .resolve(gateway_generation, &ClientId::new(CLIENT_ID)?)
+        .await;
+    match mismatched_resolve {
+        Err(error) => assert_eq!(error.code(), RouteErrorCode::FailedPrecondition),
+        Ok(_) => return Err("mismatched generation unexpectedly resolved route state".into()),
+    }
     wait_for_not_found(&probe, route_generation, CLIENT_ID).await?;
 
     let connector = Connector::connect(sdk_config(gateway.endpoint)).await?;
@@ -202,11 +213,69 @@ async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
     .await?;
 
     connector.close();
-    listener_runtime.close();
     gateway.stop().await?;
+    poll_until(Duration::from_secs(2), || async {
+        (listener.status() == ListenerStatus::Suspended).then_some(())
+    })
+    .await?;
     route_table.stop().await?;
     assert_eq!(proxy.register_count(), 1);
     assert_eq!(proxy.failed_precondition_count(), 1);
+
+    drop(probe);
+    let restarted_route_listener = TcpListener::bind(route_endpoint).await?;
+    let restarted_route_table = RunningRouteTable::serve(
+        restarted_route_listener,
+        route_directory.clone(),
+        Duration::from_millis(250),
+    )?;
+    assert!(restarted_route_table.started_empty());
+    let restarted_probe = connect_probe(route_endpoint, route_generation).await?;
+    wait_for_not_found(&restarted_probe, route_generation, CLIENT_ID).await?;
+
+    let restarted_gateway = RunningGateway::start_on(
+        route_directory,
+        Duration::from_millis(100),
+        gateway_endpoint,
+        peer_endpoint,
+    )
+    .await?;
+    poll_until(Duration::from_secs(2), || async {
+        (listener.status() == ListenerStatus::Active).then_some(())
+    })
+    .await?;
+    wait_for_gateway_snapshot(&restarted_gateway, |snapshot| {
+        snapshot.listener_bindings == 1
+            && snapshot.route_registrations_synced == 1
+            && snapshot.route_registrations_unsynced == 0
+    })
+    .await?;
+    wait_for_mapping(
+        &restarted_probe,
+        route_generation,
+        CLIENT_ID,
+        &restarted_gateway.peer_locator,
+        1,
+    )
+    .await?;
+    assert_eq!(proxy.register_count(), 2);
+    assert_eq!(proxy.failed_precondition_count(), 1);
+
+    let recovered_connector = Connector::connect(sdk_config(restarted_gateway.endpoint)).await?;
+    let (mut recovered_connector_pipe, mut recovered_listener_pipe) =
+        tokio::try_join!(recovered_connector.open(CLIENT_ID), listener.accept())?;
+    recovered_connector_pipe.write_all(b"after restart").await?;
+    let mut recovered = [0_u8; 13];
+    recovered_listener_pipe.read_exact(&mut recovered).await?;
+    assert_eq!(&recovered, b"after restart");
+    recovered_connector_pipe.close().await?;
+    recovered_listener_pipe.close().await?;
+    recovered_connector.close();
+
+    listener_runtime.close();
+    wait_for_not_found(&restarted_probe, route_generation, CLIENT_ID).await?;
+    restarted_gateway.stop().await?;
+    restarted_route_table.stop().await?;
     proxy.stop().await?;
     Ok(())
 }
@@ -759,8 +828,28 @@ impl RunningGateway {
         offer_timeout: Duration,
     ) -> TestResult<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let endpoint = listener.local_addr()?;
         let peer_listener = TcpListener::bind("127.0.0.1:0").await?;
+        Self::serve(directory, offer_timeout, listener, peer_listener).await
+    }
+
+    async fn start_on(
+        directory: ShardDirectory,
+        offer_timeout: Duration,
+        endpoint: SocketAddr,
+        peer_endpoint: SocketAddr,
+    ) -> TestResult<Self> {
+        let listener = bind_listener(endpoint).await?;
+        let peer_listener = bind_listener(peer_endpoint).await?;
+        Self::serve(directory, offer_timeout, listener, peer_listener).await
+    }
+
+    async fn serve(
+        directory: ShardDirectory,
+        offer_timeout: Duration,
+        listener: TcpListener,
+        peer_listener: TcpListener,
+    ) -> TestResult<Self> {
+        let endpoint = listener.local_addr()?;
         let peer_endpoint = peer_listener.local_addr()?;
         let config = GatewayConfig::new(
             [CLIENT_ID, ALPHA_ID, BETA_ID, GAMMA_ID]
@@ -806,6 +895,19 @@ impl RunningGateway {
             .await
             .map_err(|_| "Gateway shutdown timed out")???;
         Ok(())
+    }
+}
+
+async fn bind_listener(endpoint: SocketAddr) -> io::Result<TcpListener> {
+    let expires = Instant::now() + Duration::from_secs(1);
+    loop {
+        match TcpListener::bind(endpoint).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse && Instant::now() < expires => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 

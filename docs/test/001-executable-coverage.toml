@@ -46,7 +46,7 @@ rust = ["connector::tests::concurrent_opens_commit_monotonic_connection_ids", "s
 [[case]]
 id = "T-TERM-08"
 status = "executable"
-rust = ["exact_artifact_bytes_define_generation_and_ordered_authority", "invalid_directory_artifacts_are_rejected", "register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle", "ended_lease_operations_cannot_change_a_new_lease", "state::tests::concurrent_remote_opens_consume_only_their_request_local_resolve", "failed_initial_route_registration_keeps_local_pipe_available"]
+rust = ["exact_artifact_bytes_define_generation_and_ordered_authority", "invalid_directory_artifacts_are_rejected", "register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle", "ended_lease_operations_cannot_change_a_new_lease", "state::tests::concurrent_remote_opens_consume_only_their_request_local_resolve", "generation_mismatch_recovers_only_after_coordinated_restart"]
 reason = "directory schema가 shard별 단일 endpoint만 허용하고 mapping과 외부 generation 필드를 거절하며 exact artifact bytes로 generation을 계산한다. RT lease lifecycle과 종료 lease 격리를 검증하고, Gateway는 각 OPEN의 Resolve 결과를 attempt 종료 뒤 폐기한다. process generation mismatch는 REGISTER 한 번으로 terminal이 되어 local binding만 유지하고 같은 process에서 재시도하지 않는다."
 
 [[case]]
@@ -185,7 +185,7 @@ reason = "local 및 RT state 비생성은 검증하지만 ClientKey가 applicati
 [[case]]
 id = "T-REG-03"
 status = "executable"
-rust = ["state::tests::created_registration_publishes_one_complete_session_snapshot_after_response", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "failed_initial_route_registration_keeps_local_pipe_available", "state::tests::routed_local_hit_never_resolves_or_opens_a_peer"]
+rust = ["state::tests::created_registration_publishes_one_complete_session_snapshot_after_response", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "generation_mismatch_recovers_only_after_coordinated_restart", "state::tests::routed_local_hit_never_resolves_or_opens_a_peer"]
 reason = "RT와 Gateway의 exact directory generation을 다르게 하여 최초 Register가 FAILED_PRECONDITION으로 거절된 뒤에도 Listener 등록은 local ACTIVE로 성공하고 local OPEN과 Pipe I/O가 RT·peer 없이 동작한다. registration만 UNSYNCED로 남으며 ListenerSession과 binding은 유지된다."
 
 [[case]]
@@ -209,7 +209,7 @@ reason = "ListenerSession 종료는 local binding을 즉시 제거한다. Deregi
 [[case]]
 id = "T-REG-07"
 status = "executable"
-rust = ["routing::tests::failed_precondition_allows_one_register_probe_then_stops", "routing::tests::repeated_precondition_after_successful_probe_is_terminal", "routing::tests::successful_lease_operation_resets_precondition_probe_budget", "routing::tests::terminal_failure_does_not_hot_retry_and_backoff_is_bounded", "routing::tests::projection_preserves_exact_ids_and_gateway_location", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state", "state::tests::concurrent_remote_opens_consume_only_their_request_local_resolve", "state::tests::late_resolve_cannot_resurrect_a_closed_connector_session", "failed_initial_route_registration_keeps_local_pipe_available"]
+rust = ["routing::tests::failed_precondition_allows_one_register_probe_then_stops", "routing::tests::repeated_precondition_after_successful_probe_is_terminal", "routing::tests::successful_lease_operation_resets_precondition_probe_budget", "routing::tests::terminal_failure_does_not_hot_retry_and_backoff_is_bounded", "routing::tests::projection_preserves_exact_ids_and_gateway_location", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state", "state::tests::concurrent_remote_opens_consume_only_their_request_local_resolve", "state::tests::late_resolve_cannot_resurrect_a_closed_connector_session", "generation_mismatch_recovers_only_after_coordinated_restart"]
 reason = "lease-bound FAILED_PRECONDITION의 Register 판별 한도와 reset, auth 실패의 hot retry 억제를 검증한다. Resolve 결과는 open attempt마다 새로 소비되고 종료 뒤 폐기된다. 실제 Gateway와 RT의 generation mismatch에서는 REGISTER와 FAILED_PRECONDITION이 각각 한 번만 관측되고, reconnect 상한보다 긴 구간에도 같은 process generation으로 재시도하지 않으면서 UNSYNCED local binding과 local Pipe를 유지한다."
 
 [[case]]
@@ -470,7 +470,7 @@ reason = "pending accept cancellation과 주요 Listener lifecycle은 검증하�
 [[case]]
 id = "T-STATE-BIND"
 status = "executable"
-rust = ["registry::tests::unregister_then_register_renews_binding_id", "registry::tests::indexes_describe_the_same_live_bindings", "state::tests::invalid_key_creates_no_binding", "failed_initial_route_registration_keeps_local_pipe_available"]
+rust = ["registry::tests::unregister_then_register_renews_binding_id", "registry::tests::indexes_describe_the_same_live_bindings", "state::tests::invalid_key_creates_no_binding", "generation_mismatch_recovers_only_after_coordinated_restart"]
 reason = "ClientKey 승인 뒤 설치한 binding은 RT registration이 UNSYNCED여도 local 후보로 유지되어 local Pipe를 연다. Pipe 종료는 binding identity를 바꾸지 않고 ListenerSession 종료만 binding을 제거한다."
 
 [[case]]
@@ -599,9 +599,9 @@ rust = ["concurrent_duplicate_listener_is_rejected_and_closed_id_can_be_reused"]
 
 [[case]]
 id = "T-EDGE-16"
-status = "partial"
-rust = ["exact_artifact_bytes_define_generation_and_ordered_authority", "routed_gateway_republishes_current_listener_state_after_route_table_restart"]
-reason = "generation과 restart는 검증하지만 mismatched Gateway operation부터 coordinated restart까지 연결하지 않는다."
+status = "executable"
+rust = ["exact_artifact_bytes_define_generation_and_ordered_authority", "gateway::effects::tests::generation_mismatch_resolve_fails_once_without_remote_state", "generation_mismatch_recovers_only_after_coordinated_restart", "routed_gateway_republishes_current_listener_state_after_route_table_restart"]
+reason = "G1 Gateway의 Register와 Resolve mismatch가 FAILED_PRECONDITION으로 끝나고 G2 RT를 바꾸지 않음을 검증한다. 같은 process에서는 재시도하지 않으며, RT와 Gateway를 G2로 coordinated restart하면 READY-empty RT에 새 lease와 기존 Listener desired state의 current snapshot만 재게시되어 mapping과 Pipe가 복구된다."
 
 [[case]]
 id = "T-EDGE-17"
