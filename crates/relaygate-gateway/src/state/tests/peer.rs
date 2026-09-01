@@ -643,7 +643,15 @@ fn remote_pipe_data_fin_close_and_reset_are_symmetric() -> Result<(), Box<dyn st
 
     let sdk_fin = state.handle(connector, Frame::Fin { pipe_id })?;
     assert!(peer_deliveries(&sdk_fin).any(|delivery| matches!(delivery, PeerDelivery::Fin { .. })));
+    let peer_data_after_sdk_fin =
+        state.peer_data(key, Bytes::from_static(b"peer direction survives sdk FIN"));
+    assert_eq!(peer_data_after_sdk_fin.len(), 1);
+    assert!(sdk_deliveries(&peer_data_after_sdk_fin).any(|delivery| matches!(
+        &delivery.frame,
+        Frame::Data { payload, .. } if payload.as_ref() == b"peer direction survives sdk FIN"
+    )));
     let peer_fin = state.peer_fin(key);
+    assert_eq!(peer_fin.len(), 1);
     assert!(sdk_deliveries(&peer_fin).any(|delivery| matches!(delivery.frame, Frame::Fin { .. })));
     assert_eq!(state.pipe_count(), 0);
 
@@ -699,6 +707,69 @@ fn remote_pipe_data_fin_close_and_reset_are_symmetric() -> Result<(), Box<dyn st
             code: ErrorCode::Unavailable,
             ..
         }
+    )));
+    assert_eq!(state.pipe_count(), 0);
+
+    let fourth_resolve = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 4,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let fourth_identity = resolve_identity(&fourth_resolve).ok_or("missing fourth resolve")?;
+    state.route_resolved(
+        fourth_identity,
+        binding_set(
+            "echo.shared",
+            owner_gateway,
+            SessionId::new(),
+            BindingId::new(),
+            "owner.internal:27421",
+        )?,
+    );
+    let fourth_key = peer_key(owner_gateway, 6);
+    state.peer_open_committed(fourth_identity, fourth_key);
+    state.peer_opened(fourth_key, fourth_identity);
+    let fourth_pipe_id = PipeId::new(connector, 4);
+
+    let peer_fin = state.peer_fin(fourth_key);
+    assert_eq!(peer_fin.len(), 1);
+    assert!(sdk_deliveries(&peer_fin).any(|delivery| matches!(
+        delivery.frame,
+        Frame::Fin { pipe_id } if pipe_id == fourth_pipe_id
+    )));
+    let sdk_data_after_peer_fin = state.handle(
+        connector,
+        Frame::Data {
+            pipe_id: fourth_pipe_id,
+            payload: Bytes::from_static(b"sdk direction survives peer FIN"),
+        },
+    )?;
+    assert_eq!(sdk_data_after_peer_fin.len(), 1);
+    assert!(peer_deliveries(&sdk_data_after_peer_fin).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Data { key, payload }
+            if *key == fourth_key && payload.as_ref() == b"sdk direction survives peer FIN"
+    )));
+    let data_after_peer_fin =
+        state.peer_data(fourth_key, Bytes::from_static(b"invalid after peer FIN"));
+    assert_eq!(data_after_peer_fin.len(), 2);
+    assert!(sdk_deliveries(&data_after_peer_fin).any(|delivery| matches!(
+        delivery.frame,
+        Frame::Reset {
+            pipe_id,
+            code: ErrorCode::ProtocolError,
+            ..
+        } if pipe_id == fourth_pipe_id
+    )));
+    assert!(peer_deliveries(&data_after_peer_fin).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key,
+            code: ErrorCode::ProtocolError,
+            ..
+        } if *key == fourth_key
     )));
     assert_eq!(state.pipe_count(), 0);
     Ok(())
