@@ -149,9 +149,9 @@ rust = ["tests::log_format_accepts_text_and_json_only", "config::tests::duration
 
 [[case]]
 id = "T-OBS-02"
-status = "partial"
-rust = ["state::tests::observability_snapshot_reports_current_live_state", "rt_one_gateway_three_forms_a_closed_current_state_relay"]
-reason = "local snapshot과 대표 분산 topology는 검증하지만 publication, RT와 peer 단절의 모든 중간 관측 수렴을 계측하지 않는다."
+status = "executable"
+rust = ["state::tests::observability_snapshot_reports_current_live_state", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "rt_one_gateway_three_forms_a_closed_current_state_relay", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "stale_remote_listener_selection_fails_without_falling_back", "gateway::effects::tests::peer_liveness::active_heartbeat_timeout_preserves_unrelated_runtime_state", "gateway::effects::tests::peer_liveness::idle_retirement_preserves_unrelated_runtime_state"]
+reason = "local state index의 session·binding·offer·Pipe count와 local-only 분산 count 0을 검증한다. 분산 runtime은 publication의 SYNCED/UNSYNCED, remote attempt, public snapshot의 CONNECTING→READY, current stream, RT·peer 단절·복구와 ListenerSession 제거 후 최종 수렴을 검증하며 source 간 atomic snapshot은 가정하지 않는다."
 
 [[case]]
 id = "T-OBS-03"
