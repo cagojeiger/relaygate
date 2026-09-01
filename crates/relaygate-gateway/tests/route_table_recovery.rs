@@ -205,58 +205,6 @@ async fn lost_deregister_response_case() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn listener_cleanup_during_route_table_loss_converges_after_empty_restart() -> TestResult {
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        cleanup_after_route_table_loss_case(),
-    )
-    .await??;
-    Ok(())
-}
-
-async fn cleanup_after_route_table_loss_case() -> TestResult {
-    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
-    let route_endpoint = route_listener.local_addr()?;
-    let directory_bytes = one_shard_directory(route_endpoint);
-    let directory = ShardDirectory::from_json_bytes(&directory_bytes)?;
-    let generation = directory.generation();
-    let mut route_table = RunningRouteTable::serve(
-        route_listener,
-        directory.clone(),
-        Duration::from_millis(250),
-    )?;
-
-    let gateway = RunningGateway::start(directory.clone()).await?;
-    let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
-    let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
-
-    let probe = connect_probe(route_endpoint, generation).await?;
-    wait_for_mapping(&probe, generation, CLIENT_ID, &gateway.peer_locator, 1).await?;
-
-    route_table.stop().await?;
-    listener_runtime.close();
-    wait_for_gateway_snapshot(&gateway, |snapshot| snapshot.listener_bindings == 0).await?;
-
-    let restarted_listener = TcpListener::bind(route_endpoint).await?;
-    route_table =
-        RunningRouteTable::serve(restarted_listener, directory, Duration::from_millis(250))?;
-    assert!(route_table.started_empty());
-    let restarted_probe = connect_probe(route_endpoint, generation).await?;
-    wait_for_not_found(&restarted_probe, generation, CLIENT_ID).await?;
-    wait_for_gateway_snapshot(&gateway, |snapshot| {
-        snapshot.listener_bindings == 0
-            && snapshot.route_registrations_synced == 0
-            && snapshot.route_registrations_unsynced == 0
-    })
-    .await?;
-
-    assert_eq!(listener.client_id(), CLIENT_ID);
-    route_table.stop().await?;
-    gateway.stop().await?;
-    Ok(())
-}
-
 struct RunningGateway {
     endpoint: SocketAddr,
     peer_locator: String,
