@@ -40,6 +40,9 @@ const PEER_OPEN_KIND: u8 = 4;
 const CONCURRENT_REMOTE_PIPES: usize = 32;
 const CONCURRENT_CONTROL_CAPACITY: usize = 64;
 
+#[path = "distributed_pipe/route_table_restart.rs"]
+mod route_table_restart;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_pipes_share_one_peer_transport_and_survive_route_table_loss() -> TestResult {
     timeout(Duration::from_secs(10), remote_pipe_case()).await??;

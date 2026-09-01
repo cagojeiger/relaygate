@@ -29,6 +29,7 @@ use relaygate_sdk::{Config as SdkConfig, Connector, ListenerRuntime};
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::{
     net::{TcpListener, TcpStream},
+    sync::watch,
     task::JoinHandle,
     time::Instant,
 };
@@ -58,7 +59,8 @@ async fn routed_gateway_republishes_current_listener_state_after_route_table_res
 async fn recovery_case() -> TestResult {
     let route_listener = TcpListener::bind("127.0.0.1:0").await?;
     let route_endpoint = route_listener.local_addr()?;
-    let directory_bytes = one_shard_directory(route_endpoint);
+    let proxy = ControlledRouteProxy::start(route_endpoint).await?;
+    let directory_bytes = one_shard_directory(proxy.endpoint);
     let directory = ShardDirectory::from_json_bytes(&directory_bytes)?;
     let generation = directory.generation();
     let mut route_table = RunningRouteTable::serve(
@@ -71,16 +73,37 @@ async fn recovery_case() -> TestResult {
     let gateway = RunningGateway::start(directory.clone()).await?;
     let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
     let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    let connector = Connector::connect(sdk_config(gateway.endpoint)).await?;
 
     let probe = connect_probe(route_endpoint, generation).await?;
     wait_for_mapping(&probe, generation, CLIENT_ID, &gateway.peer_locator, 1).await?;
 
+    let (mut existing_connector_pipe, mut existing_listener_pipe) =
+        tokio::try_join!(connector.open(CLIENT_ID), listener.accept())?;
     route_table.stop().await?;
+    proxy.pause();
     let restarted_listener = TcpListener::bind(route_endpoint).await?;
     route_table =
         RunningRouteTable::serve(restarted_listener, directory, Duration::from_millis(250))?;
     assert!(route_table.started_empty());
     let restarted_probe = connect_probe(route_endpoint, generation).await?;
+
+    wait_for_not_found(&restarted_probe, generation, CLIENT_ID).await?;
+    existing_connector_pipe.write_all(b"existing").await?;
+    let mut existing_received = [0_u8; 8];
+    existing_listener_pipe
+        .read_exact(&mut existing_received)
+        .await?;
+    assert_eq!(&existing_received, b"existing");
+
+    let (mut local_connector_pipe, mut local_listener_pipe) =
+        tokio::try_join!(connector.open(CLIENT_ID), listener.accept())?;
+    local_listener_pipe.write_all(b"local-open").await?;
+    let mut local_received = [0_u8; 10];
+    local_connector_pipe.read_exact(&mut local_received).await?;
+    assert_eq!(&local_received, b"local-open");
+
+    proxy.resume();
     wait_for_mapping(
         &restarted_probe,
         generation,
@@ -91,10 +114,16 @@ async fn recovery_case() -> TestResult {
     .await?;
 
     assert_eq!(listener.client_id(), CLIENT_ID);
+    existing_connector_pipe.close().await?;
+    existing_listener_pipe.close().await?;
+    local_connector_pipe.close().await?;
+    local_listener_pipe.close().await?;
+    connector.close();
     listener_runtime.close();
     wait_for_not_found(&restarted_probe, generation, CLIENT_ID).await?;
 
     route_table.stop().await?;
+    proxy.stop().await?;
     gateway.stop().await?;
     Ok(())
 }
@@ -442,6 +471,79 @@ struct DeregisterBlackholeProxy {
     shutdown: CancellationToken,
     dropped_deregister: Arc<AtomicBool>,
     task: JoinHandle<io::Result<()>>,
+}
+
+struct ControlledRouteProxy {
+    endpoint: SocketAddr,
+    gate: watch::Sender<bool>,
+    shutdown: CancellationToken,
+    task: JoinHandle<io::Result<()>>,
+}
+
+impl ControlledRouteProxy {
+    async fn start(target: SocketAddr) -> io::Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = listener.local_addr()?;
+        let (gate, gate_rx) = watch::channel(true);
+        let shutdown = CancellationToken::new();
+        let task_shutdown = shutdown.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (inbound, _) = tokio::select! {
+                    accepted = listener.accept() => accepted?,
+                    () = task_shutdown.cancelled() => return Ok(()),
+                };
+                let connection_gate = gate_rx.clone();
+                let connection_shutdown = task_shutdown.clone();
+                tokio::spawn(async move {
+                    let _ =
+                        forward_when_open(inbound, target, connection_gate, connection_shutdown)
+                            .await;
+                });
+            }
+        });
+        Ok(Self {
+            endpoint,
+            gate,
+            shutdown,
+            task,
+        })
+    }
+
+    fn pause(&self) {
+        let _ = self.gate.send(false);
+    }
+
+    fn resume(&self) {
+        let _ = self.gate.send(true);
+    }
+
+    async fn stop(self) -> TestResult {
+        self.shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(1), self.task)
+            .await
+            .map_err(|_| "Controlled route proxy shutdown timed out")???;
+        Ok(())
+    }
+}
+
+async fn forward_when_open(
+    mut inbound: TcpStream,
+    target: SocketAddr,
+    mut gate: watch::Receiver<bool>,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    while !*gate.borrow_and_update() {
+        tokio::select! {
+            changed = gate.changed() => changed.map_err(|_| io::ErrorKind::BrokenPipe)?,
+            () = shutdown.cancelled() => return Ok(()),
+        }
+    }
+    let mut outbound = TcpStream::connect(target).await?;
+    tokio::select! {
+        result = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => result.map(|_| ()),
+        () = shutdown.cancelled() => Ok(()),
+    }
 }
 
 impl DeregisterBlackholeProxy {

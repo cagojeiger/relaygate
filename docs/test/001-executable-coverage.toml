@@ -543,9 +543,9 @@ reason = "두 shard와 같은 shard의 별도 session을 실제 runtime에 구�
 
 [[case]]
 id = "T-EDGE-06"
-status = "partial"
-rust = ["routed_gateway_republishes_current_listener_state_after_route_table_restart", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss"]
-reason = "한 sequence에서 RT loss 중 기존 remote Pipe 생존, READY-empty restart, current snapshot republish와 32개 remote Pipe 복구를 검증한다. 같은 sequence의 local OPEN과 수렴 중 NOT_FOUND 관찰은 남아 있다."
+status = "executable"
+rust = ["routed_gateway_republishes_current_listener_state_after_route_table_restart", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "route_table_restart::route_table_restart_window_preserves_local_and_existing_pipes_until_remote_republish"]
+reason = "두 Gateway와 실제 memory-only RT를 한 sequence로 구성한다. 기존 remote Pipe를 연 뒤 RT를 빈 상태로 재시작하고 Owner Gateway의 첫 UPDATE를 gate한다. gate 동안 local OPEN과 기존 Pipe가 유지되고 Entry Gateway의 remote OPEN은 NOT_FOUND/NOT_OBSERVED이며, UPDATE를 release한 뒤 registration SYNCED와 fresh remote OPEN이 복구되는지 검증한다. 기존 테스트는 단일 Gateway local 경로와 RT loss 뒤 32개 remote Pipe 복구를 별도로 보강한다."
 
 [[case]]
 id = "T-EDGE-07"
