@@ -239,12 +239,15 @@ impl TransportActor {
             return Ok(());
         }
         let mut relay = stream.relay.clone();
-        relay.fin(self.local_endpoint).map_err(|_| {
+        let newly_finished = relay.fin(self.local_endpoint).map_err(|_| {
             PeerFailure::maybe_observed(
                 ErrorCode::FailedPrecondition,
                 "peer RelayStream does not accept FIN in this direction",
             )
         })?;
+        if !newly_finished {
+            return Ok(());
+        }
         let terminal = relay.is_closed();
         enqueue_stream_frame(
             stream,
