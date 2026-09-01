@@ -24,6 +24,7 @@ use super::{
 };
 
 mod multi_shard;
+mod register_retry;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 

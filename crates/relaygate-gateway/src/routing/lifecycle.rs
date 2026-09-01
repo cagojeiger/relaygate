@@ -40,6 +40,7 @@ impl RegistrationAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct OperationTicket {
+    attempt_id: u64,
     pub(super) desired_version: u64,
     pub(super) action: RegistrationAction,
 }
@@ -61,6 +62,7 @@ pub(super) struct RegistrationState {
     lease: Option<LeaseState>,
     synced_version: Option<u64>,
     pending: Option<OperationTicket>,
+    next_attempt_id: u64,
     terminal: bool,
     precondition_probe_active: bool,
     validate_lease: bool,
@@ -86,6 +88,7 @@ impl RegistrationState {
             lease: None,
             synced_version: None,
             pending: None,
+            next_attempt_id: 1,
             terminal: false,
             precondition_probe_active: false,
             validate_lease: false,
@@ -213,7 +216,13 @@ impl RegistrationState {
             (Some(_), Some(_)) => return Ok(None),
         };
 
+        let attempt_id = self.next_attempt_id;
+        self.next_attempt_id = self
+            .next_attempt_id
+            .checked_add(1)
+            .ok_or("registration operation attempt identifier exhausted")?;
         let ticket = OperationTicket {
+            attempt_id,
             desired_version: self.desired_version,
             action,
         };
