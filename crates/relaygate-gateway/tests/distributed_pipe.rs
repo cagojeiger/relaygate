@@ -147,7 +147,15 @@ async fn remote_pipe_case() -> TestResult {
     .await?;
 
     first_connector.close().await?;
-    second_connector.close().await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().peer_streams == 1
+            && gateway_b.gateway.snapshot().peer_streams == 1
+            && gateway_a.gateway.snapshot().peer_transports_ready == 1
+            && gateway_b.gateway.snapshot().peer_transports_ready == 1
+    })
+    .await?;
+
+    second_listener.close().await?;
     wait_until(Duration::from_secs(2), || {
         gateway_a.gateway.snapshot().peer_streams == 0
             && gateway_b.gateway.snapshot().peer_streams == 0
@@ -156,7 +164,7 @@ async fn remote_pipe_case() -> TestResult {
     })
     .await?;
     first_listener.close().await?;
-    second_listener.close().await?;
+    second_connector.close().await?;
 
     connector.close();
     listener_runtime.close();
