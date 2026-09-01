@@ -290,9 +290,8 @@ rust = ["local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "sha
 
 [[case]]
 id = "T-OPEN-06"
-status = "partial"
-rust = ["remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams"]
-reason = "RT loss와 transport loss는 검증하지만 mapping 변화 후 same-attempt no-reroute 조합이 없다."
+status = "executable"
+rust = ["remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "stale_remote_listener_selection_fails_without_falling_back", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams"]
 
 [[case]]
 id = "T-OPEN-07"
@@ -313,9 +312,8 @@ reason = "session 격리와 high-watermark는 검증하지만 서로 다른 Entr
 
 [[case]]
 id = "T-OPEN-10"
-status = "partial"
-rust = ["state::tests::routed_miss_creates_one_request_local_resolve", "state::tests::late_resolve_cannot_resurrect_a_closed_connector_session"]
-reason = "attempt 종료 후 결과 폐기는 검증하지만 다음 open의 fresh Resolve까지 한 sequence로 확인하지 않는다."
+status = "executable"
+rust = ["state::tests::routed_miss_creates_one_request_local_resolve", "state::tests::late_resolve_cannot_resurrect_a_closed_connector_session", "stale_remote_listener_selection_fails_without_falling_back"]
 
 [[case]]
 id = "T-OPEN-11"
