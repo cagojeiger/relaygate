@@ -186,9 +186,9 @@ reason = "local 및 RT state 비생성은 검증하지만 ClientKey가 applicati
 
 [[case]]
 id = "T-REG-03"
-status = "partial"
-rust = ["state::tests::created_registration_publishes_one_complete_session_snapshot_after_response", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "state::tests::routed_local_hit_never_resolves_or_opens_a_peer"]
-reason = "local ACTIVE와 local OPEN은 검증하지만 최초 RT Register 또는 Update 실패 중 local OPEN 성공을 합성하지 않는다."
+status = "executable"
+rust = ["state::tests::created_registration_publishes_one_complete_session_snapshot_after_response", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "listener_registers_and_opens_local_pipe_before_route_table_is_available", "state::tests::routed_local_hit_never_resolves_or_opens_a_peer"]
+reason = "최초 RT handshake deadline을 넘겨 publication이 실패한 뒤에도 Listener 등록은 local ACTIVE로 성공하고 local OPEN과 Pipe I/O가 RT·peer 없이 동작한다. registration만 UNSYNCED로 남으며 ListenerSession과 binding은 유지된다."
 
 [[case]]
 id = "T-REG-04"
@@ -480,9 +480,9 @@ reason = "pending accept cancellation과 주요 Listener lifecycle은 검증하�
 
 [[case]]
 id = "T-STATE-BIND"
-status = "partial"
-rust = ["registry::tests::unregister_then_register_renews_binding_id", "registry::tests::indexes_describe_the_same_live_bindings", "state::tests::invalid_key_creates_no_binding"]
-reason = "binding identity, index 일관성과 ClientKey 거절은 검증하지만 RT UNSYNCED 중 local candidate 유지가 빠졌다."
+status = "executable"
+rust = ["registry::tests::unregister_then_register_renews_binding_id", "registry::tests::indexes_describe_the_same_live_bindings", "state::tests::invalid_key_creates_no_binding", "listener_registers_and_opens_local_pipe_before_route_table_is_available"]
+reason = "ClientKey 승인 뒤 설치한 binding은 RT registration이 UNSYNCED여도 local 후보로 유지되어 local Pipe를 연다. Pipe 종료는 binding identity를 바꾸지 않고 ListenerSession 종료만 binding을 제거한다."
 
 [[case]]
 id = "T-STATE-REGISTRATION"

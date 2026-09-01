@@ -1,6 +1,8 @@
 use std::{error::Error, net::SocketAddr, time::Duration};
 
-use relaygate_gateway::{Gateway, GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, check};
+use relaygate_gateway::{
+    Gateway, GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, GatewaySnapshot, check,
+};
 use relaygate_route_table::{
     ClientId, GatewayId, GatewayLocator, RouteTableConfig, RouteTableShard, ShardDirectory,
     ShardDirectoryGeneration, ShardId,
@@ -9,7 +11,8 @@ use relaygate_route_table_transport::{
     ErrorCode, GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig,
     RouteTableService, RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
 };
-use relaygate_sdk::{Config as SdkConfig, ListenerRuntime};
+use relaygate_sdk::{Config as SdkConfig, Connector, ListenerRuntime};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net::TcpListener, task::JoinHandle, time::Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -74,9 +77,79 @@ async fn recovery_case() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn listener_registers_and_opens_local_pipe_before_route_table_is_available() -> TestResult {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        local_pipe_before_initial_sync_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn local_pipe_before_initial_sync_case() -> TestResult {
+    let stalled_route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let route_endpoint = stalled_route_listener.local_addr()?;
+    let directory = ShardDirectory::from_json_bytes(one_shard_directory(route_endpoint))?;
+
+    let gateway = RunningGateway::start(directory).await?;
+    let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
+    let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    wait_for_gateway_snapshot(&gateway, |snapshot| {
+        snapshot.listener_bindings == 1
+            && snapshot.route_registrations_synced == 0
+            && snapshot.route_registrations_unsynced == 1
+    })
+    .await?;
+
+    // The endpoint is bound but no RouteTable service consumes the handshake.
+    // Waiting past the client deadline proves that at least one initial
+    // publication attempt failed without removing the local binding.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let unsynced = gateway.gateway.snapshot();
+    assert_eq!(unsynced.listener_bindings, 1);
+    assert_eq!(unsynced.route_registrations_synced, 0);
+    assert_eq!(unsynced.route_registrations_unsynced, 1);
+
+    let connector = Connector::connect(sdk_config(gateway.endpoint)).await?;
+    let (mut connector_pipe, mut listener_pipe) =
+        tokio::try_join!(connector.open(CLIENT_ID), listener.accept())?;
+    let local = gateway.gateway.snapshot();
+    assert_eq!(local.listener_bindings, 1);
+    assert_eq!(local.live_pipes, 1);
+    assert_eq!(local.route_registrations_synced, 0);
+    assert_eq!(local.route_registrations_unsynced, 1);
+    assert_eq!(local.remote_open_attempts, 0);
+    assert_eq!(local.peer_transports_connecting, 0);
+    assert_eq!(local.peer_transports_ready, 0);
+    assert_eq!(local.peer_streams, 0);
+
+    connector_pipe.write_all(b"before rt").await?;
+    let mut received = [0_u8; 9];
+    listener_pipe.read_exact(&mut received).await?;
+    assert_eq!(&received, b"before rt");
+
+    connector_pipe.close().await?;
+    listener_pipe.close().await?;
+    wait_for_gateway_snapshot(&gateway, |snapshot| {
+        snapshot.listener_bindings == 1
+            && snapshot.live_pipes == 0
+            && snapshot.route_registrations_synced == 0
+            && snapshot.route_registrations_unsynced == 1
+    })
+    .await?;
+
+    connector.close();
+    listener_runtime.close();
+    gateway.stop().await?;
+    drop(stalled_route_listener);
+    Ok(())
+}
+
 struct RunningGateway {
     endpoint: SocketAddr,
     peer_locator: String,
+    gateway: Gateway,
     shutdown: CancellationToken,
     task: JoinHandle<Result<(), relaygate_gateway::GatewayError>>,
 }
@@ -104,6 +177,7 @@ impl RunningGateway {
         let peer_config = GatewayPeerConfig::new(GATEWAY_NAME, GATEWAY_KEY, [])?;
         let gateway =
             Gateway::new_distributed(config, routing_config, peer_config, shutdown.clone())?;
+        let snapshot_gateway = gateway.clone();
         let serve_shutdown = shutdown.clone();
         let task = tokio::spawn(async move {
             gateway
@@ -114,6 +188,7 @@ impl RunningGateway {
         Ok(Self {
             endpoint,
             peer_locator: peer_endpoint.to_string(),
+            gateway: snapshot_gateway,
             shutdown,
             task,
         })
@@ -126,6 +201,16 @@ impl RunningGateway {
             .map_err(|_| "Gateway shutdown timed out")???;
         Ok(())
     }
+}
+
+async fn wait_for_gateway_snapshot(
+    gateway: &RunningGateway,
+    matches: impl Fn(GatewaySnapshot) -> bool,
+) -> TestResult {
+    poll_until(Duration::from_secs(2), || async {
+        matches(gateway.gateway.snapshot()).then_some(())
+    })
+    .await
 }
 
 struct RunningRouteTable {
