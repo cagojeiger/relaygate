@@ -219,10 +219,20 @@ async fn dropping_last_connector_owner_stops_the_session_case() -> TestResult {
         if ended.is_some() {
             return Err(io::Error::other("dropped Connector kept its session alive").into());
         }
+        if timeout(Duration::from_millis(120), listener.accept())
+            .await
+            .is_ok()
+        {
+            return Err(io::Error::other("dropped Connector reconnected").into());
+        }
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     });
 
-    let connector = Connector::connect(Config::new(address)).await?;
+    let connector = Connector::connect(
+        Config::new(address)
+            .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+    )
+    .await?;
     drop(connector);
     server.await??;
     Ok(())

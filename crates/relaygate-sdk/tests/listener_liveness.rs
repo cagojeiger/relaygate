@@ -166,10 +166,20 @@ async fn dropping_last_listener_owner_stops_the_session_case() -> TestResult {
         if ended.is_some() {
             return Err(io::Error::other("dropped Listener runtime kept its session alive").into());
         }
+        if timeout(Duration::from_millis(120), gateway.accept())
+            .await
+            .is_ok()
+        {
+            return Err(io::Error::other("dropped Listener runtime reconnected").into());
+        }
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     });
 
-    let runtime = ListenerRuntime::connect(Config::new(address)).await?;
+    let runtime = ListenerRuntime::connect(
+        Config::new(address)
+            .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+    )
+    .await?;
     drop(runtime);
     server.await??;
     Ok(())

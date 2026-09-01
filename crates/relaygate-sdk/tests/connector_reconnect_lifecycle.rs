@@ -6,16 +6,18 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{Frame, FrameCodec, PipeId, SessionId, SessionRole};
 use relaygate_sdk::{Config, Connector, ErrorCode};
-use tokio::{net::TcpListener, time::timeout};
+use tokio::{
+    net::TcpListener,
+    time::{Instant, timeout},
+};
 use tokio_util::codec::Framed;
 
 use support::{
     TestResult, TestTransport, accept_session, bind_gateway, next_application_frame, unexpected,
 };
 
-const RECONNECT_BACKOFF: Duration = Duration::from_millis(150);
-const MINIMUM_OBSERVED_BACKOFF: Duration = Duration::from_millis(20);
-const NO_RECONNECT_WINDOW: Duration = Duration::from_millis(450);
+const RECONNECT_BACKOFF: Duration = Duration::from_millis(300);
+const NO_RECONNECT_WINDOW: Duration = Duration::from_millis(900);
 
 #[tokio::test]
 async fn connector_runtime_cycles_through_loss_failed_reconnect_recovery_and_close() -> TestResult {
@@ -37,9 +39,15 @@ async fn lifecycle_case() -> TestResult {
             .await?;
         drop(initial);
 
-        reject_next_connector_handshake(&gateway).await?;
+        let rejected_at = reject_next_connector_handshake(&gateway).await?;
         let (mut replacement, replacement_session_id) =
             accept_session(&gateway, SessionRole::Connector).await?;
+        if rejected_at.elapsed() < RECONNECT_BACKOFF {
+            return Err(io::Error::other(format!(
+                "Connector retried before configured {RECONNECT_BACKOFF:?} backoff"
+            ))
+            .into());
+        }
         assert_ne!(initial_session_id, replacement_session_id);
 
         let replacement_pipe_id =
@@ -117,7 +125,7 @@ async fn accept_open(
     Ok(pipe_id)
 }
 
-async fn reject_next_connector_handshake(gateway: &TcpListener) -> TestResult {
+async fn reject_next_connector_handshake(gateway: &TcpListener) -> TestResult<Instant> {
     let (stream, _) = gateway.accept().await?;
     let mut transport = Framed::new(stream, FrameCodec::default());
     let hello = transport
@@ -130,6 +138,7 @@ async fn reject_next_connector_handshake(gateway: &TcpListener) -> TestResult {
         } => {}
         other => return Err(unexpected(other).into()),
     }
+    let rejected_at = Instant::now();
     transport.send(Frame::Pong { nonce: 7 }).await?;
     match timeout(Duration::from_secs(1), transport.next()).await? {
         None => {}
@@ -146,13 +155,7 @@ async fn reject_next_connector_handshake(gateway: &TcpListener) -> TestResult {
             .into());
         }
     }
-    if timeout(MINIMUM_OBSERVED_BACKOFF, gateway.accept())
-        .await
-        .is_ok()
-    {
-        return Err(io::Error::other("Connector retried without bounded backoff").into());
-    }
-    Ok(())
+    Ok(rejected_at)
 }
 
 async fn assert_clean_session_end_and_no_reconnect(
