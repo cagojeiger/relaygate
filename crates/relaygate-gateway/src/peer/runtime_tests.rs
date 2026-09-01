@@ -1,4 +1,8 @@
-use std::{error::Error, time::Duration};
+use std::{
+    error::Error,
+    future::{Future, poll_fn},
+    time::Duration,
+};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -16,7 +20,7 @@ use super::{
     GatewayPeerConfig, OpenIdentity, PeerEvent, PeerFailure, PeerHandle, PeerOpenRequest,
     PeerRuntime, PeerStreamKey, PeerTarget, TrustedPeerConfig,
     codec::PeerFrameCodec,
-    config::ConnectGate,
+    config::{ConnectGate, OpenCommitGate},
     event::PeerCounts,
     frame::PeerFrame,
     identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId, StreamId},
@@ -197,6 +201,79 @@ async fn fast_opened_event_and_open_commit_reply_keep_exact_correlation() -> Tes
     let committed_key = open.await??;
     assert_eq!(event_key, committed_key);
     assert_eq!(open_identity, identity);
+    pair.shutdown().await
+}
+
+#[tokio::test]
+async fn production_actor_queues_second_open_behind_paused_commit() -> TestResult {
+    let gate = OpenCommitGate::new();
+    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
+        .with_open_commit_gate(gate.clone());
+    let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?;
+    let mut pair = RuntimePair::start_with_configs(config_a, config_b).await?;
+
+    let first_request = pair.request_a_to_b(1)?;
+    let first_identity = first_request.open_identity();
+    let handle_a = pair.handle_a.clone();
+    let first_open = tokio::spawn(async move { handle_a.open(first_request).await });
+    tokio::time::timeout(Duration::from_secs(1), gate.wait_until_entered()).await?;
+
+    let second_request = pair.request_a_to_b(2)?;
+    let second_identity = second_request.open_identity();
+    let duplicate_request = second_request.clone();
+    let (enqueued, enqueued_result) = oneshot::channel();
+    let handle_a = pair.handle_a.clone();
+    let second_open = tokio::spawn(async move {
+        let mut open = Box::pin(handle_a.open(second_request));
+        let mut enqueued = Some(enqueued);
+        poll_fn(move |context| {
+            let result = open.as_mut().poll(context);
+            if result.is_pending()
+                && let Some(enqueued) = enqueued.take()
+            {
+                let _ = enqueued.send(());
+            }
+            result
+        })
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), enqueued_result).await??;
+
+    let duplicate_failure = pair
+        .handle_a
+        .open(duplicate_request)
+        .await
+        .err()
+        .ok_or("expected the queued OPEN identity to be reserved")?;
+    assert_eq!(duplicate_failure.code(), ErrorCode::AlreadyExists);
+    assert_eq!(
+        duplicate_failure.observation(),
+        PeerObservation::NotObserved
+    );
+    assert!(!first_open.is_finished());
+    assert!(!second_open.is_finished());
+    assert_eq!(pair.handle_a.counts().streams, 0);
+
+    gate.release();
+    let first_key = first_open.await??;
+    let second_key = second_open.await??;
+    assert_eq!(first_key.stream_id().raw(), 0);
+    assert_eq!(second_key.stream_id().raw(), 2);
+    assert_eq!(
+        first_key.peer_transport_id(),
+        second_key.peer_transport_id()
+    );
+
+    let (first_owner_key, observed_first) = accept_one(&mut pair.events_b, &pair.handle_b).await?;
+    let (second_owner_key, observed_second) =
+        accept_one(&mut pair.events_b, &pair.handle_b).await?;
+    assert_eq!(observed_first, first_identity);
+    assert_eq!(observed_second, second_identity);
+    assert_eq!(first_owner_key.stream_id().raw(), 0);
+    assert_eq!(second_owner_key.stream_id().raw(), 2);
+
+    pair.handle_b.send_close(first_owner_key).await?;
+    pair.handle_b.send_close(second_owner_key).await?;
     pair.shutdown().await
 }
 

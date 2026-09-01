@@ -713,9 +713,8 @@ rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_st
 
 [[case]]
 id = "T-EDGE-35"
-status = "partial"
-rust = ["peer::transport::tests::writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter"]
-reason = "actor ordering과 failed counter 비재사용은 검증하지만 A가 counter를 할당한 뒤 writer commit 전 정지한 상태에서 B command를 경합시키지는 않는다."
+status = "executable"
+rust = ["peer::runtime_tests::production_actor_queues_second_open_behind_paused_commit", "peer::transport::tests::writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter"]
 
 [[case]]
 id = "T-EDGE-36"

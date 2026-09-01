@@ -110,6 +110,7 @@ async fn open_rejected_before_writer_commit_leaves_no_stream_state() -> Result<(
 
     let failure = actor
         .open(request)
+        .await
         .err()
         .ok_or("expected OPEN pre-commit rejection")?;
 
@@ -139,6 +140,7 @@ async fn closed_writer_rejects_open_before_commit() -> Result<(), Box<dyn Error>
 
     let failure = actor
         .open(request)
+        .await
         .err()
         .ok_or("expected closed writer OPEN rejection")?;
 
@@ -155,7 +157,7 @@ async fn committed_open_timeout_is_reported_as_maybe_observed() -> Result<(), Bo
         actor_for_open(4)?;
     assert!(actor.active_opens.reserve(open_identity)?);
 
-    let key = actor.open(request)?;
+    let key = actor.open(request).await?;
     let committed = aggregate_receiver
         .recv()
         .await
@@ -244,7 +246,7 @@ async fn cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause(
         actor_for_open(1)?;
     assert!(actor.active_opens.reserve(open_identity)?);
 
-    let key = actor.open(request)?;
+    let key = actor.open(request).await?;
     let timeout_at = actor
         .next_open_deadline()
         .ok_or("expected OPEN response deadline")?;
@@ -323,7 +325,7 @@ async fn committed_open_preserves_order_while_writer_is_stalled() -> Result<(), 
     let (mut actor, mut aggregate_receiver, mut notice_receiver, open_identity, request) =
         actor_for_open(1)?;
     assert!(actor.active_opens.reserve(open_identity)?);
-    let key = actor.open(request)?;
+    let key = actor.open(request).await?;
 
     assert!(
         actor
@@ -371,7 +373,7 @@ async fn data_precedes_terminal_fin_while_writer_is_stalled() -> Result<(), Box<
     let (mut actor, mut aggregate_receiver, mut notice_receiver, open_identity, request) =
         actor_for_open(1)?;
     assert!(actor.active_opens.reserve(open_identity)?);
-    let key = actor.open(request)?;
+    let key = actor.open(request).await?;
 
     assert!(
         actor
@@ -462,7 +464,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
     let (mut actor, mut aggregate_receiver, _notice_receiver, first_identity, first_request) =
         actor_for_open(1)?;
     assert!(actor.active_opens.reserve(first_identity)?);
-    let first_key = actor.open(first_request)?;
+    let first_key = actor.open(first_request).await?;
     assert_eq!(first_key.stream_id().raw(), 0);
 
     let second_identity = OpenIdentity::new(GatewayId::new(), SessionId::new(), 2);
@@ -479,6 +481,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
     assert!(actor.active_opens.reserve(second_identity)?);
     let second_failure = actor
         .open(second_request)
+        .await
         .err()
         .ok_or("expected the second OPEN to fail while the first commit fills the writer")?;
     assert_eq!(second_failure.code(), ErrorCode::ResourceExhausted);
@@ -510,7 +513,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
         BindingId::new(),
     )?;
     assert!(actor.active_opens.reserve(third_identity)?);
-    let third_key = actor.open(third_request)?;
+    let third_key = actor.open(third_request).await?;
     assert_eq!(
         third_key.stream_id().raw(),
         4,
