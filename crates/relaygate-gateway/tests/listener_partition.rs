@@ -2,7 +2,7 @@
 mod support;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io,
     net::SocketAddr,
     sync::{
@@ -14,7 +14,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_gateway::GatewayConfig;
-use relaygate_protocol::{Frame, FrameCodec};
+use relaygate_protocol::{BindingId, Frame, FrameCodec, SessionId};
 use relaygate_sdk::{
     Config, Connector, Error, ErrorCode, Listener, ListenerRuntime, ListenerStatus,
     PeerObservation, Pipe,
@@ -209,6 +209,13 @@ async fn offer_timeout_recovery_case() -> TestResult {
     .await?;
     let selected_alpha = selected_runtime.listen("echo.alpha", "secret").await?;
     let selected_beta = selected_runtime.listen("echo.beta", "secret").await?;
+    let (initial_alpha_registration, initial_beta_registration) = proxy
+        .registration_pair("echo.alpha", "echo.beta", None)
+        .ok_or_else(|| io::Error::other("initial listener registrations were not observed"))?;
+    assert_ne!(
+        initial_alpha_registration.binding_id,
+        initial_beta_registration.binding_id
+    );
 
     let sibling_runtime = ListenerRuntime::connect(sdk_config(gateway.address)).await?;
     let sibling_gamma = sibling_runtime.listen("echo.gamma", "secret").await?;
@@ -291,9 +298,39 @@ async fn offer_timeout_recovery_case() -> TestResult {
                 && snapshot.listener_bindings == 4
                 && snapshot.pending_offers == 0
                 && snapshot.live_pipes == 0
+                && proxy
+                    .registration_pair(
+                        "echo.alpha",
+                        "echo.beta",
+                        Some(initial_alpha_registration.session_id),
+                    )
+                    .is_some()
         },
     )
     .await?;
+    let (recovered_alpha_registration, recovered_beta_registration) = proxy
+        .registration_pair(
+            "echo.alpha",
+            "echo.beta",
+            Some(initial_alpha_registration.session_id),
+        )
+        .ok_or_else(|| io::Error::other("recovered listener registrations were not observed"))?;
+    assert_ne!(
+        recovered_alpha_registration.session_id,
+        initial_alpha_registration.session_id
+    );
+    assert_ne!(
+        recovered_alpha_registration.binding_id,
+        initial_alpha_registration.binding_id
+    );
+    assert_ne!(
+        recovered_beta_registration.binding_id,
+        initial_beta_registration.binding_id
+    );
+    assert_ne!(
+        recovered_alpha_registration.binding_id,
+        recovered_beta_registration.binding_id
+    );
     assert_no_queued_pipe(&selected_alpha).await?;
     assert_round_trip(&connector, &selected_beta, "echo.beta").await?;
 
@@ -406,8 +443,16 @@ struct FrameProxy {
     address: SocketAddr,
     connections: Arc<AtomicUsize>,
     drops: DropCounters,
+    registrations: Arc<Mutex<Vec<RegistrationObservation>>>,
     cancel: CancellationToken,
     task: JoinHandle<TestResult>,
+}
+
+#[derive(Clone)]
+struct RegistrationObservation {
+    client_id: String,
+    session_id: SessionId,
+    binding_id: BindingId,
 }
 
 #[derive(Clone)]
@@ -425,6 +470,12 @@ enum ProxyMode {
     DisconnectOnSignal(tokio::sync::watch::Receiver<bool>),
 }
 
+struct ForwardBehavior {
+    drop_registered: Option<usize>,
+    drop_offer_accepted_for: Option<&'static str>,
+    hold_gateway_after_sdk_close: bool,
+}
+
 impl FrameProxy {
     async fn start(
         target: SocketAddr,
@@ -438,10 +489,12 @@ impl FrameProxy {
             registered: Arc::new(AtomicUsize::new(0)),
             offer_accepted: Arc::new(AtomicUsize::new(0)),
         };
+        let registrations = Arc::new(Mutex::new(Vec::new()));
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let task_connections = Arc::clone(&connections);
         let task_drops = drops.clone();
+        let task_registrations = Arc::clone(&registrations);
         let task = tokio::spawn(async move {
             let mut sessions = JoinSet::new();
             loop {
@@ -459,6 +512,7 @@ impl FrameProxy {
                             target,
                             mode,
                             task_drops.clone(),
+                            Arc::clone(&task_registrations),
                             task_cancel.clone(),
                         ));
                     }
@@ -477,6 +531,7 @@ impl FrameProxy {
             address,
             connections,
             drops,
+            registrations,
             cancel,
             task,
         })
@@ -494,6 +549,33 @@ impl FrameProxy {
         self.drops.offer_accepted.load(Ordering::Acquire)
     }
 
+    fn registration_pair(
+        &self,
+        first_client_id: &str,
+        second_client_id: &str,
+        excluded_session_id: Option<SessionId>,
+    ) -> Option<(RegistrationObservation, RegistrationObservation)> {
+        let registrations = match self.registrations.lock() {
+            Ok(registrations) => registrations,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        registrations
+            .iter()
+            .filter(|registration| {
+                registration.client_id == first_client_id
+                    && excluded_session_id != Some(registration.session_id)
+            })
+            .find_map(|first| {
+                registrations
+                    .iter()
+                    .find(|second| {
+                        second.client_id == second_client_id
+                            && second.session_id == first.session_id
+                    })
+                    .map(|second| (first.clone(), second.clone()))
+            })
+    }
+
     async fn stop(self) -> TestResult {
         self.cancel.cancel();
         self.task.await??;
@@ -506,52 +588,73 @@ async fn proxy_connection(
     target: SocketAddr,
     mode: ProxyMode,
     drops: DropCounters,
+    registrations: Arc<Mutex<Vec<RegistrationObservation>>>,
     cancel: CancellationToken,
 ) -> TestResult {
     let gateway_stream = TcpStream::connect(target).await?;
     let sdk = Framed::new(sdk_stream, FrameCodec::default());
     let gateway = Framed::new(gateway_stream, FrameCodec::default());
-    match mode {
-        ProxyMode::Pass => forward_frames(sdk, gateway, None, None, false, drops, cancel).await,
-        ProxyMode::DropNthRegistered(nth) => {
-            forward_frames(sdk, gateway, Some(nth), None, false, drops, cancel).await
-        }
-        ProxyMode::DropOfferAcceptedForClient(client_id) => {
-            forward_frames(sdk, gateway, None, Some(client_id), false, drops, cancel).await
-        }
-        ProxyMode::DropRegisteredAndHoldGateway(nth) => {
-            forward_frames(sdk, gateway, Some(nth), None, true, drops, cancel).await
-        }
+    let behavior = match mode {
+        ProxyMode::Pass => ForwardBehavior {
+            drop_registered: None,
+            drop_offer_accepted_for: None,
+            hold_gateway_after_sdk_close: false,
+        },
+        ProxyMode::DropNthRegistered(nth) => ForwardBehavior {
+            drop_registered: Some(nth),
+            drop_offer_accepted_for: None,
+            hold_gateway_after_sdk_close: false,
+        },
+        ProxyMode::DropOfferAcceptedForClient(client_id) => ForwardBehavior {
+            drop_registered: None,
+            drop_offer_accepted_for: Some(client_id),
+            hold_gateway_after_sdk_close: false,
+        },
+        ProxyMode::DropRegisteredAndHoldGateway(nth) => ForwardBehavior {
+            drop_registered: Some(nth),
+            drop_offer_accepted_for: None,
+            hold_gateway_after_sdk_close: true,
+        },
         ProxyMode::DisconnectOnSignal(signal) => {
-            forward_until_signal(sdk, gateway, signal, cancel).await
+            return forward_until_signal(sdk, gateway, signal, cancel).await;
         }
-    }
+    };
+    forward_frames(sdk, gateway, behavior, drops, registrations, cancel).await
 }
 
 async fn forward_frames(
     mut sdk: Framed<TcpStream, FrameCodec>,
     mut gateway: Framed<TcpStream, FrameCodec>,
-    drop_registered: Option<usize>,
-    drop_offer_accepted_for: Option<&'static str>,
-    hold_gateway_after_sdk_close: bool,
+    behavior: ForwardBehavior,
     drops: DropCounters,
+    registrations: Arc<Mutex<Vec<RegistrationObservation>>>,
     cancel: CancellationToken,
 ) -> TestResult {
     let mut registered_seen = 0;
     let mut offer_to_drop = None;
     let mut sdk_closed = false;
+    let mut session_id = None;
+    let mut pending_registrations = HashMap::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
             frame = sdk.next(), if !sdk_closed => {
                 let Some(frame) = frame else {
-                    if hold_gateway_after_sdk_close {
+                    if behavior.hold_gateway_after_sdk_close {
                         sdk_closed = true;
                         continue;
                     }
                     return Ok(());
                 };
                 let frame = frame?;
+                if let Frame::Register {
+                    request_id,
+                    client_id,
+                    ..
+                } = &frame
+                {
+                    pending_registrations.insert(*request_id, client_id.clone());
+                }
                 if let Frame::OfferAccepted { pipe_id } = &frame
                     && offer_to_drop == Some(*pipe_id)
                 {
@@ -564,9 +667,35 @@ async fn forward_frames(
             frame = gateway.next() => {
                 let Some(frame) = frame else { return Ok(()); };
                 let frame = frame?;
+                if let Frame::Welcome {
+                    session_id: welcomed_session_id,
+                } = &frame
+                {
+                    session_id = Some(*welcomed_session_id);
+                }
+                if let Frame::Registered {
+                    request_id,
+                    binding_id,
+                } = &frame
+                    && let (Some(client_id), Some(session_id)) =
+                        (pending_registrations.remove(request_id), session_id)
+                {
+                    let observation = RegistrationObservation {
+                        client_id,
+                        session_id,
+                        binding_id: *binding_id,
+                    };
+                    match registrations.lock() {
+                        Ok(mut registrations) => registrations.push(observation),
+                        Err(poisoned) => poisoned.into_inner().push(observation),
+                    }
+                }
+                if let Frame::RegisterFailed { request_id, .. } = &frame {
+                    pending_registrations.remove(request_id);
+                }
                 if matches!(frame, Frame::Registered { .. }) {
                     registered_seen += 1;
-                    if drop_registered == Some(registered_seen) {
+                    if behavior.drop_registered == Some(registered_seen) {
                         drops.registered.fetch_add(1, Ordering::AcqRel);
                         continue;
                     }
@@ -576,7 +705,7 @@ async fn forward_frames(
                     client_id,
                     ..
                 } = &frame
-                    && drop_offer_accepted_for == Some(client_id.as_str())
+                    && behavior.drop_offer_accepted_for == Some(client_id.as_str())
                 {
                     offer_to_drop = Some(*pipe_id);
                 }
@@ -584,7 +713,7 @@ async fn forward_frames(
                     continue;
                 }
                 if let Err(error) = sdk.send(frame).await {
-                    if hold_gateway_after_sdk_close {
+                    if behavior.hold_gateway_after_sdk_close {
                         sdk_closed = true;
                     } else {
                         return Err(error.into());
