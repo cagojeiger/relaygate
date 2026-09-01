@@ -216,9 +216,8 @@ reason = "lease-bound FAILED_PRECONDITION 뒤 Register 판별 1회, 판별 Regis
 
 [[case]]
 id = "T-REG-08"
-status = "partial"
-rust = ["state::tests::offer_deadline_closes_selected_listener_session_and_preserves_sibling", "unanswered_offer_closes_selected_listener_and_preserves_sibling"]
-reason = "OFFER expiry의 selected-session cleanup은 검증하지만 returned Listener만 새 identity로 재등록되는 SDK recovery까지 합성하지 않는다."
+status = "executable"
+rust = ["actual_gateway_offer_timeout_cleans_selected_session_and_recovers_returned_listeners", "state::tests::offer_deadline_closes_selected_listener_session_and_preserves_sibling", "unanswered_offer_closes_selected_listener_and_preserves_sibling"]
 
 [[case]]
 id = "T-REG-09"
