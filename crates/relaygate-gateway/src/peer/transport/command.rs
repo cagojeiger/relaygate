@@ -21,7 +21,7 @@ impl TransportActor {
         match command {
             TransportCommand::Open { request, reply } => {
                 let open_identity = request.open_identity();
-                let result = self.open(request);
+                let result = self.open(request).await;
                 if result.is_err() {
                     let _ = self
                         .notices
@@ -77,7 +77,10 @@ impl TransportActor {
         }
     }
 
-    pub(super) fn open(&mut self, request: PeerOpenRequest) -> Result<PeerStreamKey, PeerFailure> {
+    pub(super) async fn open(
+        &mut self,
+        request: PeerOpenRequest,
+    ) -> Result<PeerStreamKey, PeerFailure> {
         if self.streams.len() >= self.config.max_streams_per_transport {
             self.active_opens.release(request.open_identity());
             return Err(PeerFailure::not_observed(
@@ -92,6 +95,10 @@ impl TransportActor {
                 "peer StreamId counter is exhausted",
             )
         })?;
+        #[cfg(test)]
+        if let Some(gate) = &self.config.open_commit_gate {
+            gate.wait().await;
+        }
         let key = self.key(stream_id);
         let frame = PeerFrame::Open {
             stream_id,

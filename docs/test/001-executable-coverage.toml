@@ -714,7 +714,7 @@ rust = ["peer::transport::tests::open_rejected_before_writer_commit_leaves_no_st
 [[case]]
 id = "T-EDGE-35"
 status = "executable"
-rust = ["peer::transport::tests::pre_commit_open_failure_is_terminal_before_next_actor_command", "peer::transport::tests::writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter"]
+rust = ["peer::transport::tests::queued_open_cannot_overtake_paused_pre_commit_open", "peer::transport::tests::writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter"]
 
 [[case]]
 id = "T-EDGE-36"

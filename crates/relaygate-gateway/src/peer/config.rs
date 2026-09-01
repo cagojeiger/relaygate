@@ -61,6 +61,47 @@ impl ConnectGate {
 
 #[cfg(test)]
 #[derive(Clone, Default)]
+pub(crate) struct OpenCommitGate {
+    armed: Arc<AtomicBool>,
+    entries: Arc<AtomicUsize>,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[cfg(test)]
+impl OpenCommitGate {
+    pub(crate) fn new() -> Self {
+        let gate = Self::default();
+        gate.armed.store(true, Ordering::SeqCst);
+        gate
+    }
+
+    pub(crate) async fn wait_until_entered(&self) {
+        loop {
+            let entered = self.entered.notified();
+            if self.entries.load(Ordering::SeqCst) != 0 {
+                return;
+            }
+            entered.await;
+        }
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+
+    pub(super) async fn wait(&self) {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        self.entries.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        self.release.notified().await;
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
 pub(crate) struct ResetCommitGate {
     armed: Arc<AtomicBool>,
     trips: Arc<AtomicUsize>,
@@ -184,6 +225,8 @@ pub struct GatewayPeerConfig {
     #[cfg(test)]
     pub(super) inbound_admission_gate: Option<ConnectGate>,
     #[cfg(test)]
+    pub(super) open_commit_gate: Option<OpenCommitGate>,
+    #[cfg(test)]
     pub(super) reset_commit_gate: Option<ResetCommitGate>,
     #[cfg(test)]
     pub(super) drop_dialer_heartbeat_pong_gate: Option<DropHeartbeatPongGate>,
@@ -218,6 +261,8 @@ impl GatewayPeerConfig {
             connect_gate: None,
             #[cfg(test)]
             inbound_admission_gate: None,
+            #[cfg(test)]
+            open_commit_gate: None,
             #[cfg(test)]
             reset_commit_gate: None,
             #[cfg(test)]
@@ -294,6 +339,12 @@ impl GatewayPeerConfig {
     #[cfg(test)]
     pub(crate) fn with_inbound_admission_gate(mut self, gate: ConnectGate) -> Self {
         self.inbound_admission_gate = Some(gate);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_open_commit_gate(mut self, gate: OpenCommitGate) -> Self {
+        self.open_commit_gate = Some(gate);
         self
     }
 

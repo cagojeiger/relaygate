@@ -19,6 +19,7 @@ use super::{
 };
 use crate::peer::{
     GatewayPeerConfig,
+    config::OpenCommitGate,
     event::{PeerEvent, PeerOpenRequest, PeerTarget},
     frame::PeerFrame,
     identity::{
@@ -110,6 +111,7 @@ async fn open_rejected_before_writer_commit_leaves_no_stream_state() -> Result<(
 
     let failure = actor
         .open(request)
+        .await
         .err()
         .ok_or("expected OPEN pre-commit rejection")?;
 
@@ -131,63 +133,19 @@ async fn open_rejected_before_writer_commit_leaves_no_stream_state() -> Result<(
 }
 
 #[tokio::test]
-async fn pre_commit_open_failure_is_terminal_before_next_actor_command()
--> Result<(), Box<dyn Error>> {
-    let (mut actor, mut aggregate_receiver, mut notice_receiver, open_identity, request) =
+async fn queued_open_cannot_overtake_paused_pre_commit_open() -> Result<(), Box<dyn Error>> {
+    let (mut actor, mut aggregate_receiver, mut notice_receiver, first_identity, first_request) =
         actor_for_open(1)?;
-    actor.aggregate_writer.try_send(PeerFrame::Close {
-        stream_id: StreamId::from_raw(99),
-    })?;
-    assert!(actor.active_opens.reserve(open_identity)?);
-
-    let (open_reply, open_result) = oneshot::channel();
-    actor
-        .handle_command(TransportCommand::Open {
-            request,
-            reply: open_reply,
-        })
-        .await;
-    let failure = open_result
-        .await?
-        .err()
-        .ok_or("expected OPEN pre-commit rejection")?;
-    assert_eq!(failure.code(), ErrorCode::ResourceExhausted);
-    assert_eq!(failure.observation(), PeerObservation::NotObserved);
-    assert!(matches!(
-        notice_receiver.try_recv(),
-        Ok(TransportNotice::AttemptEnded { open_identity: ended }) if ended == open_identity
-    ));
-    assert!(actor.streams.is_empty());
-    assert_eq!(
-        actor.stream_count.load(Ordering::Relaxed),
-        0,
-        "failed pre-commit OPEN left an orphan stream"
-    );
-    assert!(!actor.active_opens.contains(open_identity));
-
-    let (data_reply, data_result) = oneshot::channel();
-    actor
-        .handle_command(TransportCommand::Data {
-            stream_id: StreamId::from_raw(0),
-            payload: Bytes::from_static(b"late-data-for-failed-open"),
-            reply: data_reply,
-        })
-        .await;
-    let data_failure = data_result
-        .await?
-        .err()
-        .ok_or("expected DATA for failed pre-commit stream to fail")?;
-    assert_eq!(data_failure.code(), ErrorCode::FailedPrecondition);
-    assert!(actor.streams.is_empty());
-    assert!(matches!(
-        aggregate_receiver.try_recv(),
-        Ok(PeerFrame::Close { stream_id }) if stream_id == StreamId::from_raw(99)
-    ));
+    let gate = OpenCommitGate::new();
+    actor.config = actor.config.clone().with_open_commit_gate(gate.clone());
+    let peer_gateway_id = actor.peer_gateway_id;
+    let active_opens = actor.active_opens.clone();
+    let stream_count = actor.stream_count.clone();
 
     let second_identity = OpenIdentity::new(GatewayId::new(), SessionId::new(), 2);
     let second_request = PeerOpenRequest::new(
         PeerTarget::new(
-            actor.peer_gateway_id,
+            peer_gateway_id,
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         second_identity,
@@ -195,28 +153,106 @@ async fn pre_commit_open_failure_is_terminal_before_next_actor_command()
         SessionId::new(),
         BindingId::new(),
     )?;
-    assert!(actor.active_opens.reserve(second_identity)?);
-    let (second_reply, second_result) = oneshot::channel();
-    actor
-        .handle_command(TransportCommand::Open {
-            request: second_request,
-            reply: second_reply,
-        })
-        .await;
-    let second_key = second_result.await??;
+    let third_identity = OpenIdentity::new(GatewayId::new(), SessionId::new(), 3);
+    let third_request = PeerOpenRequest::new(
+        PeerTarget::new(
+            peer_gateway_id,
+            GatewayLocator::new("127.0.0.1:9999".to_owned())?,
+        ),
+        third_identity,
+        "echo.b",
+        SessionId::new(),
+        BindingId::new(),
+    )?;
+
+    assert!(active_opens.reserve(first_identity)?);
+    assert!(active_opens.reserve(second_identity)?);
+    let (commands, mut command_receiver) = mpsc::channel(3);
+    let actor_task = tokio::spawn(async move {
+        while let Some(command) = command_receiver.recv().await {
+            actor.handle_command(command).await;
+        }
+        actor
+    });
+
+    let (first_reply, mut first_result) = oneshot::channel();
+    commands.try_send(TransportCommand::Open {
+        request: first_request,
+        reply: first_reply,
+    })?;
+    tokio::time::timeout(std::time::Duration::from_secs(1), gate.wait_until_entered()).await?;
+
+    let (second_reply, mut second_result) = oneshot::channel();
+    commands.try_send(TransportCommand::Open {
+        request: second_request,
+        reply: second_reply,
+    })?;
+    assert!(matches!(
+        first_result.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        second_result.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    assert!(aggregate_receiver.try_recv().is_err());
+    assert_eq!(stream_count.load(Ordering::Relaxed), 0);
+
+    gate.release();
+    let first_key = first_result.await??;
+    assert_eq!(first_key.stream_id().raw(), 0);
+    let second_failure = second_result
+        .await?
+        .err()
+        .ok_or("expected queued OPEN to fail behind the first writer commit")?;
+    assert_eq!(second_failure.code(), ErrorCode::ResourceExhausted);
+    assert_eq!(second_failure.observation(), PeerObservation::NotObserved);
+    assert!(!active_opens.contains(second_identity));
+    assert!(matches!(
+        notice_receiver.try_recv(),
+        Ok(TransportNotice::AttemptEnded { open_identity }) if open_identity == second_identity
+    ));
+    assert!(matches!(
+        aggregate_receiver.try_recv(),
+        Ok(PeerFrame::Open {
+            stream_id,
+            open_identity,
+            ..
+        }) if stream_id == first_key.stream_id() && open_identity == first_identity
+    ));
+
+    assert!(active_opens.reserve(third_identity)?);
+    let (third_reply, third_result) = oneshot::channel();
+    commands.try_send(TransportCommand::Open {
+        request: third_request,
+        reply: third_reply,
+    })?;
+    let third_key = third_result.await??;
     assert_eq!(
-        second_key.stream_id().raw(),
-        2,
-        "the failed pre-commit OPEN must not reuse its allocated StreamId"
+        third_key.stream_id().raw(),
+        4,
+        "the failed second OPEN counter must not be reused"
     );
     assert!(matches!(
         aggregate_receiver.try_recv(),
         Ok(PeerFrame::Open {
             stream_id,
-            open_identity: identity,
+            open_identity,
             ..
-        }) if stream_id == second_key.stream_id() && identity == second_identity
+        }) if stream_id == third_key.stream_id() && open_identity == third_identity
     ));
+    assert!(aggregate_receiver.try_recv().is_err());
+
+    drop(commands);
+    let mut actor = actor_task.await?;
+    assert_eq!(actor.streams.len(), 2);
+    assert_eq!(stream_count.load(Ordering::Relaxed), 2);
+    let losses = actor.drain_losses();
+    assert_eq!(losses.len(), 2);
+    assert_eq!(stream_count.load(Ordering::Relaxed), 0);
+    assert!(!active_opens.contains(first_identity));
+    assert!(!active_opens.contains(second_identity));
+    assert!(!active_opens.contains(third_identity));
     Ok(())
 }
 
@@ -229,6 +265,7 @@ async fn closed_writer_rejects_open_before_commit() -> Result<(), Box<dyn Error>
 
     let failure = actor
         .open(request)
+        .await
         .err()
         .ok_or("expected closed writer OPEN rejection")?;
 
@@ -245,7 +282,7 @@ async fn committed_open_timeout_is_reported_as_maybe_observed() -> Result<(), Bo
         actor_for_open(4)?;
     assert!(actor.active_opens.reserve(open_identity)?);
 
-    let key = actor.open(request)?;
+    let key = actor.open(request).await?;
     let committed = aggregate_receiver
         .recv()
         .await
@@ -334,7 +371,7 @@ async fn cancel_before_open_deadline_keeps_cancelled_as_the_only_terminal_cause(
         actor_for_open(1)?;
     assert!(actor.active_opens.reserve(open_identity)?);
 
-    let key = actor.open(request)?;
+    let key = actor.open(request).await?;
     let timeout_at = actor
         .next_open_deadline()
         .ok_or("expected OPEN response deadline")?;
@@ -413,7 +450,7 @@ async fn committed_open_preserves_order_while_writer_is_stalled() -> Result<(), 
     let (mut actor, mut aggregate_receiver, mut notice_receiver, open_identity, request) =
         actor_for_open(1)?;
     assert!(actor.active_opens.reserve(open_identity)?);
-    let key = actor.open(request)?;
+    let key = actor.open(request).await?;
 
     assert!(
         actor
@@ -461,7 +498,7 @@ async fn data_precedes_terminal_fin_while_writer_is_stalled() -> Result<(), Box<
     let (mut actor, mut aggregate_receiver, mut notice_receiver, open_identity, request) =
         actor_for_open(1)?;
     assert!(actor.active_opens.reserve(open_identity)?);
-    let key = actor.open(request)?;
+    let key = actor.open(request).await?;
 
     assert!(
         actor
@@ -552,7 +589,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
     let (mut actor, mut aggregate_receiver, _notice_receiver, first_identity, first_request) =
         actor_for_open(1)?;
     assert!(actor.active_opens.reserve(first_identity)?);
-    let first_key = actor.open(first_request)?;
+    let first_key = actor.open(first_request).await?;
     assert_eq!(first_key.stream_id().raw(), 0);
 
     let second_identity = OpenIdentity::new(GatewayId::new(), SessionId::new(), 2);
@@ -569,6 +606,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
     assert!(actor.active_opens.reserve(second_identity)?);
     let second_failure = actor
         .open(second_request)
+        .await
         .err()
         .ok_or("expected the second OPEN to fail while the first commit fills the writer")?;
     assert_eq!(second_failure.code(), ErrorCode::ResourceExhausted);
@@ -600,7 +638,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
         BindingId::new(),
     )?;
     assert!(actor.active_opens.reserve(third_identity)?);
-    let third_key = actor.open(third_request)?;
+    let third_key = actor.open(third_request).await?;
     assert_eq!(
         third_key.stream_id().raw(),
         4,
