@@ -222,9 +222,8 @@ reason = "OFFER expiry의 selected-session cleanup은 검증하지만 returned L
 
 [[case]]
 id = "T-REG-09"
-status = "partial"
-rust = ["committed_initial_register_timeout_recovers_only_returned_listeners", "state::tests::disconnect_removes_only_owned_state_and_terminates_pending_open", "state::tests::only_listener_session_cleanup_publishes_an_empty_snapshot"]
-reason = "SDK timeout과 Gateway cleanup은 각각 검증하지만 returned Listener와 pending REGISTER loss를 실제 Gateway까지 연결하지 않는다."
+status = "executable"
+rust = ["actual_gateway_register_response_loss_cleans_session_and_recovers_returned_listener", "committed_initial_register_timeout_recovers_only_returned_listeners", "listener::tests::late_public_deadline_preserves_committed_registration_error", "permanent_recovery_rejection_blocks_only_affected_listener", "state::tests::only_listener_session_cleanup_publishes_an_empty_snapshot"]
 
 [[case]]
 id = "T-RT-01"
@@ -674,9 +673,8 @@ rust = ["committed_initial_register_timeout_recovers_only_returned_listeners", "
 
 [[case]]
 id = "T-EDGE-28"
-status = "partial"
-rust = ["unanswered_offer_closes_selected_listener_and_preserves_sibling", "desired_listener_is_registered_again_on_new_session"]
-reason = "old/new binding 공존 뒤 selected old OFFER timeout과 SDK recovery는 각각 검증하지만 silent partition의 response loss부터 한 sequence로 합성하지 않는다."
+status = "executable"
+rust = ["silent_recovery_partition_is_cleaned_by_offer_timeout_without_same_open_reroute", "unanswered_offer_closes_selected_listener_and_preserves_sibling"]
 
 [[case]]
 id = "T-EDGE-29"
