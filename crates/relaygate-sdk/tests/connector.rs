@@ -77,16 +77,16 @@ async fn idle_connector_session_uses_heartbeat_and_pipe_read_idle_is_not_a_timeo
 }
 
 #[tokio::test]
-async fn connector_heartbeat_timeout_closes_session_and_reconnects() -> TestResult {
+async fn connector_pending_heartbeat_ignores_unrelated_ping_and_reconnects() -> TestResult {
     timeout(
         Duration::from_secs(3),
-        connector_heartbeat_timeout_closes_session_and_reconnects_case(),
+        connector_pending_heartbeat_ignores_unrelated_ping_and_reconnects_case(),
     )
     .await??;
     Ok(())
 }
 
-async fn connector_heartbeat_timeout_closes_session_and_reconnects_case() -> TestResult {
+async fn connector_pending_heartbeat_ignores_unrelated_ping_and_reconnects_case() -> TestResult {
     let (listener, address) = bind_gateway().await?;
     let server = tokio::spawn(async move {
         let (mut transport, initial_session_id) =
@@ -95,8 +95,22 @@ async fn connector_heartbeat_timeout_closes_session_and_reconnects_case() -> Tes
             .next()
             .await
             .ok_or_else(|| io::Error::other("missing heartbeat PING"))??;
-        if !matches!(heartbeat, Frame::Ping { .. }) {
-            return Err(unexpected(heartbeat).into());
+        let heartbeat_nonce = match heartbeat {
+            Frame::Ping { nonce } => nonce,
+            other => return Err(unexpected(other).into()),
+        };
+        let unrelated_nonce = heartbeat_nonce ^ u64::MAX;
+        transport
+            .send(Frame::Ping {
+                nonce: unrelated_nonce,
+            })
+            .await?;
+        let response = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("ConnectorSession closed before answering PING"))??;
+        if !matches!(response, Frame::Pong { nonce } if nonce == unrelated_nonce) {
+            return Err(unexpected(response).into());
         }
         let ended = timeout(Duration::from_secs(1), transport.next()).await?;
         if ended.is_some() {
@@ -114,7 +128,7 @@ async fn connector_heartbeat_timeout_closes_session_and_reconnects_case() -> Tes
     let connector = Connector::connect(
         Config::new(address)
             .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20))
-            .with_heartbeat(Duration::from_millis(40), Duration::from_millis(40)),
+            .with_heartbeat(Duration::from_millis(40), Duration::from_millis(300)),
     )
     .await?;
     server.await??;

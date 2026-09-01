@@ -339,6 +339,7 @@ impl Inner {
                         cancellation.cancel();
                         break;
                     }
+                    heartbeat.mark_probe_committed();
                 }
                 frame = source.next() => {
                     let Some(frame) = frame else { break; };

@@ -129,9 +129,8 @@ reason = "last-owner와 Pipe-only lifetime은 검증하지만 runtime clone 하�
 
 [[case]]
 id = "T-SDK-15"
-status = "partial"
-rust = ["session::tests::inbound_activity_without_pending_probe_resets_idle_deadline", "session::tests::pending_probe_requires_matching_pong", "session::tests::late_matching_pong_does_not_clear_pending_probe", "gateway::heartbeat::tests::activity_without_pending_probe_resets_idle_deadline", "gateway::heartbeat::tests::pending_probe_requires_matching_pong", "gateway::heartbeat::tests::late_matching_pong_does_not_clear_pending_probe", "idle_connector_session_uses_heartbeat_and_pipe_read_idle_is_not_a_timeout", "connector_heartbeat_timeout_closes_session_and_reconnects", "matching_pong_is_not_starved_by_sustained_outbound_frames", "idle_listener_session_uses_heartbeat_before_register", "listener_matching_pong_is_not_starved_by_sustained_outbound_frames", "gateway_idle_sdk_session_uses_matching_pong_heartbeat", "gateway_heartbeat_timeout_removes_sdk_session_state"]
-reason = "SDK와 Gateway 양쪽의 heartbeat, timeout cleanup, Pipe read idle 부정 조건은 검증한다. 다만 pending probe 중 unrelated inbound frame을 SDK-Gateway 통합 시나리오로 직접 합성하지는 않는다."
+status = "executable"
+rust = ["session::tests::inbound_activity_without_pending_probe_resets_idle_deadline", "session::tests::pending_probe_requires_matching_pong", "session::tests::late_matching_pong_does_not_clear_pending_probe", "session::tests::probe_commit_starts_full_response_window", "gateway::heartbeat::tests::activity_without_pending_probe_resets_idle_deadline", "gateway::heartbeat::tests::pending_probe_requires_matching_pong", "gateway::heartbeat::tests::late_matching_pong_does_not_clear_pending_probe", "gateway::heartbeat::tests::probe_commit_starts_full_response_window", "idle_connector_session_uses_heartbeat_and_pipe_read_idle_is_not_a_timeout", "connector_pending_heartbeat_ignores_unrelated_ping_and_reconnects", "matching_pong_is_not_starved_by_sustained_outbound_frames", "idle_listener_session_uses_heartbeat_before_register", "listener_matching_pong_is_not_starved_by_sustained_outbound_frames", "gateway_idle_sdk_session_uses_matching_pong_heartbeat", "gateway_heartbeat_timeout_removes_sdk_session_state", "opened_pipe_fails_when_its_session_is_replaced", "committed_open_is_not_replayed_and_reports_maybe_observed"]
 
 [[case]]
 id = "T-SDK-16"
@@ -718,9 +717,8 @@ reason = "같은 locator의 새 incarnation과 stale handshake 차단은 검증�
 
 [[case]]
 id = "T-EDGE-37"
-status = "partial"
-rust = ["session::tests::pending_probe_requires_matching_pong", "session::tests::late_matching_pong_does_not_clear_pending_probe", "gateway::heartbeat::tests::pending_probe_requires_matching_pong", "gateway::heartbeat::tests::late_matching_pong_does_not_clear_pending_probe", "connector_heartbeat_timeout_closes_session_and_reconnects", "matching_pong_is_not_starved_by_sustained_outbound_frames", "listener_matching_pong_is_not_starved_by_sustained_outbound_frames", "gateway_heartbeat_timeout_removes_sdk_session_state"]
-reason = "matching-PONG과 timeout cleanup은 양 endpoint에서 검증하지만 unrelated frame 주입부터 reconnect까지 하나의 socket sequence로 합성하지 않는다."
+status = "executable"
+rust = ["session::tests::pending_probe_requires_matching_pong", "session::tests::late_matching_pong_does_not_clear_pending_probe", "session::tests::probe_commit_starts_full_response_window", "gateway::heartbeat::tests::pending_probe_requires_matching_pong", "gateway::heartbeat::tests::late_matching_pong_does_not_clear_pending_probe", "gateway::heartbeat::tests::probe_commit_starts_full_response_window", "connector_pending_heartbeat_ignores_unrelated_ping_and_reconnects", "matching_pong_is_not_starved_by_sustained_outbound_frames", "listener_matching_pong_is_not_starved_by_sustained_outbound_frames", "gateway_heartbeat_timeout_removes_sdk_session_state", "opened_pipe_fails_when_its_session_is_replaced", "committed_open_is_not_replayed_and_reports_maybe_observed"]
 
 [[case]]
 id = "T-EDGE-38"
