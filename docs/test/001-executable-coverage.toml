@@ -123,9 +123,8 @@ rust = ["stalled_transport_send_times_out_and_cleans_up_session", "stalled_liste
 
 [[case]]
 id = "T-SDK-14"
-status = "partial"
-rust = ["dropping_last_connector_owner_stops_the_session", "dropping_last_listener_owner_stops_the_session", "pipe::tests::dropping_split_halves_signals_abandonment_only_after_the_last_owner"]
-reason = "last-owner와 Pipe-only lifetime은 검증하지만 runtime clone 하나의 drop과 explicit close를 owner count와 함께 닫지 않는다."
+status = "executable"
+rust = ["connector_clone_drop_and_explicit_close_terminate_runtime", "listener_runtime_clone_drop_and_explicit_close_terminate_runtime", "accepted_listener_pipe_is_the_last_runtime_owner", "dropping_last_connector_owner_stops_the_session", "dropping_last_listener_owner_stops_the_session", "pipe_preserves_bytes_and_directional_fin", "pipe::tests::dropping_split_halves_signals_abandonment_only_after_the_last_owner"]
 
 [[case]]
 id = "T-SDK-15"
