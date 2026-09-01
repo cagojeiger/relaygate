@@ -168,9 +168,9 @@ reason = "server의 port와 snapshot 설정은 검증하지만 library만 포함
 
 [[case]]
 id = "T-OBS-05"
-status = "partial"
+status = "executable"
 rust = ["gateway_heartbeat_timeout_removes_sdk_session_state", "gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets", "session::tests::pending_probe_requires_matching_pong", "peer::transport::liveness::tests::pending_probe_timeout_returns_heartbeat_timeout", "peer::transport::liveness::tests::zero_stream_idle_retirement_waits_then_closes", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
-reason = "SDK-Gateway timeout의 stable JSON event schema와 secret 및 payload 비노출, peer lifecycle의 실제 socket 전이는 검증한다. peer heartbeat timeout과 idle-retirement tracing event field를 process log로 capture하는 검증은 남아 있다."
+reason = "SDK-Gateway heartbeat timeout과 실제 socket 기반 PeerTransport heartbeat timeout·zero-stream idle retirement를 검증한다. 각 JSON lifecycle event의 component, event, peer Gateway·transport identity, current stream 수와 ClientKey·InternalGatewayKey·payload·application delivery field 비노출을 확인한다."
 
 [[case]]
 id = "T-REG-01"

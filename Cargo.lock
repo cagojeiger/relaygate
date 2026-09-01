@@ -322,6 +322,7 @@ dependencies = [
  "relaygate-route-table",
  "relaygate-route-table-transport",
  "relaygate-sdk",
+ "serde_json",
  "sha2",
  "subtle",
  "thiserror",
