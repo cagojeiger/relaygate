@@ -28,6 +28,8 @@ use crate::peer::{
     stream::RelayStream,
 };
 
+mod capacity;
+
 type TestActor = (
     TransportActor,
     mpsc::Receiver<PeerFrame>,
