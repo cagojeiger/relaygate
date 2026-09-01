@@ -1,5 +1,6 @@
 use std::{error::Error, time::Duration};
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{BindingId, PeerObservation, SessionId};
 use relaygate_route_table::{GatewayId, GatewayLocator};
@@ -17,7 +18,7 @@ use super::{
     frame::PeerFrame,
     identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId},
 };
-use observation::{assert_transport_lifecycle_event, captured_dispatch};
+use observation::{PAYLOAD_SENTINEL, assert_transport_lifecycle_event, captured_dispatch};
 
 mod observation;
 
@@ -137,11 +138,20 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
                 stream_id: first_stream_id,
             })
             .await?;
-        let heartbeat_nonce = loop {
-            if let PeerFrame::Ping { nonce } = next_fake_frame(&mut framed).await? {
-                break nonce;
+        let mut heartbeat_nonce = None;
+        let mut payload_observed = false;
+        while heartbeat_nonce.is_none() || !payload_observed {
+            match next_fake_frame(&mut framed).await? {
+                PeerFrame::Data { stream_id, payload } => {
+                    assert_eq!(stream_id, first_stream_id);
+                    assert_eq!(payload.as_ref(), PAYLOAD_SENTINEL);
+                    payload_observed = true;
+                }
+                PeerFrame::Ping { nonce } => heartbeat_nonce = Some(nonce),
+                frame => return Err(format!("expected DATA or PING, got {frame:?}").into()),
             }
-        };
+        }
+        let heartbeat_nonce = heartbeat_nonce.ok_or("missing heartbeat PING")?;
         let unrelated_nonce = heartbeat_nonce ^ u64::MAX;
         framed
             .send(PeerFrame::Ping {
@@ -189,6 +199,9 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
     let first_key = handle_a.open(first_request).await?;
     let opened = next_event(&mut events_a).await?;
     assert!(matches!(opened, PeerEvent::Opened { key, .. } if key == first_key));
+    handle_a
+        .send_data(first_key, Bytes::from_static(PAYLOAD_SENTINEL))
+        .await?;
 
     let loss = loop {
         let event = next_event(&mut events_a).await?;

@@ -11,6 +11,7 @@ use crate::peer::identity::PeerTransportId;
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 pub(super) type CapturedOutput = Arc<Mutex<Vec<u8>>>;
+pub(super) const PAYLOAD_SENTINEL: &[u8] = b"relaygate-peer-liveness-payload-sentinel";
 
 #[derive(Clone)]
 struct CapturedWriter {
@@ -95,5 +96,12 @@ pub(super) fn assert_transport_lifecycle_event(
     }
     assert!(!logs.contains("key-a"), "{logs}");
     assert!(!logs.contains("key-b"), "{logs}");
+    assert!(
+        !logs
+            .as_bytes()
+            .windows(PAYLOAD_SENTINEL.len())
+            .any(|window| window == PAYLOAD_SENTINEL),
+        "{logs}"
+    );
     Ok(())
 }
