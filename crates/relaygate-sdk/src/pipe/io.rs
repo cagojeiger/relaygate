@@ -48,18 +48,36 @@ impl PipeReader {
                 Poll::Pending => {}
             }
 
+            #[cfg(test)]
+            if let Some(after_inbound_pending) = self.after_inbound_pending.take() {
+                after_inbound_pending();
+            }
+
             state.read_waker.register(context.waker());
-            match state.terminal.borrow().clone() {
-                Some(Terminal::Failed(error)) => return Poll::Ready(Err(error)),
+            let terminal = state.terminal.borrow().clone();
+            if let Some(Terminal::Failed(error)) = terminal.as_ref() {
+                return Poll::Ready(Err(error.clone()));
+            }
+            if state.remote_fin.load(Ordering::Acquire) {
+                // DATA may have raced the first empty poll. FIN forbids later
+                // DATA, so this is the final queue drain before EOF.
+                match Pin::new(&mut self.inbound).poll_recv(context) {
+                    Poll::Ready(Some(payload)) => {
+                        self.current = payload;
+                        continue;
+                    }
+                    Poll::Ready(None) | Poll::Pending => {
+                        self.read_eof = true;
+                        return Poll::Ready(Ok(0));
+                    }
+                }
+            }
+            match terminal {
                 Some(Terminal::Closed) => {
                     self.read_eof = true;
                     return Poll::Ready(Ok(0));
                 }
-                None => {}
-            }
-            if state.remote_fin.load(Ordering::Acquire) {
-                self.read_eof = true;
-                return Poll::Ready(Ok(0));
+                Some(Terminal::Failed(_)) | None => {}
             }
             return Poll::Pending;
         }

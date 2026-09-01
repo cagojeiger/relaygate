@@ -49,6 +49,8 @@ struct PipeReader {
     inbound: mpsc::Receiver<Bytes>,
     current: Bytes,
     read_eof: bool,
+    #[cfg(test)]
+    after_inbound_pending: Option<Box<dyn FnOnce() + Send>>,
 }
 
 /// One ordered, opaque, bidirectional byte stream.
@@ -148,6 +150,8 @@ impl PipeState {
                 inbound: inbound_rx,
                 current: Bytes::new(),
                 read_eof: false,
+                #[cfg(test)]
+                after_inbound_pending: None,
             },
             writer: PipeWriter { outbound },
         };

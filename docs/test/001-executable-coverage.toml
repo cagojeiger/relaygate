@@ -84,7 +84,7 @@ rust = ["full_listener_queue_rejects_new_offer_without_replacing_old_pipe", "ful
 [[case]]
 id = "T-SDK-06"
 status = "executable"
-rust = ["pipe::tests::async_shutdown_sends_one_fin_and_keeps_the_read_half_alive", "pipe::tests::remote_failure_wins_while_close_waits_for_capacity", "peer::tests::relay_stream_reset_is_idempotent_terminal_cleanup"]
+rust = ["pipe::tests::async_shutdown_sends_one_fin_and_keeps_the_read_half_alive", "pipe::tests::fin_racing_after_empty_poll_does_not_discard_accepted_data", "pipe::tests::remote_failure_wins_while_close_waits_for_capacity", "peer::tests::relay_stream_reset_is_idempotent_terminal_cleanup"]
 
 [[case]]
 id = "T-SDK-07"
@@ -632,7 +632,7 @@ reason = "counter와 stale guard는 검증하지만 simultaneous endpoint counte
 [[case]]
 id = "T-EDGE-20"
 status = "executable"
-rust = ["peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_rejects_data_after_same_direction_fin", "peer::transport::tests::data_precedes_terminal_fin_while_writer_is_stalled", "state::tests::remote_pipe_data_fin_close_and_reset_are_symmetric"]
+rust = ["pipe::tests::fin_racing_after_empty_poll_does_not_discard_accepted_data", "peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_rejects_data_after_same_direction_fin", "peer::transport::tests::data_precedes_terminal_fin_while_writer_is_stalled", "state::tests::remote_pipe_data_fin_close_and_reset_are_symmetric"]
 
 [[case]]
 id = "T-EDGE-21"
