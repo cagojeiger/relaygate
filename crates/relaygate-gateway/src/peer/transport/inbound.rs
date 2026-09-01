@@ -246,17 +246,28 @@ impl TransportActor {
         if stream.terminal_queued {
             return;
         }
-        if stream.relay.fin(self.remote_endpoint).is_err() {
-            self.protocol_reset(stream_id, "FIN is invalid in the current stream phase")
-                .await;
+        let newly_finished = match stream.relay.fin(self.remote_endpoint) {
+            Ok(newly_finished) => newly_finished,
+            Err(_) => {
+                self.protocol_reset(stream_id, "FIN is invalid in the current stream phase")
+                    .await;
+                return;
+            }
+        };
+        if !newly_finished {
             return;
         }
         let closed = stream.relay.is_closed();
+        let finish_now = closed && stream.queued_frames.is_empty();
+        if closed {
+            stream.terminal_queued = true;
+            stream.open_deadline = None;
+        }
         self.emit(PeerEvent::Fin {
             key: self.key(stream_id),
         })
         .await;
-        if closed {
+        if finish_now {
             self.finish_stream(stream_id).await;
         }
     }

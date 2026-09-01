@@ -29,6 +29,7 @@ use crate::peer::{
 };
 
 mod capacity;
+mod terminal;
 
 type TestActor = (
     TransportActor,

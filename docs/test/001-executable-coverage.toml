@@ -373,9 +373,8 @@ reason = "capacity 1 aggregate writer와 두 per-stream queue를 함께 소진�
 
 [[case]]
 id = "T-PEER-05"
-status = "partial"
-rust = ["peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_rejects_data_after_same_direction_fin", "peer::tests::relay_stream_reset_is_idempotent_terminal_cleanup", "peer::transport::tests::data_precedes_terminal_fin_while_writer_is_stalled", "state::tests::remote_pipe_data_fin_close_and_reset_are_symmetric"]
-reason = "writer 압력 아래 remote FIN 뒤 반대 방향 DATA와 terminal FIN의 FIFO를 포함한 주요 전이는 검증하지만 OPEN 결과와 모든 terminal 재정렬 행렬이 없다."
+status = "executable"
+rust = ["peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_rejects_data_after_same_direction_fin", "peer::tests::relay_stream_reset_is_idempotent_terminal_cleanup", "peer::transport::tests::data_precedes_terminal_fin_while_writer_is_stalled", "peer::transport::tests::terminal::fin::local_data_and_fin_survive_remote_fin_under_writer_pressure", "peer::transport::tests::terminal::fin::duplicate_fin_and_data_after_fin_are_stream_scoped", "peer::transport::tests::terminal::reordering::opening_terminal_reordering_converges_once", "peer::transport::tests::terminal::reordering::opened_terminal_reordering_converges_once", "state::tests::remote_pipe_data_fin_close_and_reset_are_symmetric"]
 
 [[case]]
 id = "T-PEER-06"
@@ -432,7 +431,7 @@ reason = "deadline, resource와 terminal cleanup은 검증하지만 public opera
 [[case]]
 id = "T-ERR-05"
 status = "partial"
-rust = ["state::tests::owner_invalid_phase_resets_only_the_target_pipe", "state::tests::foreign_open_pipe_frames_terminate_each_offender_without_mutating_target", "foreign_pipe_frame_closes_offender_and_preserves_target_pipe", "service::tests::unexpected_actor_exit_is_a_terminal_internal_failure"]
+rust = ["state::tests::owner_invalid_phase_resets_only_the_target_pipe", "state::tests::foreign_open_pipe_frames_terminate_each_offender_without_mutating_target", "foreign_pipe_frame_closes_offender_and_preserves_target_pipe", "peer::transport::tests::terminal::fin::duplicate_fin_and_data_after_fin_are_stream_scoped", "service::tests::unexpected_actor_exit_is_a_terminal_internal_failure"]
 reason = "Pipe-local protocol error와 INTERNAL 분류는 검증하지만 INTERNAL 뒤 모든 partial live state 부재를 합성하지 않는다."
 
 [[case]]
@@ -513,7 +512,7 @@ reason = "handshake 실패·취소, force loss, 방향 slot, active heartbeat ti
 [[case]]
 id = "T-STATE-STREAM"
 status = "partial"
-rust = ["peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_reset_is_idempotent_terminal_cleanup", "peer::transport::tests::data_precedes_terminal_fin_while_writer_is_stalled", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport"]
+rust = ["peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_reset_is_idempotent_terminal_cleanup", "peer::transport::tests::data_precedes_terminal_fin_while_writer_is_stalled", "peer::transport::tests::terminal::fin::local_data_and_fin_survive_remote_fin_under_writer_pressure", "peer::transport::tests::terminal::fin::duplicate_fin_and_data_after_fin_are_stream_scoped", "peer::transport::tests::terminal::reordering::opening_terminal_reordering_converges_once", "peer::transport::tests::terminal::reordering::opened_terminal_reordering_converges_once", "state::tests::connector_cleanup_and_transport_loss_are_scoped_to_current_streams", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport"]
 reason = "writer 압력 아래 정상 양방향 FIN cleanup을 포함한 주요 stream 전이는 검증하지만 모든 origin과 cleanup commit 실패 순열이 없다."
 
 [[case]]
@@ -624,7 +623,7 @@ reason = "counter와 stale guard는 검증하지만 simultaneous endpoint counte
 [[case]]
 id = "T-EDGE-20"
 status = "executable"
-rust = ["pipe::tests::fin_racing_after_empty_poll_does_not_discard_accepted_data", "peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_rejects_data_after_same_direction_fin", "peer::transport::tests::data_precedes_terminal_fin_while_writer_is_stalled", "state::tests::remote_pipe_data_fin_close_and_reset_are_symmetric"]
+rust = ["pipe::tests::fin_racing_after_empty_poll_does_not_discard_accepted_data", "peer::tests::relay_stream_fin_closes_only_after_both_directions_finish", "peer::tests::relay_stream_rejects_data_after_same_direction_fin", "peer::transport::tests::data_precedes_terminal_fin_while_writer_is_stalled", "peer::transport::tests::terminal::fin::local_data_and_fin_survive_remote_fin_under_writer_pressure", "peer::transport::tests::terminal::fin::duplicate_fin_and_data_after_fin_are_stream_scoped", "state::tests::remote_pipe_data_fin_close_and_reset_are_symmetric"]
 
 [[case]]
 id = "T-EDGE-21"

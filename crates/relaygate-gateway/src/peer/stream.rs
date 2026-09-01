@@ -53,16 +53,20 @@ impl RelayStream {
         }
     }
 
-    pub(crate) fn fin(&mut self, sender: StreamEndpoint) -> Result<(), PeerError> {
+    pub(crate) fn fin(&mut self, sender: StreamEndpoint) -> Result<bool, PeerError> {
         self.ensure_open()?;
-        match sender {
-            StreamEndpoint::Dialer => self.local_finished = true,
-            StreamEndpoint::Acceptor => self.remote_finished = true,
+        let finished = match sender {
+            StreamEndpoint::Dialer => &mut self.local_finished,
+            StreamEndpoint::Acceptor => &mut self.remote_finished,
+        };
+        if *finished {
+            return Ok(false);
         }
+        *finished = true;
         if self.local_finished && self.remote_finished {
             self.state = RelayStreamState::Closed(StreamTerminal::Closed);
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn data(&self, sender: StreamEndpoint) -> Result<(), PeerError> {

@@ -120,11 +120,12 @@ fn relay_stream_fin_closes_only_after_both_directions_finish() -> Result<(), Pee
     let mut stream = RelayStream::opening();
     stream.opened()?;
 
-    stream.fin(StreamEndpoint::Dialer)?;
+    assert!(stream.fin(StreamEndpoint::Dialer)?);
+    assert!(!stream.fin(StreamEndpoint::Dialer)?);
     assert!(!stream.is_closed());
     stream.data(StreamEndpoint::Acceptor)?;
 
-    stream.fin(StreamEndpoint::Acceptor)?;
+    assert!(stream.fin(StreamEndpoint::Acceptor)?);
     assert!(stream.is_closed());
     Ok(())
 }
@@ -133,7 +134,7 @@ fn relay_stream_fin_closes_only_after_both_directions_finish() -> Result<(), Pee
 fn relay_stream_rejects_data_after_same_direction_fin() -> Result<(), PeerError> {
     let mut stream = RelayStream::opening();
     stream.opened()?;
-    stream.fin(StreamEndpoint::Dialer)?;
+    assert!(stream.fin(StreamEndpoint::Dialer)?);
 
     assert!(matches!(
         stream.data(StreamEndpoint::Dialer),
