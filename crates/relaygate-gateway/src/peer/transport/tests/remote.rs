@@ -9,13 +9,13 @@ use std::{
 
 use bytes::Bytes;
 use relaygate_protocol::{BindingId, ErrorCode, PeerObservation, SessionId};
-use relaygate_route_table::GatewayId;
+use relaygate_route_table::{GatewayId, GatewayLocator};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::peer::{
     GatewayPeerConfig,
-    event::{PeerEvent, PeerFailure, PeerStreamKey},
+    event::{PeerEvent, PeerFailure, PeerOpenRequest, PeerStreamKey, PeerTarget},
     frame::PeerFrame,
     identity::{
         OpenIdentity, PeerTransportId, RemoteStreamGuard, StreamEndpoint, StreamId,
@@ -184,6 +184,175 @@ fn assert_streams(
             expected.contains(stream_id)
         );
     }
+}
+
+#[tokio::test]
+async fn endpoint_bits_isolate_remote_open_replay() -> Result<(), Box<dyn Error>> {
+    let (mut actor, mut frames, mut notices, peer_gateway_id) = actor_for_remote_open()?;
+    let local_identity = OpenIdentity::new(GatewayId::new(), SessionId::new(), 1);
+    let local_request = PeerOpenRequest::new(
+        PeerTarget::new(
+            peer_gateway_id,
+            GatewayLocator::new("127.0.0.1:9999".to_owned())?,
+        ),
+        local_identity,
+        "echo.local",
+        SessionId::new(),
+        BindingId::new(),
+    )?;
+    assert!(actor.active_opens.reserve(local_identity)?);
+    let local_key = actor.open(local_request).await?;
+    let local_stream_id = StreamId::from_raw(1);
+    assert_eq!(local_key.stream_id(), local_stream_id);
+    assert!(matches!(
+        frames.recv().await,
+        Some(PeerFrame::Open {
+            stream_id,
+            open_identity,
+            ..
+        }) if stream_id == local_stream_id && open_identity == local_identity
+    ));
+
+    let remote_stream_id = StreamId::from_raw(0);
+    let remote_identity = OpenIdentity::new(peer_gateway_id, SessionId::new(), 2);
+    let remote_listener_session_id = SessionId::new();
+    let remote_binding_id = BindingId::new();
+    let remote_open = PeerFrame::Open {
+        stream_id: remote_stream_id,
+        open_identity: remote_identity,
+        client_id: "echo.remote".to_owned(),
+        listener_session_id: remote_listener_session_id,
+        binding_id: remote_binding_id,
+    };
+    assert!(actor.handle_frame(remote_open.clone()).await);
+    let remote_key = actor.key(remote_stream_id);
+    assert!(matches!(
+        notices.recv().await,
+        Some(TransportNotice::Event(PeerEvent::IncomingOpen {
+            key,
+            open_identity,
+            client_id,
+            listener_session_id,
+            binding_id,
+        })) if key == remote_key
+            && open_identity == remote_identity
+            && client_id == "echo.remote"
+            && listener_session_id == remote_listener_session_id
+            && binding_id == remote_binding_id
+    ));
+    assert_streams(
+        &actor,
+        &[remote_stream_id, local_stream_id],
+        &[
+            (remote_stream_id, remote_identity),
+            (local_stream_id, local_identity),
+        ],
+    );
+
+    send_failed(
+        &mut actor,
+        remote_stream_id,
+        PeerFailure::not_observed(ErrorCode::Unavailable, "remote OPEN failed"),
+    )
+    .await?;
+    actor.flush_stream_queues().await;
+    assert!(matches!(
+        frames.recv().await,
+        Some(PeerFrame::Failed {
+            stream_id,
+            code: ErrorCode::Unavailable,
+            observation: PeerObservation::NotObserved,
+            message,
+        }) if stream_id == remote_stream_id && message == "remote OPEN failed"
+    ));
+    assert!(matches!(
+        notices.recv().await,
+        Some(TransportNotice::StreamEnded {
+            key,
+            open_identity,
+        }) if key == remote_key && open_identity == remote_identity
+    ));
+    assert_streams(
+        &actor,
+        &[local_stream_id],
+        &[
+            (remote_stream_id, remote_identity),
+            (local_stream_id, local_identity),
+        ],
+    );
+
+    assert!(actor.handle_frame(remote_open).await);
+    assert!(matches!(
+        frames.recv().await,
+        Some(PeerFrame::Failed {
+            stream_id,
+            code: ErrorCode::ProtocolError,
+            observation: PeerObservation::NotObserved,
+            ..
+        }) if stream_id == remote_stream_id
+    ));
+    assert_streams(
+        &actor,
+        &[local_stream_id],
+        &[
+            (remote_stream_id, remote_identity),
+            (local_stream_id, local_identity),
+        ],
+    );
+    assert!(!actor.close.is_cancelled());
+    assert!(notices.try_recv().is_err());
+
+    assert!(
+        actor
+            .handle_frame(PeerFrame::Opened {
+                stream_id: local_stream_id,
+            })
+            .await
+    );
+    assert!(matches!(
+        notices.recv().await,
+        Some(TransportNotice::Event(PeerEvent::Opened {
+            key,
+            open_identity,
+        })) if key == local_key && open_identity == local_identity
+    ));
+    assert!(
+        actor
+            .handle_frame(PeerFrame::Data {
+                stream_id: local_stream_id,
+                payload: Bytes::from_static(b"local stream survived replay"),
+            })
+            .await
+    );
+    assert!(matches!(
+        notices.recv().await,
+        Some(TransportNotice::Event(PeerEvent::Data { key, payload }))
+            if key == local_key && payload == Bytes::from_static(b"local stream survived replay")
+    ));
+
+    let fresh_remote_stream_id = StreamId::from_raw(2);
+    let fresh_remote_identity = OpenIdentity::new(peer_gateway_id, SessionId::new(), 3);
+    let fresh_remote_key = receive_remote_open(
+        &mut actor,
+        &mut notices,
+        fresh_remote_stream_id,
+        fresh_remote_identity,
+    )
+    .await?;
+    assert_eq!(fresh_remote_key.stream_id(), fresh_remote_stream_id);
+    assert_streams(
+        &actor,
+        &[local_stream_id, fresh_remote_stream_id],
+        &[
+            (remote_stream_id, remote_identity),
+            (local_stream_id, local_identity),
+            (fresh_remote_stream_id, fresh_remote_identity),
+        ],
+    );
+    assert!(!actor.close.is_cancelled());
+    assert!(frames.try_recv().is_err());
+    assert!(notices.try_recv().is_err());
+    Ok(())
 }
 
 #[tokio::test]
