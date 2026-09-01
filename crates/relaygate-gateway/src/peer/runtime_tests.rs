@@ -31,6 +31,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 struct RuntimePair {
     gateway_a: GatewayId,
     gateway_b: GatewayId,
+    locator_a: GatewayLocator,
     locator_b: GatewayLocator,
     handle_a: PeerHandle,
     handle_b: PeerHandle,
@@ -71,6 +72,7 @@ impl RuntimePair {
     ) -> TestResult<Self> {
         let listener_a = TcpListener::bind("127.0.0.1:0").await?;
         let listener_b = TcpListener::bind("127.0.0.1:0").await?;
+        let locator_a = GatewayLocator::new(listener_a.local_addr()?.to_string())?;
         let locator_b = GatewayLocator::new(listener_b.local_addr()?.to_string())?;
         let gateway_a = GatewayId::new();
         let gateway_b = GatewayId::new();
@@ -85,6 +87,7 @@ impl RuntimePair {
         Ok(Self {
             gateway_a,
             gateway_b,
+            locator_a,
             locator_b,
             handle_a,
             handle_b,
@@ -102,6 +105,16 @@ impl RuntimePair {
             PeerTarget::new(self.gateway_b, self.locator_b.clone()),
             OpenIdentity::new(self.gateway_a, SessionId::new(), connection_id),
             "echo.b",
+            SessionId::new(),
+            BindingId::new(),
+        )?)
+    }
+
+    fn request_b_to_a(&self, connection_id: u64) -> TestResult<PeerOpenRequest> {
+        Ok(PeerOpenRequest::new(
+            PeerTarget::new(self.gateway_a, self.locator_a.clone()),
+            OpenIdentity::new(self.gateway_b, SessionId::new(), connection_id),
+            "echo.a",
             SessionId::new(),
             BindingId::new(),
         )?)
@@ -423,6 +436,142 @@ async fn ready_transport_is_reused_and_preserves_per_transport_data_order() -> T
     pair.handle_b.send_close(first_owner_key).await?;
     pair.handle_b.send_close(second_owner_key).await?;
     pair.shutdown().await
+}
+
+#[tokio::test]
+async fn simultaneous_opens_share_ready_transport_after_candidate_timeout() -> TestResult {
+    let gate_a = ConnectGate::new();
+    let config_a =
+        test_config("gateway-a", "key-a", "gateway-b", "key-b")?.with_connect_gate(gate_a.clone());
+    let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?;
+    let mut pair = RuntimePair::start_with_configs(config_a, config_b).await?;
+
+    let request_a_to_b = pair.request_a_to_b(1)?;
+    let identity_a_to_b = request_a_to_b.open_identity();
+    let open_a_to_b = {
+        let handle = pair.handle_a.clone();
+        tokio::spawn(async move { handle.open(request_a_to_b).await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), gate_a.wait_until_entered()).await?;
+    wait_for_counts(
+        &pair.handle_a,
+        PeerCounts {
+            connecting: 1,
+            ready: 0,
+            streams: 0,
+        },
+    )
+    .await?;
+
+    let request_b_to_a = pair.request_b_to_a(2)?;
+    let identity_b_to_a = request_b_to_a.open_identity();
+    let open_b_to_a = {
+        let handle = pair.handle_b.clone();
+        tokio::spawn(async move { handle.open(request_b_to_a).await })
+    };
+
+    let (owner_b_to_a, incoming_b_to_a) = accept_one(&mut pair.events_a, &pair.handle_a).await?;
+    assert_eq!(incoming_b_to_a, identity_b_to_a);
+    let entry_b_to_a = open_b_to_a.await??;
+    let mut owner_a_to_b = None;
+    let mut opened_b_to_a = false;
+    while owner_a_to_b.is_none() || !opened_b_to_a {
+        let event = next_event(&mut pair.events_b).await?;
+        match event {
+            PeerEvent::Opened { key, open_identity }
+                if key == entry_b_to_a && open_identity == identity_b_to_a =>
+            {
+                opened_b_to_a = true;
+            }
+            PeerEvent::IncomingOpen {
+                key, open_identity, ..
+            } if open_identity == identity_a_to_b => {
+                pair.handle_b.send_opened(key).await?;
+                owner_a_to_b = Some(key);
+            }
+            other => {
+                return Err(format!("unexpected B event while joining opens: {other:?}").into());
+            }
+        }
+    }
+    let owner_a_to_b = owner_a_to_b.ok_or("missing A->B owner key")?;
+    let entry_a_to_b = open_a_to_b.await??;
+    let opened_a = next_event(&mut pair.events_a).await?;
+    assert!(matches!(
+        opened_a,
+        PeerEvent::Opened {
+            key,
+            open_identity,
+        } if key == entry_a_to_b && open_identity == identity_a_to_b
+    ));
+    assert_eq!(
+        entry_a_to_b.peer_transport_id(),
+        owner_b_to_a.peer_transport_id()
+    );
+    assert_eq!(
+        entry_b_to_a.peer_transport_id(),
+        owner_a_to_b.peer_transport_id()
+    );
+    wait_for_counts(
+        &pair.handle_a,
+        PeerCounts {
+            connecting: 0,
+            ready: 1,
+            streams: 2,
+        },
+    )
+    .await?;
+    wait_for_counts(
+        &pair.handle_b,
+        PeerCounts {
+            connecting: 0,
+            ready: 1,
+            streams: 2,
+        },
+    )
+    .await?;
+
+    pair.handle_b
+        .send_data(entry_b_to_a, Bytes::from_static(b"surviving"))
+        .await?;
+    let surviving_data = next_event(&mut pair.events_a).await?;
+    assert!(matches!(
+        surviving_data,
+        PeerEvent::Data { key, payload }
+            if key == owner_b_to_a && payload == Bytes::from_static(b"surviving")
+    ));
+
+    pair.handle_b.send_close(owner_a_to_b).await?;
+    let joined_closed = next_event(&mut pair.events_a).await?;
+    assert!(matches!(joined_closed, PeerEvent::Close { key } if key == entry_a_to_b));
+    pair.handle_a.send_close(owner_b_to_a).await?;
+    let surviving_closed = next_event(&mut pair.events_b).await?;
+    assert!(matches!(surviving_closed, PeerEvent::Close { key } if key == entry_b_to_a));
+    wait_for_counts(
+        &pair.handle_a,
+        PeerCounts {
+            connecting: 0,
+            ready: 1,
+            streams: 0,
+        },
+    )
+    .await?;
+    wait_for_counts(
+        &pair.handle_b,
+        PeerCounts {
+            connecting: 0,
+            ready: 1,
+            streams: 0,
+        },
+    )
+    .await?;
+
+    let handle_a = pair.handle_a.clone();
+    let handle_b = pair.handle_b.clone();
+    pair.shutdown().await?;
+    assert_eq!(handle_a.counts(), PeerCounts::default());
+    assert_eq!(handle_b.counts(), PeerCounts::default());
+    Ok(())
 }
 
 #[tokio::test]
