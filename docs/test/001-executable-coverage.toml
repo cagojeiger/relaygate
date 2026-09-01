@@ -500,8 +500,8 @@ reason = "queue admission 뒤 open failure와 OFFER_ACCEPTED 유실은 selected 
 [[case]]
 id = "T-STATE-PAIR"
 status = "executable"
-rust = ["peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "peer::runtime_tests::tcp_connect_deadline_releases_candidate_and_open_identity_for_retry", "peer::runtime_tests::simultaneous_opens_join_first_ready_transport_and_release_losing_candidate", "gateway::effects::tests::peer_liveness::active_heartbeat_timeout_preserves_unrelated_runtime_state", "gateway::effects::tests::peer_liveness::idle_retirement_preserves_unrelated_runtime_state"]
-reason = "방향별 최초 connect와 중복 candidate 거절, connect deadline 뒤 candidate와 OpenIdentity 해제·retry, 실제 socket 기반 동시 OPEN 경쟁에서 먼저 READY 된 PeerTransport 하나로 양방향 Pipe가 합류하고 지연된 candidate가 정리되며 stream 종료 뒤 shutdown count가 0으로 수렴함을 검증한다. RT/Gateway wiring의 active heartbeat timeout과 zero-stream idle retirement는 fault transport만 정리되고 sibling runtime state가 유지됨을 검증한다."
+rust = ["peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "peer::runtime_tests::tcp_connect_deadline_releases_candidate_and_open_identity_for_retry", "peer::runtime_tests::simultaneous_opens_share_ready_transport_after_candidate_timeout", "peer::runtime_tests::ready_transport_is_reused_and_preserves_per_transport_data_order", "gateway::effects::tests::peer_liveness::active_heartbeat_timeout_preserves_unrelated_runtime_state", "gateway::effects::tests::peer_liveness::idle_retirement_preserves_unrelated_runtime_state"]
+reason = "방향별 최초 connect와 중복 candidate 거절, connect deadline 뒤 candidate와 OpenIdentity 해제·retry를 검증한다. 실제 socket 기반 동시 OPEN 경쟁에서는 먼저 READY 된 PeerTransport 하나로 양방향 Pipe가 합류하고 반대 방향의 timeout candidate만 정리되며, READY transport 재사용·data order·stream 종료·shutdown count zero를 검증한다. RT/Gateway wiring의 active heartbeat timeout과 zero-stream idle retirement는 fault transport만 정리되고 sibling runtime state가 유지됨을 검증한다."
 
 [[case]]
 id = "T-STATE-TRANSPORT"

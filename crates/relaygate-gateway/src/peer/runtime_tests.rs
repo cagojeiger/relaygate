@@ -439,16 +439,10 @@ async fn ready_transport_is_reused_and_preserves_per_transport_data_order() -> T
 }
 
 #[tokio::test]
-async fn simultaneous_opens_join_first_ready_transport_and_release_losing_candidate() -> TestResult
-{
+async fn simultaneous_opens_share_ready_transport_after_candidate_timeout() -> TestResult {
     let gate_a = ConnectGate::new();
-    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
-        .with_timeouts(
-            Duration::from_millis(75),
-            Duration::from_millis(500),
-            Duration::from_secs(1),
-        )
-        .with_connect_gate(gate_a.clone());
+    let config_a =
+        test_config("gateway-a", "key-a", "gateway-b", "key-b")?.with_connect_gate(gate_a.clone());
     let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?;
     let mut pair = RuntimePair::start_with_configs(config_a, config_b).await?;
 
