@@ -38,8 +38,7 @@ fn assert_transport_loss(
 }
 
 #[tokio::test]
-async fn simultaneous_force_close_emits_one_loss_per_endpoint_and_reconnects_lazily() -> TestResult
-{
+async fn simultaneous_force_close_cleans_two_streams_and_reconnects_lazily() -> TestResult {
     let mut pair = RuntimePair::start().await?;
 
     let first_request = pair.request_a_to_b(1)?;
@@ -144,9 +143,9 @@ async fn simultaneous_force_close_emits_one_loss_per_endpoint_and_reconnects_laz
     assert!(!pair.handle_b.close_transport(first_owner_key));
     assert!(!pair.handle_b.close_transport(second_owner_key));
 
-    // A fresh application OPEN is the FIFO sentinel for both event streams.
-    // Any duplicate loss notice would be observed instead of IncomingOpen or
-    // Opened, while this retry also proves reconnect is lazy and uses a new id.
+    // Retry starts only after both loss events have been reconciled and the old
+    // transport removed. No connection is created until this explicit OPEN,
+    // which must use a fresh transport id.
     let retry_request = pair.request_a_to_b(3)?;
     let retry_identity = retry_request.open_identity();
     let retry_open = {
