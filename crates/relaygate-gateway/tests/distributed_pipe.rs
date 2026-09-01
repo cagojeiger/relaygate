@@ -7,10 +7,11 @@ use relaygate_gateway::{
 };
 use relaygate_protocol::{Frame, FrameCodec};
 use relaygate_route_table::{
-    GatewayLocator, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
+    ClientId, GatewayId, GatewayLocator, RouteTableConfig, RouteTableShard, ShardDirectory,
+    ShardDirectoryGeneration, ShardId,
 };
 use relaygate_route_table_transport::{
-    GatewayName, InternalGatewayKey, RouteTableClientConfig, RouteTableService,
+    GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig, RouteTableService,
     RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
 };
 use relaygate_sdk::{
@@ -18,7 +19,7 @@ use relaygate_sdk::{
     PeerObservation as SdkPeerObservation,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::oneshot,
     task::JoinHandle,
@@ -35,6 +36,7 @@ const GATEWAY_A_KEY: &str = "gateway-a-key";
 const GATEWAY_B: &str = "gateway-b";
 const GATEWAY_B_KEY: &str = "gateway-b-key";
 const SHARD_ID: &str = "rt-0";
+const PEER_OPEN_KIND: u8 = 4;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_pipes_share_one_peer_transport_and_survive_route_table_loss() -> TestResult {
@@ -134,6 +136,138 @@ async fn remote_pipe_case() -> TestResult {
     listener_runtime.close();
     gateway_a.stop().await?;
     gateway_b.stop().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_remote_listener_selection_fails_without_falling_back() -> TestResult {
+    timeout(Duration::from_secs(12), stale_remote_listener_case()).await??;
+    Ok(())
+}
+
+async fn stale_remote_listener_case() -> TestResult {
+    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let route_endpoint = route_listener.local_addr()?;
+    let directory = ShardDirectory::from_json_bytes(one_shard_directory(route_endpoint))?;
+    let generation = directory.generation();
+    let route_table = RunningRouteTable::start(route_listener, directory.clone())?;
+    let route_observer = RouteTableClient::connect(
+        route_endpoint,
+        GatewayName::new(GATEWAY_A)?,
+        GatewayId::new(),
+        InternalGatewayKey::new(GATEWAY_A_KEY)?,
+        route_client_config()?,
+    )
+    .await?;
+
+    let owner_peer_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let owner_peer_address = owner_peer_listener.local_addr()?;
+    let mut proxy = OpenBlockingPeerProxy::start(owner_peer_address).await?;
+    let mut gateway_b = RunningGateway::start_with_peer_listener(
+        GATEWAY_B,
+        GATEWAY_B_KEY,
+        GATEWAY_A,
+        GATEWAY_A_KEY,
+        directory.clone(),
+        owner_peer_listener,
+        proxy.address,
+        Duration::from_secs(5),
+    )
+    .await?;
+    let mut gateway_a = RunningGateway::start_with_open_response_timeout(
+        GATEWAY_A,
+        GATEWAY_A_KEY,
+        GATEWAY_B,
+        GATEWAY_B_KEY,
+        directory,
+        Duration::from_secs(5),
+    )
+    .await?;
+
+    let old_runtime = ListenerRuntime::connect(sdk_config(gateway_b.sdk_address)).await?;
+    let old_listener = old_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_b.gateway.snapshot().route_registrations_synced == 1
+    })
+    .await?;
+    wait_for_binding_count(&route_observer, generation, 1).await?;
+
+    let connector = Connector::connect(sdk_config(gateway_a.sdk_address)).await?;
+    let opening = {
+        let connector = connector.clone();
+        tokio::spawn(async move { connector.open(CLIENT_ID).await })
+    };
+    proxy.wait_until_open_blocked().await?;
+    assert_eq!(gateway_a.gateway.snapshot().remote_open_attempts, 1);
+    assert_eq!(gateway_a.gateway.snapshot().peer_streams, 1);
+    assert_eq!(gateway_b.gateway.snapshot().peer_streams, 0);
+
+    old_runtime.close();
+    drop(old_listener);
+    wait_until(Duration::from_secs(2), || {
+        let owner = gateway_b.gateway.snapshot();
+        owner.listener_sessions == 0
+            && owner.listener_bindings == 0
+            && owner.route_registrations_synced == 0
+    })
+    .await?;
+    wait_for_binding_count(&route_observer, generation, 0).await?;
+
+    let replacement_runtime = ListenerRuntime::connect(sdk_config(gateway_b.sdk_address)).await?;
+    let replacement = replacement_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    wait_until(Duration::from_secs(2), || {
+        let owner = gateway_b.gateway.snapshot();
+        owner.listener_sessions == 1
+            && owner.listener_bindings == 1
+            && owner.route_registrations_synced == 1
+    })
+    .await?;
+    wait_for_binding_count(&route_observer, generation, 1).await?;
+
+    proxy.release_open()?;
+    let error = opening
+        .await?
+        .err()
+        .ok_or("stale remote OPEN unexpectedly used the replacement Listener")?;
+    assert_eq!(error.code(), SdkErrorCode::Unavailable);
+    assert_eq!(error.observation(), SdkPeerObservation::NotObserved);
+    wait_until(Duration::from_secs(2), || {
+        let entry = gateway_a.gateway.snapshot();
+        let owner = gateway_b.gateway.snapshot();
+        entry.remote_open_attempts == 0
+            && entry.live_pipes == 0
+            && entry.peer_streams == 0
+            && owner.pending_offers == 0
+            && owner.live_pipes == 0
+            && owner.peer_streams == 0
+            && owner.listener_sessions == 1
+            && owner.listener_bindings == 1
+    })
+    .await?;
+
+    let mut connector_pipe = connector.open(CLIENT_ID).await?;
+    let mut listener_pipe = replacement.accept().await?;
+    connector_pipe.write_all(b"fresh selection").await?;
+    let mut payload = [0_u8; 15];
+    listener_pipe.read_exact(&mut payload).await?;
+    assert_eq!(&payload, b"fresh selection");
+    connector_pipe.close().await?;
+    listener_pipe.close().await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().peer_streams == 0
+            && gateway_b.gateway.snapshot().peer_streams == 0
+    })
+    .await?;
+
+    connector.close();
+    replacement_runtime.close();
+    gateway_a.assert_running().await?;
+    gateway_b.assert_running().await?;
+    gateway_a.stop().await?;
+    gateway_b.stop().await?;
+    proxy.stop().await;
+    drop(route_observer);
+    route_table.stop().await?;
     Ok(())
 }
 
@@ -275,6 +409,115 @@ impl OpenedDroppingProxy {
     }
 }
 
+struct OpenBlockingPeerProxy {
+    address: SocketAddr,
+    open_blocked: oneshot::Receiver<()>,
+    release_open: Option<oneshot::Sender<()>>,
+    task: JoinHandle<TestResult>,
+}
+
+impl OpenBlockingPeerProxy {
+    async fn start(upstream: SocketAddr) -> TestResult<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (open_blocked_tx, open_blocked) = oneshot::channel();
+        let (release_open, release_open_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (entry_stream, _) = listener.accept().await?;
+            let owner_stream = TcpStream::connect(upstream).await?;
+            let (mut entry_source, mut entry_sink) = entry_stream.into_split();
+            let (mut owner_source, mut owner_sink) = owner_stream.into_split();
+
+            let entry_to_owner = async {
+                let mut open_blocked_tx = Some(open_blocked_tx);
+                let mut release_open_rx = Some(release_open_rx);
+                loop {
+                    let frame = read_peer_frame(&mut entry_source).await?;
+                    if frame[3] == PEER_OPEN_KIND
+                        && let Some(sender) = open_blocked_tx.take()
+                    {
+                        let _ = sender.send(());
+                        release_open_rx
+                            .take()
+                            .ok_or("peer OPEN release gate was already consumed")?
+                            .await
+                            .map_err(|_| "peer OPEN release sender was dropped")?;
+                    }
+                    owner_sink.write_all(&frame).await?;
+                }
+                #[allow(unreachable_code)]
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            };
+            let owner_to_entry = async {
+                loop {
+                    let frame = read_peer_frame(&mut owner_source).await?;
+                    entry_sink.write_all(&frame).await?;
+                }
+                #[allow(unreachable_code)]
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            };
+            tokio::select! {
+                result = entry_to_owner => result?,
+                result = owner_to_entry => result?,
+            }
+            Ok(())
+        });
+        Ok(Self {
+            address,
+            open_blocked,
+            release_open: Some(release_open),
+            task,
+        })
+    }
+
+    async fn wait_until_open_blocked(&mut self) -> TestResult {
+        timeout(Duration::from_secs(2), &mut self.open_blocked)
+            .await
+            .map_err(|_| "peer OPEN was not intercepted before the deadline")??;
+        Ok(())
+    }
+
+    fn release_open(&mut self) -> TestResult {
+        self.release_open
+            .take()
+            .ok_or("peer OPEN was already released")?
+            .send(())
+            .map_err(|_| "peer OPEN proxy stopped before release")?;
+        Ok(())
+    }
+
+    async fn stop(self) {
+        self.task.abort();
+        let _ = self.task.await;
+    }
+}
+
+async fn read_peer_frame(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<Vec<u8>> {
+    const HEADER_LEN: usize = 8;
+    const MAX_FRAME_LEN: usize = 1024 * 1024;
+
+    let mut header = [0_u8; HEADER_LEN];
+    reader.read_exact(&mut header).await?;
+    if &header[..2] != b"GP" || header[2] != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid peer frame header",
+        ));
+    }
+    let payload_len = u32::from_be_bytes([header[4], header[5], header[6], header[7]]) as usize;
+    if payload_len > MAX_FRAME_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "peer frame exceeds test proxy limit",
+        ));
+    }
+    let mut frame = Vec::with_capacity(HEADER_LEN + payload_len);
+    frame.extend_from_slice(&header);
+    frame.resize(HEADER_LEN + payload_len, 0);
+    reader.read_exact(&mut frame[HEADER_LEN..]).await?;
+    Ok(frame)
+}
+
 struct RunningGateway {
     name: String,
     sdk_address: SocketAddr,
@@ -291,15 +534,86 @@ impl RunningGateway {
         peer_key: &str,
         directory: ShardDirectory,
     ) -> TestResult<Self> {
+        Self::start_with_open_response_timeout(
+            name,
+            key,
+            peer_name,
+            peer_key,
+            directory,
+            Duration::from_secs(1),
+        )
+        .await
+    }
+
+    async fn start_with_open_response_timeout(
+        name: &str,
+        key: &str,
+        peer_name: &str,
+        peer_key: &str,
+        directory: ShardDirectory,
+        open_response_timeout: Duration,
+    ) -> TestResult<Self> {
         let sdk_listener = TcpListener::bind("127.0.0.1:0").await?;
-        let sdk_address = sdk_listener.local_addr()?;
         let peer_listener = TcpListener::bind("127.0.0.1:0").await?;
         let peer_address = peer_listener.local_addr()?;
+        Self::start_with_listeners(
+            name,
+            key,
+            peer_name,
+            peer_key,
+            directory,
+            sdk_listener,
+            peer_listener,
+            peer_address,
+            open_response_timeout,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_with_peer_listener(
+        name: &str,
+        key: &str,
+        peer_name: &str,
+        peer_key: &str,
+        directory: ShardDirectory,
+        peer_listener: TcpListener,
+        advertised_peer_address: SocketAddr,
+        open_response_timeout: Duration,
+    ) -> TestResult<Self> {
+        let sdk_listener = TcpListener::bind("127.0.0.1:0").await?;
+        Self::start_with_listeners(
+            name,
+            key,
+            peer_name,
+            peer_key,
+            directory,
+            sdk_listener,
+            peer_listener,
+            advertised_peer_address,
+            open_response_timeout,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_with_listeners(
+        name: &str,
+        key: &str,
+        peer_name: &str,
+        peer_key: &str,
+        directory: ShardDirectory,
+        sdk_listener: TcpListener,
+        peer_listener: TcpListener,
+        advertised_peer_address: SocketAddr,
+        open_response_timeout: Duration,
+    ) -> TestResult<Self> {
+        let sdk_address = sdk_listener.local_addr()?;
         let routing = GatewayRoutingConfig::new(
             directory,
             GatewayName::new(name)?,
             InternalGatewayKey::new(key)?,
-            GatewayLocator::new(peer_address.to_string())?,
+            GatewayLocator::new(advertised_peer_address.to_string())?,
             route_client_config()?,
         )
         .with_command_queue_capacity(16)
@@ -311,7 +625,7 @@ impl RunningGateway {
                 .with_timeouts(
                     Duration::from_millis(200),
                     Duration::from_millis(200),
-                    Duration::from_secs(1),
+                    open_response_timeout,
                 );
         let shutdown = CancellationToken::new();
         // One slot proves that Resolve -> OpenPeer hands the same attempt to
@@ -443,6 +757,31 @@ async fn wait_until(deadline: Duration, mut condition: impl FnMut() -> bool) -> 
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     Ok(())
+}
+
+async fn wait_for_binding_count(
+    client: &RouteTableClient,
+    generation: ShardDirectoryGeneration,
+    expected: usize,
+) -> TestResult {
+    let client_id = ClientId::new(CLIENT_ID)?;
+    let expires = Instant::now() + Duration::from_secs(2);
+    loop {
+        let converged = match client.resolve(generation, &client_id).await {
+            Ok(bindings) => bindings.len() == expected,
+            Err(error) => {
+                expected == 0
+                    && error.code() == relaygate_route_table_transport::ErrorCode::NotFound
+            }
+        };
+        if converged {
+            return Ok(());
+        }
+        if Instant::now() >= expires {
+            return Err(format!("RouteTable did not converge to {expected} bindings").into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn one_shard_directory(endpoint: SocketAddr) -> Vec<u8> {

@@ -276,9 +276,8 @@ rust = ["state::tests::n_to_m_registry_offers_each_open_to_only_one_listener", "
 
 [[case]]
 id = "T-OPEN-03"
-status = "partial"
-rust = ["registry::tests::exact_lookup_rejects_every_stale_identity_component", "state::tests::unregister_cancels_only_pending_binding_incarnation", "state::tests::selected_stale_local_mapping_fails_without_fallback"]
-reason = "stale identity는 검증하지만 admission과 remove 선형화 race 및 locator 재사용 조합이 없다."
+status = "executable"
+rust = ["registry::tests::exact_lookup_rejects_every_stale_identity_component", "state::tests::unregister_cancels_only_pending_binding_incarnation", "state::tests::selected_stale_local_mapping_fails_without_fallback", "stale_remote_listener_selection_fails_without_falling_back"]
 
 [[case]]
 id = "T-OPEN-04"
@@ -542,9 +541,8 @@ rust = ["ended_lease_operations_cannot_change_a_new_lease"]
 
 [[case]]
 id = "T-EDGE-04"
-status = "partial"
-rust = ["state::tests::unregister_cancels_only_pending_binding_incarnation", "registry::tests::exact_lookup_rejects_every_stale_identity_component"]
-reason = "B1과 B2 identity는 검증하지만 과거 RT snapshot과 remote OPEN까지 결합하지 않는다."
+status = "executable"
+rust = ["state::tests::unregister_cancels_only_pending_binding_incarnation", "registry::tests::exact_lookup_rejects_every_stale_identity_component", "stale_remote_listener_selection_fails_without_falling_back"]
 
 [[case]]
 id = "T-EDGE-05"
@@ -560,9 +558,8 @@ reason = "RT restart 뒤 republish와 RT loss 중 기존 Pipe 생존은 각각 �
 
 [[case]]
 id = "T-EDGE-07"
-status = "partial"
-rust = ["state::tests::selected_stale_local_mapping_fails_without_fallback", "state::tests::late_resolve_cannot_resurrect_a_closed_connector_session"]
-reason = "stale candidate와 late Resolve는 검증하지만 Resolve 뒤 실제 remote Owner session 종료 경쟁이 없다."
+status = "executable"
+rust = ["state::tests::selected_stale_local_mapping_fails_without_fallback", "state::tests::late_resolve_cannot_resurrect_a_closed_connector_session", "stale_remote_listener_selection_fails_without_falling_back"]
 
 [[case]]
 id = "T-EDGE-08"
