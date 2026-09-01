@@ -193,7 +193,12 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
         SessionRole::Listener,
         listener_cancellation.clone(),
     );
-    let sibling = add_session(&mut state, SessionRole::Listener);
+    let sibling_cancellation = CancellationToken::new();
+    let sibling = add_session_with_cancellation(
+        &mut state,
+        SessionRole::Listener,
+        sibling_cancellation.clone(),
+    );
     let connector = add_session(&mut state, SessionRole::Connector);
     register_listener(&mut state, listener)?;
     register_listener(&mut state, sibling)?;
@@ -262,6 +267,7 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
             )
     }));
     assert!(listener_cancellation.is_cancelled());
+    assert!(!sibling_cancellation.is_cancelled());
     assert!(!state.sessions.contains_key(&listener));
     assert!(state.sessions.contains_key(&sibling));
     assert_eq!(state.registry.binding_count(), 1);
@@ -289,5 +295,98 @@ fn offer_deadline_closes_selected_listener_session_and_preserves_sibling()
     assert!(sdk_deliveries(&next).any(|delivery| {
         delivery.target == sibling && matches!(delivery.frame, Frame::Offer { .. })
     }));
+    Ok(())
+}
+
+#[test]
+fn explicit_offer_rejection_closes_only_attempt_and_preserves_sessions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = limited_state(GatewayLimits::default());
+    let listener_cancellation = CancellationToken::new();
+    let listener = add_session_with_cancellation(
+        &mut state,
+        SessionRole::Listener,
+        listener_cancellation.clone(),
+    );
+    let sibling_cancellation = CancellationToken::new();
+    let sibling = add_session_with_cancellation(
+        &mut state,
+        SessionRole::Listener,
+        sibling_cancellation.clone(),
+    );
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    register_listener(&mut state, sibling)?;
+    state.handle(
+        listener,
+        Frame::Register {
+            request_id: 2,
+            client_id: "echo.other".to_owned(),
+            client_key: ClientKey::new("other-secret"),
+        },
+    )?;
+
+    let live_pipe = open_pipe(&mut state, connector, listener, 1)?;
+    let rejected_pipe = offer_pipe(&mut state, connector, sibling, 2)?;
+    let rejected = state.handle(
+        sibling,
+        Frame::OfferRejected {
+            pipe_id: rejected_pipe,
+            code: ErrorCode::Unavailable,
+            message: "listener refused".to_owned(),
+        },
+    )?;
+
+    assert!(sdk_deliveries(&rejected).any(|delivery| matches!(
+        delivery.frame,
+        Frame::OpenFailed {
+            connection_id: 2,
+            code: ErrorCode::Unavailable,
+            observation: relaygate_protocol::PeerObservation::NotObserved,
+            ..
+        }
+    )));
+    assert!(sdk_deliveries(&rejected).all(|delivery| {
+        !matches!(delivery.frame, Frame::Offer { .. })
+            && !matches!(
+                delivery.frame,
+                Frame::Reset {
+                    pipe_id,
+                    ..
+                } if pipe_id == live_pipe
+            )
+    }));
+    assert!(!listener_cancellation.is_cancelled());
+    assert!(!sibling_cancellation.is_cancelled());
+    assert!(state.sessions.contains_key(&listener));
+    assert!(state.sessions.contains_key(&sibling));
+    assert_eq!(state.registry.binding_count(), 3);
+    assert_eq!(state.registry.session_binding_count(listener), 2);
+    assert_eq!(state.registry.session_binding_count(sibling), 1);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.live_pipe_count(), 1);
+    assert_eq!(state.pipe_count(), 1);
+    assert!(
+        state
+            .handle(
+                sibling,
+                Frame::OfferAccepted {
+                    pipe_id: rejected_pipe,
+                },
+            )?
+            .is_empty()
+    );
+
+    let next = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 3,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    assert!(sdk_deliveries(&next).any(|delivery| {
+        delivery.target == listener && matches!(delivery.frame, Frame::Offer { .. })
+    }));
+    assert_eq!(state.live_pipe_count(), 1);
     Ok(())
 }

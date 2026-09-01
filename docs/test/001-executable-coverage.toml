@@ -325,9 +325,8 @@ rust = ["gateway::effects::tests::component_identity_resolve_failures_never_crea
 
 [[case]]
 id = "T-OPEN-13"
-status = "partial"
-rust = ["rejected_offer_does_not_fallback_within_the_same_open", "unanswered_offer_closes_selected_listener_and_preserves_sibling", "state::tests::offer_deadline_closes_selected_listener_session_and_preserves_sibling"]
-reason = "명시적 거절과 timeout의 no-fallback 및 sibling 보존은 검증하지만 명시적 거절 시 기존 Pipe, session과 sibling을 함께 보존하는 조합은 없다."
+status = "executable"
+rust = ["rejected_offer_does_not_fallback_within_the_same_open", "unanswered_offer_closes_selected_listener_and_preserves_sibling", "state::tests::offer_deadline_closes_selected_listener_session_and_preserves_sibling", "state::tests::explicit_offer_rejection_closes_only_attempt_and_preserves_sessions"]
 
 [[case]]
 id = "T-OPEN-14"
@@ -336,9 +335,8 @@ rust = ["committed_open_timeout_closes_session_and_existing_pipes", "committed_o
 
 [[case]]
 id = "T-OPEN-15"
-status = "partial"
-rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::connection_history_is_a_single_high_watermark", "stale_and_duplicate_offers_never_enqueue_a_second_pipe"]
-reason = "late frame과 duplicate OFFER는 검증하지만 성공과 실패 반복에서 tombstone 비누적을 함께 검증하지 않는다."
+status = "executable"
+rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::connection_history_is_a_single_high_watermark", "state::tests::repeated_terminal_opens_leave_only_connection_high_watermark", "stale_and_duplicate_offers_never_enqueue_a_second_pipe"]
 
 [[case]]
 id = "T-OPEN-16"
