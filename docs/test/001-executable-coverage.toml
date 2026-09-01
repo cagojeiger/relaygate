@@ -198,8 +198,8 @@ reason = "remove와 snapshot 또는 Deregister 의미는 검증하지만 runtime
 [[case]]
 id = "T-REG-05"
 status = "executable"
-rust = ["routing::tests::projection_splits_one_complete_session_across_directory_shards", "routing::tests::multi_shard::one_session_keeps_independent_lease_lifecycles_across_two_shards", "routing::tests::late_register_result_cannot_replace_newer_desired_state", "revision_rules_are_monotonic_atomic_and_idempotent"]
-reason = "한 ListenerSession을 두 live shard에 투영해 독립 LeaseId를 발급받고, 한 shard snapshot만 변경할 때 그 revision만 증가하며 다른 shard의 lease와 revision은 유지되는지 확인한다. 한 shard 단절 뒤에도 sibling shard가 SYNCED와 Resolve를 유지하고, terminal attempt의 늦은 결과 및 새 lease revision 규칙은 단위·core lifecycle 테스트로 함께 검증한다."
+rust = ["routing::tests::projection_splits_one_complete_session_across_directory_shards", "routing::tests::multi_shard::one_session_keeps_independent_lease_lifecycles_across_two_shards", "routing::tests::one_registration_key_serializes_every_lease_operation", "routing::tests::terminal_failed_register_ignores_late_success", "routing::tests::late_register_result_cannot_replace_newer_desired_state", "revision_rules_are_monotonic_atomic_and_idempotent"]
+reason = "한 ListenerSession을 두 live shard에 투영해 독립 LeaseId를 발급받고, 한 shard snapshot만 변경할 때 그 revision만 증가하며 다른 shard의 lease와 revision은 유지되는지 확인한다. 한 shard 단절 뒤에도 sibling shard가 SYNCED와 Resolve를 유지한다. 같은 key의 REGISTER·UPDATE·KEEP_ALIVE·DEREGISTER는 pending operation 동안 다음 operation을 시작하지 않으며, terminal 실패로 끝난 REGISTER의 뒤늦은 성공은 state를 바꾸지 않는다. 새 lease revision 규칙은 core lifecycle 테스트로 함께 검증한다."
 
 [[case]]
 id = "T-REG-06"
