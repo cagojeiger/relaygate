@@ -108,7 +108,7 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
     let (handle_a, mut events_a, runtime_a) = PeerRuntime::start(
         test_config_with_liveness(
             Duration::from_millis(20),
-            Duration::from_millis(20),
+            Duration::from_millis(300),
             Duration::from_secs(1),
         )?,
         gateway_a,
@@ -132,11 +132,22 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
                 stream_id: first_stream_id,
             })
             .await?;
-        loop {
-            if matches!(next_fake_frame(&mut framed).await?, PeerFrame::Ping { .. }) {
-                break;
+        let heartbeat_nonce = loop {
+            if let PeerFrame::Ping { nonce } = next_fake_frame(&mut framed).await? {
+                break nonce;
             }
-        }
+        };
+        let unrelated_nonce = heartbeat_nonce ^ u64::MAX;
+        framed
+            .send(PeerFrame::Ping {
+                nonce: unrelated_nonce,
+            })
+            .await?;
+        let pong = next_fake_frame(&mut framed).await?;
+        assert!(matches!(
+            pong,
+            PeerFrame::Pong { nonce } if nonce == unrelated_nonce
+        ));
         let _ = release_first_rx.await;
         drop(framed);
 

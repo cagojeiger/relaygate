@@ -138,6 +138,12 @@ impl TransportLiveness {
         });
         Some(LivenessAction::Ping(PeerFrame::Ping { nonce }))
     }
+
+    pub(super) fn mark_probe_committed(&mut self) {
+        if let Some(pending) = self.pending.as_mut() {
+            pending.deadline = Instant::now() + self.heartbeat_response_timeout;
+        }
+    }
 }
 
 pub(super) fn staggered_interval(
@@ -267,6 +273,28 @@ mod tests {
             liveness.on_deadline(deadline, false, true),
             Some(LivenessAction::HeartbeatTimeout)
         ));
+    }
+
+    #[test]
+    fn probe_commit_starts_full_response_window() {
+        let mut liveness = liveness();
+        liveness.last_inbound = Instant::now() - Duration::from_secs(60);
+        assert!(matches!(
+            liveness.on_deadline(Instant::now(), false, true),
+            Some(LivenessAction::Ping(PeerFrame::Ping { nonce: 1 }))
+        ));
+        if let Some(pending) = liveness.pending.as_mut() {
+            pending.deadline = Instant::now() - Duration::from_millis(1);
+        }
+
+        let committed_at = Instant::now();
+        liveness.mark_probe_committed();
+
+        assert!(!liveness.response_timed_out());
+        assert!(
+            liveness.next_deadline().unwrap_or_else(Instant::now)
+                >= committed_at + liveness.heartbeat_response_timeout
+        );
     }
 
     #[test]

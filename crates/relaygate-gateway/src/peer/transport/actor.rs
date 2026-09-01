@@ -125,6 +125,7 @@ pub(super) async fn run_transport_actor(
                             if actor.aggregate_writer.try_send(frame).is_err() {
                                 break;
                             }
+                            liveness.mark_probe_committed();
                         }
                         LivenessAction::HeartbeatTimeout => {
                             tracing::debug!(
