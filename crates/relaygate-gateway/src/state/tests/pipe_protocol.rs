@@ -308,7 +308,7 @@ fn unknown_pipe_frames_are_no_op_for_every_pipe_operation() -> Result<(), Box<dy
     let listener = add_session(&mut state, SessionRole::Listener);
     let connector = add_session(&mut state, SessionRole::Connector);
     let unknown = PipeId::new(connector, 99);
-    let cases = [
+    let role_specific_cases = [
         (listener, Frame::OfferAccepted { pipe_id: unknown }),
         (
             listener,
@@ -319,28 +319,30 @@ fn unknown_pipe_frames_are_no_op_for_every_pipe_operation() -> Result<(), Box<dy
             },
         ),
         (connector, Frame::Cancel { pipe_id: unknown }),
-        (
-            connector,
+    ];
+
+    for (sender, frame) in role_specific_cases {
+        assert!(state.handle(sender, frame)?.is_empty());
+        assert_eq!(state.pipe_count(), 0);
+    }
+    for sender in [connector, listener] {
+        let bidirectional_cases = [
             Frame::Data {
                 pipe_id: unknown,
                 payload: Bytes::from_static(b"late"),
             },
-        ),
-        (connector, Frame::Fin { pipe_id: unknown }),
-        (connector, Frame::Close { pipe_id: unknown }),
-        (
-            connector,
+            Frame::Fin { pipe_id: unknown },
+            Frame::Close { pipe_id: unknown },
             Frame::Reset {
                 pipe_id: unknown,
                 code: ErrorCode::Cancelled,
                 message: "late".to_owned(),
             },
-        ),
-    ];
-
-    for (sender, frame) in cases {
-        assert!(state.handle(sender, frame)?.is_empty());
-        assert_eq!(state.pipe_count(), 0);
+        ];
+        for frame in bidirectional_cases {
+            assert!(state.handle(sender, frame)?.is_empty());
+            assert_eq!(state.pipe_count(), 0);
+        }
     }
     assert!(state.sessions.contains_key(&listener));
     assert!(state.sessions.contains_key(&connector));
