@@ -68,14 +68,16 @@ fn foreign_fin_on_offered_pipe_terminates_only_offender_and_preserves_target()
     register_listener(&mut state, listener)?;
     let pipe_id = offer_pipe(&mut state, connector, listener, 1)?;
 
-    assert_foreign_frame_preserves_pipe(
-        &mut state,
-        SessionRole::Connector,
-        "FIN",
-        Frame::Fin { pipe_id },
-        pipe_id,
-        (connector, listener),
-    )?;
+    for role in [SessionRole::Connector, SessionRole::Listener] {
+        assert_foreign_frame_preserves_pipe(
+            &mut state,
+            role,
+            "FIN",
+            Frame::Fin { pipe_id },
+            pipe_id,
+            (connector, listener),
+        )?;
+    }
 
     let opened = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
     assert!(matches!(
@@ -96,34 +98,36 @@ fn foreign_offered_pipe_data_close_and_reset_terminate_offenders_without_mutatin
     register_listener(&mut state, listener)?;
     let pipe_id = offer_pipe(&mut state, connector, listener, 1)?;
 
-    let frames = [
-        (
-            "DATA",
-            Frame::Data {
-                pipe_id,
-                payload: Bytes::from_static(b"foreign"),
-            },
-        ),
-        ("CLOSE", Frame::Close { pipe_id }),
-        (
-            "RESET",
-            Frame::Reset {
-                pipe_id,
-                code: ErrorCode::Cancelled,
-                message: "foreign".to_owned(),
-            },
-        ),
-    ];
+    for role in [SessionRole::Connector, SessionRole::Listener] {
+        let frames = [
+            (
+                "DATA",
+                Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"foreign"),
+                },
+            ),
+            ("CLOSE", Frame::Close { pipe_id }),
+            (
+                "RESET",
+                Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Cancelled,
+                    message: "foreign".to_owned(),
+                },
+            ),
+        ];
 
-    for (frame_name, frame) in frames {
-        assert_foreign_frame_preserves_pipe(
-            &mut state,
-            SessionRole::Connector,
-            frame_name,
-            frame,
-            pipe_id,
-            (connector, listener),
-        )?;
+        for (frame_name, frame) in frames {
+            assert_foreign_frame_preserves_pipe(
+                &mut state,
+                role,
+                frame_name,
+                frame,
+                pipe_id,
+                (connector, listener),
+            )?;
+        }
     }
 
     let opened = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
@@ -145,35 +149,37 @@ fn foreign_open_pipe_frames_terminate_each_offender_without_mutating_target()
     register_listener(&mut state, listener)?;
     let pipe_id = open_pipe(&mut state, connector, listener, 1)?;
 
-    let frames = [
-        (
-            "DATA",
-            Frame::Data {
-                pipe_id,
-                payload: Bytes::from_static(b"foreign"),
-            },
-        ),
-        ("FIN", Frame::Fin { pipe_id }),
-        ("CLOSE", Frame::Close { pipe_id }),
-        (
-            "RESET",
-            Frame::Reset {
-                pipe_id,
-                code: ErrorCode::Cancelled,
-                message: "foreign".to_owned(),
-            },
-        ),
-    ];
+    for role in [SessionRole::Connector, SessionRole::Listener] {
+        let frames = [
+            (
+                "DATA",
+                Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"foreign"),
+                },
+            ),
+            ("FIN", Frame::Fin { pipe_id }),
+            ("CLOSE", Frame::Close { pipe_id }),
+            (
+                "RESET",
+                Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Cancelled,
+                    message: "foreign".to_owned(),
+                },
+            ),
+        ];
 
-    for (frame_name, frame) in frames {
-        assert_foreign_frame_preserves_pipe(
-            &mut state,
-            SessionRole::Connector,
-            frame_name,
-            frame,
-            pipe_id,
-            (connector, listener),
-        )?;
+        for (frame_name, frame) in frames {
+            assert_foreign_frame_preserves_pipe(
+                &mut state,
+                role,
+                frame_name,
+                frame,
+                pipe_id,
+                (connector, listener),
+            )?;
+        }
     }
 
     assert_eq!(
