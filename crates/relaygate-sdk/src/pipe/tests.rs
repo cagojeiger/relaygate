@@ -239,6 +239,31 @@ async fn async_shutdown_sends_one_fin_and_keeps_the_read_half_alive()
 }
 
 #[tokio::test]
+async fn fin_racing_after_empty_poll_does_not_discard_accepted_data()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 25);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+    let state_for_race = state.clone();
+    pipe.reader.after_inbound_pending = Some(Box::new(move || {
+        assert!(
+            state_for_race
+                .push_data(Bytes::from_static(b"accepted-before-fin"))
+                .is_ok(),
+            "DATA before FIN must fit the inbound queue"
+        );
+        state_for_race.remote_fin();
+    }));
+
+    let mut payload = [0_u8; 19];
+    pipe.read_exact(&mut payload).await?;
+    assert_eq!(&payload, b"accepted-before-fin");
+    assert_eq!(pipe.read(&mut payload).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn write_half_close_terminates_the_split_read_half() -> Result<(), Box<dyn std::error::Error>>
 {
     let (outbound, mut outbound_rx) = session_outbound_channel(2);
