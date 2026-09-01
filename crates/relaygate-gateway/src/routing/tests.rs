@@ -164,7 +164,7 @@ fn stale_lease_re_registers_while_transient_failure_retries_same_update() -> Tes
         .ok_or("missing repeated UPDATE")?;
     assert_eq!(repeated.action, update.action);
 
-    state.stale_lease(&repeated, now + retry);
+    state.precondition_failed(&repeated, now + retry);
     let renewed = state
         .begin_next(now + retry)?
         .ok_or("missing renewed REGISTER")?;
@@ -198,7 +198,81 @@ fn known_connection_loss_is_immediately_unsynced_and_validates_the_lease() -> Te
         validate.action,
         RegistrationAction::KeepAlive { .. }
     ));
-    state.stale_lease(&validate, now);
+    state.precondition_failed(&validate, now);
+    assert!(matches!(
+        state.begin_next(now)?.map(|ticket| ticket.action),
+        Some(RegistrationAction::Register { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn failed_precondition_allows_one_register_probe_then_stops() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "client-a")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+
+    let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+    state.precondition_failed(&update, now);
+    let probe = state
+        .begin_next(now)?
+        .ok_or("missing REGISTER precondition probe")?;
+    assert!(matches!(probe.action, RegistrationAction::Register { .. }));
+
+    state.precondition_failed(&probe, now);
+    assert!(state.begin_next(now + Duration::from_secs(60))?.is_none());
+    Ok(())
+}
+
+#[test]
+fn repeated_precondition_after_successful_probe_is_terminal() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "client-a")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+
+    let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+    state.precondition_failed(&update, now);
+    let probe = state
+        .begin_next(now)?
+        .ok_or("missing REGISTER precondition probe")?;
+    state.register_succeeded(&probe, registration_ack(10, None), now);
+
+    let repeated_update = state
+        .begin_next(now)?
+        .ok_or("missing UPDATE after successful probe")?;
+    state.precondition_failed(&repeated_update, now);
+    assert!(state.begin_next(now + Duration::from_secs(60))?.is_none());
+    Ok(())
+}
+
+#[test]
+fn successful_lease_operation_resets_precondition_probe_budget() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "client-a")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+
+    let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+    state.precondition_failed(&update, now);
+    let first_probe = state
+        .begin_next(now)?
+        .ok_or("missing first REGISTER precondition probe")?;
+    state.register_succeeded(&first_probe, registration_ack(10, None), now);
+
+    let recovered_update = state.begin_next(now)?.ok_or("missing recovered UPDATE")?;
+    state.update_succeeded(
+        &recovered_update,
+        registration_ack(10, Some(relaygate_route_table::RegistrationRevision::FIRST)),
+        now,
+    );
+    state.connection_lost(now);
+
+    let keep_alive = state
+        .begin_next(now)?
+        .ok_or("missing KEEP_ALIVE validation")?;
+    state.precondition_failed(&keep_alive, now);
     assert!(matches!(
         state.begin_next(now)?.map(|ticket| ticket.action),
         Some(RegistrationAction::Register { .. })

@@ -62,6 +62,7 @@ pub(super) struct RegistrationState {
     synced_version: Option<u64>,
     pending: Option<OperationTicket>,
     terminal: bool,
+    precondition_probe_active: bool,
     validate_lease: bool,
     retry_at: Instant,
     retry_backoff: Duration,
@@ -86,6 +87,7 @@ impl RegistrationState {
             synced_version: None,
             pending: None,
             terminal: false,
+            precondition_probe_active: false,
             validate_lease: false,
             retry_at: now,
             retry_backoff: retry_initial,
@@ -264,6 +266,7 @@ impl RegistrationState {
         lease.revision = Some(*revision);
         lease.keep_alive_at = next_keep_alive(now, ack.expires_in());
         self.synced_version = Some(ticket.desired_version);
+        self.precondition_probe_active = false;
         self.validate_lease = false;
         self.reset_retry(now);
     }
@@ -284,25 +287,37 @@ impl RegistrationState {
             && lease.id == lease_id
         {
             lease.keep_alive_at = next_keep_alive(now, ack.expires_in());
+            self.precondition_probe_active = false;
             self.validate_lease = false;
             self.reset_retry(now);
         }
     }
 
-    /// A stale/unknown lease can only invalidate the lease captured by this
-    /// exact desired operation. Newer desired state is never rolled back.
-    pub(super) fn stale_lease(&mut self, ticket: &OperationTicket, now: Instant) {
+    /// The first lease-bound FAILED_PRECONDITION starts one idempotent REGISTER
+    /// probe. A failed probe, or another lease-bound failure before a
+    /// successful lease operation, makes the registration terminal.
+    pub(super) fn precondition_failed(&mut self, ticket: &OperationTicket, now: Instant) {
+        if matches!(ticket.action, RegistrationAction::Register { .. }) {
+            self.terminal_failure(ticket);
+            return;
+        }
         if !self.take_current(ticket) {
             return;
         }
         let Some(expected) = ticket.action.lease_id() else {
             return;
         };
+        if self.precondition_probe_active {
+            self.synced_version = None;
+            self.terminal = true;
+            return;
+        }
         if self
             .lease
             .as_ref()
             .is_some_and(|lease| lease.id == expected)
         {
+            self.precondition_probe_active = true;
             self.lease = None;
             self.synced_version = None;
             self.validate_lease = false;

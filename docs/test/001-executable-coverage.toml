@@ -211,8 +211,8 @@ reason = "ListenerSession 종료는 local binding을 즉시 제거한다. Deregi
 [[case]]
 id = "T-REG-07"
 status = "partial"
-rust = ["routing::tests::terminal_failure_does_not_hot_retry_and_backoff_is_bounded", "routing::tests::projection_preserves_exact_ids_and_gateway_location", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state"]
-reason = "terminal config 및 auth 실패의 hot retry 억제는 일부 검증하지만 remote mapping 비보관과 process-fixed generation을 직접 검증하지 않는다."
+rust = ["routing::tests::failed_precondition_allows_one_register_probe_then_stops", "routing::tests::repeated_precondition_after_successful_probe_is_terminal", "routing::tests::successful_lease_operation_resets_precondition_probe_budget", "routing::tests::terminal_failure_does_not_hot_retry_and_backoff_is_bounded", "routing::tests::projection_preserves_exact_ids_and_gateway_location", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state"]
+reason = "lease-bound FAILED_PRECONDITION 뒤 Register 판별 1회, 판별 Register 실패와 판별 성공 뒤 반복 실패의 terminal 전환, 성공한 lease operation 뒤 별도 recovery episode 허용, auth 실패의 hot retry 억제를 검증한다. remote mapping 비보관과 process-fixed generation의 전체 runtime sequence는 남아 있다."
 
 [[case]]
 id = "T-REG-08"
@@ -487,8 +487,8 @@ reason = "ClientKey 승인 뒤 설치한 binding은 RT registration이 UNSYNCED�
 [[case]]
 id = "T-STATE-REGISTRATION"
 status = "partial"
-rust = ["register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle", "routing::tests::stale_lease_re_registers_while_transient_failure_retries_same_update", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease"]
-reason = "core lifecycle과 대표 worker recovery는 검증하지만 모든 loss, mismatch와 late operation 순열을 worker 수준에서 닫지 않는다."
+rust = ["register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle", "routing::tests::stale_lease_re_registers_while_transient_failure_retries_same_update", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "routing::tests::failed_precondition_allows_one_register_probe_then_stops", "routing::tests::repeated_precondition_after_successful_probe_is_terminal", "routing::tests::successful_lease_operation_resets_precondition_probe_budget"]
+reason = "core lifecycle, stale lease의 Register 재획득, lease-bound FAILED_PRECONDITION 뒤 bounded Register 판별, 판별 성공 뒤 반복 실패의 terminal 전환과 성공 뒤 다음 recovery episode를 검증한다. 모든 loss, mismatch와 late operation 순열의 worker-level 결합은 남아 있다."
 
 [[case]]
 id = "T-STATE-RT"
