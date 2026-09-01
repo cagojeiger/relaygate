@@ -47,11 +47,17 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
             if entry == owner {
                 continue;
             }
+            let payload = matrix_payload(entry, owner, 0);
+            let context = format!(
+                "phase=cross-dial entry={entry} owner={owner} client_id={client_id} sequence=0 payload_len={}",
+                payload.len()
+            );
             spawn_echo(
                 &mut cross_dial,
                 connector.clone(),
                 (*client_id).to_owned(),
-                matrix_payload(entry, owner, 0),
+                payload,
+                context,
             );
         }
     }
@@ -63,7 +69,14 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
             open_when_registered(&connectors[index], CLIENT_IDS[index], ROUTE_WAIT).await?,
             &payload,
         )
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "phase=local entry={index} owner={index} client_id={} sequence=0 payload_len={}",
+                CLIENT_IDS[index],
+                payload.len()
+            )
+        })?;
     }
 
     for (entry, connector) in connectors.iter().enumerate() {
@@ -72,7 +85,13 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
             open_when_registered(connector, SHARED_CLIENT_ID, ROUTE_WAIT).await?,
             &payload,
         )
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "phase=shared entry={entry} client_id={SHARED_CLIENT_ID} sequence=0 payload_len={}",
+                payload.len()
+            )
+        })?;
     }
 
     for (entry, connector) in connectors.iter().enumerate() {
@@ -82,7 +101,13 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
                 open_when_registered(connector, client_id, ROUTE_WAIT).await?,
                 &boundary,
             )
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "phase=boundary entry={entry} owner={owner} client_id={client_id} sequence=0 payload_len={}",
+                    boundary.len()
+                )
+            })?;
             assert_concurrent_path(connector, client_id, entry, owner).await?;
         }
     }
@@ -193,10 +218,15 @@ fn spawn_echo(
     connector: Connector,
     client_id: String,
     payload: Vec<u8>,
+    context: String,
 ) {
     operations.spawn(async move {
-        let pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT).await?;
-        assert_echo(pipe, &payload).await
+        let pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT)
+            .await
+            .with_context(|| format!("{context}: OPEN failed"))?;
+        assert_echo(pipe, &payload)
+            .await
+            .with_context(|| format!("{context}: echo failed"))
     });
 }
 
@@ -215,14 +245,20 @@ async fn assert_concurrent_path(
 ) -> anyhow::Result<()> {
     let mut operations = JoinSet::new();
     for sequence in 0..CONCURRENT_PIPES_PER_PATH {
+        let payload = deterministic_payload(
+            4096 + sequence * 257,
+            entry * 10_000 + owner * 100 + sequence,
+        );
+        let context = format!(
+            "phase=concurrent entry={entry} owner={owner} client_id={client_id} sequence={sequence} payload_len={}",
+            payload.len()
+        );
         spawn_echo(
             &mut operations,
             connector.clone(),
             client_id.to_owned(),
-            deterministic_payload(
-                4096 + sequence * 257,
-                entry * 10_000 + owner * 100 + sequence,
-            ),
+            payload,
+            context,
         );
     }
     join_all(&mut operations).await

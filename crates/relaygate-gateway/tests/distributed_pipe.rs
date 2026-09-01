@@ -1,4 +1,4 @@
-use std::{error::Error, io, net::SocketAddr, time::Duration};
+use std::{error::Error, io, net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_gateway::{
@@ -15,14 +15,14 @@ use relaygate_route_table_transport::{
     RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
 };
 use relaygate_sdk::{
-    Config as SdkConfig, Connector, ErrorCode as SdkErrorCode, ListenerRuntime,
+    Config as SdkConfig, Connector, ErrorCode as SdkErrorCode, Listener, ListenerRuntime,
     PeerObservation as SdkPeerObservation,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::oneshot,
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time::{Instant, timeout},
 };
 use tokio_util::sync::CancellationToken;
@@ -37,6 +37,8 @@ const GATEWAY_B: &str = "gateway-b";
 const GATEWAY_B_KEY: &str = "gateway-b-key";
 const SHARD_ID: &str = "rt-0";
 const PEER_OPEN_KIND: u8 = 4;
+const CONCURRENT_REMOTE_PIPES: usize = 32;
+const CONCURRENT_CONTROL_CAPACITY: usize = 64;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_pipes_share_one_peer_transport_and_survive_route_table_loss() -> TestResult {
@@ -48,27 +50,30 @@ async fn remote_pipe_case() -> TestResult {
     let route_listener = TcpListener::bind("127.0.0.1:0").await?;
     let route_endpoint = route_listener.local_addr()?;
     let directory = ShardDirectory::from_json_bytes(one_shard_directory(route_endpoint))?;
+    let restart_directory = directory.clone();
     let route_table = RunningRouteTable::start(route_listener, directory.clone())?;
 
-    let mut gateway_a = RunningGateway::start(
+    let mut gateway_a = RunningGateway::start_with_control_capacity(
         GATEWAY_A,
         GATEWAY_A_KEY,
         GATEWAY_B,
         GATEWAY_B_KEY,
         directory.clone(),
+        CONCURRENT_CONTROL_CAPACITY,
     )
     .await?;
-    let mut gateway_b = RunningGateway::start(
+    let mut gateway_b = RunningGateway::start_with_control_capacity(
         GATEWAY_B,
         GATEWAY_B_KEY,
         GATEWAY_A,
         GATEWAY_A_KEY,
         directory,
+        CONCURRENT_CONTROL_CAPACITY,
     )
     .await?;
 
     let listener_runtime = ListenerRuntime::connect(sdk_config(gateway_b.sdk_address)).await?;
-    let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    let listener = Arc::new(listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?);
     wait_until(Duration::from_secs(2), || {
         gateway_b.gateway.snapshot().route_registrations_synced == 1
     })
@@ -120,6 +125,27 @@ async fn remote_pipe_case() -> TestResult {
     first_connector.read_exact(&mut from_listener).await?;
     assert_eq!(&from_listener, b"from listener");
 
+    wait_until(Duration::from_secs(2), || {
+        let owner = gateway_b.gateway.snapshot();
+        owner.route_registrations_synced == 0 && owner.route_registrations_unsynced == 1
+    })
+    .await?;
+    let restarted_listener = TcpListener::bind(route_endpoint).await?;
+    let restarted_route_table = RunningRouteTable::start(restarted_listener, restart_directory)?;
+    wait_until(Duration::from_secs(2), || {
+        let owner = gateway_b.gateway.snapshot();
+        owner.route_registrations_synced == 1 && owner.route_registrations_unsynced == 0
+    })
+    .await?;
+    wait_for_remote_pipe(&connector, &listener).await?;
+    assert_concurrent_remote_echo(&connector, Arc::clone(&listener), CONCURRENT_REMOTE_PIPES)
+        .await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().peer_streams == 2
+            && gateway_b.gateway.snapshot().peer_streams == 2
+    })
+    .await?;
+
     first_connector.close().await?;
     first_listener.close().await?;
     second_connector.close().await?;
@@ -134,8 +160,75 @@ async fn remote_pipe_case() -> TestResult {
 
     connector.close();
     listener_runtime.close();
+    restarted_route_table.stop().await?;
     gateway_a.stop().await?;
     gateway_b.stop().await?;
+    Ok(())
+}
+
+async fn wait_for_remote_pipe(connector: &Connector, listener: &Listener) -> TestResult {
+    let expires = Instant::now() + Duration::from_secs(2);
+    loop {
+        match connector.open(CLIENT_ID).await {
+            Ok(mut connector_pipe) => {
+                let mut listener_pipe = listener.accept().await?;
+                connector_pipe.close().await?;
+                listener_pipe.close().await?;
+                return Ok(());
+            }
+            Err(error)
+                if matches!(
+                    error.code(),
+                    SdkErrorCode::NotFound | SdkErrorCode::Unavailable
+                ) && error.observation() == SdkPeerObservation::NotObserved =>
+            {
+                if Instant::now() >= expires {
+                    return Err(error.into());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+async fn assert_concurrent_remote_echo(
+    connector: &Connector,
+    listener: Arc<Listener>,
+    count: usize,
+) -> TestResult {
+    let mut tasks: JoinSet<TestResult> = JoinSet::new();
+    for sequence in 0..count {
+        let connector = connector.clone();
+        let listener = Arc::clone(&listener);
+        tasks.spawn(async move {
+            let (mut connector_pipe, listener_pipe) =
+                tokio::try_join!(connector.open(CLIENT_ID), listener.accept())?;
+            let echo = tokio::spawn(async move {
+                let (mut reader, mut writer) = listener_pipe.into_split();
+                tokio::io::copy(&mut reader, &mut writer).await?;
+                writer.shutdown().await
+            });
+            let payload = vec![(sequence % 251) as u8; 4_096 + sequence * 257];
+            connector_pipe.write_all(&payload).await?;
+            connector_pipe.shutdown().await?;
+            let mut received = Vec::new();
+            connector_pipe.read_to_end(&mut received).await?;
+            echo.await??;
+            if received != payload {
+                return Err(io::Error::other(format!(
+                    "concurrent remote echo {sequence} returned {} of {} bytes",
+                    received.len(),
+                    payload.len()
+                ))
+                .into());
+            }
+            Ok(())
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result??;
+    }
     Ok(())
 }
 
@@ -545,6 +638,26 @@ impl RunningGateway {
         .await
     }
 
+    async fn start_with_control_capacity(
+        name: &str,
+        key: &str,
+        peer_name: &str,
+        peer_key: &str,
+        directory: ShardDirectory,
+        control_capacity: usize,
+    ) -> TestResult<Self> {
+        Self::start_with_limits(
+            name,
+            key,
+            peer_name,
+            peer_key,
+            directory,
+            Duration::from_secs(1),
+            control_capacity,
+        )
+        .await
+    }
+
     async fn start_with_open_response_timeout(
         name: &str,
         key: &str,
@@ -552,6 +665,28 @@ impl RunningGateway {
         peer_key: &str,
         directory: ShardDirectory,
         open_response_timeout: Duration,
+    ) -> TestResult<Self> {
+        Self::start_with_limits(
+            name,
+            key,
+            peer_name,
+            peer_key,
+            directory,
+            open_response_timeout,
+            1,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_with_limits(
+        name: &str,
+        key: &str,
+        peer_name: &str,
+        peer_key: &str,
+        directory: ShardDirectory,
+        open_response_timeout: Duration,
+        control_capacity: usize,
     ) -> TestResult<Self> {
         let sdk_listener = TcpListener::bind("127.0.0.1:0").await?;
         let peer_listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -566,6 +701,7 @@ impl RunningGateway {
             peer_listener,
             peer_address,
             open_response_timeout,
+            control_capacity,
         )
         .await
     }
@@ -592,6 +728,7 @@ impl RunningGateway {
             peer_listener,
             advertised_peer_address,
             open_response_timeout,
+            1,
         )
         .await
     }
@@ -607,16 +744,18 @@ impl RunningGateway {
         peer_listener: TcpListener,
         advertised_peer_address: SocketAddr,
         open_response_timeout: Duration,
+        control_capacity: usize,
     ) -> TestResult<Self> {
         let sdk_address = sdk_listener.local_addr()?;
+        let routing_command_capacity = control_capacity.max(16);
         let routing = GatewayRoutingConfig::new(
             directory,
             GatewayName::new(name)?,
             InternalGatewayKey::new(key)?,
             GatewayLocator::new(advertised_peer_address.to_string())?,
-            route_client_config()?,
+            route_client_config_with_capacity(routing_command_capacity)?,
         )
-        .with_command_queue_capacity(16)
+        .with_command_queue_capacity(routing_command_capacity)
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(40))
         .with_desired_scan_interval(Duration::from_millis(10))
         .with_shutdown_timeout(Duration::from_millis(200));
@@ -628,11 +767,9 @@ impl RunningGateway {
                     open_response_timeout,
                 );
         let shutdown = CancellationToken::new();
-        // One slot proves that Resolve -> OpenPeer hands the same attempt to
-        // its next phase instead of transiently requiring two control slots.
         let gateway = Gateway::new_distributed(
             GatewayConfig::new([(CLIENT_ID.to_owned(), CLIENT_KEY.to_owned())])
-                .with_max_pending_offers(1),
+                .with_max_pending_offers(control_capacity),
             routing,
             peer,
             shutdown.clone(),
@@ -732,8 +869,14 @@ impl RunningRouteTable {
 }
 
 fn route_client_config() -> Result<RouteTableClientConfig, TransportError> {
+    route_client_config_with_capacity(16)
+}
+
+fn route_client_config_with_capacity(
+    command_queue_capacity: usize,
+) -> Result<RouteTableClientConfig, TransportError> {
     RouteTableClientConfig::new(
-        16,
+        command_queue_capacity,
         256 * 1024,
         Duration::from_millis(200),
         Duration::from_millis(200),

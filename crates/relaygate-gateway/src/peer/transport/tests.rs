@@ -367,6 +367,96 @@ async fn committed_open_preserves_order_while_writer_is_stalled() -> Result<(), 
 }
 
 #[tokio::test]
+async fn data_precedes_terminal_fin_while_writer_is_stalled() -> Result<(), Box<dyn Error>> {
+    let (mut actor, mut aggregate_receiver, mut notice_receiver, open_identity, request) =
+        actor_for_open(1)?;
+    assert!(actor.active_opens.reserve(open_identity)?);
+    let key = actor.open(request)?;
+
+    assert!(
+        actor
+            .handle_frame(PeerFrame::Opened {
+                stream_id: key.stream_id()
+            })
+            .await
+    );
+    let opened = notice_receiver
+        .recv()
+        .await
+        .ok_or("expected OPENED event")?;
+    assert!(matches!(
+        opened,
+        TransportNotice::Event(PeerEvent::Opened {
+            key: opened_key,
+            open_identity: identity,
+        }) if opened_key == key && identity == open_identity
+    ));
+    assert!(
+        actor
+            .handle_frame(PeerFrame::Fin {
+                stream_id: key.stream_id()
+            })
+            .await
+    );
+    let remote_fin = notice_receiver
+        .recv()
+        .await
+        .ok_or("expected remote FIN event")?;
+    assert!(matches!(
+        remote_fin,
+        TransportNotice::Event(PeerEvent::Fin { key: fin_key }) if fin_key == key
+    ));
+
+    let (data_reply, data_result) = oneshot::channel();
+    actor
+        .handle_command(TransportCommand::Data {
+            stream_id: key.stream_id(),
+            payload: Bytes::from_static(b"echo-before-fin"),
+            reply: data_reply,
+        })
+        .await;
+    data_result.await??;
+    actor.flush_stream_queues().await;
+
+    let (fin_reply, fin_result) = oneshot::channel();
+    actor
+        .handle_command(TransportCommand::Fin {
+            stream_id: key.stream_id(),
+            reply: fin_reply,
+        })
+        .await;
+    fin_result.await??;
+    actor.flush_stream_queues().await;
+
+    assert!(matches!(
+        aggregate_receiver.try_recv(),
+        Ok(PeerFrame::Open { stream_id, .. }) if stream_id == key.stream_id()
+    ));
+    actor.flush_stream_queues().await;
+    assert!(matches!(
+        aggregate_receiver.try_recv(),
+        Ok(PeerFrame::Data { stream_id, payload })
+            if stream_id == key.stream_id() && payload == Bytes::from_static(b"echo-before-fin")
+    ));
+    assert!(actor.streams.contains_key(&key.stream_id()));
+
+    actor.flush_stream_queues().await;
+    assert!(matches!(
+        aggregate_receiver.try_recv(),
+        Ok(PeerFrame::Fin { stream_id }) if stream_id == key.stream_id()
+    ));
+    assert!(actor.streams.is_empty());
+    assert!(matches!(
+        notice_receiver.try_recv(),
+        Ok(TransportNotice::StreamEnded {
+            key: ended_key,
+            open_identity: identity,
+        }) if ended_key == key && identity == open_identity
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
 -> Result<(), Box<dyn Error>> {
     let (mut actor, mut aggregate_receiver, _notice_receiver, first_identity, first_request) =
