@@ -418,6 +418,57 @@ fn json_logs_expose_stable_startup_and_snapshot_fields_without_secrets()
 }
 
 #[cfg(unix)]
+#[test]
+fn default_json_logs_do_not_emit_gateway_snapshots() -> Result<(), Box<dyn Error>> {
+    let address = unused_loopback_address()?;
+    let mut server = ChildGuard::spawn_captured(
+        server_command()
+            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_CLIENT_KEYS", "echo.alpha=test-key")
+            .env("RELAYGATE_LOG", "info")
+            .env("RELAYGATE_LOG_FORMAT", "json"),
+    )?;
+
+    wait_until_healthy(&address, &mut server)?;
+    thread::sleep(Duration::from_millis(300));
+
+    let signal_status = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()?;
+    assert!(signal_status.success(), "failed to send SIGTERM to server");
+    let exit_status = server.wait_until(SHUTDOWN_DEADLINE)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "server did not exit before the shutdown deadline",
+        )
+    })?;
+    assert!(exit_status.success(), "server shutdown failed");
+
+    let (stdout, stderr) = server.read_captured()?;
+    assert!(
+        stderr.is_empty(),
+        "server wrote unexpected stderr: {stderr}"
+    );
+    let records = stdout
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(
+        records
+            .iter()
+            .any(|record| record["event"] == "server.started"),
+        "missing server.started JSON event"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record["event"] != "gateway.snapshot"),
+        "default observability configuration emitted gateway.snapshot"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets()
 -> Result<(), Box<dyn Error>> {

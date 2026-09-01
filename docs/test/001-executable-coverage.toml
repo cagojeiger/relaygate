@@ -162,8 +162,8 @@ reason = "대표 구조화 event와 secret 및 payload 비노출은 검증하지
 [[case]]
 id = "T-OBS-04"
 status = "partial"
-rust = ["server_boots_health_checks_and_exits_on_sigterm", "json_logs_expose_stable_startup_and_snapshot_fields_without_secrets"]
-reason = "server의 port와 snapshot 설정은 검증하지만 library만 포함했을 때 전역 subscriber가 생기지 않는다는 전용 테스트가 없다."
+rust = ["embedding_gateway_and_sdk_do_not_install_a_global_subscriber", "default_json_logs_do_not_emit_gateway_snapshots", "server_boots_health_checks_and_exits_on_sigterm", "json_logs_expose_stable_startup_and_snapshot_fields_without_secrets"]
+reason = "독립 test process에서 Gateway와 SDK가 global subscriber를 설치하지 않음을 검증하고, server의 기본 JSON 설정에는 snapshot이 없으며 명시적으로 활성화하면 current-state event가 생김을 검증한다. library와 snapshot 경로가 exporter나 추가 listener를 열지 않는다는 부정 계약은 주입형 serve API와 코드 구조에 의존하며 모든 socket 부재를 동적으로 전수하지 않는다."
 
 [[case]]
 id = "T-OBS-05"
