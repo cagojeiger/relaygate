@@ -186,7 +186,7 @@ async fn distributed_sdk_reset_case() -> TestResult {
     let directory = ShardDirectory::from_json_bytes(one_shard_directory(route_endpoint))?;
     let route_table = RunningRouteTable::start(route_listener, directory.clone())?;
 
-    let mut gateway_a = RunningGateway::start(
+    let gateway_a = RunningGateway::start(
         GATEWAY_A,
         GATEWAY_A_KEY,
         GATEWAY_B,
@@ -194,7 +194,7 @@ async fn distributed_sdk_reset_case() -> TestResult {
         directory.clone(),
     )
     .await?;
-    let mut gateway_b = RunningGateway::start(
+    let gateway_b = RunningGateway::start(
         GATEWAY_B,
         GATEWAY_B_KEY,
         GATEWAY_A,
