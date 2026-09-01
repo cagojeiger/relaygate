@@ -8,7 +8,7 @@ use relaygate_protocol::{
     BindingId, ErrorCode as WireErrorCode, Frame, PipeId, SessionId, SessionRole,
 };
 use relaygate_sdk::{Config, ErrorCode, ListenerRuntime, ListenerStatus};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 use support::{TestResult, accept_session, bind_gateway, unexpected};
@@ -535,6 +535,116 @@ async fn stale_and_duplicate_offers_never_enqueue_a_second_pipe_case() -> TestRe
     );
     drop(pipe);
     let _ = test_done_tx.send(());
+    server.await??;
+    runtime.close();
+    Ok(())
+}
+
+#[tokio::test]
+async fn repeated_terminal_offers_leave_no_listener_pipe_history() -> TestResult {
+    timeout(
+        Duration::from_secs(5),
+        repeated_terminal_offers_leave_no_listener_pipe_history_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn repeated_terminal_offers_leave_no_listener_pipe_history_case() -> TestResult {
+    const ATTEMPTS: u64 = 64;
+
+    let (gateway, address) = bind_gateway().await?;
+    let (accepted_tx, mut accepted_rx) = mpsc::channel(1);
+    let (release_tx, mut release_rx) = mpsc::channel(1);
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let register = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing REGISTER"))??;
+        let request_id = match register {
+            Frame::Register { request_id, .. } => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        let binding_id = BindingId::new();
+        transport
+            .send(Frame::Registered {
+                request_id,
+                binding_id,
+            })
+            .await?;
+        let connector_session_id = SessionId::new();
+
+        for connection_id in 1..=ATTEMPTS {
+            let pipe_id = PipeId::new(connector_session_id, connection_id);
+            transport
+                .send(Frame::Offer {
+                    pipe_id,
+                    binding_id,
+                    client_id: "echo.alpha".to_owned(),
+                })
+                .await?;
+            let accepted = transport
+                .next()
+                .await
+                .ok_or_else(|| io::Error::other("missing OFFER_ACCEPTED"))??;
+            if !matches!(accepted, Frame::OfferAccepted { pipe_id: accepted } if accepted == pipe_id)
+            {
+                return Err(unexpected(accepted).into());
+            }
+            accepted_tx
+                .send(connection_id)
+                .await
+                .map_err(|_| io::Error::other("accept notification receiver closed"))?;
+            let released = release_rx
+                .recv()
+                .await
+                .ok_or_else(|| io::Error::other("terminal release sender closed"))?;
+            if released != connection_id {
+                return Err(io::Error::other("terminal release correlation mismatch").into());
+            }
+
+            if connection_id.is_multiple_of(2) {
+                transport.send(Frame::Close { pipe_id }).await?;
+            } else {
+                transport
+                    .send(Frame::Reset {
+                        pipe_id,
+                        code: WireErrorCode::Cancelled,
+                        message: "test terminal reset".to_owned(),
+                    })
+                    .await?;
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(Config::new(address)).await?;
+    let listener = runtime.listen("echo.alpha", "dev-key").await?;
+    for connection_id in 1..=ATTEMPTS {
+        let accepted = accepted_rx
+            .recv()
+            .await
+            .ok_or_else(|| io::Error::other("accept notification sender closed"))?;
+        assert_eq!(accepted, connection_id);
+        let mut pipe = listener.accept().await?;
+        release_tx
+            .send(connection_id)
+            .await
+            .map_err(|_| io::Error::other("terminal release receiver closed"))?;
+
+        let mut byte = [0_u8; 1];
+        if connection_id.is_multiple_of(2) {
+            assert_eq!(pipe.read_into(&mut byte).await?, 0);
+        } else {
+            let error = pipe
+                .read_into(&mut byte)
+                .await
+                .expect_err("RESET must terminate the current Pipe");
+            assert_eq!(error.code(), ErrorCode::Cancelled);
+        }
+    }
+
     server.await??;
     runtime.close();
     Ok(())

@@ -385,6 +385,11 @@ impl GatewayState {
         self.pipes.len()
     }
 
+    #[cfg(test)]
+    fn peer_pipe_count(&self) -> usize {
+        self.peer_pipes.len()
+    }
+
     fn pending_offer_count(&self) -> usize {
         self.pending_offer_count
     }
