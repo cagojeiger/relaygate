@@ -80,7 +80,12 @@ impl UpdateGateProxy {
     pub(super) async fn wait_until_update_blocked(&self) -> TestResult {
         timeout(Duration::from_secs(2), async {
             while self.blocked_updates() == 0 {
-                self.blocked.notified().await;
+                let notified = self.blocked.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.blocked_updates() == 0 {
+                    notified.await;
+                }
             }
         })
         .await
@@ -197,8 +202,14 @@ async fn forward_connection(
                     blocked_updates.fetch_add(1, Ordering::AcqRel);
                     blocked.notify_one();
                     while !released.load(Ordering::Acquire) {
+                        let notified = release.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
+                        if released.load(Ordering::Acquire) {
+                            break;
+                        }
                         tokio::select! {
-                            () = release.notified() => {}
+                            () = notified => {}
                             () = shutdown.cancelled() => return Ok(()),
                         }
                     }
