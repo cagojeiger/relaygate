@@ -616,9 +616,9 @@ rust = ["ended_lease_operations_cannot_change_a_new_lease", "expired_lease_updat
 
 [[case]]
 id = "T-EDGE-19"
-status = "partial"
-rust = ["peer::tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_failed_counter", "peer::tests::remote_stream_guard_rejects_reused_or_wrong_role_stream_id", "peer::runtime_tests::open_identity_is_unique_only_while_current_stream_is_active"]
-reason = "counter와 stale guard는 검증하지만 simultaneous endpoint counter와 delayed old OPEN 조합이 없다."
+status = "executable"
+rust = ["peer::transport::tests::remote::endpoint_bits_isolate_remote_open_replay", "peer::runtime_tests::simultaneous_opens_share_ready_transport_after_candidate_timeout", "peer::tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_failed_counter", "peer::tests::remote_stream_guard_rejects_reused_or_wrong_role_stream_id"]
+reason = "실제 runtime의 동시 양방향 OPEN이 하나의 READY transport에서 StreamId 0과 1로 공존함을 검증한다. transport actor sequence는 remote StreamId 0의 실패·cleanup 뒤 동일 OPEN 재도착을 high-watermark로 거절하면서 local StreamId 1과 transport를 유지하고, 다음 remote StreamId 2를 admission한다."
 
 [[case]]
 id = "T-EDGE-20"
