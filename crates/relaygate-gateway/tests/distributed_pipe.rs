@@ -40,6 +40,8 @@ const PEER_OPEN_KIND: u8 = 4;
 const CONCURRENT_REMOTE_PIPES: usize = 32;
 const CONCURRENT_CONTROL_CAPACITY: usize = 64;
 
+#[path = "distributed_pipe/open_faults.rs"]
+mod open_faults;
 #[path = "distributed_pipe/route_table_restart.rs"]
 mod route_table_restart;
 
