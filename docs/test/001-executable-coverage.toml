@@ -412,9 +412,9 @@ reason = "INVALID_ARGUMENT와 atomic non-mutation은 검증하지만 입력 수�
 
 [[case]]
 id = "T-ERR-02"
-status = "partial"
-rust = ["auth::tests::exact_client_key_is_required", "auth::tests::unknown_and_wrong_keys_fail", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state", "routing::tests::terminal_failure_does_not_hot_retry_and_backoff_is_bounded"]
-reason = "인증과 권한 오류는 구분하지만 새 credential 또는 deployment 전 동일 결과의 전체 lifecycle은 없다."
+status = "executable"
+rust = ["auth::tests::exact_client_key_is_required", "auth::tests::unknown_and_wrong_keys_fail", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state", "routing::tests::terminal_failure_does_not_hot_retry_and_backoff_is_bounded", "permanent_recovery_rejection_blocks_only_affected_listener", "replacement_gateway_key_change_blocks_only_affected_listener"]
+reason = "인증과 권한 오류를 구분하고 terminal 실패의 hot retry를 막는다. 실제 replacement Gateway의 고정 ClientKey 변경에서는 old key Listener만 UNAUTHENTICATED/BLOCKED로 유지되고, application이 새 key로 새 listen을 시작한 뒤에만 binding과 Pipe가 복구된다."
 
 [[case]]
 id = "T-ERR-03"
@@ -637,9 +637,9 @@ reason = "같은 locator를 재사용한 Gateway restart 뒤 새 GatewayId와 Bi
 
 [[case]]
 id = "T-EDGE-23"
-status = "partial"
-rust = ["permanent_recovery_rejection_blocks_only_affected_listener"]
-reason = "affected Listener 격리는 검증하지만 replacement Gateway와 다른 fixed key까지 포함하지 않는다."
+status = "executable"
+rust = ["permanent_recovery_rejection_blocks_only_affected_listener", "replacement_gateway_key_change_blocks_only_affected_listener"]
+reason = "wire-level recovery와 실제 replacement Gateway를 함께 검증한다. G2의 변경된 고정 key는 A의 old-key recovery만 BLOCKED로 만들고 B와 shared ListenerSession을 유지하며, A는 자동 재등록하지 않고 application의 close와 new-key listen 뒤에만 새 binding과 Pipe를 만든다."
 
 [[case]]
 id = "T-EDGE-24"
