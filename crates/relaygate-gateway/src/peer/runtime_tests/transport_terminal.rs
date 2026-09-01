@@ -6,6 +6,7 @@ use std::{
 use relaygate_protocol::PeerObservation;
 
 use super::*;
+use crate::peer::identity::PeerOpenProgress;
 
 fn assert_transport_loss(
     event: PeerEvent,
@@ -35,6 +36,102 @@ fn assert_transport_loss(
         })
     );
     Ok(())
+}
+
+fn assert_committed_open_loss(
+    event: PeerEvent,
+    expected_peer_gateway_id: GatewayId,
+    expected_key: PeerStreamKey,
+    expected_identity: OpenIdentity,
+) -> TestResult {
+    let PeerEvent::TransportLost {
+        peer_gateway_id,
+        peer_transport_id,
+        streams,
+    } = event
+    else {
+        return Err(format!("expected TransportLost, got {event:?}").into());
+    };
+
+    assert_eq!(peer_gateway_id, expected_peer_gateway_id);
+    assert_eq!(peer_transport_id, expected_key.peer_transport_id());
+    assert_eq!(streams.len(), 1);
+    let lost = streams[0];
+    assert_eq!(lost.key, expected_key);
+    assert_eq!(lost.open_identity, expected_identity);
+    assert_eq!(lost.progress, PeerOpenProgress::AfterOpenCommit);
+    assert_eq!(
+        lost.progress.failure_observation(),
+        PeerObservation::MaybeObserved
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn committed_open_transport_loss_is_maybe_observed_on_both_endpoints_without_replay()
+-> TestResult {
+    let mut pair = RuntimePair::start().await?;
+    let request = pair.request_a_to_b(1)?;
+    let identity = request.open_identity();
+    let open = {
+        let handle = pair.handle_a.clone();
+        tokio::spawn(async move { handle.open(request).await })
+    };
+
+    let incoming = next_event(&mut pair.events_b).await?;
+    let PeerEvent::IncomingOpen {
+        key: owner_key,
+        open_identity,
+        ..
+    } = incoming
+    else {
+        return Err(format!("expected IncomingOpen, got {incoming:?}").into());
+    };
+    assert_eq!(open_identity, identity);
+    let entry_key = open.await??;
+    assert_eq!(entry_key.peer_transport_id(), owner_key.peer_transport_id());
+    let opening_counts = PeerCounts {
+        connecting: 0,
+        ready: 1,
+        streams: 1,
+    };
+    wait_for_counts(&pair.handle_a, opening_counts).await?;
+    wait_for_counts(&pair.handle_b, opening_counts).await?;
+
+    assert!(pair.handle_a.close_transport(entry_key));
+    assert_committed_open_loss(
+        next_event(&mut pair.events_a).await?,
+        pair.gateway_b,
+        entry_key,
+        identity,
+    )?;
+    assert_committed_open_loss(
+        next_event(&mut pair.events_b).await?,
+        pair.gateway_a,
+        owner_key,
+        identity,
+    )?;
+    wait_for_counts(&pair.handle_a, PeerCounts::default()).await?;
+    wait_for_counts(&pair.handle_b, PeerCounts::default()).await?;
+    assert!(!pair.handle_a.close_transport(entry_key));
+    assert!(!pair.handle_b.close_transport(owner_key));
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), pair.events_a.recv())
+            .await
+            .is_err(),
+        "Entry Gateway replayed or emitted a duplicate terminal event"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), pair.events_b.recv())
+            .await
+            .is_err(),
+        "Owner Gateway replayed OPEN or emitted a duplicate terminal event"
+    );
+    assert_eq!(pair.handle_a.counts(), PeerCounts::default());
+    assert_eq!(pair.handle_b.counts(), PeerCounts::default());
+
+    pair.shutdown().await
 }
 
 #[tokio::test]
