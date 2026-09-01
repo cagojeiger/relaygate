@@ -451,9 +451,9 @@ rust = ["error::tests::retryable_requires_a_transient_not_observed_failure", "co
 
 [[case]]
 id = "T-STATE-SDK"
-status = "partial"
-rust = ["stalled_transport_send_times_out_and_cleans_up_session", "dropping_last_connector_owner_stops_the_session", "dropping_last_listener_owner_stops_the_session"]
-reason = "실패와 마지막 owner drop은 검증하지만 성공부터 explicit close까지 SDK runtime 전체 상태 순환을 한 sequence로 닫지 않는다."
+status = "executable"
+rust = ["connector_runtime_cycles_through_loss_failed_reconnect_recovery_and_close", "desired_listener_is_registered_again_on_new_session", "stalled_transport_send_times_out_and_cleans_up_session", "stalled_listener_transport_send_times_out_and_cleans_up_session", "listener_runtime_clone_drop_and_explicit_close_terminate_runtime", "dropping_last_connector_owner_stops_the_session", "dropping_last_listener_owner_stops_the_session"]
+reason = "Connector public runtime은 초기 성공, transport loss, bad handshake reconnect failure, bounded backoff 뒤 성공 재연결, 새 OPEN 성공, explicit close와 no-reconnect를 한 sequence로 검증한다. Listener는 기존 loss 뒤 새 session 재등록과 explicit close/no-reconnect 증거를 합성하며, 두 role의 bounded outbound write failure와 마지막 public owner drop도 별도 테스트로 검증한다."
 
 [[case]]
 id = "T-STATE-CONNECTOR"
