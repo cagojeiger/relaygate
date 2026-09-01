@@ -61,6 +61,122 @@ fn routed_miss_creates_one_request_local_resolve() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn concurrent_remote_opens_consume_only_their_request_local_resolve()
+-> Result<(), Box<dyn std::error::Error>> {
+    type Candidates = [(SessionId, BindingId); 2];
+    type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+    let client_id = "echo.shared";
+    let entry_gateway = GatewayId::new();
+    let owner_a = GatewayId::new();
+    let owner_b = GatewayId::new();
+    let mut state = routed_state(entry_gateway);
+    let connector = add_session(&mut state, SessionRole::Connector);
+
+    let resolve_a = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: client_id.to_owned(),
+        },
+    )?;
+    let resolve_b = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 2,
+            client_id: client_id.to_owned(),
+        },
+    )?;
+    let identity_a = resolve_identity(&resolve_a).ok_or("missing first resolve")?;
+    let identity_b = resolve_identity(&resolve_b).ok_or("missing second resolve")?;
+    assert_ne!(identity_a, identity_b);
+    assert_eq!(state.remote_open_attempt_count(), 2);
+
+    let make_bindings = |owner: GatewayId, locator: &str| -> TestResult<(BindingSet, Candidates)> {
+        let candidates = [
+            (SessionId::new(), BindingId::new()),
+            (SessionId::new(), BindingId::new()),
+        ];
+        let entries = candidates
+            .iter()
+            .map(|(listener_session_id, binding_id)| {
+                Ok(MappingEntry::new(
+                    RouteClientId::new(client_id)?,
+                    owner,
+                    ListenerSessionId::from_uuid(listener_session_id.as_uuid()),
+                    RouteBindingId::from_uuid(binding_id.as_uuid()),
+                    GatewayLocator::new(locator)?,
+                ))
+            })
+            .collect::<TestResult<Vec<_>>>()?;
+        Ok((BindingSet::from_entries(entries)?, candidates))
+    };
+    let (bindings_a, a_candidates) = make_bindings(owner_a, "owner-a.internal:27421")?;
+    let (bindings_b, b_candidates) = make_bindings(owner_b, "owner-b.internal:27421")?;
+
+    let assert_one_peer = |actions: &[GatewayAction],
+                           identity: OpenIdentity,
+                           owner: GatewayId,
+                           candidates: &Candidates|
+     -> TestResult<()> {
+        let [GatewayAction::OpenPeer {
+            open_identity,
+            gateway_id,
+            listener_session_id,
+            binding_id,
+            ..
+        }] = actions
+        else {
+            return Err("Resolve must select exactly one peer binding".into());
+        };
+        assert_eq!(*open_identity, identity);
+        assert_eq!(*gateway_id, owner);
+        assert!(candidates.contains(&(*listener_session_id, *binding_id)));
+        Ok(())
+    };
+
+    let open_b = state.route_resolved(identity_b, bindings_b.clone());
+    assert_one_peer(&open_b, identity_b, owner_b, &b_candidates)?;
+
+    let open_a = state.route_resolved(identity_a, bindings_a.clone());
+    assert_one_peer(&open_a, identity_a, owner_a, &a_candidates)?;
+
+    assert!(state.route_resolved(identity_b, bindings_b).is_empty());
+    assert!(state.route_resolved(identity_a, bindings_a).is_empty());
+
+    let resolve_c = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 3,
+            client_id: client_id.to_owned(),
+        },
+    )?;
+    let [GatewayAction::ResolveRoute {
+        open_identity: identity_c,
+        client_id: resolved_client_id,
+    }] = resolve_c.as_slice()
+    else {
+        return Err("a new OPEN must issue exactly one request-local Resolve".into());
+    };
+    let identity_c = *identity_c;
+    assert_eq!(resolved_client_id.as_str(), client_id);
+    assert_eq!(state.remote_open_attempt_count(), 3);
+
+    for identity in [identity_a, identity_b] {
+        state.peer_open_commit_failed(
+            identity,
+            ErrorCode::Unavailable,
+            PeerObservation::NotObserved,
+            "test cleanup",
+        );
+    }
+    state.route_failed(identity_c, ErrorCode::Unavailable, "test cleanup");
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
 fn late_resolve_cannot_resurrect_a_closed_connector_session()
 -> Result<(), Box<dyn std::error::Error>> {
     let entry_gateway = GatewayId::new();

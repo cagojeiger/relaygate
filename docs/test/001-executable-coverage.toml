@@ -576,9 +576,9 @@ reason = "ListenerSession 종료 뒤 local state는 즉시 제거된다. Deregis
 
 [[case]]
 id = "T-EDGE-12"
-status = "partial"
-rust = ["state::tests::n_to_m_registry_offers_each_open_to_only_one_listener", "rt_one_gateway_three_forms_a_closed_current_state_relay"]
-reason = "exact-one 선택은 검증하지만 concurrent open과 각 Resolve 결과 폐기를 전수하지 않는다."
+status = "executable"
+rust = ["state::tests::n_to_m_registry_offers_each_open_to_only_one_listener", "state::tests::concurrent_remote_opens_consume_only_their_request_local_resolve", "rt_one_gateway_three_forms_a_closed_current_state_relay"]
+reason = "같은 ClientId의 remote OPEN 두 개를 동시에 Resolving 상태로 만든 뒤 Resolve 결과를 역순 적용한다. 각 attempt가 자기 결과의 binding 하나만 선택하고 fan-out하지 않으며, 중복 결과를 무시하고 다음 OPEN은 정확히 하나의 새 ResolveRoute를 발행함을 검증한다."
 
 [[case]]
 id = "T-EDGE-13"
