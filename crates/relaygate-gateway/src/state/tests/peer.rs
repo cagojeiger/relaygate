@@ -385,6 +385,93 @@ fn owner_transport_loss_preserves_listener_binding_and_registration()
 }
 
 #[test]
+fn owner_offer_timeout_clears_peer_indexes_and_preserves_sibling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = routed_state(GatewayId::new());
+    let selected_cancellation = CancellationToken::new();
+    let selected = add_session_with_cancellation(
+        &mut state,
+        SessionRole::Listener,
+        selected_cancellation.clone(),
+    );
+    let sibling_cancellation = CancellationToken::new();
+    let sibling = add_session_with_cancellation(
+        &mut state,
+        SessionRole::Listener,
+        sibling_cancellation.clone(),
+    );
+    register_listener(&mut state, selected)?;
+    register_listener(&mut state, sibling)?;
+    let binding = state
+        .registry
+        .bindings_for_session(selected)
+        .into_iter()
+        .next()
+        .ok_or("missing binding")?;
+    let entry_gateway = GatewayId::new();
+    let key = peer_key(entry_gateway, 0);
+    let identity = OpenIdentity::new(entry_gateway, SessionId::new(), 1);
+    let offered_at = Instant::now();
+
+    let offered = state.receive_peer_open_at(
+        key,
+        identity,
+        "echo.shared".to_owned(),
+        selected,
+        binding.id,
+        offered_at,
+    );
+    assert!(sdk_deliveries(&offered).any(|delivery| {
+        delivery.target == selected && matches!(delivery.frame, Frame::Offer { .. })
+    }));
+    assert_eq!(state.pending_offer_count(), 1);
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.peer_pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+
+    let offer_timeout = state.limits.offer_timeout;
+    let expired = state.expire_offers(offered_at + offer_timeout);
+    assert!(peer_deliveries(&expired).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Failed {
+            key: failed_key,
+            code: ErrorCode::DeadlineExceeded,
+            observation: PeerObservation::MaybeObserved,
+            ..
+        } if *failed_key == key
+    )));
+    assert!(!sdk_deliveries(&expired).any(|delivery| {
+        delivery.target == sibling && matches!(delivery.frame, Frame::Offer { .. })
+    }));
+    assert!(selected_cancellation.is_cancelled());
+    assert!(!sibling_cancellation.is_cancelled());
+    assert!(!state.sessions.contains_key(&selected));
+    assert!(state.sessions.contains_key(&sibling));
+    assert_eq!(state.registry.binding_count(), 1);
+    assert_eq!(state.registry.session_binding_count(sibling), 1);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.live_pipe_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+    assert_eq!(state.peer_pipe_count(), 0);
+    assert_eq!(state.active_peer_open_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert!(
+        state
+            .handle(
+                selected,
+                Frame::OfferAccepted {
+                    pipe_id: PipeId::new(
+                        identity.connector_session(),
+                        identity.connection_id(),
+                    ),
+                },
+            )?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[test]
 fn connector_cleanup_and_transport_loss_are_scoped_to_current_streams()
 -> Result<(), Box<dyn std::error::Error>> {
     let entry_gateway = GatewayId::new();

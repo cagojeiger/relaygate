@@ -410,6 +410,92 @@ fn connection_history_is_a_single_high_watermark() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn repeated_terminal_opens_leave_only_connection_high_watermark()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ATTEMPTS: u64 = 64;
+
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let mut seen_pipes = std::collections::HashSet::new();
+
+    for connection_id in 1..=ATTEMPTS {
+        let offered = state.handle(
+            connector,
+            Frame::Open {
+                connection_id,
+                client_id: "echo.shared".to_owned(),
+            },
+        )?;
+        let offers = sdk_deliveries(&offered)
+            .filter_map(|delivery| match delivery.frame {
+                Frame::Offer { pipe_id, .. } if delivery.target == listener => Some(pipe_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(offers.len(), 1, "OPEN must emit exactly one OFFER");
+        let pipe_id = offers[0];
+        assert!(seen_pipes.insert(pipe_id), "PipeId must not be reused");
+        assert_eq!(pipe_id.connection_id(), connection_id);
+
+        if connection_id.is_multiple_of(2) {
+            let opened = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+            assert!(matches!(
+                first_sdk_delivery(&opened).map(|delivery| &delivery.frame),
+                Some(Frame::Opened { pipe_id: opened }) if *opened == pipe_id
+            ));
+            let closed = state.handle(connector, Frame::Close { pipe_id })?;
+            assert!(matches!(
+                first_sdk_delivery(&closed).map(|delivery| &delivery.frame),
+                Some(Frame::Close { pipe_id: closed }) if *closed == pipe_id
+            ));
+        } else {
+            let rejected = state.handle(
+                listener,
+                Frame::OfferRejected {
+                    pipe_id,
+                    code: ErrorCode::Unavailable,
+                    message: "listener rejected".to_owned(),
+                },
+            )?;
+            assert!(matches!(
+                first_sdk_delivery(&rejected).map(|delivery| &delivery.frame),
+                Some(Frame::OpenFailed {
+                    connection_id: failed,
+                    code: ErrorCode::Unavailable,
+                    observation: relaygate_protocol::PeerObservation::NotObserved,
+                    ..
+                }) if *failed == connection_id
+            ));
+        }
+
+        assert_eq!(state.pending_offer_count(), 0);
+        assert_eq!(state.live_pipe_count(), 0);
+        assert_eq!(state.pipe_count(), 0);
+        assert_eq!(state.registry.binding_count(), 1);
+        assert_eq!(state.registry.session_binding_count(listener), 1);
+        assert_eq!(state.connection_high_watermark(connector), Some(connection_id));
+    }
+
+    assert_eq!(seen_pipes.len(), ATTEMPTS as usize);
+    assert!(
+        state
+            .handle(
+                connector,
+                Frame::Open {
+                    connection_id: ATTEMPTS / 2,
+                    client_id: "echo.shared".to_owned(),
+                },
+            )?
+            .is_empty()
+    );
+    assert_eq!(state.connection_high_watermark(connector), Some(ATTEMPTS));
+    assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
 fn close_reset_and_late_frames_are_pipe_local() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
     let listener = add_session(&mut state, SessionRole::Listener);

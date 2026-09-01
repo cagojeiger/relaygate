@@ -335,9 +335,8 @@ rust = ["committed_open_timeout_closes_session_and_existing_pipes", "committed_o
 
 [[case]]
 id = "T-OPEN-15"
-status = "partial"
-rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::connection_history_is_a_single_high_watermark", "stale_and_duplicate_offers_never_enqueue_a_second_pipe"]
-reason = "late frame과 duplicate OFFER는 검증하지만 성공과 실패 반복에서 tombstone 비누적을 함께 검증하지 않는다."
+status = "executable"
+rust = ["connector::tests::concurrent_opens_commit_monotonic_connection_ids", "state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::connection_history_is_a_single_high_watermark", "state::tests::repeated_terminal_opens_leave_only_connection_high_watermark", "state::tests::data_after_fin_resets_only_that_pipe", "state::tests::offer_deadline_closes_selected_listener_session_and_preserves_sibling", "state::tests::owner_offer_timeout_clears_peer_indexes_and_preserves_sibling", "unanswered_offer_closes_selected_listener_and_preserves_sibling", "stale_and_duplicate_offers_never_enqueue_a_second_pipe", "repeated_terminal_offers_leave_no_listener_pipe_history"]
 
 [[case]]
 id = "T-OPEN-16"
