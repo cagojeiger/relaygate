@@ -136,8 +136,8 @@ reason = "SDK와 Gateway 양쪽의 heartbeat, timeout cleanup, Pipe read idle �
 [[case]]
 id = "T-SDK-16"
 status = "partial"
-rust = ["committed_register_timeout_closes_session_without_replay", "reconnect_replays_all_desired_listeners_with_capacity_one", "initial_register_failure_is_terminal_until_application_retries", "returned_listener_retries_transient_recovery_failure"]
-reason = "각 규칙은 검증하지만 returned A와 B 및 initial C blackhole을 한 session에서 합성한 시나리오가 없다."
+rust = ["committed_initial_register_timeout_recovers_only_returned_listeners", "reconnect_replays_all_desired_listeners_with_capacity_one", "initial_register_failure_is_terminal_until_application_retries", "returned_listener_retries_transient_recovery_failure"]
+reason = "returned A·B와 accepted Pipe 및 initial C blackhole을 한 session에서 합성해 session·Pipe cleanup, A·B-only recovery와 C no-replay를 검증한다. 다만 TCP 재연결 성공만으로 backoff를 초기화하지 않고 recovery registration 성공 뒤 초기화하는 progression/reset sequence는 직접 관찰하지 않는다."
 
 [[case]]
 id = "T-SDK-17"
@@ -223,7 +223,7 @@ reason = "OFFER expiry의 selected-session cleanup은 검증하지만 returned L
 [[case]]
 id = "T-REG-09"
 status = "partial"
-rust = ["committed_register_timeout_closes_session_without_replay", "state::tests::disconnect_removes_only_owned_state_and_terminates_pending_open", "state::tests::only_listener_session_cleanup_publishes_an_empty_snapshot"]
+rust = ["committed_initial_register_timeout_recovers_only_returned_listeners", "state::tests::disconnect_removes_only_owned_state_and_terminates_pending_open", "state::tests::only_listener_session_cleanup_publishes_an_empty_snapshot"]
 reason = "SDK timeout과 Gateway cleanup은 각각 검증하지만 returned Listener와 pending REGISTER loss를 실제 Gateway까지 연결하지 않는다."
 
 [[case]]
@@ -474,7 +474,7 @@ reason = "ConnectorSession cleanup과 RESET 성공·실패 scope를 검증하고
 [[case]]
 id = "T-STATE-LISTENER"
 status = "partial"
-rust = ["listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "permanent_recovery_rejection_blocks_only_affected_listener", "closing_listener_during_recovery_register_rebuilds_session_for_sibling", "committed_register_timeout_closes_session_without_replay"]
+rust = ["listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "permanent_recovery_rejection_blocks_only_affected_listener", "closing_listener_during_recovery_register_rebuilds_session_for_sibling", "committed_initial_register_timeout_recovers_only_returned_listeners"]
 reason = "pending accept cancellation과 주요 Listener lifecycle은 검증하지만 모든 recovery 경쟁을 전수하지 않는다."
 
 [[case]]
@@ -669,9 +669,8 @@ reason = "C1 cleanup과 no replay는 검증하지만 late C1 OPENED가 C2에 도
 
 [[case]]
 id = "T-EDGE-27"
-status = "partial"
-rust = ["committed_register_timeout_closes_session_without_replay", "reconnect_replays_all_desired_listeners_with_capacity_one"]
-reason = "A와 B recovery 및 C timeout은 각각 검증하지만 한 session에서 결합하지 않는다."
+status = "executable"
+rust = ["committed_initial_register_timeout_recovers_only_returned_listeners", "reconnect_replays_all_desired_listeners_with_capacity_one"]
 
 [[case]]
 id = "T-EDGE-28"
