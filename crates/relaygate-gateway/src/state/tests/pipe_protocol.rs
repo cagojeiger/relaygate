@@ -600,45 +600,56 @@ fn close_reset_and_late_frames_are_pipe_local() -> Result<(), Box<dyn std::error
     let connector = add_session(&mut state, SessionRole::Connector);
     register_listener(&mut state, listener)?;
 
-    let closed = open_pipe(&mut state, connector, listener, 1)?;
-    let close = state.handle(connector, Frame::Close { pipe_id: closed })?;
-    assert!(matches!(
-        first_sdk_delivery(&close).map(|delivery| (&delivery.target, &delivery.frame)),
-        Some((target, Frame::Close { pipe_id })) if *target == listener && *pipe_id == closed
-    ));
-    assert_eq!(state.pipe_count(), 0);
-    assert!(
-        state
-            .handle(listener, Frame::Close { pipe_id: closed })?
-            .is_empty()
-    );
+    for (connection_id, sender, counterpart) in
+        [(1, connector, listener), (2, listener, connector)]
+    {
+        let closed = open_pipe(&mut state, connector, listener, connection_id)?;
+        let close = state.handle(sender, Frame::Close { pipe_id: closed })?;
+        assert_eq!(close.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&close).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Close { pipe_id }))
+                if *target == counterpart && *pipe_id == closed
+        ));
+        assert_eq!(state.pipe_count(), 0);
+        assert!(
+            state
+                .handle(counterpart, Frame::Close { pipe_id: closed })?
+                .is_empty()
+        );
+    }
 
-    let reset = open_pipe(&mut state, connector, listener, 2)?;
-    let resets = state.handle(
-        listener,
-        Frame::Reset {
-            pipe_id: reset,
-            code: ErrorCode::Cancelled,
-            message: "listener stopped".to_owned(),
-        },
-    )?;
-    assert!(matches!(
-        first_sdk_delivery(&resets).map(|delivery| (&delivery.target, &delivery.frame)),
-        Some((target, Frame::Reset { pipe_id, code: ErrorCode::Cancelled, .. }))
-            if *target == connector && *pipe_id == reset
-    ));
-    assert_eq!(state.pipe_count(), 0);
-    assert!(
-        state
-            .handle(
-                connector,
-                Frame::Data {
-                    pipe_id: reset,
-                    payload: Bytes::from_static(b"late"),
-                },
-            )?
-            .is_empty()
-    );
+    for (connection_id, sender, counterpart) in
+        [(3, connector, listener), (4, listener, connector)]
+    {
+        let reset = open_pipe(&mut state, connector, listener, connection_id)?;
+        let resets = state.handle(
+            sender,
+            Frame::Reset {
+                pipe_id: reset,
+                code: ErrorCode::Cancelled,
+                message: "endpoint stopped".to_owned(),
+            },
+        )?;
+        assert_eq!(resets.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&resets).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Reset { pipe_id, code: ErrorCode::Cancelled, .. }))
+                if *target == counterpart && *pipe_id == reset
+        ));
+        assert_eq!(state.pipe_count(), 0);
+        assert!(
+            state
+                .handle(
+                    counterpart,
+                    Frame::Data {
+                        pipe_id: reset,
+                        payload: Bytes::from_static(b"late"),
+                    },
+                )?
+                .is_empty()
+        );
+    }
     assert_eq!(state.pipe_count(), 0);
     Ok(())
 }
