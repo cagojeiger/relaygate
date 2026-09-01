@@ -493,9 +493,9 @@ reason = "success·cancel·deadline 대표 경합과 late event는 검증하지�
 
 [[case]]
 id = "T-STATE-PIPE"
-status = "partial"
-rust = ["state::tests::close_reset_and_late_frames_are_pipe_local", "state::tests::data_after_fin_resets_only_that_pipe", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "gateway::effects::tests::entry_opened_delivery_failure_closes_connector_and_remote_pipe", "lost_entry_opened_closes_connector_session_and_remote_pipe"]
-reason = "정상과 실패 terminal 및 application accept 뒤 OPENED 응답 유실의 양 endpoint cleanup은 검증하지만 open failure와 미수락 Listener queue cleanup을 한 sequence로 연결하지 않는다."
+status = "executable"
+rust = ["state::tests::close_reset_and_late_frames_are_pipe_local", "state::tests::data_after_fin_resets_only_that_pipe", "local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "terminal_queued_pipe_is_discarded_before_accept", "session_loss_drains_unaccepted_pipe_before_recovery_admission", "actual_gateway_offer_timeout_cleans_selected_session_and_recovers_returned_listeners", "gateway::effects::tests::entry_opened_delivery_failure_closes_connector_and_remote_pipe", "lost_entry_opened_closes_connector_session_and_remote_pipe"]
+reason = "실제 Gateway와 public SDK의 OFFER_ACCEPTED 유실 sequence가 Listener queue admission 뒤 open 실패, selected ListenerSession 종료, old 미수락 Pipe 제거와 새 session 복구를 함께 검증한다. 별도 분산 OPENED 확인 유실 테스트는 ConnectorSession과 양 Gateway의 Pipe·RelayStream 및 accepted Listener endpoint cleanup을 검증한다. SDK queue 테스트는 terminal Pipe 제거와 capacity 재사용을, state 테스트는 정상 FIN/CLOSE와 RESET·transport loss·late frame의 owner-scoped terminal 수렴을 검증한다."
 
 [[case]]
 id = "T-STATE-PAIR"
