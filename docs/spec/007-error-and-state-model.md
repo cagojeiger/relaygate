@@ -146,10 +146,10 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | `STATE-REG-001` | Gateway RegistrationKey | `ABSENT` | shard에 첫 current binding 생김 | `UNSYNCED` | `Register`와 current snapshot `Update` 필요 |
 | `STATE-REG-002` | Gateway RegistrationKey | `UNSYNCED` | active lease의 current snapshot 승인 | `SYNCED` | remote discovery registration 확인 |
 | `STATE-REG-003` | Gateway RegistrationKey | `SYNCED` | local set 변경 | `UNSYNCED` | active lease revision 증가와 snapshot `Update` 필요 |
-| `STATE-REG-004` | Gateway RegistrationKey | `SYNCED` | `KeepAlive` 실패, stale lease 또는 RT loss | `UNSYNCED` | local binding 유지, active lease 확인 또는 새 `Register` 뒤 current snapshot `Update` 필요 |
+| `STATE-REG-004` | Gateway RegistrationKey | `SYNCED` | `KeepAlive` 실패, stale lease 또는 RT loss | `UNSYNCED` | local binding 유지. lease-bound `FAILED_PRECONDITION`은 의심 lease를 버리고 idempotent `Register` 판별을 한 번 수행한 뒤 성공한 current lease로 snapshot `Update`. 성공한 lease-bound operation만 판별 한도를 초기화 |
 | `STATE-REG-005` | Gateway RegistrationKey | `UNSYNCED/SYNCED` | key binding 없음 | `ABSENT` | `Deregister` best effort와 local registration state 제거 |
 | `STATE-REG-006` | Gateway RegistrationKey | non-terminal | `ListenerSession` 종료 | `REMOVED` | terminal, `Deregister` best effort와 local registration state 제거 |
-| `STATE-REG-007` | Gateway RegistrationKey | `UNSYNCED/SYNCED` | RT generation mismatch | `UNSYNCED` | local binding 유지, 같은 process configuration으로 자동 재시도 금지 |
+| `STATE-REG-007` | Gateway RegistrationKey | `UNSYNCED/SYNCED` | 최초 `Register` mismatch, 판별 `Register` 실패 또는 판별 성공 뒤 다음 lease-bound operation도 `FAILED_PRECONDITION` | `UNSYNCED` | local binding 유지, 판별 `Register`는 복구 episode당 1회로 제한하고 terminal, 같은 process configuration으로 추가 재시도 금지 |
 | `STATE-REG-008` | Gateway RegistrationKey | `UNSYNCED/SYNCED` | RT transport identity 또는 GatewayId authorization 실패 | `UNSYNCED` | local binding 유지, trust/authorization configuration 변경 전 자동 재시도 금지 |
 | `STATE-MAP-001` | RT MappingEntry | `ABSENT` | active lease의 current snapshot에 포함 | `ACTIVE` | Resolve의 live BindingSet에 포함 |
 | `STATE-MAP-002` | RT MappingEntry | `ACTIVE` | 새 snapshot에서 생략, deregister, expiry 또는 restart | `ABSENT` | 해당 mapping만 Resolve에서 제외 |
@@ -205,7 +205,7 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | Gateway-RT 단절 | registration `UNSYNCED` | local binding, ListenerSession, established Pipe | local shortcut 가능, remote resolve/register/update는 `UNAVAILABLE` 가능 |
 | Gateway-RT component identity 또는 channel integrity 실패 | 영향받은 registration `UNSYNCED`, 진행 중인 `Resolve` 실패, RT state 변경 없음 | local binding, ListenerSession, established Pipe와 기존 RT state | registration은 deployment trust 수정 전 재시도 금지. remote open은 `UNAUTHENTICATED` 또는 `PERMISSION_DENIED`, `NOT_OBSERVED`이며 새 operation만 가능 |
 | RegistrationKey의 GatewayId와 authenticated Gateway identity mismatch | 해당 registration `UNSYNCED`, RT mutation 없음 | local binding, ListenerSession, established Pipe와 기존 RT state | `PERMISSION_DENIED`; authorization configuration 수정 전 registration 재시도 금지 |
-| Gateway-RT generation mismatch | registration `UNSYNCED`, remote open attempt 실패 | local binding, ListenerSession, established Pipe와 RT state | `FAILED_PRECONDITION`; compatible generation으로 process restart 필요 |
+| Gateway-RT generation mismatch | registration `UNSYNCED`, remote open attempt 실패 | local binding, ListenerSession, established Pipe와 RT state | 최초 `Register`면 즉시 terminal. lease-bound operation에서 처음 관찰되면 idempotent `Register` 판별 1회만 허용하고, 판별 실패 또는 판별 성공 뒤 다음 lease-bound 실패면 terminal; compatible generation으로 process restart 필요 |
 | RT restart | RT lease와 mapping 소실 | Gateway local binding, established Pipe | READY-empty 수렴 중 `NOT_FOUND`, 새 lease 등록과 current snapshot update 뒤 복구 |
 | Gateway process loss | 해당 Gateway의 session, Pipe와 peer transport 종료 | 다른 Gateway와 RT의 다른 registration | lease expiry까지 stale mapping 가능, Owner OPEN은 실패 |
 | 종료된 lease의 늦은 `Update` 또는 `KeepAlive` | RT state 불변, operation 실패 | Gateway-local state와 다른 active registration | `FAILED_PRECONDITION`; 새 mapping은 새 lease를 `Register`한 뒤 current snapshot으로만 구성 |

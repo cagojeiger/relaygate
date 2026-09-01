@@ -714,19 +714,13 @@ fn apply_operation_completion(
         }
         (_, OperationResult::Registration(Err(error))) => {
             match error.code() {
-                ErrorCode::FailedPrecondition
-                    if !matches!(
-                        completion.ticket.action,
-                        RegistrationAction::Register { .. }
-                    ) =>
-                {
-                    state.stale_lease(&completion.ticket, now);
+                ErrorCode::FailedPrecondition => {
+                    state.precondition_failed(&completion.ticket, now);
                 }
                 ErrorCode::Unauthenticated
                 | ErrorCode::PermissionDenied
                 | ErrorCode::InvalidArgument
-                | ErrorCode::NotFound
-                | ErrorCode::FailedPrecondition => state.terminal_failure(&completion.ticket),
+                | ErrorCode::NotFound => state.terminal_failure(&completion.ticket),
                 ErrorCode::Unavailable
                 | ErrorCode::DeadlineExceeded
                 | ErrorCode::ResourceExhausted
