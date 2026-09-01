@@ -41,7 +41,7 @@ rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer:
 [[case]]
 id = "T-TERM-07"
 status = "executable"
-rust = ["connector::tests::concurrent_opens_commit_monotonic_connection_ids", "state::tests::same_connection_id_is_isolated_across_connector_sessions", "peer::runtime_tests::open_identity_is_unique_only_while_current_stream_is_active"]
+rust = ["connector::tests::concurrent_opens_commit_monotonic_connection_ids", "state::tests::same_connection_id_is_isolated_across_connector_sessions", "peer::runtime_tests::open_identity_is_unique_only_while_current_stream_is_active", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "open_identity::same_connection_id_isolated_across_entry_gateways_and_connector_sessions"]
 
 [[case]]
 id = "T-TERM-08"
@@ -305,8 +305,8 @@ rust = ["remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "r
 [[case]]
 id = "T-OPEN-09"
 status = "executable"
-rust = ["state::tests::same_connection_id_is_isolated_across_connector_sessions", "state::tests::connection_history_is_a_single_high_watermark", "peer::tests::remote_stream_guard_rejects_reused_or_wrong_role_stream_id", "open_identity::same_connection_id_isolated_across_entry_gateways_and_connector_sessions"]
-reason = "서로 다른 Entry Gateway A/B의 raw ConnectorSession이 각각 connection_id=1로 Owner Gateway C의 단일 Listener에 OPEN한다. 두 PipeId의 session identity가 다르고 양방향 데이터가 독립적으로 흐르며, A session 종료는 A Pipe만 정리하고 B Pipe는 유지한다. 새 A session이 같은 connection_id=1로 다시 OPEN한 뒤에도 B가 유지되고, 모든 session 종료 뒤 connector session, attempt, Pipe와 peer stream이 0으로 수렴하는지 검증한다."
+rust = ["state::tests::same_connection_id_is_isolated_across_connector_sessions", "state::tests::connection_history_is_a_single_high_watermark", "peer::tests::remote_stream_guard_rejects_reused_or_wrong_role_stream_id", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "open_identity::same_connection_id_isolated_across_entry_gateways_and_connector_sessions"]
+reason = "서로 다른 Entry Gateway A/B가 발급한 cluster-global ConnectorSessionId와 같은 connection_id=1 조합이 Owner Gateway C에서 독립 Pipe가 되는지 검증한다. authenticated peer와 다른 OpenIdentity.EntryGatewayId는 state 생성 없이 거절하고, A session 종료는 A Pipe만 정리하며 B Pipe는 유지한다. 새 A session도 같은 connection_id=1을 사용할 수 있고 모든 session 종료 뒤 connector session, attempt, Pipe와 peer stream이 0으로 수렴한다."
 
 [[case]]
 id = "T-OPEN-10"

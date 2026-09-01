@@ -61,7 +61,8 @@ peer `CANCEL` frame은 없다. Owner가 이미 Listener queue admission을 마�
 Pipe를 실패 종료하고, 늦거나 중복된 RESET은 새 state를 만들지 않는다.
 
 `OpenIdentity = (EntryGatewayId, ConnectorSessionId, ConnectionId)`는 current `RelayStream`과
-Entry 쪽 attempt를 상관시키는 값이다. SDK-origin `ConnectionId`의 strict high-watermark는
+Entry 쪽 attempt를 상관시키는 값이다. `EntryGatewayId`는 session namespace가 아니라
+authenticated peer provenance이며 수신 transport의 peer `GatewayId`와 일치해야 한다. SDK-origin `ConnectionId`의 strict high-watermark는
 SDK→Entry `ConnectorSession`에서만 적용한다. peer leg의 중복·순서는 transport-local
 `StreamId`로 검증한다. Owner Gateway는 current stream에 결합된 `OpenIdentity`만 보유하며 stream
 종료 뒤 remote `ConnectorSession` high-watermark, `OpenIdentity` tombstone 또는 replay table을
@@ -117,7 +118,7 @@ stream 수가 0이 되면 endpoint는 heartbeat를 멈추고 idle-retirement tim
 | `PEER-002` | 하나의 unordered Gateway pair에는 `DialerGatewayId`로 구분되는 방향별 `PeerTransportSlot`이 두 개 있어야 한다. 각 slot은 `READY` PeerTransport를 최대 하나만 가지므로 pair 전체에는 최대 두 개가 존재할 수 있다. transport 자체는 양방향이다. |
 | `PEER-003` | remote OPEN은 pair에 이미 있는 어느 `READY` PeerTransport든 재사용해야 한다. 하나도 없을 때만 요청을 받은 Gateway가 자기 방향 slot의 candidate를 lazy하게 연결한다. 모든 Gateway pair의 eager full mesh를 요구하지 않는다. |
 | `PEER-004` | 한 Gateway는 같은 peer를 향한 자기 slot의 candidate 생성을 직렬화해야 한다. 그 slot이 `CONNECTING` 또는 `READY`인 동안 같은 방향 duplicate candidate는 RelayStream을 받기 전에 닫는다. 서로 반대 방향의 candidate는 duplicate가 아니며 둘 다 `READY`가 될 수 있다. |
-| `PEER-005` | 각 candidate는 handshake에서 참여 Gateway identity와 `(DialerGatewayId, PeerTransportId)`를 교환하고, 그 identity가 배포 환경이 인증한 transport peer와 일치하며 양쪽이 같은 pair와 방향 slot임을 확인한 뒤에만 `READY`가 되어야 한다. claimed `GatewayId`만으로 peer를 신뢰해서는 안 된다. transport credential 또는 Gateway name을 인증하지 못하면 `UNAUTHENTICATED`, 인증된 peer가 다른 runtime owner·pair·direction을 주장하면 `PERMISSION_DENIED`다. 둘 다 candidate를 stream 없이 `CLOSED`로 만들고 해당 OPEN을 `NOT_OBSERVED`로 실패시켜야 한다. cross-Gateway winner 합의, candidate total order 또는 도착 순서 기반 arbitration을 해서는 안 되며 handshake 완료 전 RelayStream을 실어서는 안 된다. |
+| `PEER-005` | 각 candidate는 handshake에서 참여 Gateway identity와 `(DialerGatewayId, PeerTransportId)`를 교환하고, 그 identity가 배포 환경이 인증한 transport peer와 일치하며 양쪽이 같은 pair와 방향 slot임을 확인한 뒤에만 `READY`가 되어야 한다. claimed `GatewayId`만으로 peer를 신뢰해서는 안 된다. transport credential 또는 Gateway name을 인증하지 못하면 `UNAUTHENTICATED`, 인증된 peer가 handshake에서 다른 runtime owner·pair·direction을 주장하면 `PERMISSION_DENIED`로 candidate를 stream 없이 닫고 대기 중인 OPEN을 `NOT_OBSERVED`로 실패시켜야 한다. `READY` peer가 다른 `OpenIdentity.EntryGatewayId`를 주장하면 transport는 유지하되 offending OPEN만 `PERMISSION_DENIED`, `NOT_OBSERVED`로 state 생성 없이 거절해야 한다. cross-Gateway winner 합의, candidate total order 또는 도착 순서 기반 arbitration을 해서는 안 되며 handshake 완료 전 RelayStream을 실어서는 안 된다. |
 | `PEER-006` | 하나의 `READY` PeerTransport는 서로 구분되는 여러 bidirectional RelayStream을 multiplex한다. 각 RelayStream은 정확히 하나의 Pipe에 대응한다. |
 | `PEER-007` | `StreamId`는 해당 PeerTransport 안에서 유일해야 한다. 중복 OPEN은 기존 stream에 영향을 주지 않고 `PROTOCOL_ERROR`로 실패한다. |
 | `PEER-008` | per-stream buffer와 PeerTransport 전체 buffer·queue는 모두 bounded여야 한다. 수신 capacity가 없으면 unbounded buffering 대신 backpressure를 전달한다. |

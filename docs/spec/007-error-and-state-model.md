@@ -98,7 +98,7 @@ Gateway pair
 
 | 대상 | State identity |
 | --- | --- |
-| ConnectorSession | `(EntryGatewayId, ConnectorSessionId)` |
+| ConnectorSession | cluster-global `ConnectorSessionId`; 현재 owner/provenance는 `EntryGatewayId` |
 | ListenAttempt | `(Listener SDK runtime, reserved ClientId)`의 현재 pending operation |
 | returned Listener handle | `(Listener SDK runtime, ClientId)`의 current non-`CLOSED` handle |
 | local binding | `(GatewayId, ListenerSessionId, BindingId)` |
@@ -106,6 +106,7 @@ Gateway pair
 | registration key | `(GatewayId, ListenerSessionId, ShardId)` |
 | registration lease | `(RegistrationKey, LeaseId)` |
 | RT shard state | `(ShardDirectoryGeneration, ShardId)` |
+| Pipe | `PipeId = (ConnectorSessionId, ConnectionId)` |
 | open attempt | `(EntryGatewayId, ConnectorSessionId, ConnectionId)` |
 | peer open correlation | current `RelayStream` 안의 `OpenIdentity = (EntryGatewayId, ConnectorSessionId, ConnectionId)` |
 | peer transport slot | `(unordered Gateway pair, DialerGatewayId)` |
@@ -235,8 +236,8 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 9. Gateway와 RT process의 `ShardDirectoryGeneration`은 process 수명 동안 불변이고, mismatch operation은 RT state를 읽거나 변경하지 못한다.
 10. 한 Listener SDK runtime에서 같은 `ClientId`의 pending reservation과 non-`CLOSED` handle은 합쳐서 최대 하나이며 실패한 attempt는 reservation이나 live state를 남기지 않는다.
 11. `FIN`은 한 방향만 닫고, 양방향 `FIN` 또는 `CLOSE`는 정상 전체 종료이며, `RESET`은 실패 전체 종료다. stream-local protocol 위반은 다른 stream이나 shared transport로 전파하지 않는다.
-12. `GatewayId`, `ListenerSessionId`와 `BindingId`를 포함한 incarnation identity는 정의된 부모 scope의 lifetime 동안 재사용하지 않는다. stale frame이나 mapping은 새 incarnation과 같은 identity가 될 수 없다.
-13. internal RT mutation과 PeerTransport handshake의 `GatewayId`는 authenticated transport identity에 결합되어야 하며 claimed identifier만으로 authority를 얻지 못한다.
+12. `ConnectorSessionId`는 cluster-global unique로 취급한다. `GatewayId`, `ListenerSessionId`와 `BindingId`를 포함한 다른 incarnation identity는 정의된 부모 scope의 lifetime 동안 재사용하지 않는다. stale frame이나 mapping은 새 incarnation과 같은 identity가 될 수 없다.
+13. internal RT mutation과 PeerTransport handshake의 `GatewayId`는 authenticated transport identity에 결합되어야 하며 claimed identifier만으로 authority를 얻지 못한다. peer `OPEN`의 `OpenIdentity.EntryGatewayId`도 authenticated peer `GatewayId`와 일치해야 한다.
 14. local `ListenerBinding`의 `ACTIVE/REMOVED` 상태는 RT registration의 `SYNCED/UNSYNCED` 상태와 독립적이다. RT 장애는 remote discovery를 약화시킬 수 있지만 live local binding을 비활성화하지 않는다.
 15. 한 `ListenerSession`의 liveness failure는 그 session이 공유하는 모든 binding과 Pipe에 전파될 수 있지만 다른 ListenerSession으로 전파되어서는 안 된다.
 16. SDK-Gateway session과 `stream_count > 0`인 PeerTransport는 activity-aware heartbeat를 사용한다. commit된 probe는 response deadline 전 matching `PONG`만 만족시킨다. heartbeat timeout은 transport loss와 같이 current session 또는 transport를 닫고 기존 cleanup 경로로 수렴한다. application Pipe read idle은 heartbeat failure가 아니며, RT registration의 `KeepAlive`는 별도 계약이다.

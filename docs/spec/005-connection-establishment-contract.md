@@ -43,7 +43,7 @@ Connector ◄──────────── OPENED + Pipe ─────�
 Gateway
   ├── immutable ShardDirectory + ShardDirectoryGeneration
   ├── ConnectorSessions                 # Entry Gateway만 소유
-  │     └── (EntryGatewayId, ConnectorSessionId)
+  │     └── ConnectorSessionId               # cluster-global
   │           -> SDK-origin ConnectionId high-watermark + active attempts
   ├── LocalRegistry
   │     ├── ClientId  -> local BindingId set
@@ -61,7 +61,7 @@ Gateway
 
 Gateway는 RT 전체 table을 받지 않는다. Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 그 local set에서 하나를 선택하고 RT를 조회하지 않는다. local set이 비었을 때만 불변 shard directory로 authority를 찾고 internal channel이 검증한 자기 `AuthenticatedGatewayId`와 함께 `Resolve(AuthenticatedGatewayId, ShardDirectoryGeneration, ClientId)`를 정확히 한 번 보낸다. 결과는 해당 open attempt 안에서만 사용한다. 이는 최초 버전의 명시적인 local-first candidate-source 규칙이며, global N:M binding 사이의 fairness나 load-balancing 품질을 보장하지 않는다. 후보 하나를 선택한 뒤 나머지 결과를 routing cache로 보관하지 않는다. `PeerPool`은 remote mapping cache가 아니라 이미 통신하는 Gateway pair의 transport 재사용 상태다. pair의 두 방향 slot은 `DialerGatewayId`로 구분하며 각 slot에는 `READY` transport가 최대 하나다. remote path는 선택한 Owner Gateway에서 끝나고 peer에서 받은 `OPEN`을 다시 Resolve하거나 다른 Gateway로 전달하지 않는다.
 
-`ConnectionId`의 순서와 중복은 ordered SDK→Entry `ConnectorSession`에서 Entry Gateway가 검증한다. peer leg는 이 application-facing counter를 다시 검증하지 않고 `PeerTransport`별 initiator-bit `StreamId` 순서와 중복을 검증한다. Owner Gateway가 받은 `OpenIdentity`는 현재 `RelayStream`과 open/Pipe cleanup을 상관시키는 동안만 존재하며 종료 뒤 remote `ConnectorSession` high-watermark나 terminal `OpenIdentity` history로 남지 않는다.
+`ConnectionId`의 순서와 중복은 ordered SDK→Entry `ConnectorSession`에서 Entry Gateway가 검증한다. `(ConnectorSessionId, ConnectionId)`는 SDK–Gateway `PipeId`이고, remote path에서는 authenticated provenance인 `EntryGatewayId`를 더한 `OpenIdentity`를 전달한다. peer leg는 application-facing counter를 다시 검증하지 않고 `PeerTransport`별 initiator-bit `StreamId` 순서와 중복을 검증한다. Owner Gateway가 받은 `OpenIdentity`는 authenticated peer와 `EntryGatewayId`가 일치할 때만 현재 `RelayStream`과 open/Pipe cleanup을 상관시키며, 종료 뒤 remote `ConnectorSession` high-watermark나 terminal `OpenIdentity` history로 남지 않는다.
 
 Gateway는 `LocalRegistry`, `OFFER`, pending open/Pipe, relay와 terminal signal을 소유한다. 명확한 Pipe-local 오류는 해당 Pipe의 `RESET`과 bounded cleanup으로 끝내고, Gateway가 보낸 `OFFER`의 terminal 결과를 알 수 없는 경우는 selected `ListenerSession`을 종료하여 그 session의 relay state를 일괄 정리한다. SDK가 Gateway 내부 registry나 pending state를 대신 정리하지 않는다.
 
@@ -103,7 +103,7 @@ Entry Gateway는 `OPENING` RelayStream에 `RESET(CANCELLED)`을 보내 best-effo
 | `OPEN-013` | queue admission 뒤 시도가 실패하면 이미 생성된 Pipe와 양쪽 상태는 configured bound 안에 `CLOSED` 또는 `RESET`이 되어야 한다. Listener application이 이미 `accept`한 경우에도 같다. |
 | `OPEN-014` | 늦거나 중복된 `OPENED`, `FAILED`, cancel 및 close는 terminal 결과를 바꾸거나 Pipe를 다시 살리지 못한다. |
 | `OPEN-015` | Pipe 수립 뒤에는 RT가 해당 Pipe의 payload, close 또는 lifetime에 관여하지 않는다. |
-| `OPEN-016` | Entry Gateway는 Connector SDK와 새 live session을 만들 때 자신의 `GatewayId` 범위에서 재사용하지 않는 `ConnectorSessionId`를 부여해야 한다. Connector SDK는 session 안에서 전송 순서가 strictly increasing인 `ConnectionId`를 할당한다. Entry Gateway는 `(EntryGatewayId, ConnectorSessionId, ConnectionId)`를 `OpenIdentity`로 Owner Gateway까지 전달하고 양 Gateway는 현재 OPEN, terminal 응답과 cleanup을 상관시켜야 한다. |
+| `OPEN-016` | Entry Gateway는 Connector SDK와 새 live session을 만들 때 cluster-global unique로 취급하는 fresh `ConnectorSessionId`를 부여해야 한다. Connector SDK는 session 안에서 전송 순서가 strictly increasing인 `ConnectionId`를 할당하며 `(ConnectorSessionId, ConnectionId)`는 `PipeId`가 된다. Entry Gateway는 authenticated provenance를 더한 `(EntryGatewayId, ConnectorSessionId, ConnectionId)`를 `OpenIdentity`로 Owner Gateway까지 전달하고 양 Gateway는 현재 OPEN, terminal 응답과 cleanup을 상관시켜야 한다. Owner Gateway는 `EntryGatewayId`가 authenticated peer `GatewayId`와 다르면 current state를 만들지 않고 거절해야 한다. |
 | `OPEN-017` | Entry Gateway는 SDK→Entry `ConnectorSession`마다 remote `ConnectionId` high-watermark 하나를 유지하고 valid SDK `OPEN`을 처리하기 전에 전진시켜야 한다. high-watermark 이하의 중복·지연 SDK `OPEN`은 두 번째 Pipe나 terminal 결과를 만들지 않고 제거한다. Owner Gateway는 peer leg에서 `StreamId` high-watermark를 사용하고 current `RelayStream`에 결합된 `OpenIdentity`만 보유해야 하며, remote `ConnectorSession` high-watermark나 terminal `OpenIdentity` tombstone을 보관해서는 안 된다. 이미 terminal이거나 알 수 없는 identity의 늦은 frame은 기존 Pipe를 변경하거나 새 live state를 만들지 않는다. |
 | `OPEN-018` | RT `BindingSet`은 open attempt 안에서만 사용해야 한다. 선택 또는 terminal 결과 뒤 남은 후보를 이후 신규 open의 authority로 보관해서는 안 된다. |
 | `OPEN-019` | `PeerObservation`은 오류 이유와 별도의 증명 축이어야 한다. Listener queue에 들어가지 않았음을 Connector가 증명할 수 있는 실패만 `NOT_OBSERVED`, `OPENED`를 확인한 성공만 `OBSERVED`, 어느 쪽도 증명할 수 없는 terminal 실패는 실제 queue 적재 여부와 관계없이 `MAYBE_OBSERVED`로 분류해야 한다. |
