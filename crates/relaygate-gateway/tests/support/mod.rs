@@ -1,9 +1,13 @@
-use std::{error::Error, net::SocketAddr, time::Duration};
+use std::{error::Error, io, net::SocketAddr, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_gateway::{Gateway, GatewayConfig, GatewayError, GatewaySnapshot, check};
 use relaygate_protocol::{Frame, FrameCodec, SessionRole};
-use tokio::{net::TcpStream, task::JoinHandle, time::timeout};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    task::JoinHandle,
+    time::{Instant, sleep, timeout},
+};
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -31,9 +35,21 @@ impl TestGateway {
         Ok(gateway)
     }
 
+    #[allow(dead_code)]
+    pub async fn start_on(config: GatewayConfig, address: SocketAddr) -> TestResult<Self> {
+        let listener = bind_listener(address).await?;
+        let gateway = Self::start_with_listener(config, listener)?;
+        check(gateway.address, Duration::from_secs(1)).await?;
+        Ok(gateway)
+    }
+
     pub async fn start_without_check(config: GatewayConfig) -> TestResult<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        Self::start_with_listener(config, listener)
+    }
+
+    fn start_with_listener(config: GatewayConfig, listener: TcpListener) -> TestResult<Self> {
         let gateway = Gateway::new(config)?;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let shutdown = CancellationToken::new();
         let serve_shutdown = shutdown.clone();
@@ -57,6 +73,20 @@ impl TestGateway {
         self.shutdown.cancel();
         self.server.await??;
         Ok(())
+    }
+}
+
+#[allow(dead_code)]
+async fn bind_listener(address: SocketAddr) -> io::Result<TcpListener> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match TcpListener::bind(address).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse && Instant::now() < deadline => {
+                sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
