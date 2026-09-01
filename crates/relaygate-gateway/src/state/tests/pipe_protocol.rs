@@ -698,37 +698,38 @@ fn data_after_fin_resets_only_that_pipe() -> Result<(), Box<dyn std::error::Erro
     let listener = add_session(&mut state, SessionRole::Listener);
     let connector = add_session(&mut state, SessionRole::Connector);
     register_listener(&mut state, listener)?;
-    let violating = open_pipe(&mut state, connector, listener, 1)?;
-    let healthy = open_pipe(&mut state, connector, listener, 2)?;
+    let healthy = open_pipe(&mut state, connector, listener, 1)?;
 
-    assert_eq!(
-        state
-            .handle(connector, Frame::Fin { pipe_id: violating })?
-            .len(),
-        1
-    );
-    assert!(
-        state
-            .handle(connector, Frame::Fin { pipe_id: violating })?
-            .is_empty()
-    );
-    let resets = state.handle(
-        connector,
-        Frame::Data {
-            pipe_id: violating,
-            payload: Bytes::from_static(b"invalid"),
-        },
-    )?;
+    for (connection_id, sender) in [(2, connector), (3, listener)] {
+        let violating = open_pipe(&mut state, connector, listener, connection_id)?;
+        assert_eq!(
+            state.handle(sender, Frame::Fin { pipe_id: violating })?.len(),
+            1
+        );
+        assert!(
+            state
+                .handle(sender, Frame::Fin { pipe_id: violating })?
+                .is_empty()
+        );
+        let resets = state.handle(
+            sender,
+            Frame::Data {
+                pipe_id: violating,
+                payload: Bytes::from_static(b"invalid"),
+            },
+        )?;
 
-    assert_eq!(resets.len(), 2);
-    assert!(sdk_deliveries(&resets).all(|delivery| matches!(
-        delivery.frame,
-        Frame::Reset {
-            code: ErrorCode::ProtocolError,
-            ..
-        }
-    )));
-    assert_eq!(state.pipe_count(), 1);
+        assert_eq!(resets.len(), 2);
+        assert!(sdk_deliveries(&resets).all(|delivery| matches!(
+            delivery.frame,
+            Frame::Reset {
+                pipe_id,
+                code: ErrorCode::ProtocolError,
+                ..
+            } if pipe_id == violating
+        )));
+        assert_eq!(state.pipe_count(), 1);
+    }
     assert_eq!(
         state
             .handle(
