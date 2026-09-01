@@ -3,7 +3,9 @@ mod support;
 use std::{io, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
-use relaygate_protocol::{BindingId, ErrorCode as WireErrorCode, Frame, SessionRole};
+use relaygate_protocol::{
+    BindingId, ErrorCode as WireErrorCode, Frame, PipeId, SessionId, SessionRole,
+};
 use relaygate_sdk::{Config, ErrorCode, ListenerRuntime, ListenerStatus};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -173,37 +175,162 @@ async fn initial_register_failure_is_terminal_until_application_retries_case() -
 }
 
 #[tokio::test]
-async fn committed_register_timeout_closes_session_without_replay() -> TestResult {
+async fn committed_initial_register_timeout_recovers_only_returned_listeners() -> TestResult {
     timeout(
-        Duration::from_secs(3),
-        committed_register_timeout_closes_session_without_replay_case(),
+        Duration::from_secs(5),
+        committed_initial_register_timeout_recovers_only_returned_listeners_case(),
     )
     .await??;
     Ok(())
 }
 
-async fn committed_register_timeout_closes_session_without_replay_case() -> TestResult {
+async fn committed_initial_register_timeout_recovers_only_returned_listeners_case() -> TestResult {
     let (gateway, address) = bind_gateway().await?;
+    let (timed_out_tx, timed_out_rx) = oneshot::channel();
+    let (recovered_tx, recovered_rx) = oneshot::channel();
+    let (no_replay_tx, no_replay_rx) = oneshot::channel();
+    let (done_tx, done_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
-        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let (mut transport, first_session_id) =
+            accept_session(&gateway, SessionRole::Listener).await?;
+        let mut alpha_binding = None;
+        for expected_client in ["echo.alpha", "echo.beta"] {
+            let register = transport
+                .next()
+                .await
+                .ok_or_else(|| io::Error::other("missing returned Listener REGISTER"))??;
+            let request_id = match register {
+                Frame::Register {
+                    request_id,
+                    client_id,
+                    ..
+                } if client_id == expected_client => request_id,
+                other => return Err(unexpected(other).into()),
+            };
+            let binding_id = BindingId::new();
+            if expected_client == "echo.alpha" {
+                alpha_binding = Some(binding_id);
+            }
+            transport
+                .send(Frame::Registered {
+                    request_id,
+                    binding_id,
+                })
+                .await?;
+        }
+        let alpha_binding =
+            alpha_binding.ok_or_else(|| io::Error::other("missing alpha binding"))?;
+        let pipe_id = PipeId::new(SessionId::new(), 40);
+        transport
+            .send(Frame::Offer {
+                pipe_id,
+                binding_id: alpha_binding,
+                client_id: "echo.alpha".to_owned(),
+            })
+            .await?;
+        let accepted = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing OFFER_ACCEPTED"))??;
+        if !matches!(accepted, Frame::OfferAccepted { pipe_id: id } if id == pipe_id) {
+            return Err(unexpected(accepted).into());
+        }
+
         let register = transport
             .next()
             .await
-            .ok_or_else(|| io::Error::other("missing REGISTER"))??;
-        if !matches!(register, Frame::Register { .. }) {
-            return Err(unexpected(register).into());
-        }
+            .ok_or_else(|| io::Error::other("missing initial Listener REGISTER"))??;
+        let timed_out_request = match register {
+            Frame::Register {
+                request_id,
+                client_id,
+                ..
+            } if client_id == "echo.gamma" => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+
+        timed_out_rx.await?;
+        transport
+            .send(Frame::Registered {
+                request_id: timed_out_request,
+                binding_id: BindingId::new(),
+            })
+            .await?;
         let ended = timeout(Duration::from_secs(1), transport.next()).await?;
         if ended.is_some() {
             return Err(io::Error::other("timed-out ListenerSession remained open").into());
         }
 
-        let (mut replacement, _) = accept_session(&gateway, SessionRole::Listener).await?;
-        assert!(
-            timeout(Duration::from_millis(150), replacement.next())
+        let (mut replacement, replacement_session_id) =
+            accept_session(&gateway, SessionRole::Listener).await?;
+        assert_ne!(first_session_id, replacement_session_id);
+        let mut recovered_clients = Vec::new();
+        for _ in 0..2 {
+            let register = replacement
+                .next()
                 .await
-                .is_err()
-        );
+                .ok_or_else(|| io::Error::other("missing recovery REGISTER"))??;
+            let (request_id, client_id) = match register {
+                Frame::Register {
+                    request_id,
+                    client_id,
+                    ..
+                } => (request_id, client_id),
+                other => return Err(unexpected(other).into()),
+            };
+            recovered_clients.push(client_id);
+            replacement
+                .send(Frame::Registered {
+                    request_id,
+                    binding_id: BindingId::new(),
+                })
+                .await?;
+        }
+        recovered_clients.sort();
+        assert_eq!(recovered_clients, ["echo.alpha", "echo.beta"]);
+        let _ = recovered_tx.send(());
+
+        match timeout(Duration::from_millis(150), replacement.next()).await {
+            Err(_) => {}
+            Ok(None) => {
+                return Err(io::Error::other("replacement ListenerSession closed").into());
+            }
+            Ok(Some(Ok(frame))) => return Err(unexpected(frame).into()),
+            Ok(Some(Err(error))) => return Err(error.into()),
+        }
+        let _ = no_replay_tx.send(());
+
+        let retry = replacement
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing application retry REGISTER"))??;
+        let request_id = match retry {
+            Frame::Register {
+                request_id,
+                client_id,
+                client_key,
+            } if client_id == "echo.gamma" && client_key.expose_secret() == "retry-key" => {
+                request_id
+            }
+            Frame::Register {
+                client_id,
+                client_key,
+                ..
+            } if client_id == "echo.gamma" && client_key.expose_secret() == "dev-key" => {
+                return Err(io::Error::other(
+                    "timed-out initial REGISTER was replayed before application retry",
+                )
+                .into());
+            }
+            other => return Err(unexpected(other).into()),
+        };
+        replacement
+            .send(Frame::Registered {
+                request_id,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        let _ = done_rx.await;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     });
 
@@ -213,8 +340,11 @@ async fn committed_register_timeout_closes_session_without_replay_case() -> Test
             .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
     )
     .await?;
+    let alpha = runtime.listen("echo.alpha", "dev-key").await?;
+    let beta = runtime.listen("echo.beta", "dev-key").await?;
+    let mut alpha_pipe = alpha.accept().await?;
     let error = runtime
-        .listen("echo.alpha", "dev-key")
+        .listen("echo.gamma", "dev-key")
         .await
         .err()
         .ok_or_else(|| io::Error::other("timed-out listen unexpectedly succeeded"))?;
@@ -223,8 +353,30 @@ async fn committed_register_timeout_closes_session_without_replay_case() -> Test
         error.observation(),
         relaygate_sdk::PeerObservation::MaybeObserved
     );
-    server.await??;
+    timed_out_tx
+        .send(())
+        .map_err(|_| io::Error::other("server stopped before late REGISTERED"))?;
+    let mut byte = [0_u8; 1];
+    let pipe_error = timeout(Duration::from_secs(1), alpha_pipe.read_into(&mut byte))
+        .await?
+        .err()
+        .ok_or_else(|| io::Error::other("old-session Pipe remained readable after timeout"))?;
+    assert_eq!(pipe_error.code(), ErrorCode::Unavailable);
+
+    recovered_rx.await?;
+    timeout(Duration::from_secs(1), async {
+        while alpha.status() != ListenerStatus::Active || beta.status() != ListenerStatus::Active {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    no_replay_rx.await?;
+
+    let gamma = runtime.listen("echo.gamma", "retry-key").await?;
+    assert_eq!(gamma.status(), ListenerStatus::Active);
+    let _ = done_tx.send(());
     runtime.close();
+    server.await??;
     Ok(())
 }
 
