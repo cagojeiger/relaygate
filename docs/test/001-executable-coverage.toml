@@ -341,7 +341,7 @@ rust = ["connector::tests::concurrent_opens_commit_monotonic_connection_ids", "s
 [[case]]
 id = "T-OPEN-16"
 status = "executable"
-rust = ["state::tests::foreign_open_pipe_frames_terminate_each_offender_without_mutating_target", "state::tests::foreign_offer_responses_and_cancel_preserve_the_pending_pipe", "state::tests::unknown_pipe_frames_are_no_op_for_every_pipe_operation", "state::tests::owner_invalid_phase_resets_only_the_target_pipe"]
+rust = ["state::tests::foreign_open_pipe_frames_terminate_each_offender_without_mutating_target", "state::tests::foreign_offer_responses_and_cancel_preserve_the_pending_pipe", "state::tests::unknown_pipe_frames_are_no_op_for_every_pipe_operation", "state::tests::owner_invalid_phase_resets_only_the_target_pipe", "state::tests::connector_cancel_after_open_is_cancelled_cleanup_and_preserves_sibling_pipe"]
 
 [[case]]
 id = "T-OPEN-17"
