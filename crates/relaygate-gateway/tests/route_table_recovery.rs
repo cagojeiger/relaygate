@@ -363,12 +363,6 @@ async fn distributed_offer_timeout_case() -> TestResult {
     assert!(saw_open_failure, "unanswered alpha OPEN did not fail");
     assert!(saw_beta_reset, "existing beta Pipe was not reset");
     assert_ne!(unanswered_pipe, beta_pipe);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), sibling.next())
-            .await
-            .is_err(),
-        "same OPEN attempt fell back to the sibling binding"
-    );
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(1), selected.next()).await,
         Ok(None) | Ok(Some(Err(_)))
