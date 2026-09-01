@@ -133,9 +133,9 @@ rust = ["session::tests::inbound_activity_without_pending_probe_resets_idle_dead
 
 [[case]]
 id = "T-SDK-16"
-status = "partial"
-rust = ["committed_initial_register_timeout_recovers_only_returned_listeners", "reconnect_replays_all_desired_listeners_with_capacity_one", "initial_register_failure_is_terminal_until_application_retries", "returned_listener_retries_transient_recovery_failure"]
-reason = "returned A·B와 accepted Pipe 및 initial C blackhole을 한 session에서 합성해 session·Pipe cleanup, A·B-only recovery와 C no-replay를 검증한다. 다만 TCP 재연결 성공만으로 backoff를 초기화하지 않고 recovery registration 성공 뒤 초기화하는 progression/reset sequence는 직접 관찰하지 않는다."
+status = "executable"
+rust = ["committed_initial_register_timeout_recovers_only_returned_listeners", "reconnect_replays_all_desired_listeners_with_capacity_one", "initial_register_failure_is_terminal_until_application_retries", "returned_listener_retries_transient_recovery_failure", "tcp_reconnect_resets_listener_backoff_only_after_recovery_registered"]
+reason = "returned A·B와 accepted Pipe 및 initial C blackhole을 한 session에서 합성해 session·Pipe cleanup, A·B-only recovery와 C no-replay를 검증한다. TCP/WELCOME/REGISTER까지만 성공한 재연결은 Listener backoff를 초기화하지 않고, recovery REGISTERED가 관측된 뒤에만 backoff가 초기값으로 돌아오는 progression/reset sequence를 검증한다."
 
 [[case]]
 id = "T-SDK-17"

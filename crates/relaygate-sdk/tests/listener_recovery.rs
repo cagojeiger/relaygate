@@ -279,6 +279,123 @@ async fn returned_listener_retries_transient_recovery_failure_case() -> TestResu
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn tcp_reconnect_resets_listener_backoff_only_after_recovery_registered() -> TestResult {
+    timeout(
+        Duration::from_secs(5),
+        tcp_reconnect_resets_listener_backoff_only_after_recovery_registered_case(),
+    )
+    .await
+    .map_err(|_| io::Error::other("backoff reset scenario timed out"))??;
+    Ok(())
+}
+
+async fn tcp_reconnect_resets_listener_backoff_only_after_recovery_registered_case() -> TestResult {
+    const INITIAL_BACKOFF: Duration = Duration::from_millis(120);
+    const MAX_BACKOFF: Duration = Duration::from_millis(240);
+
+    // Advance paused time in small steps so loopback socket I/O is polled
+    // between backoff deadlines instead of jumping to a socket timeout.
+    let clock = tokio::spawn(async {
+        loop {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let (gateway, address) = bind_gateway().await?;
+    let (initial_active_tx, initial_active_rx) = oneshot::channel();
+    let (recovered_registered_tx, recovered_registered_rx) = oneshot::channel();
+    let (drop_recovered_tx, drop_recovered_rx) = oneshot::channel();
+    let mut server = tokio::spawn(async move {
+        let (mut initial, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let request_id = expect_echo_register(&mut initial).await?;
+        initial
+            .send(Frame::Registered {
+                request_id,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        let _ = initial_active_rx.await;
+        drop(initial);
+
+        let (mut tcp_only_reconnect, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let _ = expect_echo_register(&mut tcp_only_reconnect).await?;
+        drop(tcp_only_reconnect);
+
+        match timeout(Duration::from_millis(180), gateway.accept()).await {
+            Err(_) => {}
+            Ok(Ok(_)) => {
+                return Err(io::Error::other(
+                    "TCP reconnect success reset Listener backoff before REGISTERED",
+                )
+                .into());
+            }
+            Ok(Err(error)) => return Err(error.into()),
+        }
+
+        let (mut recovered, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let recovery_request_id = expect_echo_register(&mut recovered).await?;
+        recovered
+            .send(Frame::Registered {
+                request_id: recovery_request_id,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        let _ = recovered_registered_tx.send(());
+        let _ = drop_recovered_rx.await;
+        drop(recovered);
+
+        match timeout(
+            Duration::from_millis(180),
+            accept_session(&gateway, SessionRole::Listener),
+        )
+        .await
+        {
+            Ok(Ok((mut after_reset, _))) => {
+                let request_id = expect_echo_register(&mut after_reset).await?;
+                after_reset
+                    .send(Frame::Registered {
+                        request_id,
+                        binding_id: BindingId::new(),
+                    })
+                    .await?;
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Err(
+                    io::Error::other("REGISTERED recovery did not reset Listener backoff").into(),
+                );
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(
+        Config::new(address).with_reconnect_backoff(INITIAL_BACKOFF, MAX_BACKOFF),
+    )
+    .await?;
+    let listener = runtime.listen("echo.alpha", "dev-key").await?;
+    let _ = initial_active_tx.send(());
+    tokio::select! {
+        recovered = recovered_registered_rx => recovered?,
+        result = &mut server => {
+            result??;
+            return Err(io::Error::other("Gateway fixture ended before recovery REGISTERED").into());
+        }
+    }
+    timeout(Duration::from_secs(1), async {
+        while listener.status() != ListenerStatus::Active {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| io::Error::other("recovered Listener did not become active"))?;
+    let _ = drop_recovered_tx.send(());
+    server.await??;
+    runtime.close();
+    clock.abort();
+    Ok(())
+}
+
 #[tokio::test]
 async fn permanent_recovery_rejection_blocks_only_affected_listener() -> TestResult {
     timeout(
@@ -437,6 +554,21 @@ async fn permanent_recovery_rejection_blocks_only_affected_listener_case() -> Te
     let _ = finish_tx.send(());
     server.await??;
     Ok(())
+}
+
+async fn expect_echo_register(transport: &mut support::TestTransport) -> TestResult<u64> {
+    let register = transport
+        .next()
+        .await
+        .ok_or_else(|| io::Error::other("missing echo.alpha REGISTER"))??;
+    match register {
+        Frame::Register {
+            request_id,
+            client_id,
+            ..
+        } if client_id == "echo.alpha" => Ok(request_id),
+        other => Err(unexpected(other).into()),
+    }
 }
 
 #[tokio::test]
