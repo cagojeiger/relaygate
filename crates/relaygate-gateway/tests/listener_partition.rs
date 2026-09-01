@@ -44,7 +44,7 @@ async fn register_response_loss_case() -> TestResult {
     .await?;
     let runtime = ListenerRuntime::connect(sdk_config(proxy.address)).await?;
     let alpha = runtime.listen("echo.alpha", "secret").await?;
-    let connector = connector(gateway.address).await?;
+    let connector = connector(gateway.address, Duration::from_millis(500)).await?;
 
     let mut old_connector_pipe = connector.open("echo.alpha").await?;
     let mut old_listener_pipe = timeout(Duration::from_secs(1), alpha.accept()).await??;
@@ -149,7 +149,7 @@ async fn silent_recovery_partition_case() -> TestResult {
     )
     .await?;
 
-    let connector = connector(gateway.address).await?;
+    let connector = connector(gateway.address, Duration::from_millis(500)).await?;
     let stale_error = open_until_stale_timeout(&connector, &alpha, "echo.alpha").await?;
     assert_eq!(stale_error.code(), ErrorCode::DeadlineExceeded);
     assert_eq!(stale_error.observation(), PeerObservation::MaybeObserved);
@@ -178,7 +178,7 @@ async fn silent_recovery_partition_case() -> TestResult {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn actual_gateway_offer_timeout_cleans_selected_session_and_recovers_returned_listeners()
 -> TestResult {
-    timeout(Duration::from_secs(8), offer_timeout_recovery_case()).await??;
+    timeout(Duration::from_secs(10), offer_timeout_recovery_case()).await??;
     Ok(())
 }
 
@@ -189,13 +189,16 @@ async fn offer_timeout_recovery_case() -> TestResult {
             ("echo.beta".to_owned(), "secret".to_owned()),
             ("echo.gamma".to_owned(), "secret".to_owned()),
         ])
-        .with_offer_timeout(Duration::from_millis(80))
+        .with_offer_timeout(Duration::from_secs(1))
         .with_heartbeat(Duration::from_secs(5), Duration::from_secs(5)),
     )
     .await?;
     let proxy = FrameProxy::start(
         gateway.address,
-        [ProxyMode::DropNthOfferAccepted(2), ProxyMode::Pass],
+        [
+            ProxyMode::DropOfferAcceptedForClient("echo.alpha"),
+            ProxyMode::Pass,
+        ],
     )
     .await?;
 
@@ -208,18 +211,17 @@ async fn offer_timeout_recovery_case() -> TestResult {
     let selected_beta = selected_runtime.listen("echo.beta", "secret").await?;
 
     let sibling_runtime = ListenerRuntime::connect(sdk_config(gateway.address)).await?;
-    let sibling_alpha = sibling_runtime.listen("echo.alpha", "secret").await?;
     let sibling_gamma = sibling_runtime.listen("echo.gamma", "secret").await?;
     wait_until(
-        "both ListenerSessions own their complete binding sets",
+        "both ListenerSessions own their pre-fault binding sets",
         || {
             let snapshot = gateway.snapshot();
-            snapshot.listener_sessions == 2 && snapshot.listener_bindings == 4
+            snapshot.listener_sessions == 2 && snapshot.listener_bindings == 3
         },
     )
     .await?;
 
-    let connector = connector(gateway.address).await?;
+    let connector = connector(gateway.address, Duration::from_secs(3)).await?;
     let mut old_connector_pipe = connector.open("echo.beta").await?;
     let mut old_listener_pipe = timeout(Duration::from_secs(1), selected_beta.accept()).await??;
     old_connector_pipe.write_all_bytes(b"old-pipe").await?;
@@ -232,9 +234,23 @@ async fn offer_timeout_recovery_case() -> TestResult {
     )
     .await?;
 
-    let alpha_error = connector
-        .open("echo.alpha")
-        .await
+    let opening = {
+        let connector = connector.clone();
+        tokio::spawn(async move { connector.open("echo.alpha").await })
+    };
+    wait_until("selected OFFER_ACCEPTED is dropped", || {
+        proxy.dropped_offer_accepted() == 1
+    })
+    .await?;
+    let sibling_alpha = sibling_runtime.listen("echo.alpha", "secret").await?;
+    wait_until(
+        "same-ClientId sibling is registered before OFFER expiry",
+        || gateway.snapshot().listener_bindings == 4,
+    )
+    .await?;
+
+    let alpha_error = opening
+        .await?
         .err()
         .ok_or_else(|| io::Error::other("dropped OFFER_ACCEPTED unexpectedly opened a Pipe"))?;
     assert_eq!(alpha_error.code(), ErrorCode::DeadlineExceeded);
@@ -297,11 +313,11 @@ fn sdk_config(address: SocketAddr) -> Config {
         .with_heartbeat(Duration::from_secs(5), Duration::from_secs(5))
 }
 
-async fn connector(address: SocketAddr) -> TestResult<Connector> {
+async fn connector(address: SocketAddr, operation_timeout: Duration) -> TestResult<Connector> {
     Ok(Connector::connect(
         Config::new(address.to_string())
             .with_connect_timeout(Duration::from_millis(200))
-            .with_operation_timeout(Duration::from_millis(500)),
+            .with_operation_timeout(operation_timeout),
     )
     .await?)
 }
@@ -404,7 +420,7 @@ struct DropCounters {
 enum ProxyMode {
     Pass,
     DropNthRegistered(usize),
-    DropNthOfferAccepted(usize),
+    DropOfferAcceptedForClient(&'static str),
     DropRegisteredAndHoldGateway(usize),
     DisconnectOnSignal(tokio::sync::watch::Receiver<bool>),
 }
@@ -500,8 +516,8 @@ async fn proxy_connection(
         ProxyMode::DropNthRegistered(nth) => {
             forward_frames(sdk, gateway, Some(nth), None, false, drops, cancel).await
         }
-        ProxyMode::DropNthOfferAccepted(nth) => {
-            forward_frames(sdk, gateway, None, Some(nth), false, drops, cancel).await
+        ProxyMode::DropOfferAcceptedForClient(client_id) => {
+            forward_frames(sdk, gateway, None, Some(client_id), false, drops, cancel).await
         }
         ProxyMode::DropRegisteredAndHoldGateway(nth) => {
             forward_frames(sdk, gateway, Some(nth), None, true, drops, cancel).await
@@ -516,13 +532,13 @@ async fn forward_frames(
     mut sdk: Framed<TcpStream, FrameCodec>,
     mut gateway: Framed<TcpStream, FrameCodec>,
     drop_registered: Option<usize>,
-    drop_offer_accepted: Option<usize>,
+    drop_offer_accepted_for: Option<&'static str>,
     hold_gateway_after_sdk_close: bool,
     drops: DropCounters,
     cancel: CancellationToken,
 ) -> TestResult {
     let mut registered_seen = 0;
-    let mut offer_accepted_seen = 0;
+    let mut offer_to_drop = None;
     let mut sdk_closed = false;
     loop {
         tokio::select! {
@@ -536,12 +552,12 @@ async fn forward_frames(
                     return Ok(());
                 };
                 let frame = frame?;
-                if matches!(frame, Frame::OfferAccepted { .. }) {
-                    offer_accepted_seen += 1;
-                    if drop_offer_accepted == Some(offer_accepted_seen) {
-                        drops.offer_accepted.fetch_add(1, Ordering::AcqRel);
-                        continue;
-                    }
+                if let Frame::OfferAccepted { pipe_id } = &frame
+                    && offer_to_drop == Some(*pipe_id)
+                {
+                    drops.offer_accepted.fetch_add(1, Ordering::AcqRel);
+                    offer_to_drop = None;
+                    continue;
                 }
                 gateway.send(frame).await?;
             }
@@ -554,6 +570,15 @@ async fn forward_frames(
                         drops.registered.fetch_add(1, Ordering::AcqRel);
                         continue;
                     }
+                }
+                if let Frame::Offer {
+                    pipe_id,
+                    client_id,
+                    ..
+                } = &frame
+                    && drop_offer_accepted_for == Some(client_id.as_str())
+                {
+                    offer_to_drop = Some(*pipe_id);
                 }
                 if sdk_closed {
                     continue;
