@@ -131,6 +131,96 @@ async fn open_rejected_before_writer_commit_leaves_no_stream_state() -> Result<(
 }
 
 #[tokio::test]
+async fn pre_commit_open_failure_is_terminal_before_next_actor_command()
+-> Result<(), Box<dyn Error>> {
+    let (mut actor, mut aggregate_receiver, mut notice_receiver, open_identity, request) =
+        actor_for_open(1)?;
+    actor.aggregate_writer.try_send(PeerFrame::Close {
+        stream_id: StreamId::from_raw(99),
+    })?;
+    assert!(actor.active_opens.reserve(open_identity)?);
+
+    let (open_reply, open_result) = oneshot::channel();
+    actor
+        .handle_command(TransportCommand::Open {
+            request,
+            reply: open_reply,
+        })
+        .await;
+    let failure = open_result
+        .await?
+        .err()
+        .ok_or("expected OPEN pre-commit rejection")?;
+    assert_eq!(failure.code(), ErrorCode::ResourceExhausted);
+    assert_eq!(failure.observation(), PeerObservation::NotObserved);
+    assert!(matches!(
+        notice_receiver.try_recv(),
+        Ok(TransportNotice::AttemptEnded { open_identity: ended }) if ended == open_identity
+    ));
+    assert!(actor.streams.is_empty());
+    assert_eq!(
+        actor.stream_count.load(Ordering::Relaxed),
+        0,
+        "failed pre-commit OPEN left an orphan stream"
+    );
+    assert!(!actor.active_opens.contains(open_identity));
+
+    let (data_reply, data_result) = oneshot::channel();
+    actor
+        .handle_command(TransportCommand::Data {
+            stream_id: StreamId::from_raw(0),
+            payload: Bytes::from_static(b"late-data-for-failed-open"),
+            reply: data_reply,
+        })
+        .await;
+    let data_failure = data_result
+        .await?
+        .err()
+        .ok_or("expected DATA for failed pre-commit stream to fail")?;
+    assert_eq!(data_failure.code(), ErrorCode::FailedPrecondition);
+    assert!(actor.streams.is_empty());
+    assert!(matches!(
+        aggregate_receiver.try_recv(),
+        Ok(PeerFrame::Close { stream_id }) if stream_id == StreamId::from_raw(99)
+    ));
+
+    let second_identity = OpenIdentity::new(GatewayId::new(), SessionId::new(), 2);
+    let second_request = PeerOpenRequest::new(
+        PeerTarget::new(
+            actor.peer_gateway_id,
+            GatewayLocator::new("127.0.0.1:9999".to_owned())?,
+        ),
+        second_identity,
+        "echo.b",
+        SessionId::new(),
+        BindingId::new(),
+    )?;
+    assert!(actor.active_opens.reserve(second_identity)?);
+    let (second_reply, second_result) = oneshot::channel();
+    actor
+        .handle_command(TransportCommand::Open {
+            request: second_request,
+            reply: second_reply,
+        })
+        .await;
+    let second_key = second_result.await??;
+    assert_eq!(
+        second_key.stream_id().raw(),
+        2,
+        "the failed pre-commit OPEN must not reuse its allocated StreamId"
+    );
+    assert!(matches!(
+        aggregate_receiver.try_recv(),
+        Ok(PeerFrame::Open {
+            stream_id,
+            open_identity: identity,
+            ..
+        }) if stream_id == second_key.stream_id() && identity == second_identity
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn closed_writer_rejects_open_before_commit() -> Result<(), Box<dyn Error>> {
     let (mut actor, aggregate_receiver, _notice_receiver, open_identity, request) =
         actor_for_open(1)?;
