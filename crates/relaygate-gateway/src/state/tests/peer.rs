@@ -35,6 +35,83 @@ fn peer_open_identity_must_match_authenticated_peer_gateway()
 }
 
 #[test]
+fn stale_peer_frame_cannot_mutate_a_replacement_gateway_pipe()
+-> Result<(), Box<dyn std::error::Error>> {
+    let entry_gateway = GatewayId::new();
+    let stale_owner = GatewayId::new();
+    let current_owner = GatewayId::new();
+    let mut state = routed_state(entry_gateway);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    let resolve = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let identity = resolve_identity(&resolve).ok_or("missing resolve")?;
+    state.route_resolved(
+        identity,
+        binding_set(
+            "echo.shared",
+            current_owner,
+            SessionId::new(),
+            BindingId::new(),
+            "reused.internal:27421",
+        )?,
+    );
+    let current_key = PeerStreamKey::for_test(current_owner, PeerTransportId::new(), 0);
+    assert!(state.peer_open_committed(identity, current_key).is_empty());
+    let opened = state.peer_opened(current_key, identity);
+    assert!(sdk_deliveries(&opened).any(|delivery| matches!(
+        delivery.frame,
+        Frame::Opened { pipe_id }
+            if pipe_id == PipeId::new(connector, 1)
+    )));
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+
+    let stale_key = PeerStreamKey::for_test(stale_owner, PeerTransportId::new(), 0);
+    assert_ne!(stale_key, current_key);
+    assert!(
+        state
+            .peer_data(stale_key, Bytes::from_static(b"stale"))
+            .is_empty()
+    );
+    assert!(
+        state
+            .peer_reset(stale_key, ErrorCode::Cancelled, "stale".to_owned())
+            .is_empty()
+    );
+    assert!(
+        state
+            .peer_transport_lost_stream(stale_key, identity, PeerObservation::MaybeObserved)
+            .is_empty()
+    );
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.active_peer_open_count(), 1);
+
+    let relay = state.handle(
+        connector,
+        Frame::Data {
+            pipe_id: PipeId::new(connector, 1),
+            payload: Bytes::from_static(b"current"),
+        },
+    )?;
+    assert!(peer_deliveries(&relay).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Data { key, payload }
+            if *key == current_key && payload.as_ref() == b"current"
+    )));
+
+    state.peer_close(current_key);
+    assert_eq!(state.pipe_count(), 0);
+    assert_eq!(state.active_peer_open_count(), 0);
+    Ok(())
+}
+
+#[test]
 fn early_opened_then_late_commit_callback_is_idempotent() -> Result<(), Box<dyn std::error::Error>>
 {
     let entry_gateway = GatewayId::new();
