@@ -78,38 +78,43 @@ async fn recovery_case() -> TestResult {
 }
 
 #[tokio::test]
-async fn listener_registers_and_opens_local_pipe_before_route_table_is_available() -> TestResult {
+async fn failed_initial_route_registration_keeps_local_pipe_available() -> TestResult {
     tokio::time::timeout(
         Duration::from_secs(5),
-        local_pipe_before_initial_sync_case(),
+        local_pipe_after_initial_registration_failure_case(),
     )
     .await??;
     Ok(())
 }
 
-async fn local_pipe_before_initial_sync_case() -> TestResult {
-    let stalled_route_listener = TcpListener::bind("127.0.0.1:0").await?;
-    let route_endpoint = stalled_route_listener.local_addr()?;
-    let directory = ShardDirectory::from_json_bytes(one_shard_directory(route_endpoint))?;
+async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
+    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let route_endpoint = route_listener.local_addr()?;
+    let route_directory_bytes = one_shard_directory(route_endpoint);
+    let route_directory = ShardDirectory::from_json_bytes(&route_directory_bytes)?;
+    let route_generation = route_directory.generation();
+    let mut gateway_directory_bytes = route_directory_bytes;
+    gateway_directory_bytes.push(b'\n');
+    let gateway_directory = ShardDirectory::from_json_bytes(&gateway_directory_bytes)?;
+    assert_ne!(gateway_directory.generation(), route_generation);
 
-    let gateway = RunningGateway::start(directory).await?;
+    let route_table =
+        RunningRouteTable::serve(route_listener, route_directory, Duration::from_millis(250))?;
+    let probe = connect_probe(route_endpoint, route_generation).await?;
+
+    let gateway = RunningGateway::start(gateway_directory).await?;
     let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
     let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
-    wait_for_gateway_snapshot(&gateway, |snapshot| {
-        snapshot.listener_bindings == 1
-            && snapshot.route_registrations_synced == 0
-            && snapshot.route_registrations_unsynced == 1
-    })
-    .await?;
 
-    // The endpoint is bound but no RouteTable service consumes the handshake.
-    // Waiting past the client deadline proves that at least one initial
-    // publication attempt failed without removing the local binding.
+    // The RT is reachable and authenticated, but rejects the Gateway's exact
+    // directory generation. Give the initial REGISTER enough time to receive
+    // FAILED_PRECONDITION before checking that only publication is UNSYNCED.
     tokio::time::sleep(Duration::from_millis(250)).await;
     let unsynced = gateway.gateway.snapshot();
     assert_eq!(unsynced.listener_bindings, 1);
     assert_eq!(unsynced.route_registrations_synced, 0);
     assert_eq!(unsynced.route_registrations_unsynced, 1);
+    wait_for_not_found(&probe, route_generation, CLIENT_ID).await?;
 
     let connector = Connector::connect(sdk_config(gateway.endpoint)).await?;
     let (mut connector_pipe, mut listener_pipe) =
@@ -142,7 +147,7 @@ async fn local_pipe_before_initial_sync_case() -> TestResult {
     connector.close();
     listener_runtime.close();
     gateway.stop().await?;
-    drop(stalled_route_listener);
+    route_table.stop().await?;
     Ok(())
 }
 
