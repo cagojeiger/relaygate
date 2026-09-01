@@ -205,7 +205,8 @@ reason = "shard projection과 revision은 검증하지만 두 shard의 실제 �
 [[case]]
 id = "T-REG-06"
 status = "executable"
-rust = ["ended_lease_operations_cannot_change_a_new_lease", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "routed_gateway_republishes_current_listener_state_after_route_table_restart", "lost_deregister_response_removes_local_binding_and_route_table_mapping"]
+rust = ["ended_lease_operations_cannot_change_a_new_lease", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "routed_gateway_republishes_current_listener_state_after_route_table_restart", "unanswered_deregister_falls_back_to_lease_expiry"]
+reason = "ListenerSession 종료는 local binding을 즉시 제거한다. Deregister가 RT에 적용되기 전에 transport를 끊어 mapping이 남는 최악 조건에서도 종료 lease의 TTL 만료가 RT state를 제거하고 과거 operation은 이를 되살리지 못한다."
 
 [[case]]
 id = "T-REG-07"
@@ -583,7 +584,8 @@ reason = "aggregate와 per-stream buffer 포화 뒤 terminal commit 실패, tran
 [[case]]
 id = "T-EDGE-11"
 status = "executable"
-rust = ["state::tests::only_listener_session_cleanup_publishes_an_empty_snapshot", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "lost_deregister_response_removes_local_binding_and_route_table_mapping"]
+rust = ["state::tests::only_listener_session_cleanup_publishes_an_empty_snapshot", "routing::tests::known_connection_loss_is_immediately_unsynced_and_validates_the_lease", "unanswered_deregister_falls_back_to_lease_expiry"]
+reason = "ListenerSession 종료 뒤 local state는 즉시 제거된다. Deregister가 RT에 도달하기 전에 연결을 끊어 응답이 없는 경우에도 RT mapping은 lease TTL로 제거된다."
 
 [[case]]
 id = "T-EDGE-12"

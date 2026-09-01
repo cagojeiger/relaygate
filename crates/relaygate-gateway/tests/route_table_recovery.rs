@@ -164,23 +164,20 @@ async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
 }
 
 #[tokio::test]
-async fn lost_deregister_response_removes_local_binding_and_route_table_mapping() -> TestResult {
-    tokio::time::timeout(Duration::from_secs(5), lost_deregister_response_case()).await??;
+async fn unanswered_deregister_falls_back_to_lease_expiry() -> TestResult {
+    tokio::time::timeout(Duration::from_secs(5), deregister_loss_expiry_case()).await??;
     Ok(())
 }
 
-async fn lost_deregister_response_case() -> TestResult {
+async fn deregister_loss_expiry_case() -> TestResult {
     let route_listener = TcpListener::bind("127.0.0.1:0").await?;
     let route_endpoint = route_listener.local_addr()?;
-    let proxy = DeregisterResponseDroppingProxy::start(route_endpoint).await?;
+    let proxy = DeregisterBlackholeProxy::start(route_endpoint).await?;
     let directory_bytes = one_shard_directory(proxy.endpoint);
     let directory = ShardDirectory::from_json_bytes(&directory_bytes)?;
     let generation = directory.generation();
-    let route_table = RunningRouteTable::serve(
-        route_listener,
-        directory.clone(),
-        Duration::from_millis(250),
-    )?;
+    let route_table =
+        RunningRouteTable::serve(route_listener, directory.clone(), Duration::from_secs(1))?;
 
     let gateway = RunningGateway::start(directory).await?;
     let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
@@ -195,8 +192,12 @@ async fn lost_deregister_response_case() -> TestResult {
             && snapshot.live_pipes == 0
     })
     .await?;
+    poll_until(Duration::from_secs(2), || async {
+        proxy.dropped_deregister().then_some(())
+    })
+    .await?;
+    wait_for_mapping(&probe, generation, CLIENT_ID, &gateway.peer_locator, 1).await?;
     wait_for_not_found(&probe, generation, CLIENT_ID).await?;
-    assert!(proxy.dropped_deregistered());
 
     assert_eq!(listener.client_id(), CLIENT_ID);
     gateway.stop().await?;
@@ -213,74 +214,67 @@ struct RunningGateway {
     task: JoinHandle<Result<(), relaygate_gateway::GatewayError>>,
 }
 
-struct DeregisterResponseDroppingProxy {
+struct DeregisterBlackholeProxy {
     endpoint: SocketAddr,
     shutdown: CancellationToken,
-    dropped_deregistered: Arc<AtomicBool>,
+    dropped_deregister: Arc<AtomicBool>,
     task: JoinHandle<io::Result<()>>,
 }
 
-impl DeregisterResponseDroppingProxy {
+impl DeregisterBlackholeProxy {
     async fn start(target: SocketAddr) -> io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = listener.local_addr()?;
         let shutdown = CancellationToken::new();
         let task_shutdown = shutdown.clone();
-        let dropped_deregistered = Arc::new(AtomicBool::new(false));
-        let task_dropped_deregistered = Arc::clone(&dropped_deregistered);
+        let dropped_deregister = Arc::new(AtomicBool::new(false));
+        let task_dropped_deregister = Arc::clone(&dropped_deregister);
         let task = tokio::spawn(async move {
             let (client, _) = tokio::select! {
                 accepted = listener.accept() => accepted?,
                 () = task_shutdown.cancelled() => return Ok(()),
             };
             let server = TcpStream::connect(target).await?;
-            forward_and_drop_first_deregistered(
-                client,
-                server,
-                task_shutdown,
-                task_dropped_deregistered,
-            )
-            .await
+            forward_until_deregister(client, server, task_shutdown, task_dropped_deregister).await
         });
         Ok(Self {
             endpoint,
             shutdown,
-            dropped_deregistered,
+            dropped_deregister,
             task,
         })
     }
 
-    fn dropped_deregistered(&self) -> bool {
-        self.dropped_deregistered.load(Ordering::Acquire)
+    fn dropped_deregister(&self) -> bool {
+        self.dropped_deregister.load(Ordering::Acquire)
     }
 
     async fn stop(self) -> TestResult {
         self.shutdown.cancel();
         tokio::time::timeout(Duration::from_secs(1), self.task)
             .await
-            .map_err(|_| "Deregister response dropping proxy shutdown timed out")???;
+            .map_err(|_| "Deregister blackhole proxy shutdown timed out")???;
         Ok(())
     }
 }
 
-async fn forward_and_drop_first_deregistered(
+async fn forward_until_deregister(
     client: TcpStream,
     server: TcpStream,
     shutdown: CancellationToken,
-    dropped_deregistered: Arc<AtomicBool>,
+    dropped_deregister: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let (mut client_reader, mut client_writer) = client.into_split();
     let (mut server_reader, mut server_writer) = server.into_split();
-    let mut deregister_request_id = None;
-
     loop {
         tokio::select! {
             frame = read_rt_frame(&mut client_reader) => {
                 let Some(frame) = frame? else {
                     return Ok(());
                 };
-                if deregister_request_id.is_none() && frame_contains(&frame, br#""operation":"DEREGISTER""#) {
-                    deregister_request_id = frame_request_id(&frame);
+                if frame_contains(&frame, br#""operation":"DEREGISTER""#) {
+                    dropped_deregister.store(true, Ordering::Release);
+                    return Ok(());
                 }
                 server_writer.write_all(&frame).await?;
             }
@@ -288,15 +282,6 @@ async fn forward_and_drop_first_deregistered(
                 let Some(frame) = frame? else {
                     return Ok(());
                 };
-                let drops_deregistered = deregister_request_id.is_some_and(|request_id| {
-                    frame_request_id(&frame) == Some(request_id)
-                        && frame_contains(&frame, br#""operation":"DEREGISTERED""#)
-                });
-                if drops_deregistered {
-                    dropped_deregistered.store(true, Ordering::Release);
-                    deregister_request_id = None;
-                    continue;
-                }
                 client_writer.write_all(&frame).await?;
             }
             () = shutdown.cancelled() => return Ok(()),
@@ -320,13 +305,6 @@ async fn read_rt_frame(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<Opti
 
 fn frame_contains(frame: &[u8], needle: &[u8]) -> bool {
     frame.windows(needle.len()).any(|window| window == needle)
-}
-
-fn frame_request_id(frame: &[u8]) -> Option<u64> {
-    let payload = std::str::from_utf8(frame.get(7..)?).ok()?;
-    let (_, tail) = payload.split_once(r#""request_id":"#)?;
-    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
 }
 
 impl RunningGateway {
