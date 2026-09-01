@@ -50,7 +50,7 @@ fn byte_or_record_order_change_creates_a_different_generation() -> Result<(), Ro
 
 #[test]
 fn invalid_directory_artifacts_are_rejected() {
-    let invalid_artifacts: [&[u8]; 8] = [
+    let invalid_artifacts: [&[u8]; 9] = [
         br#"{"format_version":2,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"rt-0"}]}"#,
         br#"{"format_version":1,"authority_hash":"other","shards":[{"id":"rt-0","endpoint":"rt-0"}]}"#,
         br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[]}"#,
@@ -58,6 +58,7 @@ fn invalid_directory_artifacts_are_rejected() {
         br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":""}]}"#,
         br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"a"},{"id":"rt-0","endpoint":"b"}]}"#,
         br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"a","typo":true}]}"#,
+        br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"a"}],"mappings":[]}"#,
         br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","generation":"operator-value","shards":[{"id":"rt-0","endpoint":"a"}]}"#,
     ];
 

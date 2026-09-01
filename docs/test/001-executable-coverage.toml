@@ -45,9 +45,9 @@ rust = ["connector::tests::concurrent_opens_commit_monotonic_connection_ids", "s
 
 [[case]]
 id = "T-TERM-08"
-status = "partial"
-rust = ["exact_artifact_bytes_define_generation_and_ordered_authority", "register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle", "ended_lease_operations_cannot_change_a_new_lease"]
-reason = "directory와 lease 규칙은 검증하지만 Gateway가 remote Resolve 결과나 RT 전체 table을 recovery source로 보관하지 않는다는 부정 조건은 직접 검증하지 않는다."
+status = "executable"
+rust = ["exact_artifact_bytes_define_generation_and_ordered_authority", "invalid_directory_artifacts_are_rejected", "register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle", "ended_lease_operations_cannot_change_a_new_lease", "state::tests::concurrent_remote_opens_consume_only_their_request_local_resolve", "failed_initial_route_registration_keeps_local_pipe_available"]
+reason = "directory schema가 shard별 단일 endpoint만 허용하고 mapping과 외부 generation 필드를 거절하며 exact artifact bytes로 generation을 계산한다. RT lease lifecycle과 종료 lease 격리를 검증하고, Gateway는 각 OPEN의 Resolve 결과를 attempt 종료 뒤 폐기한다. process generation mismatch는 REGISTER 한 번으로 terminal이 되어 local binding만 유지하고 같은 process에서 재시도하지 않는다."
 
 [[case]]
 id = "T-TERM-09"
@@ -208,9 +208,9 @@ reason = "ListenerSession 종료는 local binding을 즉시 제거한다. Deregi
 
 [[case]]
 id = "T-REG-07"
-status = "partial"
-rust = ["routing::tests::failed_precondition_allows_one_register_probe_then_stops", "routing::tests::repeated_precondition_after_successful_probe_is_terminal", "routing::tests::successful_lease_operation_resets_precondition_probe_budget", "routing::tests::terminal_failure_does_not_hot_retry_and_backoff_is_bounded", "routing::tests::projection_preserves_exact_ids_and_gateway_location", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state"]
-reason = "lease-bound FAILED_PRECONDITION 뒤 Register 판별 1회, 판별 Register 실패와 판별 성공 뒤 반복 실패의 terminal 전환, 성공한 lease operation 뒤 별도 recovery episode 허용, auth 실패의 hot retry 억제를 검증한다. remote mapping 비보관과 process-fixed generation의 전체 runtime sequence는 남아 있다."
+status = "executable"
+rust = ["routing::tests::failed_precondition_allows_one_register_probe_then_stops", "routing::tests::repeated_precondition_after_successful_probe_is_terminal", "routing::tests::successful_lease_operation_resets_precondition_probe_budget", "routing::tests::terminal_failure_does_not_hot_retry_and_backoff_is_bounded", "routing::tests::projection_preserves_exact_ids_and_gateway_location", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state", "state::tests::concurrent_remote_opens_consume_only_their_request_local_resolve", "state::tests::late_resolve_cannot_resurrect_a_closed_connector_session", "failed_initial_route_registration_keeps_local_pipe_available"]
+reason = "lease-bound FAILED_PRECONDITION의 Register 판별 한도와 reset, auth 실패의 hot retry 억제를 검증한다. Resolve 결과는 open attempt마다 새로 소비되고 종료 뒤 폐기된다. 실제 Gateway와 RT의 generation mismatch에서는 REGISTER와 FAILED_PRECONDITION이 각각 한 번만 관측되고, reconnect 상한보다 긴 구간에도 같은 process generation으로 재시도하지 않으면서 UNSYNCED local binding과 local Pipe를 유지한다."
 
 [[case]]
 id = "T-REG-08"

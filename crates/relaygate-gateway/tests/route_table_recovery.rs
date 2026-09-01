@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -48,6 +48,8 @@ const GATEWAY_KEY: &str = "gateway-key";
 const PROBE_NAME: &str = "probe";
 const PROBE_KEY: &str = "probe-key";
 const SHARD_ID: &str = "rt-0";
+const ROUTING_RECONNECT_INITIAL: Duration = Duration::from_millis(20);
+const ROUTING_RECONNECT_MAX: Duration = Duration::from_millis(40);
 
 #[tokio::test]
 async fn routed_gateway_republishes_current_listener_state_after_route_table_restart() -> TestResult
@@ -141,7 +143,8 @@ async fn failed_initial_route_registration_keeps_local_pipe_available() -> TestR
 async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
     let route_listener = TcpListener::bind("127.0.0.1:0").await?;
     let route_endpoint = route_listener.local_addr()?;
-    let route_directory_bytes = one_shard_directory(route_endpoint);
+    let proxy = RegistrationCountingProxy::start(route_endpoint).await?;
+    let route_directory_bytes = one_shard_directory(proxy.endpoint);
     let route_directory = ShardDirectory::from_json_bytes(&route_directory_bytes)?;
     let route_generation = route_directory.generation();
     let mut gateway_directory_bytes = route_directory_bytes;
@@ -158,9 +161,12 @@ async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
     let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
 
     // The RT is reachable and authenticated, but rejects the Gateway's exact
-    // directory generation. Give the initial REGISTER enough time to receive
-    // FAILED_PRECONDITION before checking that only publication is UNSYNCED.
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    // directory generation. REGISTER itself is terminal, so a process with the
+    // same configuration must not retry it after the response arrives.
+    wait_for_registration_rejection(&proxy).await?;
+    tokio::time::sleep(ROUTING_RECONNECT_MAX.saturating_mul(5)).await;
+    assert_eq!(proxy.register_count(), 1);
+    assert_eq!(proxy.failed_precondition_count(), 1);
     let unsynced = gateway.gateway.snapshot();
     assert_eq!(unsynced.listener_bindings, 1);
     assert_eq!(unsynced.route_registrations_synced, 0);
@@ -199,6 +205,9 @@ async fn local_pipe_after_initial_registration_failure_case() -> TestResult {
     listener_runtime.close();
     gateway.stop().await?;
     route_table.stop().await?;
+    assert_eq!(proxy.register_count(), 1);
+    assert_eq!(proxy.failed_precondition_count(), 1);
+    proxy.stop().await?;
     Ok(())
 }
 
@@ -480,6 +489,113 @@ struct ControlledRouteProxy {
     task: JoinHandle<io::Result<()>>,
 }
 
+struct RegistrationCountingProxy {
+    endpoint: SocketAddr,
+    shutdown: CancellationToken,
+    register_count: Arc<AtomicUsize>,
+    failed_precondition_count: Arc<AtomicUsize>,
+    task: JoinHandle<io::Result<()>>,
+}
+
+impl RegistrationCountingProxy {
+    async fn start(target: SocketAddr) -> io::Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = listener.local_addr()?;
+        let shutdown = CancellationToken::new();
+        let task_shutdown = shutdown.clone();
+        let register_count = Arc::new(AtomicUsize::new(0));
+        let failed_precondition_count = Arc::new(AtomicUsize::new(0));
+        let task_register_count = Arc::clone(&register_count);
+        let task_failed_precondition_count = Arc::clone(&failed_precondition_count);
+        let task = tokio::spawn(async move {
+            loop {
+                let (inbound, _) = tokio::select! {
+                    accepted = listener.accept() => accepted?,
+                    () = task_shutdown.cancelled() => return Ok(()),
+                };
+                let connection_shutdown = task_shutdown.clone();
+                let connection_register_count = Arc::clone(&task_register_count);
+                let connection_failed_precondition_count =
+                    Arc::clone(&task_failed_precondition_count);
+                tokio::spawn(async move {
+                    let Ok(outbound) = TcpStream::connect(target).await else {
+                        return;
+                    };
+                    let _ = forward_and_count_registration(
+                        inbound,
+                        outbound,
+                        connection_shutdown,
+                        connection_register_count,
+                        connection_failed_precondition_count,
+                    )
+                    .await;
+                });
+            }
+        });
+        Ok(Self {
+            endpoint,
+            shutdown,
+            register_count,
+            failed_precondition_count,
+            task,
+        })
+    }
+
+    fn register_count(&self) -> usize {
+        self.register_count.load(Ordering::Acquire)
+    }
+
+    fn failed_precondition_count(&self) -> usize {
+        self.failed_precondition_count.load(Ordering::Acquire)
+    }
+
+    async fn stop(self) -> TestResult {
+        self.shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(1), self.task)
+            .await
+            .map_err(|_| "Registration counting proxy shutdown timed out")???;
+        Ok(())
+    }
+}
+
+async fn forward_and_count_registration(
+    client: TcpStream,
+    server: TcpStream,
+    shutdown: CancellationToken,
+    register_count: Arc<AtomicUsize>,
+    failed_precondition_count: Arc<AtomicUsize>,
+) -> io::Result<()> {
+    let (mut client_reader, mut client_writer) = client.into_split();
+    let (mut server_reader, mut server_writer) = server.into_split();
+
+    loop {
+        tokio::select! {
+            frame = read_rt_frame(&mut client_reader) => {
+                let Some(frame) = frame? else {
+                    return Ok(());
+                };
+                let is_register = frame_contains(&frame, br#""operation":"REGISTER""#);
+                server_writer.write_all(&frame).await?;
+                if is_register {
+                    register_count.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+            frame = read_rt_frame(&mut server_reader) => {
+                let Some(frame) = frame? else {
+                    return Ok(());
+                };
+                let is_failed_precondition =
+                    frame_contains(&frame, br#""code":"FAILED_PRECONDITION""#);
+                client_writer.write_all(&frame).await?;
+                if is_failed_precondition {
+                    failed_precondition_count.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+            () = shutdown.cancelled() => return Ok(()),
+        }
+    }
+}
+
 impl ControlledRouteProxy {
     async fn start(target: SocketAddr) -> io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -660,7 +776,7 @@ impl RunningGateway {
             route_client_config()?,
         )
         .with_command_queue_capacity(8)
-        .with_reconnect_backoff(Duration::from_millis(20), Duration::from_millis(40))
+        .with_reconnect_backoff(ROUTING_RECONNECT_INITIAL, ROUTING_RECONNECT_MAX)
         .with_desired_scan_interval(Duration::from_millis(20))
         .with_shutdown_timeout(Duration::from_millis(200));
         let shutdown = CancellationToken::new();
@@ -883,6 +999,13 @@ async fn wait_for_not_found(
     poll_until(Duration::from_secs(2), || async {
         let error = client.resolve(generation, &client_id).await.err()?;
         (error.code() == RouteErrorCode::NotFound).then_some(())
+    })
+    .await
+}
+
+async fn wait_for_registration_rejection(proxy: &RegistrationCountingProxy) -> TestResult {
+    poll_until(Duration::from_secs(2), || async {
+        (proxy.register_count() >= 1 && proxy.failed_precondition_count() >= 1).then_some(())
     })
     .await
 }
