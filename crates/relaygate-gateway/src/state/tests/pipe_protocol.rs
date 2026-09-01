@@ -12,22 +12,21 @@ fn late_cancel_is_idempotent_and_cannot_create_state() -> Result<(), Box<dyn std
     assert_eq!(state.pipe_count(), 0);
     Ok(())
 }
-#[test]
-fn foreign_fin_on_offered_pipe_terminates_only_offender_and_preserves_target()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut state = state();
-    let listener = add_session(&mut state, SessionRole::Listener);
-    let connector = add_session(&mut state, SessionRole::Connector);
-    let offender_cancellation = CancellationToken::new();
-    let offender = add_session_with_cancellation(
-        &mut state,
-        SessionRole::Connector,
-        offender_cancellation.clone(),
-    );
-    register_listener(&mut state, listener)?;
-    let pipe_id = offer_pipe(&mut state, connector, listener, 1)?;
 
-    let violation = match state.handle(offender, Frame::Fin { pipe_id }) {
+fn assert_foreign_frame_preserves_pipe(
+    state: &mut GatewayState,
+    role: SessionRole,
+    frame_name: &'static str,
+    frame: Frame,
+    pipe_id: PipeId,
+    endpoints: (SessionId, SessionId),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let expected_pending_offers = state.pending_offer_count();
+    let expected_live_pipes = state.live_pipe_count();
+    let expected_pipes = state.pipe_count();
+    let offender_cancellation = CancellationToken::new();
+    let offender = add_session_with_cancellation(state, role, offender_cancellation.clone());
+    let violation = match state.handle(offender, frame) {
         Err(violation) => violation,
         Ok(_) => return Err("a current Pipe frame from a non-owner must fail the session".into()),
     };
@@ -37,20 +36,99 @@ fn foreign_fin_on_offered_pipe_terminates_only_offender_and_preserves_target()
         ProtocolViolation::PipeOwnership {
             sender,
             pipe_id: violated_pipe,
-            frame_name: "FIN",
-        } if sender == offender && violated_pipe == pipe_id
+            frame_name: actual_frame,
+        } if sender == offender && violated_pipe == pipe_id && actual_frame == frame_name
     ));
-    assert_eq!(state.pending_offer_count(), 1);
-    assert_eq!(state.live_pipe_count(), 0);
-    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.pending_offer_count(), expected_pending_offers);
+    assert_eq!(state.live_pipe_count(), expected_live_pipes);
+    assert_eq!(state.pipe_count(), expected_pipes);
 
-    // `run_session` performs this cleanup immediately after propagating the violation.
-    assert!(state.remove_session(offender).is_empty());
+    let cleanup = state.remove_session(offender);
+    assert_eq!(sdk_deliveries(&cleanup).count(), 0);
+    assert_eq!(
+        publications(&cleanup).count(),
+        usize::from(role == SessionRole::Listener)
+    );
     assert!(offender_cancellation.is_cancelled());
     assert!(!state.sessions.contains_key(&offender));
-    assert!(state.sessions.contains_key(&connector));
-    assert!(state.sessions.contains_key(&listener));
-    assert_eq!(state.pending_offer_count(), 1);
+    assert!(state.sessions.contains_key(&endpoints.0));
+    assert!(state.sessions.contains_key(&endpoints.1));
+    assert_eq!(state.pending_offer_count(), expected_pending_offers);
+    assert_eq!(state.live_pipe_count(), expected_live_pipes);
+    assert_eq!(state.pipe_count(), expected_pipes);
+    Ok(())
+}
+
+#[test]
+fn foreign_fin_on_offered_pipe_terminates_only_offender_and_preserves_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let pipe_id = offer_pipe(&mut state, connector, listener, 1)?;
+
+    for role in [SessionRole::Connector, SessionRole::Listener] {
+        assert_foreign_frame_preserves_pipe(
+            &mut state,
+            role,
+            "FIN",
+            Frame::Fin { pipe_id },
+            pipe_id,
+            (connector, listener),
+        )?;
+    }
+
+    let opened = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+    assert!(matches!(
+        first_sdk_delivery(&opened).map(|delivery| (&delivery.target, &delivery.frame)),
+        Some((target, Frame::Opened { pipe_id: opened_pipe }))
+            if *target == connector && *opened_pipe == pipe_id
+    ));
+    assert_eq!(state.live_pipe_count(), 1);
+    Ok(())
+}
+
+#[test]
+fn foreign_offered_pipe_data_close_and_reset_terminate_offenders_without_mutating_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let pipe_id = offer_pipe(&mut state, connector, listener, 1)?;
+
+    for role in [SessionRole::Connector, SessionRole::Listener] {
+        let frames = [
+            (
+                "DATA",
+                Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"foreign"),
+                },
+            ),
+            ("CLOSE", Frame::Close { pipe_id }),
+            (
+                "RESET",
+                Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Cancelled,
+                    message: "foreign".to_owned(),
+                },
+            ),
+        ];
+
+        for (frame_name, frame) in frames {
+            assert_foreign_frame_preserves_pipe(
+                &mut state,
+                role,
+                frame_name,
+                frame,
+                pipe_id,
+                (connector, listener),
+            )?;
+        }
+    }
 
     let opened = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
     assert!(matches!(
@@ -71,56 +149,37 @@ fn foreign_open_pipe_frames_terminate_each_offender_without_mutating_target()
     register_listener(&mut state, listener)?;
     let pipe_id = open_pipe(&mut state, connector, listener, 1)?;
 
-    let frames = [
-        (
-            "DATA",
-            Frame::Data {
-                pipe_id,
-                payload: Bytes::from_static(b"foreign"),
-            },
-        ),
-        ("FIN", Frame::Fin { pipe_id }),
-        ("CLOSE", Frame::Close { pipe_id }),
-        (
-            "RESET",
-            Frame::Reset {
-                pipe_id,
-                code: ErrorCode::Cancelled,
-                message: "foreign".to_owned(),
-            },
-        ),
-    ];
+    for role in [SessionRole::Connector, SessionRole::Listener] {
+        let frames = [
+            (
+                "DATA",
+                Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"foreign"),
+                },
+            ),
+            ("FIN", Frame::Fin { pipe_id }),
+            ("CLOSE", Frame::Close { pipe_id }),
+            (
+                "RESET",
+                Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Cancelled,
+                    message: "foreign".to_owned(),
+                },
+            ),
+        ];
 
-    for (frame_name, frame) in frames {
-        let offender_cancellation = CancellationToken::new();
-        let offender = add_session_with_cancellation(
-            &mut state,
-            SessionRole::Connector,
-            offender_cancellation.clone(),
-        );
-        let violation = match state.handle(offender, frame) {
-            Err(violation) => violation,
-            Ok(_) => {
-                return Err("a current Pipe frame from a non-owner must fail the session".into());
-            }
-        };
-        assert!(matches!(
-            violation,
-            ProtocolViolation::PipeOwnership {
-                sender,
-                pipe_id: violated_pipe,
-                frame_name: actual_frame,
-            } if sender == offender && violated_pipe == pipe_id && actual_frame == frame_name
-        ));
-        assert_eq!(state.pipe_count(), 1);
-        assert_eq!(state.live_pipe_count(), 1);
-
-        assert!(state.remove_session(offender).is_empty());
-        assert!(offender_cancellation.is_cancelled());
-        assert!(!state.sessions.contains_key(&offender));
-        assert!(state.sessions.contains_key(&connector));
-        assert!(state.sessions.contains_key(&listener));
-        assert_eq!(state.pipe_count(), 1);
+        for (frame_name, frame) in frames {
+            assert_foreign_frame_preserves_pipe(
+                &mut state,
+                role,
+                frame_name,
+                frame,
+                pipe_id,
+                (connector, listener),
+            )?;
+        }
     }
 
     assert_eq!(
@@ -137,6 +196,60 @@ fn foreign_open_pipe_frames_terminate_each_offender_without_mutating_target()
     );
     assert_eq!(state.handle(connector, Frame::Fin { pipe_id })?.len(), 1);
     assert_eq!(state.handle(listener, Frame::Fin { pipe_id })?.len(), 1);
+    assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
+fn foreign_open_pipe_offer_responses_and_cancel_terminate_offenders_without_mutating_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let pipe_id = open_pipe(&mut state, connector, listener, 1)?;
+    let cases = [
+        (
+            SessionRole::Listener,
+            "OFFER_ACCEPTED",
+            Frame::OfferAccepted { pipe_id },
+        ),
+        (
+            SessionRole::Listener,
+            "OFFER_REJECTED",
+            Frame::OfferRejected {
+                pipe_id,
+                code: ErrorCode::Cancelled,
+                message: "foreign".to_owned(),
+            },
+        ),
+        (SessionRole::Connector, "CANCEL", Frame::Cancel { pipe_id }),
+    ];
+
+    for (role, frame_name, frame) in cases {
+        assert_foreign_frame_preserves_pipe(
+            &mut state,
+            role,
+            frame_name,
+            frame,
+            pipe_id,
+            (connector, listener),
+        )?;
+    }
+
+    assert_eq!(
+        state
+            .handle(
+                connector,
+                Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"still-open"),
+                },
+            )?
+            .len(),
+        1
+    );
+    assert_eq!(state.handle(connector, Frame::Close { pipe_id })?.len(), 1);
     assert_eq!(state.pipe_count(), 0);
     Ok(())
 }
@@ -168,34 +281,14 @@ fn foreign_offer_responses_and_cancel_preserve_the_pending_pipe()
     ];
 
     for (role, frame_name, frame) in cases {
-        let offender_cancellation = CancellationToken::new();
-        let offender =
-            add_session_with_cancellation(&mut state, role, offender_cancellation.clone());
-        let violation = match state.handle(offender, frame) {
-            Err(violation) => violation,
-            Ok(_) => {
-                return Err("a current Pipe frame from a non-owner must fail the session".into());
-            }
-        };
-        assert!(matches!(
-            violation,
-            ProtocolViolation::PipeOwnership {
-                sender,
-                pipe_id: violated_pipe,
-                frame_name: actual_frame,
-            } if sender == offender && violated_pipe == pipe_id && actual_frame == frame_name
-        ));
-        assert_eq!(state.pending_offer_count(), 1);
-        assert_eq!(state.pipe_count(), 1);
-
-        let cleanup = state.remove_session(offender);
-        assert_eq!(sdk_deliveries(&cleanup).count(), 0);
-        assert_eq!(
-            publications(&cleanup).count(),
-            usize::from(role == SessionRole::Listener)
-        );
-        assert!(offender_cancellation.is_cancelled());
-        assert_eq!(state.pending_offer_count(), 1);
+        assert_foreign_frame_preserves_pipe(
+            &mut state,
+            role,
+            frame_name,
+            frame,
+            pipe_id,
+            (connector, listener),
+        )?;
     }
 
     assert_eq!(
@@ -215,7 +308,7 @@ fn unknown_pipe_frames_are_no_op_for_every_pipe_operation() -> Result<(), Box<dy
     let listener = add_session(&mut state, SessionRole::Listener);
     let connector = add_session(&mut state, SessionRole::Connector);
     let unknown = PipeId::new(connector, 99);
-    let cases = [
+    let role_specific_cases = [
         (listener, Frame::OfferAccepted { pipe_id: unknown }),
         (
             listener,
@@ -226,28 +319,30 @@ fn unknown_pipe_frames_are_no_op_for_every_pipe_operation() -> Result<(), Box<dy
             },
         ),
         (connector, Frame::Cancel { pipe_id: unknown }),
-        (
-            connector,
+    ];
+
+    for (sender, frame) in role_specific_cases {
+        assert!(state.handle(sender, frame)?.is_empty());
+        assert_eq!(state.pipe_count(), 0);
+    }
+    for sender in [connector, listener] {
+        let bidirectional_cases = [
             Frame::Data {
                 pipe_id: unknown,
                 payload: Bytes::from_static(b"late"),
             },
-        ),
-        (connector, Frame::Fin { pipe_id: unknown }),
-        (connector, Frame::Close { pipe_id: unknown }),
-        (
-            connector,
+            Frame::Fin { pipe_id: unknown },
+            Frame::Close { pipe_id: unknown },
             Frame::Reset {
                 pipe_id: unknown,
                 code: ErrorCode::Cancelled,
                 message: "late".to_owned(),
             },
-        ),
-    ];
-
-    for (sender, frame) in cases {
-        assert!(state.handle(sender, frame)?.is_empty());
-        assert_eq!(state.pipe_count(), 0);
+        ];
+        for frame in bidirectional_cases {
+            assert!(state.handle(sender, frame)?.is_empty());
+            assert_eq!(state.pipe_count(), 0);
+        }
     }
     assert!(state.sessions.contains_key(&listener));
     assert!(state.sessions.contains_key(&connector));
@@ -262,33 +357,36 @@ fn owner_invalid_phase_resets_only_the_target_pipe() -> Result<(), Box<dyn std::
     register_listener(&mut state, listener)?;
     let healthy = open_pipe(&mut state, connector, listener, 1)?;
 
-    for invalid_case in 0..4 {
-        let pipe_id = offer_pipe(&mut state, connector, listener, 10 + invalid_case)?;
-        let frame = match invalid_case {
-            0 => Frame::Data {
-                pipe_id,
-                payload: Bytes::from_static(b"too-early"),
-            },
-            1 => Frame::Fin { pipe_id },
-            2 => Frame::Close { pipe_id },
-            3 => Frame::Reset {
-                pipe_id,
-                code: ErrorCode::Cancelled,
-                message: "too early".to_owned(),
-            },
-            _ => return Err("invalid offered-phase test case".into()),
-        };
-        let resets = state.handle(connector, frame)?;
-        assert_eq!(resets.len(), 2);
-        assert!(sdk_deliveries(&resets).all(|delivery| matches!(
-            delivery.frame,
-            Frame::Reset {
-                pipe_id: reset_pipe,
-                code: ErrorCode::ProtocolError,
-                ..
-            } if reset_pipe == pipe_id
-        )));
-        assert_eq!(state.pipe_count(), 1);
+    for (owner_index, sender) in [connector, listener].into_iter().enumerate() {
+        for invalid_case in 0..4 {
+            let connection_id = 10 + (owner_index as u64 * 4) + invalid_case;
+            let pipe_id = offer_pipe(&mut state, connector, listener, connection_id)?;
+            let frame = match invalid_case {
+                0 => Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"too-early"),
+                },
+                1 => Frame::Fin { pipe_id },
+                2 => Frame::Close { pipe_id },
+                3 => Frame::Reset {
+                    pipe_id,
+                    code: ErrorCode::Cancelled,
+                    message: "too early".to_owned(),
+                },
+                _ => return Err("invalid offered-phase test case".into()),
+            };
+            let resets = state.handle(sender, frame)?;
+            assert_eq!(resets.len(), 2);
+            assert!(sdk_deliveries(&resets).all(|delivery| matches!(
+                delivery.frame,
+                Frame::Reset {
+                    pipe_id: reset_pipe,
+                    code: ErrorCode::ProtocolError,
+                    ..
+                } if reset_pipe == pipe_id
+            )));
+            assert_eq!(state.pipe_count(), 1);
+        }
     }
 
     for invalid_case in 0..2 {
@@ -334,7 +432,7 @@ fn owner_invalid_phase_resets_only_the_target_pipe() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn cancel_after_offer_admission_closes_only_the_cancelled_pipe()
+fn connector_cancel_after_open_is_cancelled_cleanup_and_preserves_sibling_pipe()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
     let listener = add_session(&mut state, SessionRole::Listener);
@@ -367,6 +465,78 @@ fn cancel_after_offer_admission_closes_only_the_cancelled_pipe()
             .len(),
         1
     );
+    Ok(())
+}
+
+#[test]
+fn local_connector_session_loss_resets_only_owned_pipe_and_preserves_sibling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let lost_connector = add_session(&mut state, SessionRole::Connector);
+    let sibling_connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let lost_pipe = open_pipe(&mut state, lost_connector, listener, 1)?;
+    let sibling_pipe = open_pipe(&mut state, sibling_connector, listener, 1)?;
+
+    assert_eq!(state.pipe_count(), 2);
+    assert_eq!(state.live_pipe_count(), 2);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 1);
+
+    let cleanup = state.remove_session(lost_connector);
+
+    assert_eq!(cleanup.len(), 1);
+    assert!(sdk_deliveries(&cleanup).any(|delivery| matches!(
+        delivery,
+        Delivery {
+            target,
+            frame: Frame::Reset {
+                pipe_id,
+                code: ErrorCode::Unavailable,
+                ..
+            },
+            ..
+        } if *target == listener && *pipe_id == lost_pipe
+    )));
+    assert_eq!(peer_deliveries(&cleanup).count(), 0);
+    assert_eq!(publications(&cleanup).count(), 0);
+    assert!(!state.sessions.contains_key(&lost_connector));
+    assert!(state.sessions.contains_key(&sibling_connector));
+    assert!(state.sessions.contains_key(&listener));
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 1);
+
+    assert!(state
+        .handle(
+            listener,
+            Frame::Data {
+                pipe_id: lost_pipe,
+                payload: Bytes::from_static(b"late target data"),
+            },
+        )?
+        .is_empty());
+    let sibling = state.handle(
+        sibling_connector,
+        Frame::Data {
+            pipe_id: sibling_pipe,
+            payload: Bytes::from_static(b"sibling survives connector loss"),
+        },
+    )?;
+    assert!(sdk_deliveries(&sibling).any(|delivery| matches!(
+        delivery,
+        Delivery {
+            target,
+            frame: Frame::Data { pipe_id, payload },
+            ..
+        } if *target == listener
+            && *pipe_id == sibling_pipe
+            && payload.as_ref() == b"sibling survives connector loss"
+    )));
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
     Ok(())
 }
 
@@ -502,46 +672,106 @@ fn close_reset_and_late_frames_are_pipe_local() -> Result<(), Box<dyn std::error
     let connector = add_session(&mut state, SessionRole::Connector);
     register_listener(&mut state, listener)?;
 
-    let closed = open_pipe(&mut state, connector, listener, 1)?;
-    let close = state.handle(connector, Frame::Close { pipe_id: closed })?;
-    assert!(matches!(
-        first_sdk_delivery(&close).map(|delivery| (&delivery.target, &delivery.frame)),
-        Some((target, Frame::Close { pipe_id })) if *target == listener && *pipe_id == closed
-    ));
-    assert_eq!(state.pipe_count(), 0);
-    assert!(
-        state
-            .handle(listener, Frame::Close { pipe_id: closed })?
-            .is_empty()
-    );
+    for (connection_id, sender, counterpart) in
+        [(1, connector, listener), (2, listener, connector)]
+    {
+        let closed = open_pipe(&mut state, connector, listener, connection_id)?;
+        let close = state.handle(sender, Frame::Close { pipe_id: closed })?;
+        assert_eq!(close.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&close).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Close { pipe_id }))
+                if *target == counterpart && *pipe_id == closed
+        ));
+        assert_eq!(state.pipe_count(), 0);
+        assert!(
+            state
+                .handle(counterpart, Frame::Close { pipe_id: closed })?
+                .is_empty()
+        );
+    }
 
-    let reset = open_pipe(&mut state, connector, listener, 2)?;
-    let resets = state.handle(
-        listener,
-        Frame::Reset {
-            pipe_id: reset,
-            code: ErrorCode::Cancelled,
-            message: "listener stopped".to_owned(),
-        },
-    )?;
-    assert!(matches!(
-        first_sdk_delivery(&resets).map(|delivery| (&delivery.target, &delivery.frame)),
-        Some((target, Frame::Reset { pipe_id, code: ErrorCode::Cancelled, .. }))
-            if *target == connector && *pipe_id == reset
-    ));
+    for (connection_id, sender, counterpart) in
+        [(3, connector, listener), (4, listener, connector)]
+    {
+        let reset = open_pipe(&mut state, connector, listener, connection_id)?;
+        let resets = state.handle(
+            sender,
+            Frame::Reset {
+                pipe_id: reset,
+                code: ErrorCode::Cancelled,
+                message: "endpoint stopped".to_owned(),
+            },
+        )?;
+        assert_eq!(resets.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&resets).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Reset { pipe_id, code: ErrorCode::Cancelled, .. }))
+                if *target == counterpart && *pipe_id == reset
+        ));
+        assert_eq!(state.pipe_count(), 0);
+        assert!(
+            state
+                .handle(
+                    counterpart,
+                    Frame::Data {
+                        pipe_id: reset,
+                        payload: Bytes::from_static(b"late"),
+                    },
+                )?
+                .is_empty()
+        );
+    }
     assert_eq!(state.pipe_count(), 0);
-    assert!(
-        state
-            .handle(
-                connector,
-                Frame::Data {
-                    pipe_id: reset,
-                    payload: Bytes::from_static(b"late"),
-                },
-            )?
-            .is_empty()
-    );
-    assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
+fn opposite_direction_data_survives_first_fin_from_each_endpoint()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+
+    for (connection_id, first_sender, surviving_sender) in
+        [(1, connector, listener), (2, listener, connector)]
+    {
+        let pipe_id = open_pipe(&mut state, connector, listener, connection_id)?;
+        let first_fin = state.handle(first_sender, Frame::Fin { pipe_id })?;
+        assert_eq!(first_fin.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&first_fin).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Fin { pipe_id: finished }))
+                if *target == surviving_sender && *finished == pipe_id
+        ));
+
+        let reverse = state.handle(
+            surviving_sender,
+            Frame::Data {
+                pipe_id,
+                payload: Bytes::from_static(b"surviving direction"),
+            },
+        )?;
+        assert_eq!(reverse.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&reverse).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Data { pipe_id: relayed, payload }))
+                if *target == first_sender
+                    && *relayed == pipe_id
+                    && payload.as_ref() == b"surviving direction"
+        ));
+        assert_eq!(state.pipe_count(), 1);
+
+        let second_fin = state.handle(surviving_sender, Frame::Fin { pipe_id })?;
+        assert_eq!(second_fin.len(), 1);
+        assert!(matches!(
+            first_sdk_delivery(&second_fin).map(|delivery| (&delivery.target, &delivery.frame)),
+            Some((target, Frame::Fin { pipe_id: finished }))
+                if *target == first_sender && *finished == pipe_id
+        ));
+        assert_eq!(state.pipe_count(), 0);
+    }
     Ok(())
 }
 
@@ -551,37 +781,38 @@ fn data_after_fin_resets_only_that_pipe() -> Result<(), Box<dyn std::error::Erro
     let listener = add_session(&mut state, SessionRole::Listener);
     let connector = add_session(&mut state, SessionRole::Connector);
     register_listener(&mut state, listener)?;
-    let violating = open_pipe(&mut state, connector, listener, 1)?;
-    let healthy = open_pipe(&mut state, connector, listener, 2)?;
+    let healthy = open_pipe(&mut state, connector, listener, 1)?;
 
-    assert_eq!(
-        state
-            .handle(connector, Frame::Fin { pipe_id: violating })?
-            .len(),
-        1
-    );
-    assert!(
-        state
-            .handle(connector, Frame::Fin { pipe_id: violating })?
-            .is_empty()
-    );
-    let resets = state.handle(
-        connector,
-        Frame::Data {
-            pipe_id: violating,
-            payload: Bytes::from_static(b"invalid"),
-        },
-    )?;
+    for (connection_id, sender) in [(2, connector), (3, listener)] {
+        let violating = open_pipe(&mut state, connector, listener, connection_id)?;
+        assert_eq!(
+            state.handle(sender, Frame::Fin { pipe_id: violating })?.len(),
+            1
+        );
+        assert!(
+            state
+                .handle(sender, Frame::Fin { pipe_id: violating })?
+                .is_empty()
+        );
+        let resets = state.handle(
+            sender,
+            Frame::Data {
+                pipe_id: violating,
+                payload: Bytes::from_static(b"invalid"),
+            },
+        )?;
 
-    assert_eq!(resets.len(), 2);
-    assert!(sdk_deliveries(&resets).all(|delivery| matches!(
-        delivery.frame,
-        Frame::Reset {
-            code: ErrorCode::ProtocolError,
-            ..
-        }
-    )));
-    assert_eq!(state.pipe_count(), 1);
+        assert_eq!(resets.len(), 2);
+        assert!(sdk_deliveries(&resets).all(|delivery| matches!(
+            delivery.frame,
+            Frame::Reset {
+                pipe_id,
+                code: ErrorCode::ProtocolError,
+                ..
+            } if pipe_id == violating
+        )));
+        assert_eq!(state.pipe_count(), 1);
+    }
     assert_eq!(
         state
             .handle(

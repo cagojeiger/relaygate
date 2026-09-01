@@ -172,7 +172,7 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | `STATE-PDIR-002` | Pipe sender direction | `FINISHED` | duplicate `FIN` | `FINISHED` | idempotent no-op |
 | `STATE-PDIR-003` | Pipe sender direction | `FINISHED` | 같은 sender의 `DATA` 수신 | `FINISHED` | `PROTOCOL_ERROR`, 해당 Pipe를 `RESET`하고 다른 stream은 유지 |
 | `STATE-PIPE-002` | Pipe | `OPEN` | 양방향 `FINISHED` 또는 `CLOSE` | `CLOSED` | 정상 terminal, 양쪽 I/O와 state 제거 |
-| `STATE-PIPE-003` | Pipe | `OPEN` | queue admission 뒤 open attempt 실패·OPENED 확인 유실, `RESET`, 소유 SDK session 종료 또는 필요한 transport loss | `CLOSED` | 실패 terminal, pending I/O와 accepted endpoint 실패; 아직 accept되지 않은 endpoint는 incoming queue와 capacity에서 제거 |
+| `STATE-PIPE-003` | Pipe | `OPEN` | queue admission 뒤 open attempt 실패·OPENED 확인 유실, Connector SDK의 owner `CANCEL`, `RESET`, 소유 SDK session 종료 또는 필요한 transport loss | `CLOSED` | 실패 terminal, pending I/O와 accepted endpoint 실패; owner `CANCEL`은 해당 Pipe만 `RESET(CANCELLED)`로 닫고 sibling Pipe를 유지하며, 아직 accept되지 않은 endpoint는 incoming queue와 capacity에서 제거 |
 | `STATE-PAIR-001` | PeerTransportSlot | `IDLE` | pair에 READY가 없고 slot의 dialer가 remote OPEN을 처리 | `CONNECTING` | 자기 방향 candidate 하나를 lazy 연결 |
 | `STATE-PAIR-002` | PeerTransportSlot | `CONNECTING` | candidate handshake 성공 | `READY` | 방향별 reusable transport 사용 |
 | `STATE-PAIR-003` | PeerTransportSlot | `CONNECTING` | candidate 연결 또는 handshake 실패 | `IDLE` | 해당 OPEN 실패, 이후 새 연결 가능 |
@@ -246,7 +246,7 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 20. conforming Gateway는 같은 open attempt의 `OFFER`를 재전송하거나 `PipeId`를 재사용하지 않는다. Listener SDK의 memory 크기는 현재 live Pipe에 비례하며 종료된 `PipeId`별 tombstone에 비례해서는 안 된다.
 21. Gateway의 `ClientId -> ClientKey` startup configuration은 process 수명 동안 불변이다. runtime key 발급·rotation·revocation event는 없으며 replacement Gateway의 recovery `REGISTER` 거절만 returned Listener를 `BLOCKED`로 만들 수 있다.
 22. Listener handle은 shared session token을 직접 취소하지 않는다. 정상 ACTIVE close는 개별 binding cleanup이고, committed recovery REGISTER 중 desired 제거처럼 wire 결과가 불확실한 경우에만 shared Listener actor가 session reset을 결정한다.
-23. Gateway는 current Pipe를 변경하기 전에 frame role과 sender ownership을 phase보다 먼저 검증한다. unknown·stale identity는 no-op이고 current identity의 non-owner frame은 target Pipe를 변경하지 않은 채 offending session을 종료한다. owner의 invalid phase frame은 해당 Pipe만 `RESET`한다.
+23. Gateway는 current Pipe를 변경하기 전에 frame role과 sender ownership을 phase보다 먼저 검증한다. unknown·stale identity는 no-op이고 current identity의 non-owner frame은 target Pipe를 변경하지 않은 채 offending session을 종료한다. owner의 invalid phase frame은 해당 Pipe만 `RESET`한다. Connector SDK의 owner `CANCEL`은 `OPENED` application 반환 경합을 닫는 terminal frame이므로 Gateway Pipe가 `OPEN`이어도 유효하다.
 24. Listener `accept`와 session 종료는 dequeue 뒤 마지막 `ACTIVE` 및 Pipe non-terminal 확인을 성공 선형화점으로 삼아 한 순서로 직렬화한다. 이 확인이 먼저면 반환된 Pipe가 직후 failure를 관찰할 수 있고, session 종료가 먼저면 old session의 미수락 Pipe를 제거한다. 성공 확인 전에 관찰된 `BLOCKED/CLOSED`는 queue보다 우선하며 terminal 오류를 반환한다.
 25. PeerTransport endpoint의 단일 actor는 local `StreamId` counter 할당과 peer `OPEN` writer-queue commit을 같은 순서로 직렬화한다. 할당한 counter는 commit 실패 뒤에도 재사용하지 않는다.
 26. remote OPEN cancel은 `OPENING` RelayStream의 `RESET(CANCELLED)`로 표현하고 별도 peer `CANCEL` frame을 두지 않는다.

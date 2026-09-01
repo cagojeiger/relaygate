@@ -147,9 +147,116 @@ async fn remote_pipe_case() -> TestResult {
     .await?;
 
     first_connector.close().await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().peer_streams == 1
+            && gateway_b.gateway.snapshot().peer_streams == 1
+            && gateway_a.gateway.snapshot().peer_transports_ready == 1
+            && gateway_b.gateway.snapshot().peer_transports_ready == 1
+    })
+    .await?;
+
+    second_listener.close().await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().peer_streams == 0
+            && gateway_b.gateway.snapshot().peer_streams == 0
+            && gateway_a.gateway.snapshot().peer_transports_ready == 1
+            && gateway_b.gateway.snapshot().peer_transports_ready == 1
+    })
+    .await?;
     first_listener.close().await?;
     second_connector.close().await?;
-    second_listener.close().await?;
+
+    connector.close();
+    listener_runtime.close();
+    restarted_route_table.stop().await?;
+    gateway_a.stop().await?;
+    gateway_b.stop().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn distributed_sdk_resets_are_symmetric_and_stream_scoped() -> TestResult {
+    timeout(Duration::from_secs(10), distributed_sdk_reset_case()).await??;
+    Ok(())
+}
+
+async fn distributed_sdk_reset_case() -> TestResult {
+    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let route_endpoint = route_listener.local_addr()?;
+    let directory = ShardDirectory::from_json_bytes(one_shard_directory(route_endpoint))?;
+    let route_table = RunningRouteTable::start(route_listener, directory.clone())?;
+
+    let gateway_a = RunningGateway::start(
+        GATEWAY_A,
+        GATEWAY_A_KEY,
+        GATEWAY_B,
+        GATEWAY_B_KEY,
+        directory.clone(),
+    )
+    .await?;
+    let gateway_b = RunningGateway::start(
+        GATEWAY_B,
+        GATEWAY_B_KEY,
+        GATEWAY_A,
+        GATEWAY_A_KEY,
+        directory,
+    )
+    .await?;
+
+    let listener_runtime = ListenerRuntime::connect(sdk_config(gateway_b.sdk_address)).await?;
+    let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_b.gateway.snapshot().route_registrations_synced == 1
+    })
+    .await?;
+    let connector = Connector::connect(sdk_config(gateway_a.sdk_address)).await?;
+
+    let mut connector_reset = connector.open(CLIENT_ID).await?;
+    let mut listener_reset = listener.accept().await?;
+    let mut connector_survivor = connector.open(CLIENT_ID).await?;
+    let mut listener_survivor = listener.accept().await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().peer_streams == 2
+            && gateway_b.gateway.snapshot().peer_streams == 2
+    })
+    .await?;
+
+    connector_reset
+        .reset(SdkErrorCode::Cancelled, "connector reset")
+        .await?;
+    let mut probe = [0_u8; 1];
+    let listener_error = listener_reset
+        .read_into(&mut probe)
+        .await
+        .err()
+        .ok_or("Listener Pipe unexpectedly survived Connector RESET")?;
+    assert_eq!(listener_error.code(), SdkErrorCode::Cancelled);
+    assert_eq!(listener_error.observation(), SdkPeerObservation::Observed);
+    assert_eq!(listener_error.message(), "connector reset");
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().peer_streams == 1
+            && gateway_b.gateway.snapshot().peer_streams == 1
+            && gateway_a.gateway.snapshot().peer_transports_ready == 1
+            && gateway_b.gateway.snapshot().peer_transports_ready == 1
+    })
+    .await?;
+
+    listener_survivor.write_all(b"sibling survives").await?;
+    let mut sibling_payload = [0_u8; 16];
+    connector_survivor.read_exact(&mut sibling_payload).await?;
+    assert_eq!(&sibling_payload, b"sibling survives");
+
+    listener_survivor
+        .reset(SdkErrorCode::PermissionDenied, "listener reset")
+        .await?;
+    let connector_error = connector_survivor
+        .read_into(&mut probe)
+        .await
+        .err()
+        .ok_or("Connector Pipe unexpectedly survived Listener RESET")?;
+    assert_eq!(connector_error.code(), SdkErrorCode::PermissionDenied);
+    assert_eq!(connector_error.observation(), SdkPeerObservation::Observed);
+    assert_eq!(connector_error.message(), "listener reset");
     wait_until(Duration::from_secs(2), || {
         gateway_a.gateway.snapshot().peer_streams == 0
             && gateway_b.gateway.snapshot().peer_streams == 0
@@ -160,7 +267,7 @@ async fn remote_pipe_case() -> TestResult {
 
     connector.close();
     listener_runtime.close();
-    restarted_route_table.stop().await?;
+    route_table.stop().await?;
     gateway_a.stop().await?;
     gateway_b.stop().await?;
     Ok(())

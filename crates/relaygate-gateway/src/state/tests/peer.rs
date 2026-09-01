@@ -280,6 +280,125 @@ fn connector_cancel_after_peer_open_commit_resets_peer_and_late_opened_cannot_re
 }
 
 #[test]
+fn connector_cancel_after_peer_opened_resets_only_target_stream()
+-> Result<(), Box<dyn std::error::Error>> {
+    let entry_gateway = GatewayId::new();
+    let owner_gateway = GatewayId::new();
+    let peer_transport_id = PeerTransportId::new();
+    let mut state = routed_state(entry_gateway);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    let mut identities = Vec::new();
+    let mut keys = Vec::new();
+    let mut pipe_ids = Vec::new();
+
+    for (connection_id, raw_stream_id) in [(1, 0), (2, 2)] {
+        let resolve = state.handle(
+            connector,
+            Frame::Open {
+                connection_id,
+                client_id: "echo.shared".to_owned(),
+            },
+        )?;
+        let identity = resolve_identity(&resolve).ok_or("missing resolve")?;
+        let pipe_id = PipeId::new(connector, connection_id);
+        state.route_resolved(
+            identity,
+            binding_set(
+                "echo.shared",
+                owner_gateway,
+                SessionId::new(),
+                BindingId::new(),
+                "owner.internal:27421",
+            )?,
+        );
+        let key = PeerStreamKey::for_test(owner_gateway, peer_transport_id, raw_stream_id);
+        assert!(state.peer_open_committed(identity, key).is_empty());
+        let opened = state.peer_opened(key, identity);
+        assert_eq!(opened.len(), 1);
+        assert!(sdk_deliveries(&opened).any(|delivery| {
+            delivery.target == connector
+                && matches!(delivery.frame, Frame::Opened { pipe_id: opened_id } if opened_id == pipe_id)
+        }));
+        identities.push(identity);
+        keys.push(key);
+        pipe_ids.push(pipe_id);
+    }
+    assert_eq!(state.pipe_count(), 2);
+    assert_eq!(state.peer_pipe_count(), 2);
+    assert_eq!(state.active_peer_open_count(), 2);
+    assert_eq!(state.live_pipe_count(), 2);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+
+    let cancelled = state.handle(
+        connector,
+        Frame::Cancel {
+            pipe_id: pipe_ids[0],
+        },
+    )?;
+
+    assert_eq!(cancelled.len(), 1);
+    assert!(peer_deliveries(&cancelled).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key,
+            code: ErrorCode::Cancelled,
+            ..
+        } if *key == keys[0]
+    )));
+    assert!(!peer_deliveries(&cancelled).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset { key, .. } if *key == keys[1]
+    )));
+    assert_eq!(sdk_deliveries(&cancelled).count(), 0);
+    assert_eq!(publications(&cancelled).count(), 0);
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.peer_pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+
+    let late_opened = state.peer_opened(keys[0], identities[0]);
+    assert_eq!(late_opened.len(), 1);
+    assert!(peer_deliveries(&late_opened).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key,
+            code: ErrorCode::Cancelled,
+            ..
+        } if *key == keys[0]
+    )));
+    assert_eq!(sdk_deliveries(&late_opened).count(), 0);
+    assert_eq!(publications(&late_opened).count(), 0);
+    assert!(state
+        .peer_data(keys[0], Bytes::from_static(b"late target data"))
+        .is_empty());
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.peer_pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+
+    let sibling = state.handle(
+        connector,
+        Frame::Data {
+            pipe_id: pipe_ids[1],
+            payload: Bytes::from_static(b"sibling survives cancel"),
+        },
+    )?;
+    assert!(peer_deliveries(&sibling).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Data { key, payload }
+            if *key == keys[1] && payload.as_ref() == b"sibling survives cancel"
+    )));
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.peer_pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+    Ok(())
+}
+
+#[test]
 fn connector_session_cleanup_resets_committed_peer_stream_as_cancelled()
 -> Result<(), Box<dyn std::error::Error>> {
     let entry_gateway = GatewayId::new();
@@ -381,6 +500,135 @@ fn owner_transport_loss_preserves_listener_binding_and_registration()
     assert_eq!(state.active_peer_open_count(), 0);
     assert_eq!(state.snapshot().listener_bindings, 1);
     assert_eq!(state.snapshot().listener_sessions, 1);
+    Ok(())
+}
+
+#[test]
+fn owner_listener_session_loss_resets_only_owned_peer_stream_and_preserves_sibling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let entry_gateway = GatewayId::new();
+    let mut state = routed_state(GatewayId::new());
+    let lost_listener = add_session(&mut state, SessionRole::Listener);
+    let sibling_listener = add_session(&mut state, SessionRole::Listener);
+    register_listener(&mut state, lost_listener)?;
+    register_listener(&mut state, sibling_listener)?;
+    let lost_binding = state
+        .registry
+        .bindings_for_session(lost_listener)
+        .into_iter()
+        .next()
+        .ok_or("missing lost listener binding")?;
+    let sibling_binding = state
+        .registry
+        .bindings_for_session(sibling_listener)
+        .into_iter()
+        .next()
+        .ok_or("missing sibling listener binding")?;
+    let peer_transport_id = PeerTransportId::new();
+    let identities = [
+        OpenIdentity::new(entry_gateway, SessionId::new(), 1),
+        OpenIdentity::new(entry_gateway, SessionId::new(), 1),
+    ];
+    let keys = [
+        PeerStreamKey::for_test(entry_gateway, peer_transport_id, 0),
+        PeerStreamKey::for_test(entry_gateway, peer_transport_id, 2),
+    ];
+    let listeners = [lost_listener, sibling_listener];
+    let binding_ids = [lost_binding.id, sibling_binding.id];
+    let mut pipe_ids = Vec::new();
+
+    for (((listener, binding_id), key), identity) in listeners
+        .into_iter()
+        .zip(binding_ids)
+        .zip(keys)
+        .zip(identities)
+    {
+        let offered = state.receive_peer_open(
+            key,
+            identity,
+            "echo.shared".to_owned(),
+            listener,
+            binding_id,
+        );
+        let pipe_id = PipeId::new(identity.connector_session(), identity.connection_id());
+        assert!(sdk_deliveries(&offered).any(|delivery| matches!(
+            delivery,
+            Delivery {
+                target,
+                frame: Frame::Offer {
+                    pipe_id: offered_pipe,
+                    ..
+                },
+                ..
+            } if *target == listener && *offered_pipe == pipe_id
+        )));
+        let accepted = state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+        assert!(peer_deliveries(&accepted).any(|delivery| matches!(
+            delivery,
+            PeerDelivery::Opened { key: opened_key } if *opened_key == key
+        )));
+        pipe_ids.push(pipe_id);
+    }
+    assert_eq!(state.pipe_count(), 2);
+    assert_eq!(state.peer_pipe_count(), 2);
+    assert_eq!(state.active_peer_open_count(), 2);
+    assert_eq!(state.live_pipe_count(), 2);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 2);
+
+    let cleanup = state.remove_session(lost_listener);
+
+    assert!(peer_deliveries(&cleanup).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key,
+            code: ErrorCode::Unavailable,
+            ..
+        } if *key == keys[0]
+    )));
+    assert!(!peer_deliveries(&cleanup).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset { key, .. } if *key == keys[1]
+    )));
+    assert_eq!(sdk_deliveries(&cleanup).count(), 0);
+    let published = publications(&cleanup).collect::<Vec<_>>();
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].0, lost_listener);
+    assert!(published[0].1.is_empty());
+    assert!(!state.sessions.contains_key(&lost_listener));
+    assert!(state.sessions.contains_key(&sibling_listener));
+    assert_eq!(state.registry.session_binding_count(lost_listener), 0);
+    assert_eq!(state.registry.session_binding_count(sibling_listener), 1);
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.peer_pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
+    assert_eq!(state.pending_offer_count(), 0);
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.snapshot().listener_bindings, 1);
+
+    assert!(state
+        .peer_data(keys[0], Bytes::from_static(b"late target data"))
+        .is_empty());
+    let sibling = state.peer_data(
+        keys[1],
+        Bytes::from_static(b"sibling survives listener loss"),
+    );
+    assert!(sdk_deliveries(&sibling).any(|delivery| matches!(
+        delivery,
+        Delivery {
+            target,
+            frame: Frame::Data { pipe_id, payload },
+            ..
+        } if *target == sibling_listener
+            && *pipe_id == pipe_ids[1]
+            && payload.as_ref() == b"sibling survives listener loss"
+    )));
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(state.peer_pipe_count(), 1);
+    assert_eq!(state.active_peer_open_count(), 1);
+    assert_eq!(state.live_pipe_count(), 1);
     Ok(())
 }
 
@@ -643,7 +891,15 @@ fn remote_pipe_data_fin_close_and_reset_are_symmetric() -> Result<(), Box<dyn st
 
     let sdk_fin = state.handle(connector, Frame::Fin { pipe_id })?;
     assert!(peer_deliveries(&sdk_fin).any(|delivery| matches!(delivery, PeerDelivery::Fin { .. })));
+    let peer_data_after_sdk_fin =
+        state.peer_data(key, Bytes::from_static(b"peer direction survives sdk FIN"));
+    assert_eq!(peer_data_after_sdk_fin.len(), 1);
+    assert!(sdk_deliveries(&peer_data_after_sdk_fin).any(|delivery| matches!(
+        &delivery.frame,
+        Frame::Data { payload, .. } if payload.as_ref() == b"peer direction survives sdk FIN"
+    )));
     let peer_fin = state.peer_fin(key);
+    assert_eq!(peer_fin.len(), 1);
     assert!(sdk_deliveries(&peer_fin).any(|delivery| matches!(delivery.frame, Frame::Fin { .. })));
     assert_eq!(state.pipe_count(), 0);
 
@@ -699,6 +955,69 @@ fn remote_pipe_data_fin_close_and_reset_are_symmetric() -> Result<(), Box<dyn st
             code: ErrorCode::Unavailable,
             ..
         }
+    )));
+    assert_eq!(state.pipe_count(), 0);
+
+    let fourth_resolve = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 4,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let fourth_identity = resolve_identity(&fourth_resolve).ok_or("missing fourth resolve")?;
+    state.route_resolved(
+        fourth_identity,
+        binding_set(
+            "echo.shared",
+            owner_gateway,
+            SessionId::new(),
+            BindingId::new(),
+            "owner.internal:27421",
+        )?,
+    );
+    let fourth_key = peer_key(owner_gateway, 6);
+    state.peer_open_committed(fourth_identity, fourth_key);
+    state.peer_opened(fourth_key, fourth_identity);
+    let fourth_pipe_id = PipeId::new(connector, 4);
+
+    let peer_fin = state.peer_fin(fourth_key);
+    assert_eq!(peer_fin.len(), 1);
+    assert!(sdk_deliveries(&peer_fin).any(|delivery| matches!(
+        delivery.frame,
+        Frame::Fin { pipe_id } if pipe_id == fourth_pipe_id
+    )));
+    let sdk_data_after_peer_fin = state.handle(
+        connector,
+        Frame::Data {
+            pipe_id: fourth_pipe_id,
+            payload: Bytes::from_static(b"sdk direction survives peer FIN"),
+        },
+    )?;
+    assert_eq!(sdk_data_after_peer_fin.len(), 1);
+    assert!(peer_deliveries(&sdk_data_after_peer_fin).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Data { key, payload }
+            if *key == fourth_key && payload.as_ref() == b"sdk direction survives peer FIN"
+    )));
+    let data_after_peer_fin =
+        state.peer_data(fourth_key, Bytes::from_static(b"invalid after peer FIN"));
+    assert_eq!(data_after_peer_fin.len(), 2);
+    assert!(sdk_deliveries(&data_after_peer_fin).any(|delivery| matches!(
+        delivery.frame,
+        Frame::Reset {
+            pipe_id,
+            code: ErrorCode::ProtocolError,
+            ..
+        } if pipe_id == fourth_pipe_id
+    )));
+    assert!(peer_deliveries(&data_after_peer_fin).any(|delivery| matches!(
+        delivery,
+        PeerDelivery::Reset {
+            key,
+            code: ErrorCode::ProtocolError,
+            ..
+        } if *key == fourth_key
     )));
     assert_eq!(state.pipe_count(), 0);
     Ok(())
