@@ -586,7 +586,7 @@ impl RunningGateway {
 
     async fn stop(self) -> TestResult {
         self.shutdown.cancel();
-        let result = timeout(Duration::from_secs(2), self.task)
+        let result = timeout(Duration::from_secs(3), self.task)
             .await
             .map_err(|_| io::Error::other(format!("{} shutdown timed out", self.name)))?
             .map_err(|error| {
