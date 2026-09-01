@@ -41,7 +41,7 @@ rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer:
 [[case]]
 id = "T-TERM-07"
 status = "executable"
-rust = ["connector::tests::concurrent_opens_commit_monotonic_connection_ids", "state::tests::same_connection_id_is_isolated_across_connector_sessions", "peer::runtime_tests::open_identity_is_unique_only_while_current_stream_is_active", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "open_identity::same_connection_id_isolated_across_entry_gateways_and_connector_sessions"]
+rust = ["connector::tests::concurrent_opens_commit_monotonic_connection_ids", "state::tests::same_connection_id_is_isolated_across_connector_sessions", "peer::runtime_tests::open_identity_is_unique_only_while_current_stream_is_active", "peer::runtime_tests::replacement_peer_rejects_old_identity_without_harming_current_stream", "open_identity::same_connection_id_isolated_across_entry_gateways_and_connector_sessions"]
 
 [[case]]
 id = "T-TERM-08"
@@ -304,7 +304,7 @@ rust = ["remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "r
 [[case]]
 id = "T-OPEN-09"
 status = "executable"
-rust = ["state::tests::same_connection_id_is_isolated_across_connector_sessions", "state::tests::connection_history_is_a_single_high_watermark", "peer::tests::remote_stream_guard_rejects_reused_or_wrong_role_stream_id", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "open_identity::same_connection_id_isolated_across_entry_gateways_and_connector_sessions"]
+rust = ["state::tests::same_connection_id_is_isolated_across_connector_sessions", "state::tests::connection_history_is_a_single_high_watermark", "peer::tests::remote_stream_guard_rejects_reused_or_wrong_role_stream_id", "peer::runtime_tests::replacement_peer_rejects_old_identity_without_harming_current_stream", "open_identity::same_connection_id_isolated_across_entry_gateways_and_connector_sessions"]
 reason = "서로 다른 Entry Gateway A/B가 발급한 cluster-global ConnectorSessionId와 같은 connection_id=1 조합이 Owner Gateway C에서 독립 Pipe가 되는지 검증한다. authenticated peer와 다른 OpenIdentity.EntryGatewayId는 state 생성 없이 거절하고, A session 종료는 A Pipe만 정리하며 B Pipe는 유지한다. 새 A session도 같은 connection_id=1을 사용할 수 있고 모든 session 종료 뒤 connector session, attempt, Pipe와 peer stream이 0으로 수렴한다."
 
 [[case]]
@@ -356,7 +356,7 @@ rust = ["state::tests::routed_local_hit_never_resolves_or_opens_a_peer", "rt_one
 [[case]]
 id = "T-PEER-02"
 status = "executable"
-rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "gateway::effects::tests::peer_cleanup::reset_commit_failure_closes_only_current_peer_transport_scope", "gateway::effects::tests::peer_liveness::active_heartbeat_timeout_preserves_unrelated_runtime_state", "gateway::effects::tests::peer_liveness::idle_retirement_preserves_unrelated_runtime_state"]
+rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer::tests::peer_pool_keeps_at_most_one_transport_per_direction", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit", "peer::runtime_tests::replacement_peer_rejects_old_identity_without_harming_current_stream", "gateway::effects::tests::peer_cleanup::reset_commit_failure_closes_only_current_peer_transport_scope", "gateway::effects::tests::peer_liveness::active_heartbeat_timeout_preserves_unrelated_runtime_state", "gateway::effects::tests::peer_liveness::idle_retirement_preserves_unrelated_runtime_state"]
 reason = "한 Gateway의 concurrent OPEN이 같은 candidate를 공유하고, 두 Gateway의 최초 outbound connect를 모두 gate에서 정지한 뒤 진행하면 방향별 transport 두 개와 open별 Pipe 하나가 생성됨을 검증한다. 기존 pool 및 인증 테스트가 같은 방향 duplicate, key와 runtime identity 경계를 검증한다."
 
 [[case]]
@@ -706,9 +706,9 @@ rust = ["peer::runtime_tests::production_actor_queues_second_open_behind_paused_
 
 [[case]]
 id = "T-EDGE-36"
-status = "partial"
-rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit", "peer::runtime_tests::authenticated_peer_cannot_spoof_open_entry_gateway", "peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots"]
-reason = "같은 locator의 새 incarnation과 stale handshake 차단은 검증하지만 valid G2 연결 뒤 old runtime frame 지연 도착까지 결합하지 않는다."
+status = "executable"
+rust = ["restarted_gateway_with_reused_locator_publishes_a_new_identity", "authentication_and_owner_mismatch_are_terminal_and_do_not_create_state", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit", "peer::runtime_tests::replacement_peer_rejects_old_identity_without_harming_current_stream", "state::tests::stale_peer_frame_cannot_mutate_a_replacement_gateway_pipe", "peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots", "peer::tests::peer_handshake_round_trip_preserves_uuid_claims_and_redacts_key", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily"]
+reason = "같은 locator를 재사용한 새 incarnation을 publish한다. 실제 peer runtime에서 등록된 gateway-c key로 gateway-a identity를 주장하는 교차 name/key handshake는 state 생성 없이 UNAUTHENTICATED로 거절한다. 과거 GatewayId의 valid transport가 종료된 뒤 현재 GatewayId의 replacement transport를 수립하고, 거기에 도착한 과거 OpenIdentity는 PERMISSION_DENIED로 거절하면서 현재 stream의 OPENED와 DATA 전달을 유지한다. RT owner mismatch는 state를 만들지 않고, 과거 pair/transport frame은 current replacement Pipe를 변경하지 않으며, peer key는 Debug와 실제 구조화 lifecycle log에 노출하지 않는다."
 
 [[case]]
 id = "T-EDGE-37"

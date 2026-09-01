@@ -898,18 +898,98 @@ async fn cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_t
 }
 
 #[tokio::test]
-async fn authenticated_peer_cannot_spoof_open_entry_gateway() -> TestResult {
+async fn replacement_peer_rejects_old_identity_without_harming_current_stream() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let locator = GatewayLocator::new(listener.local_addr()?.to_string())?;
+    let old_gateway_a = GatewayId::new();
     let gateway_a = GatewayId::new();
     let gateway_b = GatewayId::new();
     let shutdown = CancellationToken::new();
-    let (handle_b, mut events_b, runtime_b) = PeerRuntime::start(
-        test_config("gateway-b", "key-b", "gateway-a", "key-a")?,
-        gateway_b,
-        shutdown.clone(),
-    )?;
+    let peer_config = GatewayPeerConfig::new(
+        "gateway-b",
+        "key-b",
+        [
+            TrustedPeerConfig::new("gateway-a", "key-a")?,
+            TrustedPeerConfig::new("gateway-c", "key-c")?,
+        ],
+    )?
+    .with_queue_bounds(64, 64, 64, 64, 8)
+    .with_resource_limits(64, 64, 16, 64 * 1024)
+    .with_timeouts(
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+        Duration::from_secs(1),
+    );
+    let (handle_b, mut events_b, runtime_b) =
+        PeerRuntime::start(peer_config, gateway_b, shutdown.clone())?;
     let serve = tokio::spawn(runtime_b.serve(listener));
+
+    let invalid_stream = TcpStream::connect(locator.as_str()).await?;
+    invalid_stream.set_nodelay(true)?;
+    let mut invalid_framed = Framed::new(invalid_stream, PeerFrameCodec::new(64 * 1024));
+    invalid_framed
+        .send(PeerFrame::Hello(PeerHandshake {
+            gateway_name: PeerGatewayName::new("gateway-a")?,
+            internal_gateway_key: PeerGatewayKey::new("key-c")?,
+            gateway_id: old_gateway_a,
+            expected_peer_gateway_id: gateway_b,
+            dialer_gateway_id: old_gateway_a,
+            peer_transport_id: PeerTransportId::new(),
+        }))
+        .await?;
+    let rejected_handshake = tokio::time::timeout(Duration::from_secs(1), invalid_framed.next())
+        .await?
+        .ok_or("peer closed before rejecting invalid credentials")??;
+    assert!(matches!(
+        rejected_handshake,
+        PeerFrame::HandshakeRejected {
+            code: ErrorCode::Unauthenticated,
+            ..
+        }
+    ));
+    drop(invalid_framed);
+    wait_for_counts(&handle_b, PeerCounts::default()).await?;
+
+    let old_stream = TcpStream::connect(locator.as_str()).await?;
+    old_stream.set_nodelay(true)?;
+    let mut old_framed = Framed::new(old_stream, PeerFrameCodec::new(64 * 1024));
+    let old_transport_id = PeerTransportId::new();
+    old_framed
+        .send(PeerFrame::Hello(PeerHandshake {
+            gateway_name: PeerGatewayName::new("gateway-a")?,
+            internal_gateway_key: PeerGatewayKey::new("key-a")?,
+            gateway_id: old_gateway_a,
+            expected_peer_gateway_id: gateway_b,
+            dialer_gateway_id: old_gateway_a,
+            peer_transport_id: old_transport_id,
+        }))
+        .await?;
+    let old_welcome = tokio::time::timeout(Duration::from_secs(1), old_framed.next())
+        .await?
+        .ok_or("peer closed before old WELCOME")??;
+    assert!(matches!(old_welcome, PeerFrame::Welcome(_)));
+    wait_for_counts(
+        &handle_b,
+        PeerCounts {
+            connecting: 0,
+            ready: 1,
+            streams: 0,
+        },
+    )
+    .await?;
+    drop(old_framed);
+    wait_for_counts(&handle_b, PeerCounts::default()).await?;
+    let lost = next_event(&mut events_b).await?;
+    assert!(matches!(
+        lost,
+        PeerEvent::TransportLost {
+            peer_gateway_id,
+            peer_transport_id,
+            streams,
+        } if peer_gateway_id == old_gateway_a
+            && peer_transport_id == old_transport_id
+            && streams.is_empty()
+    ));
 
     let stream = TcpStream::connect(locator.as_str()).await?;
     stream.set_nodelay(true)?;
@@ -929,12 +1009,20 @@ async fn authenticated_peer_cannot_spoof_open_entry_gateway() -> TestResult {
         .await?
         .ok_or("peer closed before WELCOME")??;
     assert!(matches!(welcome, PeerFrame::Welcome(_)));
+    wait_for_counts(
+        &handle_b,
+        PeerCounts {
+            connecting: 0,
+            ready: 1,
+            streams: 0,
+        },
+    )
+    .await?;
 
-    let spoofed_gateway = GatewayId::new();
     framed
         .send(PeerFrame::Open {
             stream_id: StreamId::from_raw(0),
-            open_identity: OpenIdentity::new(spoofed_gateway, SessionId::new(), 1),
+            open_identity: OpenIdentity::new(old_gateway_a, SessionId::new(), 1),
             client_id: "echo.b".to_owned(),
             listener_session_id: SessionId::new(),
             binding_id: BindingId::new(),
@@ -960,7 +1048,6 @@ async fn authenticated_peer_cannot_spoof_open_entry_gateway() -> TestResult {
     );
     assert_eq!(handle_b.counts().streams, 0);
 
-    // A later strictly-increasing, correctly bound OPEN is still admitted.
     let valid_identity = OpenIdentity::new(gateway_a, SessionId::new(), 2);
     framed
         .send(PeerFrame::Open {
@@ -980,33 +1067,47 @@ async fn authenticated_peer_cannot_spoof_open_entry_gateway() -> TestResult {
     };
     assert_eq!(open_identity, valid_identity);
 
-    // CLOSE in OPENING is a stream-local protocol violation, not a normal
-    // close and not a transport-wide failure.
+    handle_b.send_opened(key).await?;
+    let opened = tokio::time::timeout(Duration::from_secs(1), framed.next())
+        .await?
+        .ok_or("peer closed before OPENED")??;
+    assert!(matches!(
+        opened,
+        PeerFrame::Opened { stream_id } if stream_id == StreamId::from_raw(2)
+    ));
+
     framed
-        .send(PeerFrame::Close {
+        .send(PeerFrame::Data {
             stream_id: StreamId::from_raw(2),
+            payload: Bytes::from_static(b"current"),
         })
         .await?;
-    let reset_event = next_event(&mut events_b).await?;
+    let data = next_event(&mut events_b).await?;
     assert!(matches!(
-        reset_event,
-        PeerEvent::Reset {
+        data,
+        PeerEvent::Data {
             key: event_key,
-            code: ErrorCode::ProtocolError,
-            ..
-        } if event_key == key
+            payload,
+        } if event_key == key && payload == Bytes::from_static(b"current")
     ));
-    let reset_frame = tokio::time::timeout(Duration::from_secs(1), framed.next())
+
+    handle_b.send_close(key).await?;
+    let closed = tokio::time::timeout(Duration::from_secs(1), framed.next())
         .await?
-        .ok_or("peer closed before protocol RESET")??;
+        .ok_or("peer closed before CLOSE")??;
     assert!(matches!(
-        reset_frame,
-        PeerFrame::Reset {
-            stream_id,
-            code: ErrorCode::ProtocolError,
-            ..
-        } if stream_id == StreamId::from_raw(2)
+        closed,
+        PeerFrame::Close { stream_id } if stream_id == StreamId::from_raw(2)
     ));
+    wait_for_counts(
+        &handle_b,
+        PeerCounts {
+            connecting: 0,
+            ready: 1,
+            streams: 0,
+        },
+    )
+    .await?;
 
     shutdown.cancel();
     tokio::time::timeout(Duration::from_secs(2), serve).await???;
