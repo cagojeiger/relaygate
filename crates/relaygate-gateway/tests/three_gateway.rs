@@ -45,6 +45,9 @@ const ALL_GATEWAYS: [(&str, &str); 3] = [
     (GATEWAY_C, GATEWAY_C_KEY),
 ];
 
+#[path = "three_gateway/open_identity.rs"]
+mod open_identity;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn rt_one_gateway_three_forms_a_closed_current_state_relay() -> TestResult {
     timeout(Duration::from_secs(12), three_gateway_case()).await??;
