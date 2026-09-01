@@ -384,9 +384,9 @@ reason = "transport loss와 retirement가 해당 transport만 정리하고 반�
 
 [[case]]
 id = "T-PEER-07"
-status = "partial"
-rust = ["peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots", "peer::runtime_tests::transport_terminal::simultaneous_force_close_cleans_two_streams_and_reconnects_lazily", "peer::runtime_tests::cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate", "peer::runtime_tests::tcp_connect_deadline_releases_candidate_and_open_identity_for_retry", "peer::runtime_tests::cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_transport"]
-reason = "connect 취소·deadline, handshake 취소와 loss 뒤 candidate·stream 수렴은 검증하지만 same-direction duplicate와 buffer cleanup 전체 조합이 없다."
+status = "executable"
+rust = ["peer::tests::ended_gateway_incarnations_leave_no_idle_peer_slots", "peer::tests::removing_one_peer_transport_keeps_opposite_direction_ready", "peer::runtime_tests::duplicate_cleanup::same_direction_duplicate_preserves_ready_transport_for_open_and_data", "peer::runtime_tests::transport_terminal::simultaneous_force_close_cleans_two_streams_and_reconnects_lazily", "peer::runtime_tests::cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate", "peer::runtime_tests::tcp_connect_deadline_releases_candidate_and_open_identity_for_retry", "peer::runtime_tests::cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_transport", "peer::transport::tests::capacity::saturated_stream_and_aggregate_buffers_are_released_on_transport_loss", "gateway::effects::tests::peer_cleanup::reset_commit_failure_closes_only_current_peer_transport_scope"]
+reason = "실제 socket의 READY transport가 있는 방향에 다른 socket·PeerTransportId의 duplicate HELLO를 보내 ALREADY_EXISTS wire 거절과 rejected socket 종료를 확인한다. 거절 뒤 기존 transport에서 OPEN, 양방향 DATA, CLOSE가 유지되고 shutdown 뒤 count가 0으로 수렴한다. 기존 취소·deadline·loss, opposite slot과 capacity 테스트가 candidate, stream, 반대 방향 slot, aggregate/per-stream buffer 해제를 각각 검증한다."
 
 [[case]]
 id = "T-PEER-08"
