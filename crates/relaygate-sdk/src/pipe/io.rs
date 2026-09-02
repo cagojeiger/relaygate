@@ -7,7 +7,10 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use relaygate_protocol::Frame;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    sync::mpsc::error::TryRecvError,
+};
 
 use super::{
     DATA_CHUNK_LEN, Pipe, PipeReadHalf, PipeReader, PipeState, PipeWriteHalf, PipeWriter, Terminal,
@@ -61,12 +64,12 @@ impl PipeReader {
             if state.remote_fin.load(Ordering::Acquire) {
                 // DATA may have raced the first empty poll. FIN forbids later
                 // DATA, so this is the final queue drain before EOF.
-                match Pin::new(&mut self.inbound).poll_recv(context) {
-                    Poll::Ready(Some(payload)) => {
+                match self.inbound.try_recv() {
+                    Ok(payload) => {
                         self.current = payload;
                         continue;
                     }
-                    Poll::Ready(None) | Poll::Pending => {
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
                         self.read_eof = true;
                         return Poll::Ready(Ok(0));
                     }
