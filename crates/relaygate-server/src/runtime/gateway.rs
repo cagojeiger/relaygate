@@ -112,6 +112,7 @@ fn log_gateway_snapshot(gateway: &Gateway) {
         listener_bindings = snapshot.listener_bindings,
         pending_offers = snapshot.pending_offers,
         live_pipes = snapshot.live_pipes,
+        route_dependency_health = snapshot.route_dependency_health.as_str(),
         route_registrations_synced = snapshot.route_registrations_synced,
         route_registrations_unsynced = snapshot.route_registrations_unsynced,
         remote_open_attempts = snapshot.remote_open_attempts,

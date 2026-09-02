@@ -180,14 +180,14 @@ reason = "SDK-Gateway heartbeat timeout과 실제 socket 기반 PeerTransport he
 [[case]]
 id = "T-HEALTH-01"
 status = "partial"
-rust = ["server_boots_health_checks_and_exits_on_sigterm", "session_limit_includes_connections_waiting_for_hello", "peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait"]
-reason = "기존 check의 HELLO/WELCOME 성공, session capacity 격리와 peer runtime fail-closed를 각각 검증한다. 같은 running Gateway에서 check의 지속 state 비생성과 capacity 소진·회수 전후 readiness, distributed serve 종료까지 하나의 운영 시나리오로 연결하는 실행 증거는 G003에서 보강한다."
+rust = ["server_boots_health_checks_and_exits_on_sigterm", "sdk_admission_check_leaves_no_persistent_gateway_state", "session_limit_includes_connections_waiting_for_hello", "peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait"]
+reason = "check의 HELLO/WELCOME 성공과 지속 state 비생성, session capacity 소진 중 실패·회수 뒤 성공, peer runtime fail-closed를 각각 검증한다. 격리 불가능한 distributed component failure가 Gateway serve와 실제 server process 종료까지 전파되는 실행 증거는 아직 없다."
 
 [[case]]
 id = "T-HEALTH-02"
-status = "partial"
-rust = ["remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "routed_gateway_republishes_current_listener_state_after_route_table_restart", "generation_mismatch_recovers_only_after_coordinated_restart", "route_table_authentication_failure_keeps_local_binding_and_stops_retries"]
-reason = "RT 단절·restart와 terminal configuration failure가 local binding 및 established Pipe와 격리되는 동작은 검증한다. GatewaySnapshot의 canonical RouteDependencyHealth summary가 아직 구현되지 않아 DISABLED/READY/DEGRADED/TERMINAL 관찰 계약은 G003 실행 증거가 필요하다."
+status = "executable"
+rust = ["local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "routed_gateway_republishes_current_listener_state_after_route_table_restart", "generation_mismatch_recovers_only_after_coordinated_restart", "route_table_authentication_failure_keeps_local_binding_and_stops_retries", "routing::tests::multi_shard::one_session_keeps_independent_lease_lifecycles_across_two_shards", "routing::tests::multi_shard::terminal_shard_does_not_block_unaffected_shard_resolve", "routing::runtime::tests::worker_counts_distinguish_terminal_desired_registration", "json_logs_expose_stable_startup_and_snapshot_fields_without_secrets"]
+reason = "local-only DISABLED, desired registration이 없는 distributed READY, RT 단절의 DEGRADED와 admission·established Pipe 유지, 재시작 뒤 READY 복구, generation/auth terminal의 TERMINAL, 다중 shard 중 한 shard의 retryable 단절 또는 terminal auth failure 시 unaffected shard Resolve 유지를 검증한다. JSON snapshot은 canonical 대문자 health field를 노출한다."
 
 [[case]]
 id = "T-REG-01"

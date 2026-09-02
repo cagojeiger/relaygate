@@ -10,7 +10,8 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_gateway::{
-    Gateway, GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, GatewaySnapshot, check,
+    Gateway, GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, GatewaySnapshot,
+    RouteDependencyHealth, check,
 };
 use relaygate_protocol::{
     BindingId as ProtocolBindingId, ClientKey, ErrorCode as ProtocolErrorCode, Frame, FrameCodec,
@@ -74,6 +75,12 @@ async fn recovery_case() -> TestResult {
     assert!(route_table.started_empty());
 
     let gateway = RunningGateway::start(directory.clone()).await?;
+    wait_for_gateway_snapshot(&gateway, |snapshot| {
+        snapshot.route_dependency_health == RouteDependencyHealth::Ready
+            && snapshot.route_registrations_synced == 0
+            && snapshot.route_registrations_unsynced == 0
+    })
+    .await?;
     let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
     let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
     let connector = Connector::connect(sdk_config(gateway.endpoint)).await?;
@@ -173,6 +180,10 @@ async fn generation_mismatch_recovery_case() -> TestResult {
     assert_eq!(proxy.failed_precondition_count(), 1);
     let unsynced = gateway.gateway.snapshot();
     assert_eq!(unsynced.listener_bindings, 1);
+    assert_eq!(
+        unsynced.route_dependency_health,
+        RouteDependencyHealth::Terminal
+    );
     assert_eq!(unsynced.route_registrations_synced, 0);
     assert_eq!(unsynced.route_registrations_unsynced, 1);
     wait_for_not_found(&probe, route_generation, CLIENT_ID).await?;
@@ -247,6 +258,7 @@ async fn generation_mismatch_recovery_case() -> TestResult {
     .await?;
     wait_for_gateway_snapshot(&restarted_gateway, |snapshot| {
         snapshot.listener_bindings == 1
+            && snapshot.route_dependency_health == RouteDependencyHealth::Ready
             && snapshot.route_registrations_synced == 1
             && snapshot.route_registrations_unsynced == 0
     })
@@ -318,6 +330,10 @@ async fn route_table_authentication_failure_case() -> TestResult {
     assert_eq!(proxy.authentication_rejection_count(), 1);
     let snapshot = gateway.gateway.snapshot();
     assert_eq!(snapshot.listener_bindings, 1);
+    assert_eq!(
+        snapshot.route_dependency_health,
+        RouteDependencyHealth::Terminal
+    );
     assert_eq!(snapshot.route_registrations_synced, 0);
     assert_eq!(snapshot.route_registrations_unsynced, 1);
     wait_for_not_found(&probe, generation, CLIENT_ID).await?;

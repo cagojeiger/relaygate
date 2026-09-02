@@ -395,6 +395,7 @@ fn json_logs_expose_stable_startup_and_snapshot_fields_without_secrets()
         .find(|record| record["event"] == "gateway.snapshot")
         .ok_or("missing gateway.snapshot JSON event")?;
     assert_eq!(snapshot["component"], "gateway");
+    assert_eq!(snapshot["route_dependency_health"], "DISABLED");
     for field in [
         "sessions",
         "listener_sessions",

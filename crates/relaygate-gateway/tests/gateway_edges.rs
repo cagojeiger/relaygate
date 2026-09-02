@@ -1,7 +1,7 @@
 mod support;
 
 use futures_util::{SinkExt, StreamExt};
-use relaygate_gateway::GatewayConfig;
+use relaygate_gateway::{GatewayConfig, RouteDependencyHealth, check};
 use relaygate_protocol::{
     BindingId, ClientKey, ErrorCode, Frame, PeerObservation, PipeId, SessionRole,
 };
@@ -12,6 +12,36 @@ use tokio::{
 };
 
 use support::{TestGateway, TestResult, next_frame, sdk_session};
+
+#[tokio::test]
+async fn sdk_admission_check_leaves_no_persistent_gateway_state() -> TestResult {
+    let gateway = TestGateway::start_without_check(GatewayConfig::new([])).await?;
+
+    check(gateway.address, Duration::from_secs(1)).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let snapshot = gateway.snapshot();
+        if snapshot.sessions == 0 {
+            assert_eq!(snapshot.connector_sessions, 0);
+            assert_eq!(snapshot.listener_sessions, 0);
+            assert_eq!(snapshot.listener_bindings, 0);
+            assert_eq!(snapshot.pending_offers, 0);
+            assert_eq!(snapshot.live_pipes, 0);
+            assert_eq!(
+                snapshot.route_dependency_health,
+                RouteDependencyHealth::Disabled
+            );
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("SDK admission check left persistent Gateway state".into());
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    gateway.stop().await?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn gateway_idle_sdk_session_uses_matching_pong_heartbeat() -> TestResult {
@@ -432,33 +462,20 @@ async fn session_limit_includes_connections_waiting_for_hello() -> TestResult {
     let first = TcpStream::connect(gateway.address).await?;
     sleep(Duration::from_millis(20)).await;
 
-    let second = TcpStream::connect(gateway.address).await?;
-    let mut second =
-        tokio_util::codec::Framed::new(second, relaygate_protocol::FrameCodec::default());
-    second
-        .send(Frame::Hello {
-            role: SessionRole::Connector,
-        })
-        .await?;
-    assert!(matches!(
-        timeout(Duration::from_secs(1), second.next()).await,
-        Ok(None) | Ok(Some(Err(_)))
-    ));
+    assert!(
+        check(gateway.address, Duration::from_millis(100))
+            .await
+            .is_err()
+    );
 
     drop(first);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     loop {
-        match timeout(
-            Duration::from_millis(100),
-            sdk_session(gateway.address, SessionRole::Connector),
-        )
-        .await
-        {
-            Ok(Ok(_session)) => break,
-            Ok(Err(_)) | Err(_) if tokio::time::Instant::now() < deadline => {
+        match check(gateway.address, Duration::from_millis(100)).await {
+            Ok(()) => break,
+            Err(_) if tokio::time::Instant::now() < deadline => {
                 sleep(Duration::from_millis(10)).await;
             }
-            Ok(Err(error)) => return Err(error),
             Err(error) => return Err(error.into()),
         }
     }

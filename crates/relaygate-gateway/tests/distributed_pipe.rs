@@ -3,7 +3,7 @@ use std::{error::Error, io, net::SocketAddr, sync::Arc, time::Duration};
 use futures_util::{SinkExt, StreamExt};
 use relaygate_gateway::{
     Gateway, GatewayConfig, GatewayError, GatewayPeerConfig, GatewayRoutingConfig,
-    TrustedPeerConfig, check,
+    RouteDependencyHealth, TrustedPeerConfig, check,
 };
 use relaygate_protocol::{Frame, FrameCodec};
 use relaygate_route_table::{
@@ -77,6 +77,12 @@ async fn remote_pipe_case() -> TestResult {
     )
     .await?;
 
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().route_dependency_health == RouteDependencyHealth::Ready
+            && gateway_b.gateway.snapshot().route_dependency_health == RouteDependencyHealth::Ready
+    })
+    .await?;
+
     let listener_runtime = ListenerRuntime::connect(sdk_config(gateway_b.sdk_address)).await?;
     let listener = Arc::new(listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?);
     wait_until(Duration::from_secs(2), || {
@@ -113,10 +119,15 @@ async fn remote_pipe_case() -> TestResult {
         .ok_or("remote open unexpectedly succeeded while RouteTable was unavailable")?;
     assert_eq!(failed_open.code(), SdkErrorCode::Unavailable);
     assert_eq!(failed_open.observation(), SdkPeerObservation::NotObserved);
+    check(gateway_a.sdk_address, Duration::from_secs(1)).await?;
+    check(gateway_b.sdk_address, Duration::from_secs(1)).await?;
     wait_until(Duration::from_secs(2), || {
         let entry = gateway_a.gateway.snapshot();
         let owner = gateway_b.gateway.snapshot();
-        entry.remote_open_attempts == 0 && entry.peer_streams == 2 && owner.peer_streams == 2
+        entry.remote_open_attempts == 0
+            && entry.peer_streams == 2
+            && owner.peer_streams == 2
+            && entry.route_dependency_health == RouteDependencyHealth::Degraded
     })
     .await?;
 
@@ -132,14 +143,22 @@ async fn remote_pipe_case() -> TestResult {
 
     wait_until(Duration::from_secs(2), || {
         let owner = gateway_b.gateway.snapshot();
-        owner.route_registrations_synced == 0 && owner.route_registrations_unsynced == 1
+        owner.route_registrations_synced == 0
+            && owner.route_registrations_unsynced == 1
+            && owner.route_dependency_health == RouteDependencyHealth::Degraded
     })
     .await?;
     let restarted_listener = TcpListener::bind(route_endpoint).await?;
     let restarted_route_table = RunningRouteTable::start(restarted_listener, restart_directory)?;
     wait_until(Duration::from_secs(2), || {
         let owner = gateway_b.gateway.snapshot();
-        owner.route_registrations_synced == 1 && owner.route_registrations_unsynced == 0
+        owner.route_registrations_synced == 1
+            && owner.route_registrations_unsynced == 0
+            && owner.route_dependency_health == RouteDependencyHealth::Ready
+    })
+    .await?;
+    wait_until(Duration::from_secs(2), || {
+        gateway_a.gateway.snapshot().route_dependency_health == RouteDependencyHealth::Ready
     })
     .await?;
     wait_for_remote_pipe(&connector, &listener).await?;

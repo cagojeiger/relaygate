@@ -2,6 +2,7 @@ mod support;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use relaygate_gateway::RouteDependencyHealth;
 use relaygate_protocol::{ClientKey, Frame, SessionRole};
 use tokio::time::{Duration, timeout};
 
@@ -51,6 +52,10 @@ async fn local_pipe_opens_only_after_listener_acceptance_and_relays_bytes() -> T
     ));
 
     let snapshot = gateway.snapshot();
+    assert_eq!(
+        snapshot.route_dependency_health,
+        RouteDependencyHealth::Disabled
+    );
     assert_eq!(snapshot.route_registrations_synced, 0);
     assert_eq!(snapshot.route_registrations_unsynced, 0);
     assert_eq!(snapshot.remote_open_attempts, 0);

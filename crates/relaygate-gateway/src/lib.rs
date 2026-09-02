@@ -17,6 +17,6 @@ mod state;
 pub use config::GatewayConfig;
 pub use error::GatewayError;
 pub use gateway::{Gateway, check};
-pub use observation::GatewaySnapshot;
+pub use observation::{GatewaySnapshot, RouteDependencyHealth};
 pub use peer::{GatewayPeerConfig, TrustedPeerConfig};
 pub use routing::GatewayRoutingConfig;
