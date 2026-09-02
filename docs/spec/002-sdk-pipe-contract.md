@@ -66,7 +66,7 @@ Listener SDK runtime이 선택된 binding의 bounded incoming queue에 Listener 
 
 한 Listener SDK runtime에서 같은 `ClientId`의 pending `ListenAttempt`와 non-`CLOSED` Listener handle은 합쳐서 하나만 존재할 수 있다. 생성은 runtime의 `ClientId` index에서 atomic하게 직렬화한다. 이미 reservation 또는 handle이 있으면 두 번째 생성은 `ALREADY_EXISTS`로 끝나며 새 registration, binding, incoming queue를 만들지 않는다. attempt가 terminal 실패하거나 기존 handle이 `CLOSED`가 되면 같은 `ClientId`로 새 attempt를 시작할 수 있고, 새 session registration은 재사용하지 않은 새 `BindingId`를 사용한다.
 
-`accept`는 해당 Listener handle의 incoming queue에서 아직 전달되지 않은 current `ListenerSession`의 Pipe 하나를 정확히 한 번 반환한다. 대기 중인 `accept` future를 drop 또는 abort하면 그 호출에는 SDK 반환값이 없고 해당 waiter만 제거한다. Listener, sibling Listener handle, 다른 `accept` 또는 queue의 다른 Pipe를 닫지 않는다.
+`accept`는 해당 Listener handle의 incoming queue에서 아직 전달되지 않은 current `ListenerSession`의 Pipe 하나를 정확히 한 번 반환한다. 하나 이상의 live `Listener` owner를 유지한 채 대기 중인 `accept` future만 drop 또는 abort하면 그 호출에는 SDK 반환값이 없고 해당 waiter만 제거한다. Listener, sibling Listener handle, 다른 `accept` 또는 queue의 다른 Pipe를 닫지 않는다. abort한 task가 마지막 `Listener` owner도 함께 소유했다면 task drop은 handle drop을 일으키므로 아래의 Listener close 계약을 따른다.
 
 `accept`와 `ListenerSession` 종료는 한 순서로 직렬화한다. `accept` 성공은 dequeue 뒤의 마지막 `ACTIVE` 및 Pipe non-terminal 확인에서 확정된다. 이 확인이 먼저면 반환된 Pipe는 직후 발생한 session failure를 I/O 오류로 관찰할 수 있다. session 종료가 먼저 확정되면 그 session에서 queue admission을 마쳤지만 아직 accept되지 않은 Pipe를 queue에서 제거하고, `SUSPENDED` 또는 `REGISTERING`인 handle의 `accept`는 이후 session의 새 Pipe를 기다린다. `BLOCKED`와 `CLOSED`는 이 성공 확인 전에 관찰되면 queue보다 우선하며 각각 저장된 등록 오류와 closed 오류를 반환한다.
 
@@ -127,7 +127,7 @@ queue와 buffer 크기, flow-control protocol과 scheduling은 별도 SPEC 또�
 
 - `open` future가 drop 또는 abort되면 commit 전 attempt를 제거하거나 commit 뒤 `CANCEL`을 한 번 보내며, 늦은 성공 응답이 Pipe를 반환하거나 state를 되살려서는 안 된다.
 - `listen` future가 drop 또는 abort되면 reservation을 제거한다. `REGISTER`가 이미 commit되어 결과가 불확실하면 current `ListenerSession`을 종료하며, 같은 attempt를 새 session에서 재등록하지 않는다.
-- `accept` future가 drop 또는 abort되면 해당 waiter만 제거하고 Listener registration, sibling Listener handle, 다른 waiter와 queued Pipe는 유지한다.
+- live `Listener` owner를 유지한 채 `accept` future만 drop 또는 abort하면 해당 waiter만 제거하고 Listener registration, sibling Listener handle, 다른 waiter와 queued Pipe는 유지한다. abort한 task가 마지막 owner도 함께 drop하면 Listener close 계약을 따른다.
 - `open`이 이미 Pipe를 반환했다면 과거 호출을 취소하는 대신 반환된 Pipe를 닫아야 한다.
 - 명시적으로 닫힌 runtime 또는 Listener에서 새로 await한 operation은 `CANCELLED`를 반환한다.
 
@@ -188,7 +188,7 @@ Listener registration의 승인·거절·갱신 절차는 SPEC 003이, 상태와
 - **`SDK-002`**: Listener queue admission은 Pipe를 정확히 하나 만들고, Connector의 open 성공은 그 뒤 `OPENED`를 확인한 경우에만 Connector endpoint를 반환해야 한다. queue admission 뒤 attempt가 실패하면 queued 또는 accept된 Pipe를 terminal로 닫아야 한다.
 - **`SDK-003`**: incoming queue가 가득 찼을 때 기존의 non-terminal queued Pipe를 제거해 새 연결을 성공시켜서는 안 된다. 반대로 accept 전에 terminal이 된 Pipe는 애플리케이션의 추가 호출을 기다리지 않고 queue capacity에서 제거되어야 한다.
 - **`SDK-004`**: `Listener.accept()`는 같은 Pipe를 두 번 반환하지 않고 distinct Pipe 하나를 반환해야 한다. `accept`와 session 종료는 한 순서로 직렬화하고, 종료가 먼저면 old session의 미수락 Pipe를 반환해서는 안 된다. `SUSPENDED/REGISTERING`은 이후 새 Pipe를 기다릴 수 있지만 `BLOCKED/CLOSED`는 queue보다 우선해 terminal 오류를 반환해야 한다.
-- **`SDK-005`**: pending accept future의 drop 또는 abort는 SDK 결과를 반환하지 않고 해당 waiter만 종료하며 Listener, sibling Listener handle, 다른 waiter와 queued Pipe의 상태를 변경해서는 안 된다.
+- **`SDK-005`**: live Listener owner가 유지된 pending accept future의 drop 또는 abort는 SDK 결과를 반환하지 않고 해당 waiter만 종료하며 Listener, sibling Listener handle, 다른 waiter와 queued Pipe의 상태를 변경해서는 안 된다. 취소 task가 마지막 Listener owner를 함께 drop하면 Listener handle close 계약을 적용한다.
 - **`SDK-006`**: Listener handle close와 해당 handle의 Pipe queue admission은 한 순서로 직렬화되어야 한다. 정상 `ACTIVE` binding의 close는 자신의 신규·대기·미수락 Pipe와 binding만 종료하고 shared `ListenerSession`, sibling Listener handle 또는 이미 accept된 Pipe를 닫아서는 안 된다. returned Listener의 recovery `REGISTER`가 commit된 채 결과가 불확실하면 handle이 session을 직접 취소하지 않고 shared actor가 current `ListenerSession`을 종료해야 한다. 이 session reset은 closing Listener를 재등록하지 않고 returned sibling Listener만 새 session에 재등록하며 old session의 Pipe를 terminal failure로 끝내야 한다.
 - **`SDK-007`**: Pipe는 방향별 byte 순서를 보존해야 하며 message boundary를 추가해서는 안 된다.
 - **`SDK-008`**: SDK의 모든 incoming queue와 Pipe buffer는 bounded여야 하며 capacity 부족을 backpressure 또는 명시적 실패로 관찰시켜야 한다.

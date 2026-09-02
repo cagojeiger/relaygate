@@ -452,3 +452,157 @@ async fn cancelled_committed_listen_closes_session_and_client_id_can_be_reused_c
     server.await??;
     Ok(())
 }
+
+#[tokio::test]
+async fn registered_and_public_listen_cancel_unregisters_before_client_id_reuse() -> TestResult {
+    timeout(
+        Duration::from_secs(3),
+        registered_and_public_listen_cancel_unregisters_before_client_id_reuse_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn registered_and_public_listen_cancel_unregisters_before_client_id_reuse_case() -> TestResult
+{
+    let (gateway, address) = bind_gateway().await?;
+    let (register_seen_tx, register_seen_rx) = oneshot::channel();
+    let (send_registered_tx, send_registered_rx) = oneshot::channel();
+    let (registered_processed_tx, registered_processed_rx) = oneshot::channel();
+    let (cleanup_complete_tx, cleanup_complete_rx) = oneshot::channel();
+    let (done_tx, done_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut transport, _) = accept_session(&gateway, SessionRole::Listener).await?;
+        let register = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing raced REGISTER"))??;
+        let first_request_id = match register {
+            Frame::Register {
+                request_id,
+                client_id,
+                ..
+            } if client_id == "echo.alpha" => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        let _ = register_seen_tx.send(());
+        send_registered_rx
+            .await
+            .map_err(|_| io::Error::other("REGISTERED release signal was dropped"))?;
+
+        let first_binding = BindingId::new();
+        transport
+            .send(Frame::Registered {
+                request_id: first_request_id,
+                binding_id: first_binding,
+            })
+            .await?;
+        let barrier_nonce = 0x1a57_0001;
+        transport
+            .send(Frame::Ping {
+                nonce: barrier_nonce,
+            })
+            .await?;
+        loop {
+            let frame = transport.next().await.ok_or_else(|| {
+                io::Error::other("ListenerSession closed before REGISTERED barrier")
+            })??;
+            match frame {
+                Frame::Pong { nonce } if nonce == barrier_nonce => break,
+                Frame::Ping { nonce } => transport.send(Frame::Pong { nonce }).await?,
+                other => return Err(unexpected(other).into()),
+            }
+        }
+        let _ = registered_processed_tx.send(());
+
+        let unregister = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing cancelled binding UNREGISTER"))??;
+        let unregister_request = match unregister {
+            Frame::Unregister {
+                request_id,
+                binding_id,
+            } if binding_id == first_binding => request_id,
+            other => return Err(unexpected(other).into()),
+        };
+        transport
+            .send(Frame::Unregistered {
+                request_id: unregister_request,
+            })
+            .await?;
+        let cleanup_barrier_nonce = 0x1a57_0002;
+        transport
+            .send(Frame::Ping {
+                nonce: cleanup_barrier_nonce,
+            })
+            .await?;
+        loop {
+            let frame = transport.next().await.ok_or_else(|| {
+                io::Error::other("ListenerSession closed before UNREGISTER barrier")
+            })??;
+            match frame {
+                Frame::Pong { nonce } if nonce == cleanup_barrier_nonce => break,
+                Frame::Ping { nonce } => transport.send(Frame::Pong { nonce }).await?,
+                other => return Err(unexpected(other).into()),
+            }
+        }
+        let _ = cleanup_complete_tx.send(());
+
+        let replacement = transport
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing replacement REGISTER"))??;
+        let replacement_request = match replacement {
+            Frame::Register {
+                request_id: replacement_request,
+                client_id,
+                client_key,
+            } if replacement_request != first_request_id
+                && client_id == "echo.alpha"
+                && client_key.expose_secret() == "new-key" =>
+            {
+                replacement_request
+            }
+            other => return Err(unexpected(other).into()),
+        };
+        transport
+            .send(Frame::Registered {
+                request_id: replacement_request,
+                binding_id: BindingId::new(),
+            })
+            .await?;
+        done_rx
+            .await
+            .map_err(|_| io::Error::other("test completion signal was dropped"))?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+
+    let runtime = ListenerRuntime::connect(Config::new(address)).await?;
+    let mut listening = Box::pin(runtime.listen("echo.alpha", "dev-key"));
+    tokio::select! {
+        result = &mut listening => {
+            return Err(io::Error::other(format!(
+                "listen completed before the cancellation race was released: {result:?}"
+            )).into());
+        }
+        seen = register_seen_rx => {
+            seen.map_err(|_| io::Error::other("Gateway dropped the REGISTER observation"))?;
+        }
+    }
+    let _ = send_registered_tx.send(());
+    registered_processed_rx
+        .await
+        .map_err(|_| io::Error::other("Gateway dropped the REGISTERED barrier"))?;
+    drop(listening);
+    cleanup_complete_rx
+        .await
+        .map_err(|_| io::Error::other("Gateway dropped the UNREGISTER barrier"))?;
+
+    let replacement = runtime.listen("echo.alpha", "new-key").await?;
+    assert_eq!(replacement.status(), ListenerStatus::Active);
+    let _ = done_tx.send(());
+    runtime.close();
+    server.await??;
+    Ok(())
+}

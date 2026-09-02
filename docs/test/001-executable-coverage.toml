@@ -94,7 +94,7 @@ rust = ["connector::tests::precommit_closed_actor_retries_on_replacement_session
 [[case]]
 id = "T-SDK-08"
 status = "executable"
-rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::pending_accept_observes_close_before_a_racing_pipe", "listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "cancelled_committed_listen_closes_session_and_client_id_can_be_reused"]
+rust = ["state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::pending_accept_observes_close_before_a_racing_pipe", "listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "cancelled_committed_listen_closes_session_and_client_id_can_be_reused", "registered_and_public_listen_cancel_unregisters_before_client_id_reuse"]
 
 [[case]]
 id = "T-SDK-09"
@@ -424,8 +424,8 @@ rust = ["full_registration_lifecycle_and_ready_empty_not_found", "ended_lease_op
 [[case]]
 id = "T-ERR-04"
 status = "executable"
-rust = ["committed_open_timeout_closes_session_and_existing_pipes", "full_pipe_buffer_resets_only_that_pipe", "connection_limit_rejects_the_next_handshake_as_resource_exhausted", "connector_clone_drop_and_explicit_close_terminate_runtime", "listener::tests::closed_listener_does_not_return_an_already_queued_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "cancelled_committed_listen_closes_session_and_client_id_can_be_reused", "listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::connector_cancel_after_open_is_cancelled_cleanup_and_preserves_sibling_pipe"]
-reason = "await를 완료한 deadline·resource limit과 닫힌 runtime·object operation의 안정된 code를 검증한다. drop·abort된 open과 listen은 SDK 결과 없이 CANCEL 한 번 또는 session cleanup으로 수렴하고 reservation을 재사용할 수 있으며, accept 취소는 sibling과 queue를 보존한다. success 경합과 late terminal frame도 내부 attempt나 Pipe를 되살리지 않는다."
+rust = ["committed_open_timeout_closes_session_and_existing_pipes", "full_pipe_buffer_resets_only_that_pipe", "connection_limit_rejects_the_next_handshake_as_resource_exhausted", "connector_clone_drop_and_explicit_close_terminate_runtime", "listener::tests::closed_listener_does_not_return_an_already_queued_pipe", "cancelling_committed_open_sends_one_cancel", "opened_and_public_open_cancel_emit_one_terminal_frame", "cancelled_committed_listen_closes_session_and_client_id_can_be_reused", "registered_and_public_listen_cancel_unregisters_before_client_id_reuse", "listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "state::tests::terminal_interleavings_emit_once_and_never_resurrect_pipe", "state::tests::connector_cancel_after_open_is_cancelled_cleanup_and_preserves_sibling_pipe"]
+reason = "await를 완료한 deadline·resource limit과 닫힌 runtime·object operation의 안정된 code를 검증한다. drop·abort된 open은 CANCEL 한 번으로 수렴한다. listen은 REGISTER commit 뒤 결과 미확정이면 session cleanup, REGISTERED 처리 뒤 public 반환 전이면 성공한 binding의 UNREGISTER로 수렴하며 두 경우 모두 ClientId reservation을 재사용할 수 있다. live Listener owner가 유지된 accept 취소는 sibling과 queue를 보존한다. success 경합과 late terminal frame도 내부 attempt나 Pipe를 되살리지 않는다."
 
 [[case]]
 id = "T-ERR-05"
