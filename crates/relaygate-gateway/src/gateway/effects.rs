@@ -260,6 +260,9 @@ impl Inner {
                     tracing::debug!(
                         component = "gateway",
                         event = "gateway.peer_open.cancel_failed",
+                        entry_gateway_id = %open_identity.entry_gateway().as_uuid(),
+                        connector_session_id = %open_identity.connector_session().as_uuid(),
+                        connection_id = open_identity.connection_id(),
                         error_code = ?error.code(),
                         observation = ?error.observation(),
                         "peer OPEN cancellation did not commit; a late result remains terminal locally"
@@ -308,6 +311,8 @@ impl Inner {
             component = "gateway",
             event = "gateway.peer_frame.commit_failed",
             peer_gateway_id = %key.peer_gateway_id(),
+            peer_transport_id = %key.peer_transport_id().as_uuid(),
+            stream_id = key.stream_id().raw(),
             error_code = ?error.code(),
             observation = ?error.observation(),
             "peer frame did not commit"

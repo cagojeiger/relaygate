@@ -245,8 +245,10 @@ impl GatewayState {
         tracing::debug!(
             component = "gateway",
             event = "gateway.pipe.opened",
+            connector_session_id = %pipe_id.connector_session_id().as_uuid(),
             listener_session_id = %listener.as_uuid(),
             connection_id = pipe_id.connection_id(),
+            binding_id = %pipe.binding_id.as_uuid(),
             pending_offers = self.pending_offer_count(),
             live_pipes = self.live_pipe_count(),
             "Pipe opened"

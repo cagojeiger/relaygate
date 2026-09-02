@@ -90,6 +90,80 @@ fn structured_events_use_stable_ids_without_frame_secrets_or_payloads()
 }
 
 #[test]
+fn pipe_opened_event_reports_full_identity_without_secrets_or_payloads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let listener = add_session(&mut state, SessionRole::Listener);
+    let connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, listener)?;
+    let deliveries = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 42,
+            client_id: "echo.shared".to_owned(),
+        },
+    )?;
+    let (pipe_id, binding_id) = sdk_deliveries(&deliveries)
+        .find_map(|delivery| match delivery.frame {
+            Frame::Offer {
+                pipe_id,
+                binding_id,
+                ..
+            } if delivery.target == listener => Some((pipe_id, binding_id)),
+            _ => None,
+        })
+        .ok_or("missing offer")?;
+    let (output, dispatch) = captured_dispatch();
+
+    tracing::dispatcher::with_default(&dispatch, || -> Result<_, Box<dyn std::error::Error>> {
+        state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+        Ok(())
+    })?;
+
+    let logs = String::from_utf8(captured_bytes(&output))?;
+    let records = logs
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let matching = records
+        .iter()
+        .filter(|record| record["fields"]["event"] == "gateway.pipe.opened")
+        .collect::<Vec<_>>();
+    assert_eq!(matching.len(), 1, "{logs}");
+    let fields = &matching[0]["fields"];
+
+    assert_eq!(fields["component"], "gateway", "{fields}");
+    assert_eq!(fields["event"], "gateway.pipe.opened", "{fields}");
+    assert_eq!(
+        fields["connector_session_id"],
+        connector.as_uuid().to_string(),
+        "{fields}"
+    );
+    assert_eq!(
+        fields["listener_session_id"],
+        listener.as_uuid().to_string(),
+        "{fields}"
+    );
+    assert_eq!(fields["connection_id"], 42, "{fields}");
+    assert_eq!(
+        fields["binding_id"],
+        binding_id.as_uuid().to_string(),
+        "{fields}"
+    );
+    for forbidden in [
+        "client_key",
+        "internal_gateway_key",
+        "payload",
+        "application_data",
+        "delivery_acknowledgement",
+    ] {
+        assert!(fields.get(forbidden).is_none(), "{fields}");
+    }
+    assert!(!logs.contains("secret"), "{logs}");
+    Ok(())
+}
+
+#[test]
 fn successful_data_relay_emits_no_per_frame_event_or_payload()
 -> Result<(), Box<dyn std::error::Error>> {
     const PAYLOAD: &[u8] = b"data-hot-path-payload-sentinel";

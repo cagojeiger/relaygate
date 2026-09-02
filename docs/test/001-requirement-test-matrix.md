@@ -57,7 +57,7 @@ test 목록과 대조한다.
 | --- | --- | --- |
 | `T-OBS-01` | `OBS-001`, `OBS-002` | `text`, `json`, unset과 양수 interval을 승인하고 알 수 없는 format과 0 interval은 socket을 열기 전에 거절한다. |
 | `T-OBS-02` | `OBS-003` | Listener/Connector session, binding, pending offer와 live Pipe를 생성·제거하며 local `GatewaySnapshot` 값이 같은 current state index와 일치하는지 확인한다. distributed mode에서는 worker가 관찰한 session-shard registration의 `SYNCED/UNSYNCED`, remote open attempt, connecting/ready PeerTransport와 current RelayStream 수가 publication·RT/peer 단절·복구·session 제거에 따라 최종 수렴하고 서로 원자적 시점은 가정하지 않는다. local-only mode에서는 분산 count가 0인지 확인한다. |
-| `T-OBS-03` | `OBS-004`, `OBS-005`, `OBS-006` | session·registration·open·Pipe terminal event가 고정된 `component`와 `event`, current identity와 terminal error field를 갖는지 확인한다. configured `ClientKey`, `InternalGatewayKey`와 payload marker가 출력에 없고 DATA 반복 수에 비례한 event가 생기지 않아야 한다. |
+| `T-OBS-03` | `OBS-004`, `OBS-005`, `OBS-006` | session·registration·open·Pipe terminal event가 고정된 `component`와 `event`, current identity와 기존 결과에 정의된 terminal error field를 갖는지 확인한다. 정상 close와 `PeerObservation`이 없는 operation에는 오류 field를 합성하지 않는다. configured `ClientKey`, `InternalGatewayKey`와 payload marker가 출력에 없고 DATA 반복 수에 비례한 event가 생기지 않아야 한다. |
 | `T-OBS-04` | `OBS-007`, `OBS-008` | library만 포함해도 전역 subscriber나 listener가 생기지 않는다. server의 기본 설정은 snapshot event를 만들지 않고, 명시적으로 활성화하면 JSON current-state event를 남기되 Gateway protocol port 외 새 port를 열지 않는다. |
 | `T-OBS-05` | `OBS-009` | SDK-Gateway heartbeat timeout, active PeerTransport heartbeat timeout과 zero-stream PeerTransport idle retirement event가 transport lifecycle로만 기록되고 payload bytes, application data와 delivery acknowledgement를 기록하지 않는지 확인한다. |
 

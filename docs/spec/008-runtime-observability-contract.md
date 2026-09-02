@@ -39,7 +39,8 @@ component
 event
 session_id / role
 request_id / client_id / binding_id
-connector_session_id / connection_id
+connector_session_id / listener_session_id / connection_id
+entry_gateway_id / peer_gateway_id / peer_transport_id / stream_id
 error_code / observation
 ```
 
@@ -68,6 +69,11 @@ error_code / observation
 성공·실패 event는 기존 protocol/state 결과를 그대로 관찰한다. 여기서 관측성 event는
 tracing/metrics event이며 Gateway 상태 전이를 전달하는 내부 `PeerEvent`가 아니다. 관측성 event
 유실이나 collector 장애가 RelayGate 상태 전이와 Pipe 데이터 경로를 바꾸면 안 된다.
+terminal failure event는 기존 결과에 있는 `error_code`와, 정의된 경우 `observation`을 기록한다.
+정상 close와 source 결과에 `PeerObservation`이 없는 operation에는 존재하지 않는 오류 field를
+합성하지 않는다.
+예를 들어 `gateway.listener.registration_rejected`는 source protocol result에 `observation`이 없으므로
+`error_code`만 기록하고, OPEN과 Pipe failure event는 기존 `observation`을 함께 기록한다.
 
 다음 값은 기록하지 않는다.
 
@@ -145,7 +151,7 @@ durable metric history
 | `OBS-003` | `GatewaySnapshot`은 session, binding, pending offer, live Pipe와 remote open attempt 수를 같은 local state index에서 계산해야 한다. distributed runtime이 있으면 routing worker의 session-shard registration `SYNCED/UNSYNCED` 및 peer manager의 connecting/ready transport와 current stream 수를 함께 제공하되 각 source 사이 원자적 시점을 보장하지 않는다. local-only mode의 분산 count는 0이어야 하며 RT 전체 mapping 수, cluster 합계 또는 routing 진실로 해석해서는 안 된다. |
 | `OBS-004` | 구조화 event는 `component`, `event`와 현재 객체를 구분할 수 있는 identity field를 사용해야 한다. |
 | `OBS-005` | event는 `ClientKey`, `InternalGatewayKey`, payload, application data를 기록하지 않고 DATA hot path에 per-frame 로그를 만들지 않아야 한다. |
-| `OBS-006` | SDK와 Gateway lifecycle event는 기존 terminal code와 observation을 바꾸지 않고 관찰해야 한다. |
+| `OBS-006` | SDK와 Gateway terminal failure event는 source protocol/state 결과에 있는 `error_code`와, 정의된 경우 `observation`을 바꾸지 않고 관찰해야 한다. 정상 close와 source 결과에 `PeerObservation`이 없는 registration 같은 operation에는 오류 field를 합성하지 않는다. |
 | `OBS-007` | library crate는 event만 발행하며 subscriber와 exporter는 embedding application 또는 server가 소유해야 한다. |
 | `OBS-008` | snapshot event는 기본적으로 비활성화되고 활성화해도 새 listening port를 만들지 않아야 한다. |
 | `OBS-009` | SDK-Gateway heartbeat timeout, active PeerTransport heartbeat timeout과 zero-stream PeerTransport idle retirement는 lifecycle event로 관찰 가능해야 하며, payload bytes나 application-level delivery result를 기록해서는 안 된다. |
