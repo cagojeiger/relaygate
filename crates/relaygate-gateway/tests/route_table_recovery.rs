@@ -48,6 +48,7 @@ const GATEWAY_KEY: &str = "gateway-key";
 const PROBE_NAME: &str = "probe";
 const PROBE_KEY: &str = "probe-key";
 const SHARD_ID: &str = "rt-0";
+const ROUTE_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(200);
 const ROUTING_RECONNECT_INITIAL: Duration = Duration::from_millis(20);
 const ROUTING_RECONNECT_MAX: Duration = Duration::from_millis(40);
 
@@ -276,6 +277,65 @@ async fn generation_mismatch_recovery_case() -> TestResult {
     wait_for_not_found(&restarted_probe, route_generation, CLIENT_ID).await?;
     restarted_gateway.stop().await?;
     restarted_route_table.stop().await?;
+    proxy.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn route_table_authentication_failure_keeps_local_binding_and_stops_retries() -> TestResult {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        route_table_authentication_failure_case(),
+    )
+    .await??;
+    Ok(())
+}
+
+async fn route_table_authentication_failure_case() -> TestResult {
+    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let route_endpoint = route_listener.local_addr()?;
+    let proxy = RegistrationCountingProxy::start(route_endpoint).await?;
+    let directory = ShardDirectory::from_json_bytes(one_shard_directory(proxy.endpoint))?;
+    let generation = directory.generation();
+    let route_table = RunningRouteTable::serve_with_trusted_gateways(
+        route_listener,
+        directory.clone(),
+        Duration::from_millis(250),
+        probe_only_trusted_gateway_keys()?,
+    )?;
+    let probe = connect_probe(route_endpoint, generation).await?;
+
+    let gateway = RunningGateway::start(directory).await?;
+    let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
+    let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+
+    poll_until(Duration::from_secs(2), || async {
+        (proxy.authentication_rejection_count() >= 1).then_some(())
+    })
+    .await?;
+    tokio::time::sleep(ROUTE_HANDSHAKE_TIMEOUT + ROUTING_RECONNECT_MAX.saturating_mul(5)).await;
+    assert_eq!(proxy.connection_count(), 1);
+    assert_eq!(proxy.authentication_rejection_count(), 1);
+    let snapshot = gateway.gateway.snapshot();
+    assert_eq!(snapshot.listener_bindings, 1);
+    assert_eq!(snapshot.route_registrations_synced, 0);
+    assert_eq!(snapshot.route_registrations_unsynced, 1);
+    wait_for_not_found(&probe, generation, CLIENT_ID).await?;
+
+    let connector = Connector::connect(sdk_config(gateway.endpoint)).await?;
+    let (mut connector_pipe, mut listener_pipe) =
+        tokio::try_join!(connector.open(CLIENT_ID), listener.accept())?;
+    connector_pipe.write_all(b"local only").await?;
+    let mut received = [0_u8; 10];
+    listener_pipe.read_exact(&mut received).await?;
+    assert_eq!(&received, b"local only");
+
+    connector_pipe.close().await?;
+    listener_pipe.close().await?;
+    connector.close();
+    listener_runtime.close();
+    gateway.stop().await?;
+    route_table.stop().await?;
     proxy.stop().await?;
     Ok(())
 }
@@ -561,8 +621,10 @@ struct ControlledRouteProxy {
 struct RegistrationCountingProxy {
     endpoint: SocketAddr,
     shutdown: CancellationToken,
+    connection_count: Arc<AtomicUsize>,
     register_count: Arc<AtomicUsize>,
     failed_precondition_count: Arc<AtomicUsize>,
+    authentication_rejection_count: Arc<AtomicUsize>,
     task: JoinHandle<io::Result<()>>,
 }
 
@@ -572,30 +634,38 @@ impl RegistrationCountingProxy {
         let endpoint = listener.local_addr()?;
         let shutdown = CancellationToken::new();
         let task_shutdown = shutdown.clone();
+        let connection_count = Arc::new(AtomicUsize::new(0));
         let register_count = Arc::new(AtomicUsize::new(0));
         let failed_precondition_count = Arc::new(AtomicUsize::new(0));
+        let authentication_rejection_count = Arc::new(AtomicUsize::new(0));
+        let task_connection_count = Arc::clone(&connection_count);
         let task_register_count = Arc::clone(&register_count);
         let task_failed_precondition_count = Arc::clone(&failed_precondition_count);
+        let task_authentication_rejection_count = Arc::clone(&authentication_rejection_count);
         let task = tokio::spawn(async move {
             loop {
                 let (inbound, _) = tokio::select! {
                     accepted = listener.accept() => accepted?,
                     () = task_shutdown.cancelled() => return Ok(()),
                 };
+                task_connection_count.fetch_add(1, Ordering::AcqRel);
                 let connection_shutdown = task_shutdown.clone();
                 let connection_register_count = Arc::clone(&task_register_count);
                 let connection_failed_precondition_count =
                     Arc::clone(&task_failed_precondition_count);
+                let connection_authentication_rejection_count =
+                    Arc::clone(&task_authentication_rejection_count);
                 tokio::spawn(async move {
                     let Ok(outbound) = TcpStream::connect(target).await else {
                         return;
                     };
-                    let _ = forward_and_count_registration(
+                    let _ = forward_and_count_route_events(
                         inbound,
                         outbound,
                         connection_shutdown,
                         connection_register_count,
                         connection_failed_precondition_count,
+                        connection_authentication_rejection_count,
                     )
                     .await;
                 });
@@ -604,10 +674,16 @@ impl RegistrationCountingProxy {
         Ok(Self {
             endpoint,
             shutdown,
+            connection_count,
             register_count,
             failed_precondition_count,
+            authentication_rejection_count,
             task,
         })
+    }
+
+    fn connection_count(&self) -> usize {
+        self.connection_count.load(Ordering::Acquire)
     }
 
     fn register_count(&self) -> usize {
@@ -616,6 +692,10 @@ impl RegistrationCountingProxy {
 
     fn failed_precondition_count(&self) -> usize {
         self.failed_precondition_count.load(Ordering::Acquire)
+    }
+
+    fn authentication_rejection_count(&self) -> usize {
+        self.authentication_rejection_count.load(Ordering::Acquire)
     }
 
     async fn stop(self) -> TestResult {
@@ -627,12 +707,13 @@ impl RegistrationCountingProxy {
     }
 }
 
-async fn forward_and_count_registration(
+async fn forward_and_count_route_events(
     client: TcpStream,
     server: TcpStream,
     shutdown: CancellationToken,
     register_count: Arc<AtomicUsize>,
     failed_precondition_count: Arc<AtomicUsize>,
+    authentication_rejection_count: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     let (mut client_reader, mut client_writer) = client.into_split();
     let (mut server_reader, mut server_writer) = server.into_split();
@@ -655,9 +736,15 @@ async fn forward_and_count_registration(
                 };
                 let is_failed_precondition =
                     frame_contains(&frame, br#""code":"FAILED_PRECONDITION""#);
+                let is_authentication_rejection =
+                    frame_contains(&frame, br#""frame":"HANDSHAKE_REJECTED""#)
+                        && frame_contains(&frame, br#""code":"UNAUTHENTICATED""#);
                 client_writer.write_all(&frame).await?;
                 if is_failed_precondition {
                     failed_precondition_count.fetch_add(1, Ordering::AcqRel);
+                }
+                if is_authentication_rejection {
+                    authentication_rejection_count.fetch_add(1, Ordering::AcqRel);
                 }
             }
             () = shutdown.cancelled() => return Ok(()),
@@ -1010,6 +1097,15 @@ impl RunningRouteTable {
         directory: ShardDirectory,
         ttl: Duration,
     ) -> Result<Self, TransportError> {
+        Self::serve_with_trusted_gateways(listener, directory, ttl, trusted_gateway_keys()?)
+    }
+
+    fn serve_with_trusted_gateways(
+        listener: TcpListener,
+        directory: ShardDirectory,
+        ttl: Duration,
+        trusted_gateways: TrustedGatewayKeys,
+    ) -> Result<Self, TransportError> {
         let shard = RouteTableShard::new(
             directory,
             ShardId::new(SHARD_ID).map_err(TransportError::from)?,
@@ -1025,7 +1121,7 @@ impl RunningRouteTable {
         };
         let service = RouteTableService::new(
             shard,
-            trusted_gateway_keys()?,
+            trusted_gateways,
             RouteTableServiceConfig::new(16, 8, 4, 256 * 1024, Duration::from_secs(1))?,
         );
         let shutdown = CancellationToken::new();
@@ -1134,7 +1230,7 @@ fn route_client_config() -> Result<RouteTableClientConfig, TransportError> {
         8,
         256 * 1024,
         Duration::from_millis(200),
-        Duration::from_millis(200),
+        ROUTE_HANDSHAKE_TIMEOUT,
         Duration::from_millis(200),
     )
 }
@@ -1157,6 +1253,13 @@ fn trusted_gateway_keys() -> Result<TrustedGatewayKeys, TransportError> {
             InternalGatewayKey::new(PROBE_KEY)?,
         ),
     ])
+}
+
+fn probe_only_trusted_gateway_keys() -> Result<TrustedGatewayKeys, TransportError> {
+    TrustedGatewayKeys::new([(
+        GatewayName::new(PROBE_NAME)?,
+        InternalGatewayKey::new(PROBE_KEY)?,
+    )])
 }
 
 fn one_shard_directory(endpoint: SocketAddr) -> Vec<u8> {
