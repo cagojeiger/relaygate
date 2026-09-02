@@ -163,7 +163,7 @@ reason = "local state index의 session·binding·offer·Pipe count와 local-only
 id = "T-OBS-03"
 status = "executable"
 rust = ["state::tests::structured_events_use_stable_ids_without_frame_secrets_or_payloads", "state::tests::successful_data_relay_emits_no_per_frame_event_or_payload", "state::tests::pipe_opened_event_reports_full_identity_without_secrets_or_payloads", "gateway::effects::tests::observation::peer_open_cancel_failure_reports_full_open_identity_without_secrets", "gateway::effects::tests::observation::peer_frame_commit_failure_reports_full_stream_identity_without_payload", "sdk_gateway_lifecycle_events_preserve_identity_and_hide_wire_contents", "json_logs_expose_stable_startup_and_snapshot_fields_without_secrets", "peer::tests::peer_data_debug_reports_only_length"]
-reason = "대표 구조화 event와 secret 및 payload 비노출을 검증하고, 열린 local Pipe에서 양방향 DATA 64개를 writer queue까지 성공적으로 relay해도 event와 payload marker가 기록되지 않음을 확인한다. 실제 SDK↔Gateway lifecycle 경로에서 Listener registration, OPEN 성공·실패, Pipe terminal failure, session removal event의 current identity와 terminal error_code/observation을 검증하고, peer OPEN cancel 및 peer frame commit failure event도 full identity와 비노출 경계를 확인한다."
+reason = "대표 구조화 event와 secret 및 payload 비노출을 검증하고, 열린 local Pipe에서 양방향 DATA 64개를 writer queue까지 성공적으로 relay해도 event와 payload marker가 기록되지 않음을 확인한다. 실제 SDK↔Gateway lifecycle 경로에서 Listener 등록 승인·거절·해제, OPEN 성공·실패, Pipe terminal failure와 session removal event의 current identity 및 terminal error_code/observation을 검증한다. peer OPEN cancel 및 peer frame commit failure event도 full identity와 비노출 경계를 확인한다."
 
 [[case]]
 id = "T-OBS-04"

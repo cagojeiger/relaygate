@@ -19,6 +19,7 @@ use support::{TestGateway, TestResult};
 const CLIENT_ID: &str = "observability.alpha";
 const MISSING_CLIENT_ID: &str = "observability.missing";
 const CLIENT_KEY_SENTINEL: &str = "client-key-sentinel-containing-internal-gateway-key-sentinel";
+const REJECTED_CLIENT_KEY_SENTINEL: &str = "rejected-client-key-sentinel";
 const INTERNAL_GATEWAY_KEY_SENTINEL: &str = "internal-gateway-key-sentinel";
 const PAYLOAD_SENTINEL: &[u8] = b"application-payload-sentinel";
 const RESET_MESSAGE_SENTINEL: &str = "counterpart session disconnected";
@@ -64,6 +65,30 @@ async fn sdk_gateway_lifecycle_events_preserve_identity_and_hide_wire_contents()
     let config = Config::new(gateway.address.to_string())
         .with_operation_timeout(Duration::from_secs(1))
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20));
+
+    let rejected_runtime = ListenerRuntime::connect(config.clone()).await?;
+    let registration_error = rejected_runtime
+        .listen(CLIENT_ID, REJECTED_CLIENT_KEY_SENTINEL)
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("registration with an invalid ClientKey succeeded"))?;
+    assert_eq!(registration_error.code(), ErrorCode::Unauthenticated);
+    assert_eq!(
+        registration_error.observation(),
+        PeerObservation::NotObserved
+    );
+    let rejected_registration = logs
+        .wait_for("Gateway Listener registration rejection", |record| {
+            is_event(record, "gateway.listener.registration_rejected")
+                && string_field(record, "client_id") == Some(CLIENT_ID)
+                && string_field(record, "error_code") == Some("Unauthenticated")
+        })
+        .await?;
+    assert_eq!(rejected_registration["component"], "gateway");
+    required_string(&rejected_registration, "session_id")?;
+    assert!(rejected_registration["request_id"].is_number());
+    assert!(rejected_registration.get("observation").is_none());
+    rejected_runtime.close();
 
     let listener_runtime = ListenerRuntime::connect(config.clone()).await?;
     let listener = listener_runtime
@@ -339,6 +364,7 @@ fn assert_safe_logs(logs: &CapturedLogs) -> TestResult {
     let text = logs.text()?;
     for sentinel in [
         CLIENT_KEY_SENTINEL,
+        REJECTED_CLIENT_KEY_SENTINEL,
         INTERNAL_GATEWAY_KEY_SENTINEL,
         std::str::from_utf8(PAYLOAD_SENTINEL)?,
         RESET_MESSAGE_SENTINEL,
