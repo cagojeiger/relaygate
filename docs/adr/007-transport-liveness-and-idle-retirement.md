@@ -29,6 +29,8 @@ PeerTransport(stream_count == 0)
 
 Heartbeat는 transport liveness만 확인한다. Pipe health, application health, payload 처리 성공, delivery acknowledgement를 뜻하지 않는다.
 
+RFC 5880에서 참고하는 원리는 application과 routing 의미에 독립적인 경로 생존 감지다. RelayGate는 BFD packet format, 상태 머신과 timer 협상을 구현하지 않고 기존 transport의 Ping/Pong 계약에 이 책임 경계만 적용한다.
+
 Heartbeat timer는 valid inbound transport activity가 있으면 `PING` 전송 전에는 연장될 수 있다. idle interval 동안 inbound activity가 없을 때 `PING`을 보내고, 그 `PING`이 commit된 뒤 configured response deadline 전에 matching `PONG`을 받지 못하면 해당 transport를 닫는다. unrelated inbound frame, outbound write, nonce가 다른 `PONG`, deadline 이후의 늦은 `PONG`은 이미 commit된 probe를 만족시키지 않는다.
 
 `PeerTransport`는 live `RelayStream`이 하나 이상 있을 때만 heartbeat 대상이다. stream 수가 0이 되면 keepalive를 중단하고 idle-retirement timer를 시작한다. 새 stream이 같은 transport를 재사용하면 retirement timer는 취소된다. timeout까지 재사용되지 않으면 transport를 정상 종료한다.
@@ -57,3 +59,4 @@ RT registration의 `KeepAlive`는 RouteTable soft state lease 갱신이다. SDK-
 - [RFC 4254](../rfc/rfc-4254-ssh-channel.md)
 - [RFC 9000](../rfc/rfc-9000-quic-streams.md)
 - [RFC 9113](../rfc/rfc-9113-http2-connection-lifecycle.md)
+- [RFC 5880](../rfc/rfc-5880-bfd-liveness.md)

@@ -23,8 +23,10 @@ SPEC       = RelayGate의 관찰 가능한 계약
 | --- | --- | --- |
 | 설계 원칙 | [RFC 1958](rfc-1958-internet-architecture.md) | end-to-end, self-healing state, 단순성과 모듈성 |
 | 설계 원칙 | [RFC 3439](rfc-3439-simplicity-principle.md) | 대규모 network의 Simplicity Principle |
+| 아키텍처 | [RFC 7426](rfc-7426-sdn-architecture.md) | application, control, forwarding, operational, management plane |
 | Relay API | [RFC 1928](rfc-1928-socks5-relay.md) | destination 기반 relay request |
 | Soft state | [RFC 2205](rfc-2205-rsvp-soft-state.md) | refresh-or-expire soft state |
+| 생존 감지 | [RFC 5880](rfc-5880-bfd-liveness.md) | application 의미와 독립적인 양방향 경로 장애 감지 |
 | Multiplexing | [RFC 4254](rfc-4254-ssh-channel.md) | 한 connection 위의 channel multiplexing |
 | Relay lifecycle | [RFC 8656](rfc-8656-turn-lifetime.md) | relay resource의 lifetime과 refresh |
 | Flow control / liveness | [RFC 9000](rfc-9000-quic-streams.md) | stream과 connection flow control, idle timeout |
