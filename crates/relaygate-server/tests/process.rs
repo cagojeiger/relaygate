@@ -12,6 +12,7 @@ use std::io::Read;
 #[cfg(unix)]
 use std::{
     fs,
+    net::TcpStream,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -32,6 +33,12 @@ const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+#[cfg(unix)]
+const PROCESS_NOFILE_LIMIT: usize = 32;
+#[cfg(unix)]
+const PEER_FD_PRESSURE_ATTEMPTS: usize = 128;
+#[cfg(unix)]
+const PEER_CONNECT_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[cfg(unix)]
 #[test]
@@ -188,6 +195,76 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
         .find(|record| record["event"] == "gateway.route_table.trusted_local_enabled")
         .ok_or("missing distributed Gateway trusted-local warning")?;
     assert_eq!(warning["transport"], "plain_tcp");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn distributed_peer_accept_failure_exits_process_nonzero_within_bound() -> Result<(), Box<dyn Error>>
+{
+    let address = unused_loopback_address()?;
+    let peer_address = unused_loopback_address()?;
+    let peer_socket = peer_address.parse()?;
+    let artifact = ShardDirectoryArtifact::create()?;
+    let secret = "must-not-appear-peer-failure-key";
+    let mut server = ChildGuard::spawn_captured(
+        server_command_with_open_file_limit(PROCESS_NOFILE_LIMIT)
+            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_CLIENT_KEYS", "echo.alpha=client-key")
+            .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
+            .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
+            .env("RELAYGATE_GATEWAY_NAME", "gw-a")
+            .env("RELAYGATE_GATEWAY_LOCATOR", &peer_address)
+            .env("RELAYGATE_PEER_BIND_ADDR", &peer_address)
+            .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", format!("gw-a={secret}"))
+            .env("RELAYGATE_LOG", "info")
+            .env("RELAYGATE_LOG_FORMAT", "json"),
+    )?;
+
+    wait_until_healthy(&address, &mut server)?;
+
+    let mut idle_peers = Vec::with_capacity(PEER_FD_PRESSURE_ATTEMPTS);
+    for _ in 0..PEER_FD_PRESSURE_ATTEMPTS {
+        if server.try_wait()?.is_some() {
+            break;
+        }
+        if let Ok(stream) = TcpStream::connect_timeout(&peer_socket, PEER_CONNECT_TIMEOUT) {
+            idle_peers.push(stream);
+        }
+    }
+    assert!(!idle_peers.is_empty(), "no peer connection was established");
+
+    let exit_status = server.wait_until(SHUTDOWN_DEADLINE)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "distributed Gateway did not fail closed before the shutdown deadline",
+        )
+    })?;
+    assert!(
+        !exit_status.success(),
+        "distributed Gateway unexpectedly exited successfully"
+    );
+
+    drop(idle_peers);
+    let (stdout, stderr) = server.read_captured()?;
+    assert!(!stdout.contains(secret));
+    assert!(!stderr.contains(secret));
+    assert!(
+        stderr.contains(
+            "Gateway peer relay failed: Unavailable/NotObserved: peer listener accept failed"
+        ),
+        "unexpected distributed Gateway failure: {stderr}"
+    );
+    let records = stdout
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(
+        records
+            .iter()
+            .any(|record| record["event"] == "server.started" && record["role"] == "gateway"),
+        "distributed Gateway failed before reaching the running state"
+    );
     Ok(())
 }
 
@@ -530,7 +607,21 @@ async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets(
 }
 
 fn server_command() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_relaygate-server"));
+    clean_server_command(Command::new(env!("CARGO_BIN_EXE_relaygate-server")))
+}
+
+#[cfg(unix)]
+fn server_command_with_open_file_limit(limit: usize) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg("ulimit -n \"$1\" && shift && exec \"$0\" \"$@\"")
+        .arg(env!("CARGO_BIN_EXE_relaygate-server"))
+        .arg(limit.to_string());
+    clean_server_command(command)
+}
+
+fn clean_server_command(mut command: Command) -> Command {
     for name in [
         "RELAYGATE_BIND_ADDR",
         "RELAYGATE_CLIENT_KEYS",

@@ -179,9 +179,9 @@ reason = "SDK-Gateway heartbeat timeout과 실제 socket 기반 PeerTransport he
 
 [[case]]
 id = "T-HEALTH-01"
-status = "partial"
-rust = ["server_boots_health_checks_and_exits_on_sigterm", "sdk_admission_check_leaves_no_persistent_gateway_state", "session_limit_includes_connections_waiting_for_hello", "peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait"]
-reason = "check의 HELLO/WELCOME 성공과 지속 state 비생성, session capacity 소진 중 실패·회수 뒤 성공, peer runtime fail-closed를 각각 검증한다. 격리 불가능한 distributed component failure가 Gateway serve와 실제 server process 종료까지 전파되는 실행 증거는 아직 없다."
+status = "executable"
+rust = ["server_boots_health_checks_and_exits_on_sigterm", "distributed_peer_accept_failure_exits_process_nonzero_within_bound", "sdk_admission_check_leaves_no_persistent_gateway_state", "session_limit_includes_connections_waiting_for_hello", "peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait"]
+reason = "check의 HELLO/WELCOME 성공과 지속 state 비생성, session capacity 소진 중 실패·회수 뒤 성공을 검증한다. peer event queue 포화는 runtime fail-closed를, 실제 peer listener accept 실패는 distributed Gateway의 bounded cleanup과 server process non-zero 종료 전파를 검증한다."
 
 [[case]]
 id = "T-HEALTH-02"
