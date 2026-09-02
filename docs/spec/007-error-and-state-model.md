@@ -131,7 +131,7 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 
 ```text
 local-only mode                                      -> DISABLED
-configured shard 중 terminal failure가 하나라도 있음 -> TERMINAL
+configured shard 또는 desired registration에 terminal failure가 있음 -> TERMINAL
 unavailable shard 또는 UNSYNCED desired registration  -> DEGRADED
 나머지 distributed state                             -> READY
 ```
@@ -155,7 +155,7 @@ acknowledgement 또는 cluster 전체의 생존을 나타내지 않는다.
 | `STATE-RTDEP-001` | `RouteDependencyHealth` | initialization | local-only mode | `DISABLED` | RT 없이 local lookup과 local Pipe만 사용 |
 | `STATE-RTDEP-002` | `RouteDependencyHealth` | initialization/`DEGRADED` | 모든 configured shard client가 available이고 존재하는 current desired registration이 모두 `SYNCED` | `READY` | remote registration과 Resolve 가능 |
 | `STATE-RTDEP-003` | `RouteDependencyHealth` | initialization/`READY` | configured shard client unavailable 또는 current desired registration `UNSYNCED` | `DEGRADED` | local binding과 established Pipe 유지, affected remote operation은 `UNAVAILABLE` 가능 |
-| `STATE-RTDEP-004` | `RouteDependencyHealth` | initialization/`READY`/`DEGRADED` | generation, transport identity 또는 authorization의 terminal failure | `TERMINAL` | local binding과 established Pipe 유지, corrected configuration의 새 process 전까지 affected remote operation 복구 없음 |
+| `STATE-RTDEP-004` | `RouteDependencyHealth` | initialization/`READY`/`DEGRADED` | routing worker가 shard 또는 desired registration의 failure를 non-retryable로 판정 | `TERMINAL` | local binding과 established Pipe 유지, corrected configuration 또는 desired state의 새 process 전까지 affected remote operation 복구 없음 |
 | `STATE-SDK-001` | SDK session | `DISCONNECTED` | 연결 시작 | `CONNECTING` | Gateway 연결 시도 |
 | `STATE-SDK-002` | SDK session | `CONNECTING` | transport 성공 | `READY` | SDK operation 가능 |
 | `STATE-SDK-003` | SDK session | `CONNECTING` | 연결 실패 | `DISCONNECTED` | managed backoff 뒤 재시도 가능 |

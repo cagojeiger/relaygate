@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, time::Duration};
+use std::{collections::BTreeMap, error::Error, sync::atomic::Ordering, time::Duration};
 
 use relaygate_route_table::{
     BindingId, ClientId, GatewayId, GatewayLocator, LeaseId, ListenerSessionId, MappingEntry,
@@ -9,13 +9,42 @@ use relaygate_route_table_transport::{ErrorCode, TransportError};
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use super::{OperationCompletion, OperationResult, apply_epoch_scoped_operation_completion};
+use super::{
+    OperationCompletion, OperationResult, WorkerCounts, apply_epoch_scoped_operation_completion,
+};
 use crate::routing::lifecycle::{RegistrationAction, RegistrationState};
 
 mod stale_epoch;
 mod update_gate_proxy;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
+
+#[test]
+fn worker_counts_distinguish_terminal_desired_registration() -> TestResult {
+    let now = Instant::now();
+    let session_id = ListenerSessionId::from_uuid(Uuid::from_u128(2));
+    let mut state = RegistrationState::new(
+        RegistrationKey::new(
+            GatewayId::from_uuid(Uuid::from_u128(1)),
+            session_id,
+            ShardId::new("rt-0")?,
+        ),
+        1,
+        Some(snapshot()?),
+        now,
+        Duration::from_millis(10),
+        Duration::from_secs(1),
+    );
+    state.mark_terminal();
+
+    let counts = WorkerCounts::default();
+    counts.update(&BTreeMap::from([(session_id, state)]));
+
+    assert_eq!(counts.synced.load(Ordering::Relaxed), 0);
+    assert_eq!(counts.unsynced.load(Ordering::Relaxed), 1);
+    assert_eq!(counts.terminal.load(Ordering::Relaxed), 1);
+    Ok(())
+}
 
 #[test]
 fn old_epoch_terminal_completion_retries_current_registration() -> TestResult {

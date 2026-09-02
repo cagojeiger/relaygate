@@ -247,6 +247,7 @@ impl Gateway {
         let mut snapshot = self.inner.lock_state().snapshot();
         if let Some(routing) = &self.inner.routing {
             let counts = routing.current_counts();
+            snapshot.route_dependency_health = counts.dependency_health;
             snapshot.route_registrations_synced = counts.synced;
             snapshot.route_registrations_unsynced = counts.unsynced;
         }
@@ -451,7 +452,10 @@ async fn write_frames(
     Ok(())
 }
 
-/// Performs a protocol-level TCP health check without creating application state.
+/// Checks SDK admission readiness through a TCP `HELLO`/`WELCOME` exchange.
+///
+/// This does not check RouteTable availability, Listener bindings, Pipe
+/// establishment, or application payload processing.
 pub async fn check(address: impl ToSocketAddrs, deadline: Duration) -> Result<(), GatewayError> {
     timeout(deadline, async {
         let stream = TcpStream::connect(address).await?;
@@ -463,12 +467,12 @@ pub async fn check(address: impl ToSocketAddrs, deadline: Duration) -> Result<()
             .await?;
         match framed.next().await {
             Some(Ok(Frame::Welcome { .. })) => Ok(()),
-            Some(Ok(_)) | None => Err(GatewayError::UnexpectedHealthResponse),
+            Some(Ok(_)) | None => Err(GatewayError::UnexpectedAdmissionResponse),
             Some(Err(error)) => Err(GatewayError::Protocol(error)),
         }
     })
     .await
-    .map_err(|_| GatewayError::HealthCheckTimeout)?
+    .map_err(|_| GatewayError::AdmissionCheckTimeout)?
 }
 
 #[derive(Debug, thiserror::Error)]

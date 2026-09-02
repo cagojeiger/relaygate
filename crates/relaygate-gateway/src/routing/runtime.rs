@@ -25,7 +25,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::registry::Binding;
+use crate::{RouteDependencyHealth, registry::Binding};
 
 use super::{
     GatewayRoutingConfig, RoutingError,
@@ -116,28 +116,35 @@ struct ShardDesiredView {
 pub(crate) struct RoutingCounts {
     pub(crate) synced: usize,
     pub(crate) unsynced: usize,
+    pub(crate) dependency_health: RouteDependencyHealth,
 }
 
 #[derive(Debug, Default)]
 struct WorkerCounts {
     synced: AtomicUsize,
     unsynced: AtomicUsize,
+    terminal: AtomicUsize,
 }
 
 impl WorkerCounts {
     fn update(&self, registrations: &BTreeMap<ListenerSessionId, RegistrationState>) {
-        let (synced, unsynced) = registrations
+        let (synced, unsynced, terminal) = registrations
             .values()
             .filter(|state| state.is_desired())
-            .fold((0, 0), |(synced, unsynced), state| {
+            .fold((0, 0, 0), |(synced, unsynced, terminal), state| {
                 if state.is_synced() {
-                    (synced + 1, unsynced)
+                    (synced + 1, unsynced, terminal)
                 } else {
-                    (synced, unsynced + 1)
+                    (
+                        synced,
+                        unsynced + 1,
+                        terminal + usize::from(state.is_terminal()),
+                    )
                 }
             });
         self.synced.store(synced, Ordering::Relaxed);
         self.unsynced.store(unsynced, Ordering::Relaxed);
+        self.terminal.store(terminal, Ordering::Relaxed);
     }
 }
 
@@ -248,12 +255,47 @@ impl RoutingHandle {
             RoutingCounts {
                 synced: 0,
                 unsynced: 0,
+                dependency_health: RouteDependencyHealth::Ready,
             },
-            |counts, worker| RoutingCounts {
-                synced: counts.synced + worker.counts.synced.load(Ordering::Relaxed),
-                unsynced: counts.unsynced + worker.counts.unsynced.load(Ordering::Relaxed),
+            |counts, worker| {
+                let synced = worker.counts.synced.load(Ordering::Relaxed);
+                let unsynced = worker.counts.unsynced.load(Ordering::Relaxed);
+                let availability = worker.client.borrow();
+                let terminal = worker.counts.terminal.load(Ordering::Relaxed) > 0
+                    || matches!(&*availability, ClientAvailability::Terminal(_));
+                let unavailable = matches!(&*availability, ClientAvailability::Unavailable);
+                let shard_health = if terminal {
+                    RouteDependencyHealth::Terminal
+                } else if unavailable || unsynced > 0 {
+                    RouteDependencyHealth::Degraded
+                } else {
+                    RouteDependencyHealth::Ready
+                };
+                RoutingCounts {
+                    synced: counts.synced + synced,
+                    unsynced: counts.unsynced + unsynced,
+                    dependency_health: merge_dependency_health(
+                        counts.dependency_health,
+                        shard_health,
+                    ),
+                }
             },
         )
+    }
+}
+
+const fn merge_dependency_health(
+    current: RouteDependencyHealth,
+    shard: RouteDependencyHealth,
+) -> RouteDependencyHealth {
+    match (current, shard) {
+        (RouteDependencyHealth::Terminal, _) | (_, RouteDependencyHealth::Terminal) => {
+            RouteDependencyHealth::Terminal
+        }
+        (RouteDependencyHealth::Degraded, _) | (_, RouteDependencyHealth::Degraded) => {
+            RouteDependencyHealth::Degraded
+        }
+        _ => RouteDependencyHealth::Ready,
     }
 }
 
@@ -572,6 +614,7 @@ async fn run_shard_worker(
     }
     counts.synced.store(0, Ordering::Relaxed);
     counts.unsynced.store(0, Ordering::Relaxed);
+    counts.terminal.store(0, Ordering::Relaxed);
     Ok(())
 }
 

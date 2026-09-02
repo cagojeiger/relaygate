@@ -11,7 +11,7 @@ use relaygate_route_table_transport::{
 use tokio::{net::TcpListener, time::timeout};
 use tokio_util::sync::CancellationToken;
 
-use crate::{registry::Binding, routing::GatewayRoutingConfig};
+use crate::{RouteDependencyHealth, registry::Binding, routing::GatewayRoutingConfig};
 
 use super::{
     TestResult, gateway, protocol_binding, protocol_session, wait_for_not_found, wait_for_resolve,
@@ -104,6 +104,10 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
     wait_for_resolve(&handle, client_0.clone()).await?;
     wait_for_resolve(&handle, client_1.clone()).await?;
     wait_for_counts(&handle, 2, 0).await?;
+    assert_eq!(
+        handle.current_counts().dependency_health,
+        RouteDependencyHealth::Ready
+    );
 
     let lease_client_0 = connect_lease_client(
         endpoint_0,
@@ -172,6 +176,10 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
     shutdown_0.cancel();
     timeout(Duration::from_secs(5), task_0).await???;
     wait_for_counts(&handle, 1, 1).await?;
+    assert_eq!(
+        handle.current_counts().dependency_health,
+        RouteDependencyHealth::Degraded
+    );
     wait_for_resolve(&handle, client_1.clone()).await?;
 
     handle.publish_session(session_id, Vec::new())?;
@@ -181,6 +189,91 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
     routing_shutdown.cancel();
     timeout(Duration::from_secs(5), runtime.wait()).await??;
     shutdown_1.cancel();
+    timeout(Duration::from_secs(5), task_1).await???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult {
+    let listener_0 = TcpListener::bind("127.0.0.1:0").await?;
+    let listener_1 = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint_0 = listener_0.local_addr()?;
+    let endpoint_1 = listener_1.local_addr()?;
+    let directory = two_live_shard_directory(endpoint_0, endpoint_1)?;
+    let gateway_id = gateway(4_000);
+    let gateway_name = GatewayName::new("gw-terminal-shard")?;
+    let gateway_key = InternalGatewayKey::new("correct-key")?;
+    let service_config =
+        RouteTableServiceConfig::new(32, 32, 8, 256 * 1024, Duration::from_secs(1))?;
+
+    let shutdown_0 = CancellationToken::new();
+    let shutdown_1 = CancellationToken::new();
+    let task_0 = spawn_service(
+        listener_0,
+        directory.clone(),
+        "rt-0",
+        Duration::from_secs(3),
+        gateway_name.clone(),
+        InternalGatewayKey::new("wrong-key")?,
+        service_config,
+        shutdown_0.clone(),
+    )?;
+    let task_1 = spawn_service(
+        listener_1,
+        directory.clone(),
+        "rt-1",
+        Duration::from_secs(3),
+        gateway_name.clone(),
+        gateway_key.clone(),
+        service_config,
+        shutdown_1.clone(),
+    )?;
+
+    let client_config = RouteTableClientConfig::new(
+        32,
+        256 * 1024,
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(200),
+    )?;
+    let routing_shutdown = CancellationToken::new();
+    let runtime = RoutingRuntime::start(
+        GatewayRoutingConfig::new(
+            directory.clone(),
+            gateway_name,
+            gateway_key,
+            GatewayLocator::new("gw-terminal-shard.internal:27431")?,
+            client_config,
+        )
+        .with_reconnect_backoff(Duration::from_millis(5), Duration::from_millis(20))
+        .with_desired_scan_interval(Duration::from_millis(5))
+        .with_shutdown_timeout(Duration::from_millis(200)),
+        gateway_id,
+        routing_shutdown.clone(),
+    )?;
+    let handle = runtime.handle();
+    let healthy_client = client_for_shard(&directory, "rt-1", "healthy")?;
+    let session_id = protocol_session(5_000);
+
+    handle.publish_session(
+        session_id,
+        vec![Binding {
+            id: protocol_binding(6_000),
+            client_id: healthy_client.as_str().to_owned(),
+            session_id,
+        }],
+    )?;
+    wait_for_resolve(&handle, healthy_client.clone()).await?;
+    wait_for_health(&handle, RouteDependencyHealth::Terminal).await?;
+
+    let resolved = handle.resolve(healthy_client).await?;
+    assert_eq!(resolved.len(), 1);
+
+    routing_shutdown.cancel();
+    timeout(Duration::from_secs(5), runtime.wait()).await??;
+    shutdown_0.cancel();
+    shutdown_1.cancel();
+    timeout(Duration::from_secs(5), task_0).await???;
     timeout(Duration::from_secs(5), task_1).await???;
     Ok(())
 }
@@ -228,6 +321,16 @@ async fn wait_for_counts(handle: &RoutingHandle, synced: usize, unsynced: usize)
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     Err(format!("routing counts did not converge to {synced} synced/{unsynced} unsynced").into())
+}
+
+async fn wait_for_health(handle: &RoutingHandle, expected: RouteDependencyHealth) -> TestResult {
+    for _ in 0..800 {
+        if handle.current_counts().dependency_health == expected {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    Err(format!("route dependency health did not converge to {expected:?}").into())
 }
 
 fn two_live_shard_directory(

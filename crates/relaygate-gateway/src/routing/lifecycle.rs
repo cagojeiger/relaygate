@@ -143,6 +143,11 @@ impl RegistrationState {
     }
 
     #[must_use]
+    pub(super) fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    #[must_use]
     pub(super) fn is_removable(&self) -> bool {
         self.snapshot.is_none() && self.lease.is_none() && self.pending.is_none()
     }

@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
         }
         Command::CheckGateway { address } => check(address, DEFAULT_CHECK_DEADLINE)
             .await
-            .context("Gateway health check failed"),
+            .context("Gateway SDK admission readiness check failed"),
     }
 }
 

@@ -69,7 +69,7 @@ Pipe::into_split()                            -> read half + write half
 | Gateway unit | registry index, N:M binding, OPEN/OFFER state, owner 검증, timeout, bounded queue, FIN/CLOSE/RESET, cleanup, current snapshot |
 | SDK unit | managed reconnect, Listener recovery, Pipe I/O·half-close, operation deadline, heartbeat timeout, error observation |
 | Gateway integration | local Pipe, public SDK full duplex, 같은 ClientId의 surviving Listener 선택, disconnect·queue·foreign frame edge case |
-| Server process | config validation, health check, structured log redaction, SIGTERM cleanup |
+| Server process | config validation, SDK admission readiness check, structured log redaction, SIGTERM cleanup |
 | Docker image/process topology | [TEST 004](004-rt1-gw3-closed-loop-test-plan.md)의 RT1/GW3 Compose profile |
 
 핵심 executable regression은 다음과 같다.

@@ -10,10 +10,10 @@ pub enum GatewayError {
     Routing(String),
     #[error("Gateway peer relay failed: {0}")]
     Peer(String),
-    #[error("Gateway health check timed out")]
-    HealthCheckTimeout,
-    #[error("Gateway health check received an unexpected frame")]
-    UnexpectedHealthResponse,
+    #[error("Gateway SDK admission readiness check timed out")]
+    AdmissionCheckTimeout,
+    #[error("Gateway SDK admission readiness check received an unexpected frame")]
+    UnexpectedAdmissionResponse,
 }
 
 impl From<crate::routing::RoutingError> for GatewayError {

@@ -153,7 +153,7 @@ application health, payload delivery acknowledgement 또는 retry 명령으로 �
 DISABLED = local-only mode
 READY    = 모든 configured shard client가 available이고 존재하는 desired registration이 모두 SYNCED
 DEGRADED = terminal failure 없이 unavailable shard 또는 UNSYNCED desired registration이 존재
-TERMINAL = generation, transport identity 또는 authorization의 terminal failure가 존재
+TERMINAL = shard 또는 desired registration에 non-retryable control failure가 존재
 ```
 
 여러 shard의 summary는 `TERMINAL > DEGRADED > READY` 우선순위를 사용한다. 같은 process에서
