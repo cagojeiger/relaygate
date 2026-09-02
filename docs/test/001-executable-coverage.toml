@@ -263,8 +263,8 @@ rust = ["remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "r
 [[case]]
 id = "T-RT-07"
 status = "partial"
-rust = ["state::tests::routed_miss_creates_one_request_local_resolve", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "registry::tests::indexes_describe_the_same_live_bindings"]
-reason = "miss Resolve와 index 일관성은 검증하지만 매 신규 miss 조회, table scan 부재와 Connector identity 비저장을 계측하지 않는다."
+rust = ["state::tests::routed_miss_creates_one_request_local_resolve", "state::tests::concurrent_remote_opens_consume_only_their_request_local_resolve", "state::tests::terminated_remote_open_does_not_cache_successful_resolve_for_next_open", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "registry::tests::indexes_describe_the_same_live_bindings"]
+reason = "동시 OPEN과 성공한 Resolve 뒤 terminal된 다음 OPEN도 각자 fresh authority Resolve를 발행하며 core cache를 재사용하지 않고, index mutation의 atomicity와 일관성을 검증한다. table scan 부재와 RT schema에 ConnectorSession·ConnectionId·Pipe identity가 없다는 조건은 구조적 성질로 남아 있다."
 
 [[case]]
 id = "T-OPEN-01"
