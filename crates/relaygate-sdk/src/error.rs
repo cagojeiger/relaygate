@@ -160,13 +160,11 @@ mod tests {
             assert!(!observed.is_retryable());
         }
 
-        assert!(
-            !Error::new(
-                ErrorCode::PermissionDenied,
-                PeerObservation::NotObserved,
-                "terminal",
-            )
-            .is_retryable()
-        );
+        for code in [ErrorCode::InvalidArgument, ErrorCode::PermissionDenied] {
+            assert!(
+                !Error::new(code, PeerObservation::NotObserved, "terminal").is_retryable(),
+                "{code:?} must not produce a retry hint"
+            );
+        }
     }
 }
