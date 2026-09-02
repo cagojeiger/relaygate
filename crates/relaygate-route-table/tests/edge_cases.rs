@@ -12,6 +12,46 @@ use uuid::Uuid;
 use support::{binding, client, context, gateway, key, mapping, session, shard, snapshot};
 
 #[test]
+fn internal_register_deadline_overflow_leaves_no_partial_route_table_state()
+-> Result<(), RouteTableError> {
+    let start = Instant::now();
+    assert!(start.checked_add(Duration::MAX).is_none());
+
+    let gateway_id = gateway(1);
+    let mut shard = shard(Duration::MAX)?;
+    let generation = shard.generation();
+    let register = shard.register(
+        context(gateway_id),
+        generation,
+        key(gateway_id, session(1))?,
+        start,
+    );
+
+    assert!(matches!(
+        register,
+        Err(ref error) if error.code() == ErrorCode::Internal
+    ));
+    let stats = shard.stats();
+    assert_eq!(stats.registration_count, 0);
+    assert_eq!(stats.mapping_count, 0);
+    assert_eq!(stats.route_count, 0);
+    assert_eq!(stats.expiry_record_count, 0);
+
+    let resolve = shard.resolve(
+        context(gateway_id),
+        generation,
+        &client("unregistered")?,
+        start,
+    );
+    assert!(matches!(
+        resolve,
+        Err(ref error) if error.code() == ErrorCode::NotFound
+    ));
+    assert_eq!(shard.stats(), stats);
+    Ok(())
+}
+
+#[test]
 fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTableError> {
     let start = Instant::now();
     let ttl = Duration::from_secs(10);

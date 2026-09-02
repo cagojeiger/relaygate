@@ -429,9 +429,9 @@ reason = "await를 완료한 deadline·resource limit과 닫힌 Connector·Liste
 
 [[case]]
 id = "T-ERR-05"
-status = "partial"
-rust = ["state::tests::owner_invalid_phase_resets_only_the_target_pipe", "state::tests::foreign_open_pipe_frames_terminate_each_offender_without_mutating_target", "foreign_pipe_frame_closes_offender_and_preserves_target_pipe", "peer::transport::tests::terminal::fin::duplicate_fin_and_data_after_fin_are_stream_scoped", "service::tests::unexpected_actor_exit_is_a_terminal_internal_failure"]
-reason = "Pipe-local protocol error와 INTERNAL 분류는 검증하지만 INTERNAL 뒤 모든 partial live state 부재를 합성하지 않는다."
+status = "executable"
+rust = ["state::tests::owner_invalid_phase_resets_only_the_target_pipe", "state::tests::foreign_open_pipe_frames_terminate_each_offender_without_mutating_target", "foreign_pipe_frame_closes_offender_and_preserves_target_pipe", "peer::transport::tests::terminal::fin::duplicate_fin_and_data_after_fin_are_stream_scoped", "service::tests::unexpected_actor_exit_is_a_terminal_internal_failure", "internal_register_deadline_overflow_leaves_no_partial_route_table_state", "gateway::effects::tests::internal_resolve_failure_cleans_attempt_and_preserves_sibling_state"]
+reason = "Pipe-local protocol error는 target만 reset하고 non-owner·role 위반은 offending session에 격리한다. 실제 RT deadline overflow는 INTERNAL을 반환하면서 shard index를 전혀 만들지 않고, Gateway Resolve의 INTERNAL은 current remote OPEN state를 제거해 late success를 무시하면서 unrelated local session, binding과 Pipe를 보존한다. 예상 밖 RT actor 종료도 INTERNAL로 분류한다."
 
 [[case]]
 id = "T-ERR-06"
