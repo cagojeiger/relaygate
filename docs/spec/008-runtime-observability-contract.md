@@ -99,6 +99,7 @@ connector_sessions
 listener_bindings
 pending_offers
 live_pipes
+route_dependency_health
 route_registrations_synced
 route_registrations_unsynced
 remote_open_attempts
@@ -132,6 +133,35 @@ message delivery acknowledgement가 아니다.
 Heartbeat와 idle-retirement event는 transport lifecycle 관찰값이다. 해당 event를 Pipe
 application health, payload delivery acknowledgement 또는 retry 명령으로 해석해서는 안 된다.
 
+## 운영 health 관찰
+
+운영 health는 하나의 종합 신호로 노출하지 않는다.
+
+| 신호 | 관찰 방법 | 확인하지 않는 것 |
+| --- | --- | --- |
+| `ProcessLiveness` | 배포 환경의 process supervision과 serve 종료 결과 | SDK admission, RT, Pipe와 application 성공 |
+| `SdkAdmissionReadiness` | `relaygate-server check <SDK address>`의 TCP 연결과 `HELLO(Connector) -> WELCOME` | RT availability, binding, open, Pipe와 payload 성공 |
+| `RouteDependencyHealth` | `GatewaySnapshot.route_dependency_health` | RT table 내용, cluster 전체 health와 payload 성공 |
+
+`check`는 짧은 ConnectorSession을 만들 수 있지만 binding, open, Pipe 또는 application state를
+만들지 않는다. SDK listener unavailable, shutdown 또는 session capacity 소진으로
+`HELLO -> WELCOME`을 완료하지 못하면 실패한다. RT 단절만으로는 실패하지 않는다.
+
+`RouteDependencyHealth`는 Gateway routing worker가 마지막으로 관찰한 값이다.
+
+```text
+DISABLED = local-only mode
+READY    = 모든 configured shard client가 available이고 존재하는 desired registration이 모두 SYNCED
+DEGRADED = terminal failure 없이 unavailable shard 또는 UNSYNCED desired registration이 존재
+TERMINAL = generation, transport identity 또는 authorization의 terminal failure가 존재
+```
+
+여러 shard의 summary는 `TERMINAL > DEGRADED > READY` 우선순위를 사용한다. 같은 process에서
+local-only와 distributed mode를 섞지 않으므로 `DISABLED`는 local-only mode에서만 사용한다.
+한 shard의 terminal failure가 summary를 `TERMINAL`로 만들더라도 unaffected shard의 operation까지
+실패했다는 뜻은 아니다. health 값은 last-observed current observation이며 routing 결정의 입력,
+RT 전체 truth 또는 restart 명령이 아니다.
+
 ## 현재 범위 밖
 
 ```text
@@ -155,3 +185,6 @@ durable metric history
 | `OBS-007` | library crate는 event만 발행하며 subscriber와 exporter는 embedding application 또는 server가 소유해야 한다. |
 | `OBS-008` | snapshot event는 기본적으로 비활성화되고 활성화해도 새 listening port를 만들지 않아야 한다. |
 | `OBS-009` | SDK-Gateway heartbeat timeout, active PeerTransport heartbeat timeout과 zero-stream PeerTransport idle retirement는 lifecycle event로 관찰 가능해야 하며, payload bytes나 application-level delivery result를 기록해서는 안 된다. |
+| `OBS-010` | `relaygate-server check`는 새 ConnectorSession의 TCP 연결과 `HELLO -> WELCOME`만 검증하는 `SdkAdmissionReadiness` probe여야 한다. RT, binding, open, Pipe와 application 결과를 검증하거나 지속 state를 남겨서는 안 된다. |
+| `OBS-011` | `GatewaySnapshot`은 `RouteDependencyHealth`를 제공해야 한다. local-only는 `DISABLED`, distributed mode는 terminal failure, unavailable shard와 `UNSYNCED` registration을 우선순위에 따라 `TERMINAL`, `DEGRADED`, `READY`로 집계해야 한다. 한 shard의 terminal failure는 summary를 `TERMINAL`로 만들지만 unaffected shard operation의 실패를 뜻하지 않아야 한다. |
+| `OBS-012` | `ProcessLiveness`, `SdkAdmissionReadiness`와 `RouteDependencyHealth`는 별도 신호여야 한다. RT 저하는 process 또는 admission 실패를 직접 만들지 않고, admission 저하는 process failure를 뜻하지 않아야 한다. |
