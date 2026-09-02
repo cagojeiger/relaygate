@@ -112,6 +112,7 @@ Docker timing에 의존하면 불안정한 순서와 state cleanup은 Rust integ
 | `G3-I-PEER-04` | capacity 1 PeerEvent queue 포화와 receiver 종료 | 실행 중에는 cyclic wait 없이 각각 `RESOURCE_EXHAUSTED`/`UNAVAILABLE` fail-closed와 count 0 수렴. 정상 shutdown과 경쟁한 Full/Closed는 새 장애가 아님 | `T-PEER-04`, `T-STATE-TRANSPORT` |
 | `G3-I-PEER-05` | active PeerTransport heartbeat timeout | 해당 transport의 stream과 Pipe만 terminal cleanup하고 반대 방향 transport, 다른 pair, RT mapping과 Listener binding을 유지 | `T-PEER-10`, `T-STATE-TRANSPORT`, `T-EDGE-38` |
 | `G3-I-PEER-06` | zero-stream PeerTransport idle retirement와 재사용 경쟁 | stream 수 0에서는 keepalive를 보내지 않고 retirement timeout 뒤 정상 종료한다. timeout 전 새 stream이 재사용하면 timer가 취소된다. | `T-PEER-10`, `T-STATE-TRANSPORT`, `T-EDGE-38` |
+| `G3-I-PROC-01` | 실행 중 peer listener의 `accept` resource failure | peer runtime과 distributed Gateway가 bounded cleanup 뒤 오류를 반환하고 실제 server process가 non-zero로 종료 | `T-HEALTH-01`, `T-STATE-TRANSPORT` |
 | `G3-I-STATE-01` | unmapped remote open 실패 뒤 mapped remote open 성공·종료를 100회 반복 | 매 cycle은 새 application operation이며 마지막 snapshot의 pending offer, Pipe, remote attempt, connecting transport와 stream이 baseline으로 수렴한다. ConnectionId·StreamId는 재사용하지 않고 scalar high-watermark 외에 terminal history를 누적하지 않는다. | `T-TERM-07`, `T-OPEN-09`, `T-STATE-PAIR` |
 
 integration test는 RT table, Gateway snapshot, peer pool snapshot을 직접 관찰할 수 있다. public
@@ -175,6 +176,7 @@ deterministic하게 검증한다.
 | `AC-G3-PEER-02` | integration | 한 peer pair 장애가 다른 pair, RT mapping, sibling stream으로 전파되지 않는다. |
 | `AC-G3-PEER-03` | integration | concurrent StreamId 할당·commit 순서와 ConnectorSession/cancel의 RESET cleanup이 deterministic하다. RESET writer commit 실패는 해당 transport close로 수렴한다. |
 | `AC-G3-PEER-04` | integration | active PeerTransport heartbeat timeout과 zero-stream idle retirement가 서로 다른 cleanup scope로 닫힌다. |
+| `AC-G3-PROC-01` | process integration | 실행 중 격리 불가능한 peer runtime failure가 bounded cleanup과 Gateway serve 오류를 거쳐 server process의 non-zero 종료로 전파된다. |
 | `AC-G3-PIPE-01` | integration/Compose | local/remote `DATA`, `FIN`, `CLOSE`, `RESET` 의미가 동일하다. |
 | `AC-G3-FAIL-01` | Compose | GW-B restart 중 A-C established Pipe가 유지되고 B 재등록 뒤 matrix가 다시 성공한다. |
 | `AC-G3-FAIL-02` | Compose | RT outage 중 established Pipe는 유지되고 신규 remote open은 `UNAVAILABLE`로 terminal 실패한다. |
