@@ -469,9 +469,9 @@ reason = "ConnectorSession cleanup과 RESET 성공·실패 scope를 검증하고
 
 [[case]]
 id = "T-STATE-LISTENER"
-status = "partial"
-rust = ["listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "registered_and_public_listen_cancel_unregisters_before_client_id_reuse", "permanent_recovery_rejection_blocks_only_affected_listener", "closing_listener_during_recovery_register_rebuilds_session_for_sibling", "committed_initial_register_timeout_recovers_only_returned_listeners"]
-reason = "pending accept cancellation, REGISTERED 뒤 public 반환 전 cancellation과 주요 Listener lifecycle은 검증하지만 모든 recovery 경쟁을 전수하지 않는다."
+status = "executable"
+rust = ["listener::tests::return_and_session_end_share_one_lifecycle_linearization", "listener::tests::recovery_activation_and_close_share_one_lifecycle_linearization", "listener::tests::cancelled_pending_accept_preserves_other_accept_sibling_and_queued_pipes", "listener::tests::explicit_close_removes_desired_and_drops_unaccepted_pipes", "concurrent_duplicate_listener_is_rejected_and_closed_id_can_be_reused", "initial_register_failure_is_terminal_until_application_retries", "cancelled_committed_listen_closes_session_and_client_id_can_be_reused", "registered_and_public_listen_cancel_unregisters_before_client_id_reuse", "committed_initial_register_timeout_recovers_only_returned_listeners", "desired_listener_is_registered_again_on_new_session", "session_loss_drains_unaccepted_pipe_before_recovery_admission", "returned_listener_retries_transient_recovery_failure", "permanent_recovery_rejection_blocks_only_affected_listener", "closing_listener_during_recovery_register_rebuilds_session_for_sibling", "stalled_listener_transport_send_times_out_and_cleans_up_session", "listener_runtime_clone_drop_and_explicit_close_terminate_runtime"]
+reason = "ListenAttempt의 duplicate·initial failure·commit 뒤 timeout/cancel과 REGISTERED 뒤 public 반환 전 cancel을 검증한다. 반환된 Listener는 session loss 때 SUSPENDED가 되어 old queue를 비우고 recovery REGISTERED 뒤 ACTIVE로 돌아오며, transient 실패는 retry하고 terminal credential 실패는 해당 handle만 BLOCKED로 만든다. recovery 활성화와 application close는 하나의 lifecycle lock으로 직렬화되어 최종 CLOSED 뒤 재활성화할 수 없고, commit된 recovery 중 close는 current session을 다시 만들어 sibling만 복구한다. pending accept 취소, active handle close, bounded listener write 실패와 runtime 종료도 각 소유 범위만 정리한다."
 
 [[case]]
 id = "T-STATE-BIND"

@@ -80,6 +80,31 @@ fn return_and_session_end_share_one_lifecycle_linearization()
 }
 
 #[test]
+fn recovery_activation_and_close_share_one_lifecycle_linearization()
+-> Result<(), Box<dyn std::error::Error>> {
+    let state = listener_state("echo.alpha");
+    assert!(state.begin_registration_commit());
+    let observed = Arc::clone(&state);
+    assert!(state.activate_while_locked(|| {
+        assert!(matches!(
+            observed.lifecycle.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+    }));
+
+    state.close(None);
+    assert_eq!(*state.status.borrow(), ListenerStatus::Closed);
+    assert!(!state.activate());
+    assert!(
+        !*state
+            .registration_committed
+            .lock()
+            .map_err(|_| std::io::Error::other("registration lock is poisoned"))?
+    );
+    Ok(())
+}
+
+#[test]
 fn late_public_deadline_preserves_committed_registration_error()
 -> Result<(), Box<dyn std::error::Error>> {
     let state = listener_state("echo.alpha");
