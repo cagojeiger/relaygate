@@ -33,6 +33,9 @@ use super::{
     projection::{ProjectedShardSnapshot, project_session, project_session_id},
 };
 
+#[cfg(test)]
+mod tests;
+
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 #[derive(Debug, Clone)]
@@ -522,18 +525,12 @@ async fn run_shard_worker(
             completion = poll_optional(&mut operation) => {
                 operation = None;
                 let current_epoch = connected.as_ref().map(|current| current.epoch);
-                let result = if completion.epoch != current_epoch.unwrap_or_default() {
-                    if let Some(state) = registration_for_ticket(&mut registrations, &completion.ticket) {
-                        state.transient_failure(&completion.ticket, Instant::now());
-                    }
-                    None
-                } else {
-                    apply_operation_completion(
-                        &mut registrations,
-                        &completion,
-                        Instant::now(),
-                    )
-                };
+                let result = apply_epoch_scoped_operation_completion(
+                    &mut registrations,
+                    &completion,
+                    current_epoch,
+                    Instant::now(),
+                );
                 if let Some(error) = result {
                     if is_terminal_control_error(error.code()) {
                         if matches!(completion.ticket.action, RegistrationAction::Register { .. }) {
@@ -685,6 +682,21 @@ fn execute_operation(
             result,
         }
     })
+}
+
+fn apply_epoch_scoped_operation_completion(
+    registrations: &mut BTreeMap<ListenerSessionId, RegistrationState>,
+    completion: &OperationCompletion,
+    current_epoch: Option<u64>,
+    now: Instant,
+) -> Option<TransportError> {
+    if completion.epoch != current_epoch.unwrap_or_default() {
+        if let Some(state) = registration_for_ticket(registrations, &completion.ticket) {
+            state.transient_failure(&completion.ticket, now);
+        }
+        return None;
+    }
+    apply_operation_completion(registrations, completion, now)
 }
 
 /// Applies a completion only to the RegistrationKey captured in its ticket.
