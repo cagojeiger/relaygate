@@ -59,4 +59,3 @@ routing truth나 payload 전달 증명이 아니다.
 
 - [RFC 5880](../rfc/rfc-5880-bfd-liveness.md)
 - [RFC 7426](../rfc/rfc-7426-sdn-architecture.md)
-
