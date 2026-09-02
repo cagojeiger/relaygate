@@ -277,7 +277,8 @@ async fn write_half_close_terminates_the_split_read_half() -> Result<(), Box<dyn
     let write_error = writer
         .write_all_bytes(b"after-close")
         .await
-        .expect_err("closed Pipe write unexpectedly succeeded");
+        .err()
+        .ok_or("closed Pipe write unexpectedly succeeded")?;
     assert_eq!(write_error.code(), ErrorCode::FailedPrecondition);
 
     let mut byte = [0_u8; 1];
