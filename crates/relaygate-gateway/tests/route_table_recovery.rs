@@ -294,7 +294,7 @@ async fn route_table_authentication_failure_case() -> TestResult {
     let route_listener = TcpListener::bind("127.0.0.1:0").await?;
     let route_endpoint = route_listener.local_addr()?;
     let proxy = RegistrationCountingProxy::start(route_endpoint).await?;
-    let directory = ShardDirectory::from_json_bytes(&one_shard_directory(proxy.endpoint))?;
+    let directory = ShardDirectory::from_json_bytes(one_shard_directory(proxy.endpoint))?;
     let generation = directory.generation();
     let route_table = RunningRouteTable::serve_with_trusted_gateways(
         route_listener,
