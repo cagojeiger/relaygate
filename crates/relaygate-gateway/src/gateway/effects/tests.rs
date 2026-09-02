@@ -128,6 +128,38 @@ async fn component_identity_resolve_failures_never_create_peer_or_pipe_state() -
 }
 
 #[tokio::test]
+async fn internal_resolve_failure_cleans_attempt_and_preserves_sibling_state() -> TestResult {
+    let resolver = ScriptedResolver::new([Err(RouteResolveFailure::new(
+        ErrorCode::Internal,
+        "RouteTable internal failure",
+    ))]);
+    let inner = test_inner(Arc::new(resolver.clone()));
+    let listener = add_session(&inner, SessionRole::Listener)?;
+    let connector = add_session(&inner, SessionRole::Connector)?;
+    establish_local_pipe(&inner, listener, connector)?;
+
+    let (open_identity, client_id) = begin_remote_open(&inner, connector, 2, "echo.remote")?;
+    let actions = inner
+        .run_control_effect(ControlAction::ResolveRoute {
+            open_identity,
+            client_id,
+        })
+        .await;
+
+    assert_open_failed(&actions, 2, ErrorCode::Internal);
+    assert_eq!(resolver.call_count(), 1);
+    assert_local_state_is_unchanged(&inner);
+
+    let late = inner.lock_state().route_resolved(
+        open_identity,
+        remote_binding_set("echo.remote", GatewayId::new(), BindingId::new())?,
+    );
+    assert!(late.is_empty());
+    assert_local_state_is_unchanged(&inner);
+    Ok(())
+}
+
+#[tokio::test]
 async fn identity_failure_preserves_local_state_and_only_new_open_resolves_again() -> TestResult {
     let resolver = ScriptedResolver::new([Err(RouteResolveFailure::new(
         ErrorCode::Unauthenticated,
@@ -351,6 +383,9 @@ fn assert_terminal_remote_failure(inner: &Inner) {
 
 fn assert_local_state_is_unchanged(inner: &Inner) {
     let snapshot = inner.lock_state().snapshot();
+    assert_eq!(snapshot.sessions, 2);
+    assert_eq!(snapshot.listener_sessions, 1);
+    assert_eq!(snapshot.connector_sessions, 1);
     assert_eq!(snapshot.remote_open_attempts, 0);
     assert_eq!(snapshot.pending_offers, 0);
     assert_eq!(snapshot.live_pipes, 1);

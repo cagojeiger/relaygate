@@ -5,7 +5,7 @@ use relaygate_route_table::{AuthenticatedGatewayId, GatewayId, RequestContext, R
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{Semaphore, mpsc, oneshot},
-    task::{JoinError, JoinSet},
+    task::{JoinError, JoinHandle, JoinSet},
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
 use uuid::Uuid;
@@ -76,6 +76,24 @@ impl RouteTableService {
         listener: TcpListener,
         shutdown: CancellationToken,
     ) -> Result<(), TransportError> {
+        self.serve_with_actor(listener, shutdown, spawn_shard_actor)
+            .await
+    }
+
+    async fn serve_with_actor<F>(
+        self,
+        listener: TcpListener,
+        shutdown: CancellationToken,
+        spawn_actor: F,
+    ) -> Result<(), TransportError>
+    where
+        F: FnOnce(
+                RouteTableShard,
+                mpsc::Receiver<ServiceCommand>,
+                CancellationToken,
+            ) -> JoinHandle<RouteTableShard>
+            + Send,
+    {
         let Self {
             shard,
             trusted_gateway_keys,
@@ -86,11 +104,7 @@ impl RouteTableService {
         let (requests, request_receiver) = mpsc::channel(config.request_queue_capacity);
         let runtime_shutdown = shutdown.child_token();
         let actor_shutdown = runtime_shutdown.child_token();
-        let mut actor = tokio::spawn(run_shard_actor(
-            shard,
-            request_receiver,
-            actor_shutdown.clone(),
-        ));
+        let mut actor = spawn_actor(shard, request_receiver, actor_shutdown.clone());
         let mut actor_completed = false;
         let mut connections = JoinSet::new();
         let mut service_error = None;
@@ -188,6 +202,14 @@ impl RouteTableService {
             Ok(())
         }
     }
+}
+
+fn spawn_shard_actor(
+    shard: RouteTableShard,
+    requests: mpsc::Receiver<ServiceCommand>,
+    shutdown: CancellationToken,
+) -> JoinHandle<RouteTableShard> {
+    tokio::spawn(run_shard_actor(shard, requests, shutdown))
 }
 
 fn unexpected_actor_exit<T>(result: Result<T, JoinError>) -> TransportError {
@@ -773,6 +795,85 @@ mod tests {
         aborted.abort();
         let aborted = aborted.await;
         assert_eq!(unexpected_actor_exit(aborted).code(), ErrorCode::Internal);
+    }
+
+    #[tokio::test]
+    async fn unexpected_actor_exit_terminates_service_and_live_connection()
+    -> Result<(), TransportError> {
+        let directory = ShardDirectory::from_json_bytes(DIRECTORY)?;
+        let shard = RouteTableShard::new(
+            directory,
+            ShardId::new("rt-0")?,
+            RouteTableConfig::new(Duration::from_secs(10))?,
+        )?;
+        let trusted = TrustedGatewayKeys::new([(
+            GatewayName::new("gw-a")?,
+            InternalGatewayKey::new("key-a")?,
+        )])?;
+        let config = RouteTableServiceConfig::new(4, 2, 2, 64 * 1024, Duration::from_secs(1))?;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| TransportError::unavailable(error.to_string()))?;
+        let endpoint = listener
+            .local_addr()
+            .map_err(|error| TransportError::unavailable(error.to_string()))?;
+        let shutdown = CancellationToken::new();
+        let (stop_actor, actor_stopped) = oneshot::channel();
+        let service_task = tokio::spawn(
+            RouteTableService::new(shard, trusted, config).serve_with_actor(
+                listener,
+                shutdown.clone(),
+                move |shard, requests, _actor_shutdown| {
+                    tokio::spawn(async move {
+                        let _requests = requests;
+                        let _ = actor_stopped.await;
+                        shard
+                    })
+                },
+            ),
+        );
+
+        let stream = TcpStream::connect(endpoint)
+            .await
+            .map_err(|error| TransportError::unavailable(error.to_string()))?;
+        let mut framed = Framed::new(stream, FrameCodec::new(64 * 1024));
+        framed
+            .send(WireFrame::Hello {
+                role: GATEWAY_ROLE.to_owned(),
+                gateway_name: "gw-a".to_owned(),
+                gateway_id: Uuid::from_u128(1).to_string(),
+                internal_gateway_key: "key-a".to_owned(),
+            })
+            .await
+            .map_err(map_send_codec_error)?;
+        let welcome = framed
+            .next()
+            .await
+            .ok_or_else(|| TransportError::unavailable("test handshake closed"))?
+            .map_err(map_receive_codec_error)?;
+        assert!(matches!(
+            welcome,
+            WireFrame::Welcome { role } if role == ROUTE_TABLE_ROLE
+        ));
+
+        stop_actor
+            .send(())
+            .map_err(|()| TransportError::internal("test actor trigger dropped"))?;
+        let service_result = tokio::time::timeout(Duration::from_secs(1), service_task)
+            .await
+            .map_err(|_| TransportError::deadline_exceeded("test service shutdown timed out"))?
+            .map_err(|error| TransportError::internal(error.to_string()))?;
+        let service_error = service_result
+            .err()
+            .ok_or_else(|| TransportError::internal("test service exited without INTERNAL"))?;
+        assert_eq!(service_error.code(), ErrorCode::Internal);
+        assert!(!shutdown.is_cancelled());
+
+        let closed = tokio::time::timeout(Duration::from_secs(1), framed.next())
+            .await
+            .map_err(|_| TransportError::deadline_exceeded("test connection close timed out"))?;
+        assert!(matches!(closed, None | Some(Err(_))));
+        Ok(())
     }
 
     #[tokio::test]

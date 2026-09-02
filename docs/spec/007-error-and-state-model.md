@@ -11,7 +11,7 @@
 
 | ID | Code | 의미 | 새 operation 재시도 |
 | --- | --- | --- | --- |
-| `ERR-001` | `INVALID_ARGUMENT` | 식별자, snapshot scope, authority 또는 요청 형식이 유효하지 않음 | 입력 수정 뒤 가능 |
+| `ERR-001` | `INVALID_ARGUMENT` | 식별자, snapshot scope, authority, 요청 형식 또는 runtime timer로 표현할 수 없는 configuration이 유효하지 않음 | 입력 수정 뒤 가능 |
 | `ERR-002` | `UNAUTHENTICATED` | ClientKey 또는 필요한 transport/component identity 검증 실패 | 새 credential 또는 새 deployment configuration 뒤 가능 |
 | `ERR-003` | `PERMISSION_DENIED` | 검증된 주체에 해당 등록 권한이 없음 | 권한 변경 뒤 가능 |
 | `ERR-004` | `NOT_FOUND` | READY RT의 current view에 해당 `ClientId`의 live binding이 없음 | 상태가 바뀐 뒤 가능 |
@@ -21,7 +21,7 @@
 | `ERR-008` | `RESOURCE_EXHAUSTED` | queue, frame, Pipe, stream 또는 connection의 bounded limit 초과 | 부하 감소 뒤 가능 |
 | `ERR-009` | `CANCELLED` | await 중인 SDK control operation이 명시적으로 닫힌 Connector·Listener runtime 또는 Listener handle을 관찰하거나, live operation·Pipe가 terminal cancellation failure를 관찰함. future drop·abort의 내부 취소에는 사용자 반환값이 없음 | caller 결정으로 새 runtime·handle 또는 새 operation 가능 |
 | `ERR-010` | `PROTOCOL_ERROR` | peer가 허용되지 않은 role, ownership 또는 상태 전이의 frame을 보냄 | owner의 Pipe-local 상태 위반은 해당 Pipe만 `RESET`; current Pipe의 non-owner frame과 role 위반은 offending session을 닫은 뒤 새 operation 가능 |
-| `ERR-011` | `INTERNAL` | 위 code로 분류할 수 없는 RelayGate 내부 실패 | backoff 뒤 새 operation으로만 가능 |
+| `ERR-011` | `INTERNAL` | 위 code로 분류할 수 없는 RelayGate 내부 실패. 실패를 operation scope로 격리할 수 있으면 그 operation의 partial state만 terminal 정리하고 sibling state를 유지한다. 안전하게 격리할 수 없으면 enclosing session, runtime 또는 service를 terminal 종료한다. | backoff 뒤 새 operation으로만 가능 |
 | `ERR-012` | `ALREADY_EXISTS` | 같은 Listener SDK runtime에 동일 `ClientId`의 pending `ListenAttempt` 또는 non-`CLOSED` Listener handle이 이미 존재함 | attempt가 terminal로 끝나거나 기존 handle이 `CLOSED`가 된 뒤 가능 |
 
 `ALREADY_REGISTERED`는 오류 code가 아니다. 다른 `ListenerSession`이 같은 `ClientId`를 등록하는 것은 many-to-many model의 정상 동작이고, 하나의 existing Listener handle이 동일 session의 current binding 등록을 반복하는 것은 idempotent operation이다. `ALREADY_EXISTS`는 이들과 달리 한 SDK runtime 안에서 동일 `ClientId`의 pending attempt 또는 handle을 중복 생성한 경우에만 사용한다.

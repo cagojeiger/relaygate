@@ -7,7 +7,7 @@ use std::sync::{Arc, Weak};
 use relaygate_protocol::{PipeId, SessionId, SessionRole};
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
-    time::{Instant, sleep_until, timeout_at},
+    time::{sleep_until, timeout_at},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -100,7 +100,7 @@ impl Connector {
             ));
         }
 
-        let deadline = Instant::now() + self.inner.config.operation_timeout;
+        let deadline = self.inner.config.operation_deadline()?;
         let mut current = self.inner.current.subscribe();
         loop {
             if self.inner.cancel.is_cancelled() {
