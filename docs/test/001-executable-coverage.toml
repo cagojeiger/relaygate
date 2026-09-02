@@ -143,6 +143,12 @@ status = "executable"
 rust = ["pipe::tests::pipe_implements_async_read_and_write_without_changing_frame_semantics", "pipe::tests::owned_halves_can_read_and_write_concurrently", "pipe::tests::async_shutdown_sends_one_fin_and_keeps_the_read_half_alive", "pipe::tests::async_write_waits_for_the_existing_bounded_session_queue", "pipe::tests::async_io_errors_preserve_the_structured_sdk_error_as_their_payload"]
 
 [[case]]
+id = "T-SDK-18"
+status = "executable"
+rust = ["unrepresentable_deadline_configuration_is_rejected_before_connect"]
+reason = "public SDK timeout deadline과 reconnect backoff wake-up timer의 표현 가능성을 공통 validation gate에서 검사하고 Connector와 Listener runtime이 transport 연결 전 INVALID_ARGUMENT/NOT_OBSERVED로 거절하는지 확인한다."
+
+[[case]]
 id = "T-OBS-01"
 status = "executable"
 rust = ["tests::log_format_accepts_text_and_json_only", "config::tests::duration_rejects_zero_milliseconds", "invalid_environment_configuration_fails_before_serving", "server_boots_health_checks_and_exits_on_sigterm"]
@@ -407,8 +413,8 @@ rust = ["peer::transport::liveness::tests::zero_stream_idle_retirement_waits_the
 [[case]]
 id = "T-ERR-01"
 status = "partial"
-rust = ["typed_non_empty_identifiers_reject_empty_values", "invalid_snapshot_is_rejected_before_existing_state_changes", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "routing::tests::projection_rejects_a_binding_from_another_session"]
-reason = "INVALID_ARGUMENT와 atomic non-mutation은 검증하지만 입력 수정 전 retry 금지를 직접 검증하지 않는다."
+rust = ["typed_non_empty_identifiers_reject_empty_values", "invalid_snapshot_is_rejected_before_existing_state_changes", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "routing::tests::projection_rejects_a_binding_from_another_session", "unrepresentable_deadline_configuration_is_rejected_before_connect"]
+reason = "INVALID_ARGUMENT와 atomic non-mutation, SDK runtime 생성 전 timer configuration 거절은 검증하지만 입력 수정 전 retry 금지를 직접 검증하지 않는다."
 
 [[case]]
 id = "T-ERR-02"

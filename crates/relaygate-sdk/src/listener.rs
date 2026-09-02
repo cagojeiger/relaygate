@@ -140,7 +140,7 @@ impl ListenerRuntime {
                 "ClientId and ClientKey must be non-empty and fit the wire limit",
             ));
         }
-        let deadline = Instant::now() + self.inner.config.operation_timeout;
+        let deadline = self.inner.config.operation_deadline()?;
         let (incoming_tx, incoming_rx) = mpsc::channel(self.inner.config.listener_queue_capacity);
         let (status, _) = watch::channel(ListenerStatus::Registering);
         let state = Arc::new(ListenerState {

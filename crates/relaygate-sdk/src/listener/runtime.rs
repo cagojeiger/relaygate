@@ -410,7 +410,14 @@ async fn reconcile_registrations(
             continue;
         }
         let deadline = if state.was_returned() {
-            Instant::now() + inner.config.operation_timeout
+            match inner.config.operation_deadline() {
+                Ok(deadline) => deadline,
+                Err(error) => {
+                    state.block(error);
+                    state.drain_unaccepted(true).await;
+                    continue;
+                }
+            }
         } else {
             state.initial_deadline
         };

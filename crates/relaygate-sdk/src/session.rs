@@ -156,11 +156,14 @@ impl SessionHeartbeat {
     }
 
     pub(crate) fn next_deadline(&self) -> Instant {
-        self.pending
-            .as_ref()
-            .map_or(self.last_inbound + self.idle_timeout, |pending| {
-                pending.deadline
-            })
+        self.pending.as_ref().map_or_else(
+            || {
+                self.last_inbound
+                    .checked_add(self.idle_timeout)
+                    .unwrap_or(self.last_inbound)
+            },
+            |pending| pending.deadline,
+        )
     }
 
     pub(crate) fn on_deadline(&mut self) -> Option<Frame> {
@@ -174,16 +177,15 @@ impl SessionHeartbeat {
         }
         let nonce = self.next_nonce;
         self.next_nonce = self.next_nonce.wrapping_add(1).max(1);
-        self.pending = Some(PendingHeartbeat {
-            nonce,
-            deadline: now + self.response_timeout,
-        });
+        let deadline = now.checked_add(self.response_timeout)?;
+        self.pending = Some(PendingHeartbeat { nonce, deadline });
         Some(Frame::Ping { nonce })
     }
 
     pub(crate) fn mark_probe_committed(&mut self) {
         if let Some(pending) = self.pending.as_mut() {
-            pending.deadline = Instant::now() + self.response_timeout;
+            let now = Instant::now();
+            pending.deadline = now.checked_add(self.response_timeout).unwrap_or(now);
         }
     }
 }

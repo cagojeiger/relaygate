@@ -49,6 +49,7 @@ test 목록과 대조한다.
 | `T-SDK-15` | `SDK-026` | SDK-Gateway session을 idle 상태로 둔 뒤 valid inbound activity는 `PING` 전송 전 timer를 연장할 수 있고, `PING` commit 뒤에는 response deadline 전 matching `PONG`만 probe를 만족하는지 확인한다. 송신 부하 아래의 timely matching `PONG`은 수신되고, nonce가 다르거나 deadline 이후인 `PONG`은 무시해야 한다. timeout이면 current session 전체가 transport-loss cleanup과 managed reconnect로 수렴한다. 단순 Pipe read idle은 session failure가 아니며 commit된 open, Pipe와 payload는 replay하지 않는다. |
 | `T-SDK-16` | `SDK-027` | 기존 반환 Listener A·B와 최초 ListenAttempt C가 한 session에 있을 때 C의 commit된 REGISTER terminal 응답을 blackhole 처리한다. current ListenerSession 전체와 기존 Pipe가 종료되고 C는 한 번만 terminal 실패하며 reservation이 제거된다. 새 session에는 A·B만 새 request identity로 재등록되고 C나 old request는 replay되지 않는다. 별도로 최초 attempt의 명시적 transient `REGISTER_FAILED`는 terminal인 반면 A·B recovery registration의 transient 실패는 bounded backoff 뒤 새 request로 복구되는지 확인한다. TCP 연결 성공만으로 backoff를 초기화하지 않고 A·B recovery 성공 뒤 초기화한다. |
 | `T-SDK-17` | `SDK-028` | `Pipe`의 Tokio I/O trait와 consuming owned split을 public API로 사용한다. read/write half를 서로 다른 task에서 동시에 구동해 byte ordering과 half-close를 확인하고, outbound full 상태의 write가 capacity 또는 terminal failure에 깨어나는지 검증한다. half 하나의 drop은 frame을 만들지 않고 마지막 public owner drop만 cleanup을 한 번 발생시키며, `AsyncWrite::shutdown`은 `FIN`, shutdown 뒤 write는 오류이고 Tokio I/O 오류의 downcast 가능한 inner error에는 원래 RelayGate `Error`의 code와 observation이 남는다. |
+| `T-SDK-18` | `SDK-029` | deadline 또는 backoff wake-up timer로 표현할 수 없는 SDK configuration을 Connector와 Listener runtime 생성에 주입한다. transport 연결이나 background state 없이 `INVALID_ARGUMENT`, `NOT_OBSERVED`로 끝나고 panic하지 않아야 한다. |
 
 ## 관측성
 
@@ -122,7 +123,7 @@ test 목록과 대조한다.
 
 | Test ID | Requirement | 시나리오와 기대 결과 |
 | --- | --- | --- |
-| `T-ERR-01` | `ERR-001` | malformed identifier, mixed shard snapshot과 잘못된 scope는 `INVALID_ARGUMENT`이며 입력 수정 전 재시도하지 않는다. |
+| `T-ERR-01` | `ERR-001` | malformed identifier, mixed shard snapshot, 잘못된 scope와 runtime timer로 표현할 수 없는 SDK configuration은 `INVALID_ARGUMENT`이며 입력 수정 전 재시도하지 않는다. |
 | `T-ERR-02` | `ERR-002`, `ERR-003` | ClientKey 및 component transport identity 검증 실패와 인증된 주체의 권한 부재를 구분하고 새 credential·deployment configuration 전에는 같은 결과를 유지한다. |
 | `T-ERR-03` | `ERR-004`, `ERR-005`, `ERR-006` | READY-empty, generation mismatch·stale lease/revision, 정상 종료된 Pipe 또는 shutdown된 write direction에 대한 write와 unavailable dependency를 `NOT_FOUND`, `FAILED_PRECONDITION`, `UNAVAILABLE`로 구분한다. |
 | `T-ERR-04` | `ERR-007`, `ERR-008`, `ERR-009` | 끝까지 await한 deadline, resource limit과 닫힌 Connector·Listener runtime 또는 Listener handle의 control operation은 각각 안정적인 code를 반환한다. future drop·abort에는 SDK 반환값이 없으며 내부 attempt를 정확히 한 번 정리하고, committed open은 `CANCEL` 한 번 또는 해당 session cleanup으로 수렴한다. live Listener owner가 유지된 accept 취소는 sibling·queue를 보존하고 어떤 늦은 응답도 state를 되살리지 않는다. |

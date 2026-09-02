@@ -11,7 +11,7 @@
 
 | ID | Code | 의미 | 새 operation 재시도 |
 | --- | --- | --- | --- |
-| `ERR-001` | `INVALID_ARGUMENT` | 식별자, snapshot scope, authority 또는 요청 형식이 유효하지 않음 | 입력 수정 뒤 가능 |
+| `ERR-001` | `INVALID_ARGUMENT` | 식별자, snapshot scope, authority, 요청 형식 또는 runtime timer로 표현할 수 없는 configuration이 유효하지 않음 | 입력 수정 뒤 가능 |
 | `ERR-002` | `UNAUTHENTICATED` | ClientKey 또는 필요한 transport/component identity 검증 실패 | 새 credential 또는 새 deployment configuration 뒤 가능 |
 | `ERR-003` | `PERMISSION_DENIED` | 검증된 주체에 해당 등록 권한이 없음 | 권한 변경 뒤 가능 |
 | `ERR-004` | `NOT_FOUND` | READY RT의 current view에 해당 `ClientId`의 live binding이 없음 | 상태가 바뀐 뒤 가능 |

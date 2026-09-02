@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use relaygate_protocol::DEFAULT_MAX_FRAME_LEN;
+use tokio::time::Instant;
 
 use crate::{Error, ErrorCode, PeerObservation, Result};
 
@@ -123,6 +124,20 @@ impl Config {
                 "timeouts and reconnect backoff must be positive and ordered",
             ));
         }
+        for (name, duration) in [
+            ("connect_timeout", self.connect_timeout),
+            ("operation_timeout", self.operation_timeout),
+            ("heartbeat_idle_interval", self.heartbeat_idle_interval),
+            (
+                "heartbeat_response_timeout",
+                self.heartbeat_response_timeout,
+            ),
+            ("reconnect_initial", self.reconnect_initial),
+            ("reconnect_maximum", self.reconnect_maximum),
+            ("offer_timeout", self.offer_timeout),
+        ] {
+            deadline_from_now(name, duration)?;
+        }
         if self.outbound_capacity == 0
             || self.listener_queue_capacity == 0
             || self.pipe_inbound_capacity == 0
@@ -136,4 +151,18 @@ impl Config {
         }
         Ok(())
     }
+
+    pub(crate) fn operation_deadline(&self) -> Result<Instant> {
+        deadline_from_now("operation_timeout", self.operation_timeout)
+    }
+}
+
+fn deadline_from_now(name: &str, duration: Duration) -> Result<Instant> {
+    Instant::now().checked_add(duration).ok_or_else(|| {
+        Error::new(
+            ErrorCode::InvalidArgument,
+            PeerObservation::NotObserved,
+            format!("{name} is too large to form a monotonic deadline"),
+        )
+    })
 }
