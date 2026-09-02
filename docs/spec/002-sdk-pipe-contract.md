@@ -126,7 +126,7 @@ queue와 buffer 크기, flow-control protocol과 scheduling은 별도 SPEC 또�
 끝까지 await한 `open`, `listen` 또는 `accept`는 성공이나 오류 하나만 반환한다. Rust future를 drop 또는 abort하면 해당 호출에는 SDK 반환값이 없지만 내부 attempt는 terminal로 정확히 한 번 정리되어야 한다.
 
 - `open` future가 drop 또는 abort되면 commit 전 attempt를 제거하거나 commit 뒤 `CANCEL`을 한 번 보내며, 늦은 성공 응답이 Pipe를 반환하거나 state를 되살려서는 안 된다.
-- `listen` future가 drop 또는 abort되면 reservation을 제거한다. `REGISTER`가 이미 commit되어 결과가 불확실하면 current `ListenerSession`을 종료하며, 같은 attempt를 새 session에서 재등록하지 않는다.
+- `listen` future가 drop 또는 abort되면 reservation을 제거한다. `REGISTER`가 이미 commit되어 결과가 불확실하면 current `ListenerSession`을 종료하며, `REGISTERED`를 처리했지만 Listener handle을 아직 반환하지 않았다면 알려진 binding을 같은 session에서 `UNREGISTER`한다. 어느 경우에도 같은 attempt를 새 session에서 재등록하지 않는다.
 - live `Listener` owner를 유지한 채 `accept` future만 drop 또는 abort하면 해당 waiter만 제거하고 Listener registration, sibling Listener handle, 다른 waiter와 queued Pipe는 유지한다. abort한 task가 마지막 owner도 함께 drop하면 Listener close 계약을 따른다.
 - `open`이 이미 Pipe를 반환했다면 과거 호출을 취소하는 대신 반환된 Pipe를 닫아야 한다.
 - 명시적으로 닫힌 runtime 또는 Listener에서 새로 await한 operation은 `CANCELLED`를 반환한다.
@@ -146,7 +146,7 @@ SDK가 자동 복구 안 함 = 기존 Pipe + commit된 OPEN + payload
 - 이미 반환된 `Listener` handle들은 일시적인 Gateway 단절 동안 각자의 desired `ClientId`를 유지한다. SDK runtime은 returned live Listener set을 복구 source of truth로 삼고 shared session을 다시 만든 뒤 그 handle들의 registration을 전부 다시 등록한다. pending `ListenAttempt`를 이 복구 집합에 포함하거나 과거 wire command를 replay해서는 안 된다.
 - 한 live `ListenerSession`에 commit된 `REGISTER`가 configured response deadline까지 terminal 응답을 받지 못하면 SDK는 그 session을 종료한다. 해당 request를 시작한 pending `ListenAttempt`는 terminal 실패하며 새 session으로 이동하지 않는다. 이미 반환된 Listener만 새 `ListenerSessionId`와 새 request identity로 다시 선언한다.
 - 반복되는 session failure와 `REGISTER` response timeout은 bounded reconnect backoff를 따라야 한다. TCP session을 만들었다는 이유만으로 failure streak을 즉시 초기화하지 않고, current desired registration의 terminal 성공을 관찰한 뒤 정상 수렴으로 취급한다.
-- 최초 `listen(ClientId, ClientKey)` 호출은 `REGISTER`가 live session의 bounded outbound path에 commit되기 전까지만 자신의 deadline 안에서 session 준비를 기다릴 수 있다. commit 뒤 명시적 등록 실패, response deadline, session 상실 또는 future drop·abort에 따른 내부 취소는 attempt를 terminal로 끝내고 reservation을 제거한다. drop 또는 abort된 호출에는 SDK 오류를 반환하지 않는다. 같은 호출을 새 session에서 자동 재등록하지 않으며 애플리케이션이 새 `listen`을 시작할지 결정한다.
+- 최초 `listen(ClientId, ClientKey)` 호출은 `REGISTER`가 live session의 bounded outbound path에 commit되기 전까지만 자신의 deadline 안에서 session 준비를 기다릴 수 있다. commit 뒤 명시적 등록 실패, response deadline, session 상실 또는 future drop·abort에 따른 내부 취소는 attempt를 terminal로 끝내고 reservation을 제거한다. 결과가 불확실한 committed request는 session 종료로, 이미 `REGISTERED`를 처리한 binding은 같은 session의 `UNREGISTER`로 정리한다. drop 또는 abort된 호출에는 SDK 오류를 반환하지 않는다. 같은 호출을 새 session에서 자동 재등록하지 않으며 애플리케이션이 새 `listen`을 시작할지 결정한다.
 - 이미 반환된 Listener의 recovery registration이 transient 실패하면 SDK는 bounded backoff 뒤 새 request identity로 다시 선언할 수 있다. recovery `REGISTER`의 credential·permission terminal 거절은 해당 Listener를 `BLOCKED`로 만들고 자동 재등록하지 않는다.
 - Gateway의 `ClientKey` map은 process 시작 시 고정되며 runtime revocation event는 없다. replacement Gateway가 recovery `REGISTER`의 저장된 key를 거절하면 영향받은 Listener handle만 `BLOCKED`에 머문다. 애플리케이션은 그 handle을 닫고 새 key로 새 `listen(ClientId, ClientKey)` operation을 시작해야 한다.
 - `BLOCKED` handle은 current binding을 갖지 않고 신규 Pipe를 받지 않는다. 전환 전에 종료된 session에서 남은 미수락 Pipe를 모두 제거하고 pending·후속 `accept`에 저장된 등록 오류를 반환한다. sibling Listener handle과 shared session은 유지한다.

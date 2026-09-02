@@ -15,11 +15,11 @@
 | `ERR-002` | `UNAUTHENTICATED` | ClientKey 또는 필요한 transport/component identity 검증 실패 | 새 credential 또는 새 deployment configuration 뒤 가능 |
 | `ERR-003` | `PERMISSION_DENIED` | 검증된 주체에 해당 등록 권한이 없음 | 권한 변경 뒤 가능 |
 | `ERR-004` | `NOT_FOUND` | READY RT의 current view에 해당 `ClientId`의 live binding이 없음 | 상태가 바뀐 뒤 가능 |
-| `ERR-005` | `FAILED_PRECONDITION` | `ShardDirectoryGeneration` mismatch, stale `BindingId`·`LeaseId`·registration revision 또는 닫힌 object 등 현재 상태가 operation을 허용하지 않음 | compatible configuration 또는 current state로 다시 시작한 뒤 가능 |
+| `ERR-005` | `FAILED_PRECONDITION` | `ShardDirectoryGeneration` mismatch, stale `BindingId`·`LeaseId`·registration revision, 정상 종료된 Pipe 또는 shutdown된 write direction에 대한 write처럼 현재 상태가 operation을 허용하지 않음 | compatible configuration 또는 current state로 다시 시작한 뒤 가능 |
 | `ERR-006` | `UNAVAILABLE` | RT shard, Gateway, peer path 또는 Resolve 뒤 선택한 ListenerSession을 현재 사용할 수 없음 | backoff 뒤 가능 |
 | `ERR-007` | `DEADLINE_EXCEEDED` | operation이 configured deadline 안에 terminal 결과를 내지 못함 | 새 operation으로 가능 |
 | `ERR-008` | `RESOURCE_EXHAUSTED` | queue, frame, Pipe, stream 또는 connection의 bounded limit 초과 | 부하 감소 뒤 가능 |
-| `ERR-009` | `CANCELLED` | await 중인 operation이 명시적으로 닫힌 runtime·object 또는 terminal cancellation을 관찰함. future drop·abort의 내부 취소에는 사용자 반환값이 없음 | caller 결정으로 새 object 또는 새 operation 가능 |
+| `ERR-009` | `CANCELLED` | await 중인 SDK control operation이 명시적으로 닫힌 Connector·Listener runtime 또는 Listener handle을 관찰하거나, live operation·Pipe가 terminal cancellation failure를 관찰함. future drop·abort의 내부 취소에는 사용자 반환값이 없음 | caller 결정으로 새 runtime·handle 또는 새 operation 가능 |
 | `ERR-010` | `PROTOCOL_ERROR` | peer가 허용되지 않은 role, ownership 또는 상태 전이의 frame을 보냄 | owner의 Pipe-local 상태 위반은 해당 Pipe만 `RESET`; current Pipe의 non-owner frame과 role 위반은 offending session을 닫은 뒤 새 operation 가능 |
 | `ERR-011` | `INTERNAL` | 위 code로 분류할 수 없는 RelayGate 내부 실패 | backoff 뒤 새 operation으로만 가능 |
 | `ERR-012` | `ALREADY_EXISTS` | 같은 Listener SDK runtime에 동일 `ClientId`의 pending `ListenAttempt` 또는 non-`CLOSED` Listener handle이 이미 존재함 | attempt가 terminal로 끝나거나 기존 handle이 `CLOSED`가 된 뒤 가능 |
@@ -130,10 +130,12 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | `STATE-CS-002` | ConnectorSession | `LIVE` | transport loss, explicit close, bounded outbound write failure 또는 commit된 OPEN terminal-response deadline | `CLOSED` | terminal, 소유 attempt와 Pipe 정리. current remote RelayStream마다 `RESET(CANCELLED)`을 commit하고 commit 불가 transport는 닫음 |
 | `STATE-LA-001` | ListenAttempt | `ABSENT` | 같은 runtime에 동일 ClientId reservation/handle 없음 | `PENDING` | ClientId reservation 생성, live session의 bounded outbound path 대기 가능 |
 | `STATE-LA-002` | ListenAttempt | `PENDING` | `REGISTER`가 current ListenerSession에 commit | `COMMITTED` | 같은 attempt를 다른 session으로 이동하거나 replay하지 않음 |
-| `STATE-LA-003` | ListenAttempt | `COMMITTED` | ClientKey 승인과 local binding 설치 확인 | `SUCCEEDED` | terminal, reservation을 returned Listener handle로 승계 |
+| `STATE-LA-003` | ListenAttempt | `COMMITTED` | `REGISTERED`, ClientKey 승인과 local binding 설치 확인 | `REGISTERED` | non-terminal, binding은 `ACTIVE`지만 public Listener handle은 아직 없고 reservation은 ListenAttempt에 남음 |
 | `STATE-LA-004` | ListenAttempt | `PENDING` | commit 전 deadline, future drop·abort 또는 runtime close | `FAILED` | terminal, reservation과 내부 state 제거. future drop·abort이면 사용자 반환값 없음 |
 | `STATE-LA-005` | ListenAttempt | `COMMITTED` | 등록 거절, response deadline, session 상실 또는 future drop·abort | `FAILED` | terminal, reservation 제거, 자동 재등록 금지; response deadline이나 미확정 내부 취소는 current ListenerSession 종료. future drop·abort이면 사용자 반환값 없음 |
 | `STATE-LA-006` | ListenAttempt | `ABSENT` | 같은 runtime에 동일 ClientId reservation/handle 존재 | `FAILED` | `ALREADY_EXISTS`, object·registration·queue 생성 없음 |
+| `STATE-LA-007` | ListenAttempt | `REGISTERED` | `listen` future가 `ACTIVE`를 확인하고 Listener handle을 반환 | `SUCCEEDED` | terminal, reservation을 returned Listener handle로 승계 |
+| `STATE-LA-008` | ListenAttempt | `REGISTERED` | Listener handle 반환 전 future drop·abort, runtime close 또는 session 상실 | `FAILED` | terminal, reservation 제거와 자동 재등록 금지. live session이면 known binding을 `UNREGISTER`, session 상실이면 transport cleanup; future drop·abort이면 사용자 반환값 없음 |
 | `STATE-LH-001` | returned Listener handle | `ABSENT` | ListenAttempt 성공과 handle 반환 | `ACTIVE` | local incoming Pipe 수신 가능, RT registration은 별도 상태 |
 | `STATE-LH-002` | returned Listener handle | `ACTIVE` | SDK session 상실 | `SUSPENDED` | local binding이 있으면 제거, 신규 incoming 중단, accepted Pipe 실패와 old session의 미수락 queue 제거; RT registration 실패만으로는 전이하지 않음 |
 | `STATE-LH-003` | returned Listener handle | `SUSPENDED` | 새 SDK session READY 또는 retry backoff 종료 | `REGISTERING` | 새 request identity로 recovery registration 선언 |
