@@ -6,7 +6,7 @@ use relaygate_route_table::{
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
-    GatewayName, InternalGatewayKey, RouteTableClientConfig, RouteTableService,
+    ErrorCode, GatewayName, InternalGatewayKey, RouteTableClientConfig, RouteTableService,
     RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
 };
 use tokio::{net::TcpListener, sync::watch};
@@ -14,7 +14,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{TestResult, update_gate_proxy::UpdateGateProxy};
-use crate::{registry::Binding, routing::GatewayRoutingConfig};
+use crate::{
+    registry::Binding,
+    routing::{GatewayRoutingConfig, RoutingError},
+};
 
 use super::super::{ClientAvailability, ClientFailure, RoutingHandle, RoutingRuntime};
 
@@ -80,22 +83,41 @@ async fn stale_epoch_case() -> TestResult {
     let first_epoch = ready_epoch(&availability).ok_or("first worker epoch is not ready")?;
     assert_eq!(first_epoch, 1);
 
+    let client_id = ClientId::new("client-a")?;
+    let first_keep_alive_count = proxy.keep_alive_count();
+    proxy.disconnect_next_resolve();
+    let failed_resolve = handle.resolve(client_id.clone()).await;
+    assert!(matches!(
+        failed_resolve,
+        Err(RoutingError::Transport(ref error)) if error.code() == ErrorCode::Unavailable
+    ));
+    wait_for_counts(&handle, 0, 1).await?;
+    let second_epoch = wait_for_new_epoch(&mut availability, first_epoch).await?;
+    assert_eq!(second_epoch, first_epoch + 1);
+    proxy
+        .wait_for_keep_alive_after(first_keep_alive_count)
+        .await?;
+    wait_for_counts(&handle, 1, 0).await?;
+
     proxy.arm();
     handle.publish_session(session_id, vec![binding(session_id, 302)])?;
     proxy.wait_until_update_blocked().await?;
 
     failure.send_replace(Some(ClientFailure {
-        epoch: first_epoch,
+        epoch: second_epoch,
         error: TransportError::from(RouteTableError::DeadlineOverflow),
     }));
     wait_for_counts(&handle, 0, 1).await?;
-    let second_epoch = wait_for_new_epoch(&mut availability, first_epoch).await?;
-    assert_eq!(second_epoch, first_epoch + 1);
+    let third_epoch = wait_for_new_epoch(&mut availability, second_epoch).await?;
+    assert_eq!(third_epoch, second_epoch + 1);
 
+    let second_keep_alive_count = proxy.keep_alive_count();
     proxy.release();
-    proxy.wait_until_post_release_keep_alive().await?;
+    proxy
+        .wait_for_keep_alive_after(second_keep_alive_count)
+        .await?;
     wait_for_counts(&handle, 1, 0).await?;
-    let resolved = handle.resolve(ClientId::new("client-a")?).await?;
+    let resolved = handle.resolve(client_id).await?;
     assert_eq!(resolved.len(), 1);
     assert_eq!(
         resolved.entries()[0].identity().binding_id(),

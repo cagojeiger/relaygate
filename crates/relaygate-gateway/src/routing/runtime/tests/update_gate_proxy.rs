@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -23,6 +23,7 @@ const HEADER_LEN: usize = 7;
 const MAX_FRAME_LEN: usize = 256 * 1024;
 const UPDATE_OPERATION: &[u8] = br#""operation":"UPDATE""#;
 const KEEP_ALIVE_OPERATION: &[u8] = br#""operation":"KEEP_ALIVE""#;
+const RESOLVE_OPERATION: &[u8] = br#""operation":"RESOLVE""#;
 
 pub(super) struct UpdateGateProxy {
     endpoint: SocketAddr,
@@ -38,8 +39,9 @@ struct UpdateGate {
     released: Arc<AtomicBool>,
     blocked_notify: Arc<Notify>,
     release_notify: Arc<Notify>,
-    post_release_keep_alive: Arc<AtomicBool>,
-    post_release_keep_alive_notify: Arc<Notify>,
+    resolve_disconnect_armed: Arc<AtomicBool>,
+    keep_alive_count: Arc<AtomicUsize>,
+    keep_alive_notify: Arc<Notify>,
 }
 
 impl UpdateGateProxy {
@@ -69,9 +71,6 @@ impl UpdateGateProxy {
     pub(super) fn arm(&self) {
         self.gate.blocked.store(false, Ordering::Release);
         self.gate.released.store(false, Ordering::Release);
-        self.gate
-            .post_release_keep_alive
-            .store(false, Ordering::Release);
         self.gate.armed.store(true, Ordering::Release);
     }
 
@@ -96,19 +95,29 @@ impl UpdateGateProxy {
         self.gate.release_notify.notify_waiters();
     }
 
-    pub(super) async fn wait_until_post_release_keep_alive(&self) -> TestResult {
+    pub(super) fn disconnect_next_resolve(&self) {
+        self.gate
+            .resolve_disconnect_armed
+            .store(true, Ordering::Release);
+    }
+
+    pub(super) fn keep_alive_count(&self) -> usize {
+        self.gate.keep_alive_count.load(Ordering::Acquire)
+    }
+
+    pub(super) async fn wait_for_keep_alive_after(&self, previous: usize) -> TestResult {
         timeout(Duration::from_secs(1), async {
-            while !self.gate.post_release_keep_alive.load(Ordering::Acquire) {
-                let notified = self.gate.post_release_keep_alive_notify.notified();
+            while self.keep_alive_count() <= previous {
+                let notified = self.gate.keep_alive_notify.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
-                if !self.gate.post_release_keep_alive.load(Ordering::Acquire) {
+                if self.keep_alive_count() <= previous {
                     notified.await;
                 }
             }
         })
         .await
-        .map_err(|_| "current epoch did not validate its lease after the old UPDATE completed")?;
+        .map_err(|_| "current epoch did not validate its lease after connection recovery")?;
         Ok(())
     }
 
@@ -178,11 +187,19 @@ async fn forward_connection(
                 let Some(frame) = frame? else {
                     return Ok(());
                 };
-                if gate.released.load(Ordering::Acquire)
-                    && frame_contains(&frame, KEEP_ALIVE_OPERATION)
+                if frame_contains(&frame, RESOLVE_OPERATION)
+                    && gate.resolve_disconnect_armed.compare_exchange(
+                        true,
+                        false,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ).is_ok()
                 {
-                    gate.post_release_keep_alive.store(true, Ordering::Release);
-                    gate.post_release_keep_alive_notify.notify_waiters();
+                    return Ok(());
+                }
+                if frame_contains(&frame, KEEP_ALIVE_OPERATION) {
+                    gate.keep_alive_count.fetch_add(1, Ordering::AcqRel);
+                    gate.keep_alive_notify.notify_waiters();
                 }
                 if frame_contains(&frame, UPDATE_OPERATION)
                     && gate.armed.compare_exchange(
