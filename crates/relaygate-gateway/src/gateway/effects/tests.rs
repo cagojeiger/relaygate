@@ -33,6 +33,7 @@ use crate::gateway::{
 type ResolveResult = Result<BindingSet, RouteResolveFailure>;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+mod observation;
 mod peer_cleanup;
 mod peer_liveness;
 
