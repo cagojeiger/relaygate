@@ -412,9 +412,9 @@ rust = ["peer::transport::liveness::tests::zero_stream_idle_retirement_waits_the
 
 [[case]]
 id = "T-ERR-01"
-status = "partial"
-rust = ["typed_non_empty_identifiers_reject_empty_values", "invalid_snapshot_is_rejected_before_existing_state_changes", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "routing::tests::projection_rejects_a_binding_from_another_session", "unrepresentable_deadline_configuration_is_rejected_before_connect"]
-reason = "INVALID_ARGUMENT와 atomic non-mutation, SDK runtime 생성 전 timer configuration 거절은 검증하지만 입력 수정 전 retry 금지를 직접 검증하지 않는다."
+status = "executable"
+rust = ["typed_non_empty_identifiers_reject_empty_values", "invalid_snapshot_is_rejected_before_existing_state_changes", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "routing::tests::projection_rejects_a_binding_from_another_session", "unrepresentable_deadline_configuration_is_rejected_before_connect", "error::tests::retryable_requires_a_transient_not_observed_failure"]
+reason = "malformed identifier, invalid snapshot·scope·authority와 runtime timer로 표현할 수 없는 SDK configuration을 INVALID_ARGUMENT로 거절하고 state나 runtime을 만들지 않음을 검증한다. SDK retry hint도 INVALID_ARGUMENT에는 false이므로 application이 입력을 고쳐 새 operation을 시작하기 전 내부 재시도를 지시하지 않는다."
 
 [[case]]
 id = "T-ERR-02"
