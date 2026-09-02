@@ -1,3 +1,5 @@
+use std::{future::Future, task::Poll};
+
 use bytes::Bytes;
 use relaygate_protocol::{Frame, PipeId, SessionId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -5,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
 use super::PipeState;
-use crate::{Error, ErrorCode, session::session_outbound_channel};
+use crate::{Error, ErrorCode, PeerObservation, session::session_outbound_channel};
 
 #[tokio::test]
 async fn dropped_pipe_uses_the_current_pipe_terminal_lane() -> Result<(), Box<dyn std::error::Error>>
@@ -258,6 +260,53 @@ async fn fin_racing_after_empty_poll_does_not_discard_accepted_data()
 
     let mut payload = [0_u8; 19];
     pipe.read_exact(&mut payload).await?;
+    assert_eq!(&payload, b"accepted-before-fin");
+    assert_eq!(pipe.read(&mut payload).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_fin_final_drain_does_not_treat_cooperative_pending_as_eof()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 26);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+    let state_for_race = state.clone();
+    pipe.reader.after_inbound_pending = Some(Box::new(move || {
+        assert!(
+            state_for_race
+                .push_data(Bytes::from_static(b"accepted-before-fin"))
+                .is_ok(),
+            "DATA before FIN must fit the inbound queue"
+        );
+        state_for_race.remote_fin();
+    }));
+
+    let mut payload = [0_u8; 19];
+    let count = std::future::poll_fn(|context| {
+        for _ in 0..4096 {
+            let mut consume = Box::pin(tokio::task::coop::consume_budget());
+            if consume.as_mut().poll(context).is_pending() {
+                return match pipe.reader.poll_read(&state, context, &mut payload) {
+                    Poll::Ready(result) => Poll::Ready(result),
+                    Poll::Pending => Poll::Ready(Err(Error::new(
+                        ErrorCode::Internal,
+                        PeerObservation::NotObserved,
+                        "remote FIN final drain depends on cooperative budget",
+                    ))),
+                };
+            }
+        }
+        Poll::Ready(Err(Error::new(
+            ErrorCode::Internal,
+            PeerObservation::NotObserved,
+            "Tokio cooperative budget was not exhausted",
+        )))
+    })
+    .await?;
+
+    assert_eq!(count, payload.len());
     assert_eq!(&payload, b"accepted-before-fin");
     assert_eq!(pipe.read(&mut payload).await?, 0);
     Ok(())
