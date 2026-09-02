@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
 use super::PipeState;
-use crate::{Error, ErrorCode, session::session_outbound_channel};
+use crate::{Error, ErrorCode, PeerObservation, session::session_outbound_channel};
 
 #[tokio::test]
 async fn dropped_pipe_uses_the_current_pipe_terminal_lane() -> Result<(), Box<dyn std::error::Error>>
@@ -290,13 +290,19 @@ async fn remote_fin_final_drain_does_not_treat_cooperative_pending_as_eof()
             if consume.as_mut().poll(context).is_pending() {
                 return match pipe.reader.poll_read(&state, context, &mut payload) {
                     Poll::Ready(result) => Poll::Ready(result),
-                    Poll::Pending => {
-                        panic!("remote FIN final drain must not depend on cooperative budget")
-                    }
+                    Poll::Pending => Poll::Ready(Err(Error::new(
+                        ErrorCode::Internal,
+                        PeerObservation::NotObserved,
+                        "remote FIN final drain depends on cooperative budget",
+                    ))),
                 };
             }
         }
-        panic!("Tokio cooperative budget was not exhausted")
+        Poll::Ready(Err(Error::new(
+            ErrorCode::Internal,
+            PeerObservation::NotObserved,
+            "Tokio cooperative budget was not exhausted",
+        )))
     })
     .await?;
 
