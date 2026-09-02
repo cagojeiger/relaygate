@@ -55,7 +55,7 @@ fn captured_dispatch() -> (Arc<Mutex<Vec<u8>>>, tracing::Dispatch) {
         .json()
         .without_time()
         .with_target(false)
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(tracing::Level::TRACE)
         .with_writer(move || CapturedWriter {
             output: Arc::clone(&writer_output),
         })
