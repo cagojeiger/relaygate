@@ -61,6 +61,13 @@ test 목록과 대조한다.
 | `T-OBS-04` | `OBS-007`, `OBS-008` | library만 포함해도 전역 subscriber나 listener가 생기지 않는다. server의 기본 설정은 snapshot event를 만들지 않고, 명시적으로 활성화하면 JSON current-state event를 남기되 Gateway protocol port 외 새 port를 열지 않는다. |
 | `T-OBS-05` | `OBS-009` | SDK-Gateway heartbeat timeout, active PeerTransport heartbeat timeout과 zero-stream PeerTransport idle retirement event가 transport lifecycle로만 기록되고 payload bytes, application data와 delivery acknowledgement를 기록하지 않는지 확인한다. |
 
+## 운영 health
+
+| Test ID | Requirement | 시나리오와 기대 결과 |
+| --- | --- | --- |
+| `T-HEALTH-01` | `STATE-PROC-001`, `STATE-PROC-002`, `STATE-ADMIT-001`, `STATE-ADMIT-002`, `OBS-010`, `OBS-012` | 실행 중 process에서 `check`가 TCP `HELLO -> WELCOME` 성공만 확인하고 지속 binding·open·Pipe state를 남기지 않는다. SDK session capacity 소진 시 `check`는 실패하지만 process는 계속 실행되고 capacity 회수 뒤 다시 성공한다. 격리 불가능한 critical runtime 실패는 serve와 process 종료로 수렴하며 readiness와 liveness를 같은 신호로 해석하지 않는다. |
+| `T-HEALTH-02` | `STATE-RTDEP-001`, `STATE-RTDEP-002`, `STATE-RTDEP-003`, `STATE-RTDEP-004`, `OBS-011`, `OBS-012` | local-only snapshot은 `DISABLED`다. desired registration이 0개여도 모든 configured shard client가 available하면 `READY`다. distributed Gateway는 RT 단절·restart 또는 `UNSYNCED` registration에서 `DEGRADED`, generation·identity·authorization terminal failure에서 `TERMINAL`을 관찰한다. 한 terminal shard가 summary를 올려도 unaffected shard operation은 가능하다. RT 저하 중에도 process와 SDK admission, local binding과 established Pipe를 유지하고 transient 복구 뒤 `READY`로 돌아간다. |
+
 ## Gateway 등록과 route registration
 
 | Test ID | Requirement | 시나리오와 기대 결과 |

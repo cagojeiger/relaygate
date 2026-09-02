@@ -117,10 +117,45 @@ Gateway pair
 
 Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 logical 대상이 다시 필요하면 새 `BindingId`, `LeaseId`, `ConnectorSessionId`, `ConnectionId`, `PeerTransportId` 또는 transport-local `StreamId` identity를 만든다. RT에서도 `Deregister`, expiry 또는 restart로 종료된 lease의 operation은 registration이나 mapping을 다시 만들지 않는다.
 
+## 운영 health 상태
+
+운영 health는 하나의 종합 상태가 아니라 서로 독립적인 세 축이다.
+
+| 상태 | 값 | 판정 범위 |
+| --- | --- | --- |
+| `ProcessLiveness` | `LIVE`, `NOT_LIVE` | process와 격리할 수 없는 critical runtime이 진행 가능한가 |
+| `SdkAdmissionReadiness` | `READY`, `NOT_READY` | 새 SDK connection이 `HELLO -> WELCOME`을 완료할 수 있는가 |
+| `RouteDependencyHealth` | `DISABLED`, `READY`, `DEGRADED`, `TERMINAL` | remote registration과 Resolve에 필요한 RT 의존성의 current 상태 |
+
+`RouteDependencyHealth`는 다음 우선순위로 계산한다.
+
+```text
+local-only mode                                      -> DISABLED
+configured shard 중 terminal failure가 하나라도 있음 -> TERMINAL
+unavailable shard 또는 UNSYNCED desired registration  -> DEGRADED
+나머지 distributed state                             -> READY
+```
+
+`READY`는 존재하는 current desired registration이 모두 `SYNCED`라는 뜻이며 registration이
+하나 이상 있어야 한다는 뜻이 아니다. `RouteDependencyHealth`는 Gateway-local routing worker의
+last-observed summary다. 한 shard가 `TERMINAL`이면 summary도 `TERMINAL`이지만 unaffected shard의
+operation까지 실패했다는 뜻은 아니다. `TERMINAL`은 affected shard가 같은 process
+configuration으로 자동 복구하지 않는다는 뜻이다. corrected configuration의 새 process는 새
+상태를 계산한다. 세 축은 RT 전체 truth, payload 처리, application health, delivery
+acknowledgement 또는 cluster 전체의 생존을 나타내지 않는다.
+
 ## Canonical 전이표
 
 | ID | 대상 | From | Event / guard | To | 관찰 결과 |
 | --- | --- | --- | --- | --- | --- |
+| `STATE-PROC-001` | `ProcessLiveness` | `NOT_LIVE` | process와 critical runtime 시작 완료 | `LIVE` | process supervision이 실행 상태를 관찰할 수 있음. SDK admission 또는 RT 성공을 뜻하지 않음 |
+| `STATE-PROC-002` | `ProcessLiveness` | `LIVE` | process 종료 또는 격리 불가능한 critical runtime 실패 | `NOT_LIVE` | process 소유 session·binding·Pipe·transport cleanup과 supervisor 재시작 대상으로 수렴 |
+| `STATE-ADMIT-001` | `SdkAdmissionReadiness` | `NOT_READY` | SDK listener가 새 connection을 수락하고 capacity 안에서 `HELLO -> WELCOME` 가능 | `READY` | 새 SDK session admission 가능. RT와 application 성공은 확인하지 않음 |
+| `STATE-ADMIT-002` | `SdkAdmissionReadiness` | `READY` | shutdown, SDK listener unavailable 또는 session capacity 소진 | `NOT_READY` | 새 admission 실패. 이미 수립된 session·Pipe와 process liveness를 직접 변경하지 않음 |
+| `STATE-RTDEP-001` | `RouteDependencyHealth` | initialization | local-only mode | `DISABLED` | RT 없이 local lookup과 local Pipe만 사용 |
+| `STATE-RTDEP-002` | `RouteDependencyHealth` | initialization/`DEGRADED` | 모든 configured shard client가 available이고 존재하는 current desired registration이 모두 `SYNCED` | `READY` | remote registration과 Resolve 가능 |
+| `STATE-RTDEP-003` | `RouteDependencyHealth` | initialization/`READY` | configured shard client unavailable 또는 current desired registration `UNSYNCED` | `DEGRADED` | local binding과 established Pipe 유지, affected remote operation은 `UNAVAILABLE` 가능 |
+| `STATE-RTDEP-004` | `RouteDependencyHealth` | initialization/`READY`/`DEGRADED` | generation, transport identity 또는 authorization의 terminal failure | `TERMINAL` | local binding과 established Pipe 유지, corrected configuration의 새 process 전까지 affected remote operation 복구 없음 |
 | `STATE-SDK-001` | SDK session | `DISCONNECTED` | 연결 시작 | `CONNECTING` | Gateway 연결 시도 |
 | `STATE-SDK-002` | SDK session | `CONNECTING` | transport 성공 | `READY` | SDK operation 가능 |
 | `STATE-SDK-003` | SDK session | `CONNECTING` | 연결 실패 | `DISCONNECTED` | managed backoff 뒤 재시도 가능 |
@@ -206,11 +241,11 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | selected ListenerSession의 `OFFER` terminal 응답 deadline 초과 | 해당 ListenerSession과 그 session의 모든 binding·Pipe 종료, current attempt는 `DEADLINE_EXCEEDED`, `MAYBE_OBSERVED` | 다른 ListenerSession, sibling binding과 그 Pipe | 새 ListenerSessionId로 반환된 current Listener만 재등록; 같은 attempt reroute 금지 |
 | Listener의 명시적 `OFFER_REJECTED` | 해당 open attempt만 실패 | selected ListenerSession, sibling binding과 기존 Pipe | caller가 원하면 새 open 가능 |
 | recovery `REGISTER`의 ClientKey 영구 거절 | 해당 returned Listener handle `BLOCKED`, old session 미수락 queue 제거, pending·후속 accept 등록 오류, 새 binding과 신규 admission 없음 | sibling handle과 shared session | 기존 handle을 닫고 새 credential로 새 `listen` 가능; 자동 재등록 없음 |
-| Gateway-RT shard 연결 단절 | 해당 shard 연결을 공유하는 active registration 각각 `UNSYNCED` | local binding, ListenerSession, established Pipe와 다른 shard registration | local shortcut 가능, 해당 shard의 remote resolve/register/update는 `UNAVAILABLE` 가능. 연결 복구 뒤 보존한 current desired state로 각 registration을 검증·publish |
-| Gateway-RT component identity 또는 channel integrity 실패 | 영향받은 registration `UNSYNCED`, 진행 중인 `Resolve` 실패, RT state 변경 없음 | local binding, ListenerSession, established Pipe와 기존 RT state | registration은 deployment trust 수정 전 재시도 금지. remote open은 `UNAUTHENTICATED` 또는 `PERMISSION_DENIED`, `NOT_OBSERVED`이며 새 operation만 가능 |
+| Gateway-RT shard 연결 단절 | 해당 shard 연결을 공유하는 active registration 각각 `UNSYNCED`, `RouteDependencyHealth`는 `DEGRADED` | `ProcessLiveness`, `SdkAdmissionReadiness`, local binding, ListenerSession, established Pipe와 다른 shard registration | local shortcut 가능, 해당 shard의 remote resolve/register/update는 `UNAVAILABLE` 가능. 연결 복구 뒤 보존한 current desired state로 각 registration을 검증·publish |
+| Gateway-RT component identity 또는 channel integrity 실패 | 영향받은 registration `UNSYNCED`, 진행 중인 `Resolve` 실패, `RouteDependencyHealth`는 `TERMINAL`, RT state 변경 없음 | `ProcessLiveness`, `SdkAdmissionReadiness`, local binding, ListenerSession, established Pipe와 기존 RT state | registration은 deployment trust 수정 전 재시도 금지. remote open은 `UNAUTHENTICATED` 또는 `PERMISSION_DENIED`, `NOT_OBSERVED`이며 새 operation만 가능 |
 | RegistrationKey의 GatewayId와 authenticated Gateway identity mismatch | 해당 registration `UNSYNCED`, RT mutation 없음 | local binding, ListenerSession, established Pipe와 기존 RT state | `PERMISSION_DENIED`; authorization configuration 수정 전 registration 재시도 금지 |
-| Gateway-RT generation mismatch | registration `UNSYNCED`, remote open attempt 실패 | local binding, ListenerSession, established Pipe와 RT state | 최초 `Register`면 즉시 terminal. lease-bound operation에서 처음 관찰되면 idempotent `Register` 판별 1회만 허용하고, 판별 실패 또는 판별 성공 뒤 다음 lease-bound 실패면 terminal; compatible generation으로 process restart 필요 |
-| RT restart | RT lease와 mapping 소실 | Gateway local binding, established Pipe | READY-empty 수렴 중 `NOT_FOUND`, 새 lease 등록과 current snapshot update 뒤 복구 |
+| Gateway-RT generation mismatch | registration `UNSYNCED`, remote open attempt 실패, 판별 한도 소진 뒤 `RouteDependencyHealth`는 `TERMINAL` | `ProcessLiveness`, `SdkAdmissionReadiness`, local binding, ListenerSession, established Pipe와 RT state | 최초 `Register`면 즉시 terminal. lease-bound operation에서 처음 관찰되면 idempotent `Register` 판별 1회만 허용하고, 판별 실패 또는 판별 성공 뒤 다음 lease-bound 실패면 terminal; compatible generation으로 process restart 필요 |
+| RT restart | RT lease와 mapping 소실, Gateway의 `RouteDependencyHealth`는 `DEGRADED`로 수렴 | `ProcessLiveness`, `SdkAdmissionReadiness`, Gateway local binding, established Pipe | READY-empty 수렴 중 `NOT_FOUND`, 새 lease 등록과 current snapshot update 뒤 `READY` 복구 |
 | Gateway process loss | 해당 Gateway의 session, Pipe와 peer transport 종료 | 다른 Gateway와 RT의 다른 registration | lease expiry까지 stale mapping 가능, Owner OPEN은 실패 |
 | 종료된 lease의 늦은 `Update` 또는 `KeepAlive` | RT state 불변, operation 실패 | Gateway-local state와 다른 active registration | `FAILED_PRECONDITION`; 새 mapping은 새 lease를 `Register`한 뒤 current snapshot으로만 구성 |
 | stale mapping 선택 | 해당 open attempt 실패 | local binding truth와 다른 candidate | `UNAVAILABLE`, `NOT_OBSERVED`, 같은 attempt reroute 없음 |
@@ -220,7 +255,8 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 | peer `OPEN` commit 뒤 terminal 결과 deadline | 해당 RelayStream과 attempt `CLOSED`, best-effort `RESET` | 같은 transport의 다른 stream, sibling binding과 RT mapping | `DEADLINE_EXCEEDED`, `MAYBE_OBSERVED`; 같은 attempt replay·reroute 금지 |
 | `OPENING` remote attempt cancel | commit 전 state 제거 또는 commit 뒤 `RESET(CANCELLED)`과 RelayStream cleanup | 같은 transport의 다른 stream과 다른 attempt | 별도 peer `CANCEL` 없음; 늦은 OPENED/FAILED/RESET은 state를 부활시키지 않음 |
 | PeerTransport loss | 포함된 RelayStream과 Pipe 종료, 해당 방향 slot `IDLE` | RT mapping, Listener registration, 반대 방향 PeerTransport와 그 stream | 이후 open은 살아 있는 transport를 재사용하거나 새 transport 연결 |
-| 실행 중 `PeerEvent` queue Full 또는 receiver 종료 | peer runtime terminal, distributed Gateway fail-closed shutdown, current PeerTransport·SDK session·attempt·Pipe 정리 | 다른 Gateway process와 RT의 current state | 해당 Gateway의 새 operation은 `RESOURCE_EXHAUSTED` 또는 `UNAVAILABLE`; supervisor가 새 process를 시작하고 Listener SDK가 current state를 재등록한 뒤 새 operation 가능. 이미 시작된 정상 shutdown의 Full/Closed는 추가 장애가 아님 |
+| SDK session capacity 소진 | `SdkAdmissionReadiness`는 `NOT_READY` | `ProcessLiveness`, `RouteDependencyHealth`, 기존 session과 Pipe | capacity 회수 뒤 `READY`; 새 admission은 그 전까지 실패 가능 |
+| 실행 중 `PeerEvent` queue Full 또는 receiver 종료 | peer runtime terminal, distributed Gateway fail-closed shutdown, `ProcessLiveness`는 `NOT_LIVE`로 수렴, current PeerTransport·SDK session·attempt·Pipe 정리 | 다른 Gateway process와 RT의 current state | 해당 Gateway의 새 operation은 `RESOURCE_EXHAUSTED` 또는 `UNAVAILABLE`; supervisor가 새 process를 시작하고 Listener SDK가 current state를 재등록한 뒤 새 operation 가능. 이미 시작된 정상 shutdown의 Full/Closed는 추가 장애가 아님 |
 | stream `FIN` 뒤 같은 방향 `DATA` | 해당 RelayStream과 Pipe `RESET` | 다른 RelayStream과 PeerTransport | `PROTOCOL_ERROR`; 새 open만 가능 |
 | SDK-Gateway heartbeat timeout | current SDK session과 그 session의 pending attempt·Pipe 종료 | 다른 SDK session, Gateway local binding, RT mapping | SDK runtime은 새 session으로 managed reconnect 가능. commit된 open, Pipe와 payload replay 없음 |
 | active PeerTransport heartbeat timeout | 해당 PeerTransport와 포함된 RelayStream·Pipe 종료, 해당 방향 slot `IDLE` | 반대 방향 PeerTransport, 다른 Gateway pair, RT mapping과 Listener binding | 이후 새 open은 surviving transport 또는 새 lazy transport만 사용. 기존 Pipe replay·reroute 없음 |
@@ -260,5 +296,6 @@ Gateway와 SDK가 종료한 object는 다시 활성화하지 않는다. 같은 l
 30. peer authentication 뒤에는 conforming Gateway가 frame과 identity scope를 지킨다고 전제한다. Byzantine Gateway의 semantic replay 방어는 범위 밖이며 `StreamId` high-watermark를 durable replay protection으로 해석하지 않는다.
 31. 실행 중 내부 `PeerEvent`는 Gateway 상태 전이 입력이므로 관측성 event처럼 버리지 않는다. bounded queue 포화나 receiver 종료는 distributed Gateway를 fail-closed로 끝내고, 정상 shutdown과 경쟁한 전달 실패만 idempotent cleanup으로 처리한다.
 32. `stream_count == 0`인 PeerTransport는 heartbeat를 보내지 않고 idle-retirement timeout 뒤 정상 종료한다. 새 stream이 재사용하면 retirement timer를 취소한다.
+33. `ProcessLiveness`, `SdkAdmissionReadiness`와 `RouteDependencyHealth`는 서로 독립적으로 관찰한다. 한 축의 저하만으로 다른 축이나 payload 결과를 추론하지 않는다.
 
 shard lease expiry나 RT restart로 mapping이 사라져도 Gateway-local `ListenerBinding`이나 live `ListenerSession`은 닫히지 않는다. `ACTIVE` local binding은 local OPEN에 계속 사용할 수 있고, Gateway가 새 lease를 `Register`한 뒤 current snapshot을 `Update`하여 RT mapping을 다시 구성한다.

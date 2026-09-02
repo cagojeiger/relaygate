@@ -77,6 +77,7 @@ Pipe 수립, RT 단절·재시작, Gateway 재시작과 current-state 재등록�
 | [ADR 005](adr/005-soft-state-registration-lifecycle.md) | Route mapping은 active registration lease에 연결된 current soft state다. |
 | [ADR 006](adr/006-one-hop-peer-multiplexing.md) | Gateway data plane은 initiator-bit StreamId를 쓰는 one-hop multiplexed relay다. |
 | [ADR 007](adr/007-transport-liveness-and-idle-retirement.md) | transport liveness와 zero-stream idle retirement를 분리한다. |
+| [ADR 008](adr/008-operational-health-boundaries.md) | process liveness, SDK admission readiness와 RT dependency health를 분리한다. |
 
 ## SPEC
 
