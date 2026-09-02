@@ -177,6 +177,85 @@ fn concurrent_remote_opens_consume_only_their_request_local_resolve()
 }
 
 #[test]
+fn terminated_remote_open_does_not_cache_successful_resolve_for_next_open()
+-> Result<(), Box<dyn std::error::Error>> {
+    let client_id = "echo.shared";
+    let mut state = routed_state(GatewayId::new());
+    let connector = add_session(&mut state, SessionRole::Connector);
+
+    let first_resolve = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 1,
+            client_id: client_id.to_owned(),
+        },
+    )?;
+    let first_identity = resolve_identity(&first_resolve).ok_or("missing first resolve")?;
+    let first_peer = state.route_resolved(
+        first_identity,
+        binding_set(
+            client_id,
+            GatewayId::new(),
+            SessionId::new(),
+            BindingId::new(),
+            "owner.internal:27421",
+        )?,
+    );
+    assert!(matches!(
+        first_peer.as_slice(),
+        [GatewayAction::OpenPeer { .. }]
+    ));
+
+    let failed = state.peer_open_commit_failed(
+        first_identity,
+        ErrorCode::Unavailable,
+        PeerObservation::NotObserved,
+        "peer unavailable",
+    );
+    assert!(sdk_deliveries(&failed).any(|delivery| {
+        delivery.target == connector
+            && matches!(
+                delivery.frame,
+                Frame::OpenFailed {
+                    connection_id: 1,
+                    code: ErrorCode::Unavailable,
+                    observation: PeerObservation::NotObserved,
+                    ..
+                }
+            )
+    }));
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+
+    let second_resolve = state.handle(
+        connector,
+        Frame::Open {
+            connection_id: 2,
+            client_id: client_id.to_owned(),
+        },
+    )?;
+    let [GatewayAction::ResolveRoute {
+        open_identity: second_identity,
+        client_id: resolved_client_id,
+    }] = second_resolve.as_slice()
+    else {
+        return Err("new OPEN must issue one fresh Resolve".into());
+    };
+    assert_ne!(*second_identity, first_identity);
+    assert_eq!(resolved_client_id.as_str(), client_id);
+    assert_eq!(state.remote_open_attempt_count(), 1);
+
+    state.route_failed(
+        *second_identity,
+        ErrorCode::Unavailable,
+        "test cleanup",
+    );
+    assert_eq!(state.remote_open_attempt_count(), 0);
+    assert_eq!(state.pipe_count(), 0);
+    Ok(())
+}
+
+#[test]
 fn late_resolve_cannot_resurrect_a_closed_connector_session()
 -> Result<(), Box<dyn std::error::Error>> {
     let entry_gateway = GatewayId::new();
