@@ -274,6 +274,12 @@ async fn write_half_close_terminates_the_split_read_half() -> Result<(), Box<dyn
 
     writer.close().await?;
     assert_eq!(outbound_rx.recv().await, Some(Frame::Close { pipe_id }));
+    let write_error = writer
+        .write_all_bytes(b"after-close")
+        .await
+        .err()
+        .ok_or("closed Pipe write unexpectedly succeeded")?;
+    assert_eq!(write_error.code(), ErrorCode::FailedPrecondition);
 
     let mut byte = [0_u8; 1];
     assert_eq!(reader.read(&mut byte).await?, 0);
