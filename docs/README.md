@@ -24,6 +24,22 @@ application data = endpoint가 해석하고 보호하는 opaque payload
 component trust  = 배포 환경이 보장하며 application peer 인증과 별개
 ```
 
+## Plane 대응
+
+[RFC 7426](rfc/rfc-7426-sdn-architecture.md)의 용어로 책임을 다음처럼 구분한다.
+
+| Plane 또는 interface | RelayGate에서의 범위 |
+| --- | --- |
+| Application Plane | SDK를 사용하는 application과 application 소유 protocol·정책 |
+| Service interface | public SDK의 `Connector`, `Listener`, `Pipe` API |
+| Control Plane | RT mapping과 Gateway의 registration, resolve, binding 선택 |
+| Data / Forwarding Plane | established SDK-Gateway Pipe byte path, local Pipe와 one-hop peer byte relay |
+| Operational Plane | live session, binding, Pipe, transport liveness와 current-state snapshot |
+| Management Plane | process boot, config, deployment, health, logs와 metrics |
+
+Plane은 책임을 설명하는 개념적 경계다. 하나의 process나 crate가 여러 plane의 기능을
+포함할 수 있으며 plane마다 별도 process나 protocol을 요구하지 않는다.
+
 ## 문서 권위
 
 ```text

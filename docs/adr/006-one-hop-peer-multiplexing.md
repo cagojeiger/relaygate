@@ -28,6 +28,8 @@ unordered Gateway pair
 
 Gateway 간 payload path는 최대 one hop이다. 각 Gateway가 dial한 방향별 transport는 최대 하나이며, unordered Gateway pair에는 동시에 최대 두 개의 reusable bidirectional peer transport가 존재할 수 있다. 각 transport는 여러 Pipe를 독립적인 logical stream으로 multiplex한다.
 
+RFC 7426의 용어로 local Pipe와 one-hop peer relay는 data/forwarding plane이다. RouteTable lookup과 registration은 control plane에 남고 established Pipe의 byte path에 들어오지 않는다.
+
 양쪽 Gateway가 동시에 dial하면 서로 반대 방향의 두 transport를 모두 유지한다. cross-Gateway winner 합의나 total-order arbitration은 하지 않는다. 같은 Gateway가 같은 peer로 만드는 중복 candidate만 자기 방향 안에서 직렬화하고 제거한다.
 
 peer handshake의 Gateway identity는 배포 환경이 인증한 transport context와 일치해야 한다. handshake frame이 주장하는 `GatewayId`만으로 peer를 신뢰하지 않는다. TLS, mTLS 또는 service mesh의 구체적인 선택은 이 ADR이 정하지 않는다.
@@ -58,3 +60,4 @@ peer handshake의 Gateway identity는 배포 환경이 인증한 transport conte
 - [RFC 9293](../rfc/rfc-9293-tcp-connection-roles.md)
 - [RFC 9000](../rfc/rfc-9000-quic-streams.md)
 - [RFC 3439](../rfc/rfc-3439-simplicity-principle.md)
+- [RFC 7426](../rfc/rfc-7426-sdn-architecture.md)
