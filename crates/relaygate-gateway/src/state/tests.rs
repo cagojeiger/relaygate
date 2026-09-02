@@ -41,6 +41,28 @@ impl Write for CapturedWriter {
     }
 }
 
+fn captured_bytes(output: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
+    match output.lock() {
+        Ok(output) => output.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+fn captured_dispatch() -> (Arc<Mutex<Vec<u8>>>, tracing::Dispatch) {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let writer_output = Arc::clone(&output);
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .without_time()
+        .with_target(false)
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(move || CapturedWriter {
+            output: Arc::clone(&writer_output),
+        })
+        .finish();
+    (output, tracing::Dispatch::new(subscriber))
+}
+
 fn state() -> GatewayState {
     GatewayState::new(
         ClientKeyStore::new([("echo.shared".to_owned(), "secret".to_owned())].into()),
@@ -198,6 +220,7 @@ fn offer_pipe(
 }
 
 include!("tests/registration.rs");
+include!("tests/observation.rs");
 include!("tests/pipe_protocol.rs");
 include!("tests/limits.rs");
 include!("tests/routing.rs");
