@@ -12,6 +12,9 @@ use uuid::Uuid;
 use super::{OperationCompletion, OperationResult, apply_epoch_scoped_operation_completion};
 use crate::routing::lifecycle::{RegistrationAction, RegistrationState};
 
+mod stale_epoch;
+mod update_gate_proxy;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[test]
