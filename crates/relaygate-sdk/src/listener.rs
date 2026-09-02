@@ -531,14 +531,20 @@ impl ListenerState {
     }
 
     pub(super) fn activate(&self) -> bool {
+        self.activate_while_locked(|| {})
+    }
+
+    fn activate_while_locked(&self, before_publish: impl FnOnce()) -> bool {
         let Ok(lifecycle) = self.lifecycle.lock() else {
             return false;
         };
         if *lifecycle == ListenerLifecycle::Terminal {
             return false;
         }
+        before_publish();
         self.finish_registration_attempt();
         self.set_status(ListenerStatus::Active, None);
+        drop(lifecycle);
         true
     }
 
