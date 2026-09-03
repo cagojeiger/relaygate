@@ -327,10 +327,7 @@ impl Pipe {
 }
 
 impl PipeReadHalf {
-    /// Reads ordered bytes while preserving RelayGate's structured [`Error`].
-    /// `0` means graceful EOF.
-    ///
-    /// Prefer Tokio's [`tokio::io::AsyncReadExt`] helpers for ordinary I/O.
+    /// Split-read equivalent of [`Pipe::read_into`].
     pub async fn read_into(&mut self, destination: &mut [u8]) -> Result<usize> {
         poll_fn(|context| {
             self.reader
@@ -341,25 +338,22 @@ impl PipeReadHalf {
 }
 
 impl PipeWriteHalf {
-    /// Enqueues all bytes to the bounded session path in order.
-    ///
-    /// Success is not a peer application delivery acknowledgement.
-    /// Prefer Tokio's [`tokio::io::AsyncWriteExt`] helpers for ordinary I/O.
+    /// Split-write equivalent of [`Pipe::write_all_bytes`].
     pub async fn write_all_bytes(&mut self, payload: &[u8]) -> Result<()> {
         self.writer.write_all(&self.owner.state, payload).await
     }
 
-    /// Gracefully closes only this endpoint's write direction.
+    /// Split-write equivalent of [`Pipe::shutdown_write`].
     pub async fn shutdown_write(&mut self) -> Result<()> {
         self.writer.shutdown_write(&self.owner.state).await
     }
 
-    /// Closes both directions. Repeated calls are safe.
+    /// Split-write equivalent of [`Pipe::close`].
     pub async fn close(&mut self) -> Result<()> {
         self.writer.close(&self.owner.state).await
     }
 
-    /// Fails both directions. Repeated calls are safe.
+    /// Split-write equivalent of [`Pipe::reset`].
     pub async fn reset(&mut self, code: ErrorCode, message: impl Into<String>) -> Result<()> {
         self.writer
             .reset(&self.owner.state, code, message.into())

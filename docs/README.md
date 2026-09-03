@@ -8,37 +8,42 @@ RelayGate = logical destination resolution
           + opaque bidirectional byte relay
 ```
 
-## 책임
-
-| 구성 요소 | 책임 |
-| --- | --- |
-| 애플리케이션 | payload protocol, peer 인증·인가, service 선택, aggregation, idempotency, 업무 retry |
-| 배포 환경 | SDK가 접속하는 Gateway service identity와 channel integrity, Gateway 간 및 Gateway-RT 간 component identity와 integrity |
-| SDK | `Connector`, `Listener`, `Pipe` 사용자 계약 |
-| Gateway | Connector/Listener session과 local binding 소유, RT registration, binding 선택, Pipe 수립, local/one-hop relay |
-| RouteTable shard | 한 `ShardDirectoryGeneration`의 현재 `ClientId -> BindingSet<MappingEntry>` mapping authority와 registration lease |
+## 현재 구조
 
 ```text
-ClientKey        = startup config의 고정 ClientId binding 등록 권한
-application data = endpoint가 해석하고 보호하는 opaque payload
-component trust  = 배포 환경이 보장하며 application peer 인증과 별개
+Listener SDK ── session / binding ──► Owner Gateway ── snapshot / lease ──► RouteTable shard
+Connector SDK ── open(ClientId) ────► Entry Gateway ── Resolve ──────────► RouteTable shard
+
+Connector Pipe ◄══ Entry Gateway [── Owner Gateway, 최대 one hop ──] ══► Listener Pipe
 ```
 
-## Plane 대응
+`RouteTable`은 control plane에만 참여한다. Established Pipe의 opaque bytes는 local Gateway
+또는 하나의 peer hop을 통해 전달된다.
 
-[RFC 7426](rfc/rfc-7426-sdn-architecture.md)의 용어로 책임을 다음처럼 구분한다.
+## 책임
 
-| Plane 또는 interface | RelayGate에서의 범위 |
+| 구성 요소 | Plane | 책임 |
+| --- | --- | --- |
+| 애플리케이션 | Application | payload protocol, peer 인증·인가, service 선택, aggregation, idempotency, 업무 retry |
+| 배포 환경 | Management | process config, Gateway service identity, channel integrity와 component identity |
+| SDK | Service interface | `Connector`, `Listener`, `Pipe` 사용자 계약 |
+| Gateway | Control + Data | session과 local binding 소유, RT registration·resolve, binding 선택, Pipe 수립과 local/one-hop relay |
+| RouteTable shard | Control | 한 `ShardDirectoryGeneration`의 현재 `ClientId -> BindingSet<MappingEntry>` authority와 registration lease |
+| runtime observation | Operational | live session, binding, Pipe, transport liveness와 current-state snapshot |
+
+Plane은 [RFC 7426](rfc/rfc-7426-sdn-architecture.md)의 개념적 책임 경계이며 process 경계가 아니다.
+
+## 보장 경계
+
+| RelayGate가 보장하는 것 | RelayGate가 보장하지 않는 것 |
 | --- | --- |
-| Application Plane | SDK를 사용하는 application과 application 소유 protocol·정책 |
-| Service interface | public SDK의 `Connector`, `Listener`, `Pipe` API |
-| Control Plane | RT mapping과 Gateway의 registration, resolve, binding 선택 |
-| Data / Forwarding Plane | established SDK-Gateway Pipe byte path, local Pipe와 one-hop peer byte relay |
-| Operational Plane | live session, binding, Pipe, transport liveness와 current-state snapshot |
-| Management Plane | process boot, config, deployment, health, logs와 metrics |
+| logical destination으로 Pipe 수립 | payload 해석과 application peer 인증·인가 |
+| bounded relay와 transport-level cleanup | message 저장, delivery acknowledgement와 업무 retry |
+| active lease에서 파생된 memory-only current mapping | RT persistence, replication과 consensus |
+| local 또는 최대 one-hop peer relay | 닫힌 Pipe의 replay·resume·reroute와 multi-hop routing |
+| startup config의 `ClientKey`로 binding 등록 권한 확인 | key 발급·영속화·hot rotation과 channel security 구현 |
 
-Plane은 책임을 설명하는 개념적 경계다. 하나의 process나 crate가 여러 plane의 기능을
-포함할 수 있으며 plane마다 별도 process나 protocol을 요구하지 않는다.
+Channel identity와 integrity는 배포 환경이 제공한다.
 
 ## 문서 권위
 
@@ -55,16 +60,6 @@ IETF 원문 -> RFC 참고 노트 -> ADR -> SPEC -> TEST
 
 같은 규칙을 여러 문서에서 다시 정의하지 않는다. 상태와 오류의 최종 권위는 SPEC이며,
 TEST는 새 규칙을 만들지 않는다.
-
-## 현재 구현과 검증 범위
-
-현재 Rust 구현은 memory-only RouteTable 1개와 Gateway 3개의 one-hop profile에서 local/remote
-Pipe 수립, RT 단절·재시작, Gateway 재시작과 current-state 재등록의 주요 경로를 CI로 검증한다.
-[TEST 004](test/004-rt1-gw3-closed-loop-test-plan.md)가 이 profile을 정의한다.
-
-이는 [TEST 001](test/001-requirement-test-matrix.md)의 모든 경쟁 조건과 조합이 실행으로 완전히
-증명되었다는 뜻은 아니다. 전체 요구사항의 현재 실행 증거와 `partial` 범위는
-[`001-executable-coverage.toml`](test/001-executable-coverage.toml)이 기준이다.
 
 ## ADR
 
@@ -98,19 +93,9 @@ Pipe 수립, RT 단절·재시작, Gateway 재시작과 current-state 재등록�
 | --- | --- |
 | [TEST 001](test/001-requirement-test-matrix.md) | 전체 SPEC requirement와 edge case 대응 |
 | [TEST 001 실행 증거](test/001-executable-coverage.toml) | TEST 001 시나리오와 현재 Rust test의 기계 검증 가능한 연결 |
-| [TEST 002](test/002-single-gateway-rust-compose-test-plan.md) | 단일 Gateway local Pipe Rust 회귀 profile |
-| [TEST 003](test/003-route-table-core-test-plan.md) | memory-only RouteTable shard core 구현과 결정적 검증 profile |
-| [TEST 004](test/004-rt1-gw3-closed-loop-test-plan.md) | RT 1개와 Gateway 3개의 one-hop closed-loop 구현 profile |
+| [TEST 002](test/002-single-gateway-rust-compose-test-plan.md) | 단일 Gateway local Pipe 회귀 검증 |
+| [TEST 003](test/003-route-table-core-test-plan.md) | memory-only RouteTable shard core 검증 |
+| [TEST 004](test/004-rt1-gw3-closed-loop-test-plan.md) | RT 1개와 Gateway 3개의 one-hop closed-loop 검증 |
 
-## 제외 범위
-
-```text
-payload interpretation       application peer authentication protocol
-application aggregation      message storage
-Pipe replay / resume         multi-hop routing
-RT persistence               RT replication / consensus
-online shard reconfiguration
-TLS / mTLS / service-mesh 선택
-implementation language      module layout
-RT shard 증설 운영 절차
-```
+TEST 문서의 존재 자체는 완전한 실행 증명을 뜻하지 않는다. 시나리오별 증거 수준은
+[`001-executable-coverage.toml`](test/001-executable-coverage.toml)의 `executable/partial/gap` 상태가 기준이다.

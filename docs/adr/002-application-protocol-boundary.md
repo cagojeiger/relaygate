@@ -34,14 +34,6 @@ Gateway는 process 시작 시 external configuration에서 `ClientId -> ClientKe
 - key 변경은 새 Gateway process configuration과 새 `listen(ClientId, ClientKey)` operation으로 적용한다.
 - 내부 transport identity와 integrity가 없는 배포는 RelayGate의 `GatewayId`와 RT registration 신뢰 전제를 만족하지 않는다.
 
-## 이 ADR에서 정하지 않는 것
-
-- `ClientKey` secret의 구체적인 배포 수단
-- 등록 권한 실패의 오류 코드
-- application handshake와 payload protocol
-- application의 분산 조정 방식
-- TLS, mTLS, service mesh와 certificate 배포 방식
-
 ## 참고
 
 - [RFC 1958](../rfc/rfc-1958-internet-architecture.md)

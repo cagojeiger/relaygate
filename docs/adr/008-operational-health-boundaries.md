@@ -47,14 +47,6 @@ routing truth나 payload 전달 증명이 아니다.
 - local-only Gateway는 RT 의존성이 없음을 명시적으로 나타낼 수 있다.
 - 운영자는 하나의 신호로 전체 system health를 추론할 수 없다.
 
-## 이 ADR에서 정하지 않는 것
-
-- probe endpoint, port와 wire format 추가
-- timeout, polling interval과 배포 probe 설정값
-- Prometheus와 OpenTelemetry exporter
-- application health, payload 처리 성공과 delivery acknowledgement
-- RT replication, consensus와 online shard reconfiguration
-
 ## 참고
 
 - [RFC 5880](../rfc/rfc-5880-bfd-liveness.md)

@@ -8,7 +8,7 @@
 
 ## 범위
 
-이 문서는 `open(ClientId)`, 즉 현재 Rust API의 `connector.open(ClientId)` 한 번이 live `ListenerBinding` 하나를 선택하고, 정확히 하나의 Listener SDK runtime과 양방향 `Pipe`를 수립하는 과정을 정의한다. `Connector::connect(Config)`는 SDK-Gateway session을 만들 뿐 이 연결 시도와 구분된다.
+이 문서는 `open(ClientId)`, 즉 공개 SDK API의 `connector.open(ClientId)` 한 번이 live `ListenerBinding` 하나를 선택하고, 정확히 하나의 Listener SDK runtime과 양방향 `Pipe`를 수립하는 과정을 정의한다. `Connector::connect(Config)`는 SDK-Gateway session을 만들 뿐 이 연결 시도와 구분된다.
 
 ```text
 registration : ClientId * <── ListenerBinding ──> * ListenerSession
@@ -59,7 +59,7 @@ Gateway
                     └── current RelayStream -> OpenIdentity
 ```
 
-Gateway는 RT 전체 table을 받지 않는다. Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 그 local set에서 하나를 선택하고 RT를 조회하지 않는다. local set이 비었을 때만 불변 shard directory로 authority를 찾고 internal channel이 검증한 자기 `AuthenticatedGatewayId`와 함께 `Resolve(AuthenticatedGatewayId, ShardDirectoryGeneration, ClientId)`를 정확히 한 번 보낸다. 결과는 해당 open attempt 안에서만 사용한다. 이는 최초 버전의 명시적인 local-first candidate-source 규칙이며, global N:M binding 사이의 fairness나 load-balancing 품질을 보장하지 않는다. 후보 하나를 선택한 뒤 나머지 결과를 routing cache로 보관하지 않는다. `PeerPool`은 remote mapping cache가 아니라 이미 통신하는 Gateway pair의 transport 재사용 상태다. pair의 두 방향 slot은 `DialerGatewayId`로 구분하며 각 slot에는 `READY` transport가 최대 하나다. remote path는 선택한 Owner Gateway에서 끝나고 peer에서 받은 `OPEN`을 다시 Resolve하거나 다른 Gateway로 전달하지 않는다.
+Gateway는 RT 전체 table을 받지 않는다. Entry Gateway에 해당 `ClientId`의 `ACTIVE` local binding이 하나 이상 있으면 그 local set에서 하나를 선택하고 RT를 조회하지 않는다. local set이 비었을 때만 불변 shard directory로 authority를 찾고 internal channel이 검증한 자기 `AuthenticatedGatewayId`와 함께 `Resolve(AuthenticatedGatewayId, ShardDirectoryGeneration, ClientId)`를 정확히 한 번 보낸다. 결과는 해당 open attempt 안에서만 사용한다. local-first candidate-source 규칙은 global N:M binding 사이의 fairness나 load-balancing 품질을 보장하지 않는다. 후보 하나를 선택한 뒤 나머지 결과를 routing cache로 보관하지 않는다. `PeerPool`은 remote mapping cache가 아니라 이미 통신하는 Gateway pair의 transport 재사용 상태다. pair의 두 방향 slot은 `DialerGatewayId`로 구분하며 각 slot에는 `READY` transport가 최대 하나다. remote path는 선택한 Owner Gateway에서 끝나고 peer에서 받은 `OPEN`을 다시 Resolve하거나 다른 Gateway로 전달하지 않는다.
 
 `ConnectionId`의 순서와 중복은 ordered SDK→Entry `ConnectorSession`에서 Entry Gateway가 검증한다. `(ConnectorSessionId, ConnectionId)`는 SDK–Gateway `PipeId`이고, remote path에서는 authenticated provenance인 `EntryGatewayId`를 더한 `OpenIdentity`를 전달한다. peer leg는 application-facing counter를 다시 검증하지 않고 `PeerTransport`별 initiator-bit `StreamId` 순서와 중복을 검증한다. Owner Gateway가 받은 `OpenIdentity`는 authenticated peer와 `EntryGatewayId`가 일치할 때만 현재 `RelayStream`과 open/Pipe cleanup을 상관시키며, 종료 뒤 remote `ConnectorSession` high-watermark나 terminal `OpenIdentity` history로 남지 않는다.
 

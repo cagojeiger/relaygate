@@ -25,7 +25,7 @@ Listener SDK runtime
   └── ClientId -> returned non-CLOSED Listener handle 0..1
 ```
 
-이 문서의 `open(ClientId)`는 논리적인 Pipe 연결 operation을 뜻한다. 현재 Rust API에서는 transport runtime 생성과 logical Pipe 생성을 구분한다.
+이 문서의 `open(ClientId)`는 논리적인 Pipe 연결 operation을 뜻한다. 공개 SDK API는 transport runtime 생성과 logical Pipe 생성을 구분한다.
 
 ```text
 Connector::connect(Config) -> Connector
@@ -36,9 +36,9 @@ listener_runtime.listen(ClientId, ClientKey) -> Listener
 listener.accept()                           -> Pipe
 ```
 
-따라서 `Connector::connect(Config)`의 성공은 Gateway session 준비만 뜻하며 Listener에 대한 Pipe 성공이 아니다. 이 SPEC에서 `open(ClientId)`라고 쓴 동작은 Rust API의 `connector.open(ClientId)`에 대응한다.
+따라서 `Connector::connect(Config)`의 성공은 Gateway session 준비만 뜻하며 Listener에 대한 Pipe 성공이 아니다. 이 SPEC의 `open(ClientId)`는 공개 API의 `connector.open(ClientId)`에 대응한다.
 
-현재 Rust SDK의 `Pipe`는 Tokio `AsyncRead`와 `AsyncWrite`를 구현한다. `Pipe::into_split()`은 Pipe를 소비하고 하나의 `PipeReadHalf`와 하나의 `PipeWriteHalf`를 반환한다. 두 half는 clone할 수 없고 동일한 bounded Pipe state와 terminal 결과를 공유하며, read cursor와 inbound receiver는 read half 하나만 소유한다. 따라서 독립 task가 동시에 읽고 쓰더라도 별도의 Pipe, queue 또는 buffering layer를 만들지 않는다.
+공개 SDK의 `Pipe`는 Tokio `AsyncRead`와 `AsyncWrite`를 구현한다. `Pipe::into_split()`은 Pipe를 소비하고 하나의 `PipeReadHalf`와 하나의 `PipeWriteHalf`를 반환한다. 두 half는 clone할 수 없고 동일한 bounded Pipe state와 terminal 결과를 공유하며, read cursor와 inbound receiver는 read half 하나만 소유한다. 따라서 독립 task가 동시에 읽고 쓰더라도 별도의 Pipe, queue 또는 buffering layer를 만들지 않는다.
 
 Tokio `AsyncWrite::poll_shutdown`은 이 문서의 `shutdown(write)`와 같은 `FIN`이다. half 하나의 drop은 `FIN`이나 전체 close를 합성하지 않는다. 마지막 public Pipe owner가 drop되면 기존 Pipe drop과 같은 전체 cleanup을 정확히 한 번 시작한다. Tokio I/O adapter가 `std::io::Error`를 반환할 때에도 원래 RelayGate `Error`를 `get_ref()`로 downcast 가능한 inner error로 보존해야 한다. RelayGate 오류 code와 observation을 직접 다뤄야 하는 사용자를 위해 이름이 충돌하지 않는 `read_into`와 `write_all_bytes` 구조화 메서드를 같은 state와 전송 경로 위에 유지한다. split 뒤 write와 `shutdown_write`·`close`·`reset`은 유일한 `PipeWriteHalf`가 소유하여 한 outbound 순서로 직렬화한다.
 
@@ -184,7 +184,7 @@ Listener registration의 승인·거절·갱신 절차는 SPEC 003이, 상태와
 
 ## 요구사항
 
-- **`SDK-001`**: `open(ClientId)`, 즉 현재 Rust API의 `connector.open(ClientId)`는 정확히 하나의 Listener에 대한 Pipe 하나를 요청해야 한다. `Connector::connect(Config)`는 SDK-Gateway session 생성이며 이 operation과 구분해야 한다.
+- **`SDK-001`**: `open(ClientId)`, 즉 공개 API의 `connector.open(ClientId)`는 정확히 하나의 Listener에 대한 Pipe 하나를 요청해야 한다. `Connector::connect(Config)`는 SDK-Gateway session 생성이며 이 operation과 구분해야 한다.
 - **`SDK-002`**: Listener queue admission은 Pipe를 정확히 하나 만들고, Connector의 open 성공은 그 뒤 `OPENED`를 확인한 경우에만 Connector endpoint를 반환해야 한다. queue admission 뒤 attempt가 실패하면 queued 또는 accept된 Pipe를 terminal로 닫아야 한다.
 - **`SDK-003`**: incoming queue가 가득 찼을 때 기존의 non-terminal queued Pipe를 제거해 새 연결을 성공시켜서는 안 된다. 반대로 accept 전에 terminal이 된 Pipe는 애플리케이션의 추가 호출을 기다리지 않고 queue capacity에서 제거되어야 한다.
 - **`SDK-004`**: `Listener.accept()`는 같은 Pipe를 두 번 반환하지 않고 distinct Pipe 하나를 반환해야 한다. `accept`와 session 종료는 한 순서로 직렬화하고, 종료가 먼저면 old session의 미수락 Pipe를 반환해서는 안 된다. `SUSPENDED/REGISTERING`은 이후 새 Pipe를 기다릴 수 있지만 `BLOCKED/CLOSED`는 queue보다 우선해 terminal 오류를 반환해야 한다.
@@ -211,14 +211,5 @@ Listener registration의 승인·거절·갱신 절차는 SPEC 003이, 상태와
 - **`SDK-025`**: 명시적 runtime close는 current session과 managed reconnect를 종료해야 한다. 개별 clone drop은 shared runtime을 닫지 않지만, live `Pipe`를 포함하여 runtime을 사용할 마지막 public owner가 사라지면 background task는 runtime을 자기 소유로 남기지 않고 종료해야 한다.
 - **`SDK-026`**: SDK-Gateway session은 activity-aware heartbeat를 수행해야 한다. idle interval 동안 valid inbound activity가 없으면 `PING`을 commit하고, configured response deadline 전에 matching `PONG`을 확인하지 못하면 current session을 transport loss와 같이 종료해야 한다. unrelated inbound frame, outbound write, nonce가 다른 `PONG`, deadline 이후의 늦은 `PONG`은 commit된 probe를 만족시키지 않는다. heartbeat는 Pipe/application health나 delivery acknowledgement가 아니며 application Pipe read idle만으로 session을 닫아서는 안 된다.
 - **`SDK-027`**: commit된 최초 `REGISTER`가 명시적 실패, response deadline 또는 session 상실로 terminal 성공을 확인하지 못하면 해당 `ListenAttempt`를 한 번만 실패시키고 reservation을 제거해야 한다. response deadline은 current `ListenerSession` 전체를 종료해야 한다. SDK는 pending attempt를 새 session으로 옮기거나 같은 request를 replay해서는 안 되며, 이미 반환된 current Listener만 bounded reconnect backoff 뒤 새 session identity와 새 registration request로 재등록해야 한다. TCP 연결 성공만으로 연속 failure backoff를 초기화해서는 안 되며 반환된 Listener의 recovery registration 성공 뒤 초기화할 수 있다.
-- **`SDK-028`**: 현재 Rust `Pipe`는 Tokio `AsyncRead`와 `AsyncWrite`를 구현하고, consuming owned split으로 non-clone `PipeReadHalf` 하나와 `PipeWriteHalf` 하나를 제공해야 한다. 두 half는 하나의 bounded Pipe state와 terminal 결과를 공유하며 read receiver와 cursor는 read half만, outbound sender와 write·`shutdown_write`·`close`·`reset` 순서는 write half만 소유해야 한다. `AsyncWrite` shutdown은 `FIN`과 같고 half 하나의 drop은 protocol frame을 합성하지 않으며 마지막 public owner의 drop만 전체 cleanup을 정확히 한 번 시작해야 한다. Tokio I/O 오류는 원래 RelayGate `Error`를 downcast 가능한 inner error로 보존해야 하고, 이름 충돌 없는 `read_into`·`write_all_bytes`와 trait adapter는 같은 ordering·backpressure·terminal 경로를 사용해야 한다.
+- **`SDK-028`**: 공개 SDK의 `Pipe`는 Tokio `AsyncRead`와 `AsyncWrite`를 구현하고, consuming owned split으로 non-clone `PipeReadHalf` 하나와 `PipeWriteHalf` 하나를 제공해야 한다. 두 half는 하나의 bounded Pipe state와 terminal 결과를 공유하며 read receiver와 cursor는 read half만, outbound sender와 write·`shutdown_write`·`close`·`reset` 순서는 write half만 소유해야 한다. `AsyncWrite` shutdown은 `FIN`과 같고 half 하나의 drop은 protocol frame을 합성하지 않으며 마지막 public owner의 drop만 전체 cleanup을 정확히 한 번 시작해야 한다. Tokio I/O 오류는 원래 RelayGate `Error`를 downcast 가능한 inner error로 보존해야 하고, 이름 충돌 없는 `read_into`·`write_all_bytes`와 trait adapter는 같은 ordering·backpressure·terminal 경로를 사용해야 한다.
 - **`SDK-029`**: SDK의 timeout configuration은 양수이고 monotonic deadline으로, reconnect backoff configuration은 양수·순서 조건을 만족하며 bounded wake-up timer로 표현 가능해야 한다. `Connector::connect(Config)`와 `ListenerRuntime::connect(Config)`는 runtime timer로 표현할 수 없는 값을 transport 연결이나 background state 생성 전에 `INVALID_ARGUMENT`, `NOT_OBSERVED`로 거절해야 하며 runtime panic으로 넘겨서는 안 된다.
-
-## 이 SPEC에서 정하지 않는 것
-
-- Listener registration API와 credential 처리
-- binding resolve와 selection
-- Gateway 간 relay와 wire protocol
-- 오류 enum 값과 상태 이름
-- timeout, reconnect backoff와 queue 크기의 기본값
-- 위 Rust API와 Tokio I/O adapter 대응을 제외한 구현 언어별 signature와 module layout

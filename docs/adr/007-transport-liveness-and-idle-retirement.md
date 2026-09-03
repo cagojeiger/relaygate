@@ -45,14 +45,6 @@ RT registration의 `KeepAlive`는 RouteTable soft state lease 갱신이다. SDK-
 - Gateway pair의 eager full mesh나 RT sharding 변경은 요구하지 않는다.
 - heartbeat 실패는 기존 Pipe나 payload를 replay, reroute, resume하지 않는다.
 
-## 이 ADR에서 정하지 않는 것
-
-- heartbeat interval, timeout, idle-retirement timeout의 기본값
-- Ping/Pong frame encoding과 nonce 크기
-- TLS, mTLS, service mesh 구현
-- application-level keepalive, request acknowledgement, delivery acknowledgement
-- RT shard 수, replication, online shard reconfiguration
-
 ## 참고
 
 - [RFC 9293](../rfc/rfc-9293-tcp-connection-roles.md)

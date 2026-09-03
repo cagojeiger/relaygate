@@ -1,9 +1,9 @@
-# TEST 003: RouteTable core 구현 profile
+# TEST 003: RouteTable core 검증
 
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active |
-| 실행 | RouteTable shard core 구현 |
+| 실행 | workspace CI |
 | 기준 | [SPEC 004](../spec/004-route-table-contract.md), [TEST 001](001-requirement-test-matrix.md) |
 
 ## 범위
@@ -20,9 +20,8 @@ RouteTableShard
         └── Register / Update / KeepAlive / Deregister / Resolve
 ```
 
-이 단계는 버리지 않는 shard-local 상태 머신을 구현한다. Gateway registration manager,
-RT network service, peer relay, replication, persistence와 rolling directory 변경은 포함하지
-않는다.
+이 문서는 shard-local 상태 머신을 검증한다. Gateway registration manager, RT network
+service, peer relay, replication, persistence와 rolling directory 변경은 검증 범위가 아니다.
 
 ## 검증 경계
 
@@ -63,7 +62,7 @@ Register(L1) ── Update(1) ── KeepAlive ── expiry
 | `T-RT-07` | forward/reverse index 격리와 bounded state count |
 
 `T-RT-05`의 process-down `UNAVAILABLE`, `T-RT-06`의 existing Pipe 독립성, `T-RT-07`의
-Gateway lookup behavior는 RT service와 Gateway integration 단계에서 완성한다.
+Gateway lookup behavior는 RT service와 Gateway integration test가 검증한다.
 `T-RT-01`의 unauthenticated channel rejection도 service adapter가 소유하며, core는 adapter가
 검증한 caller와 mutation owner의 불일치를 `PERMISSION_DENIED`로 검증한다.
 

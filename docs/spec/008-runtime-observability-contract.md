@@ -162,16 +162,6 @@ local-only와 distributed mode를 섞지 않으므로 `DISABLED`는 local-only m
 실패했다는 뜻은 아니다. health 값은 last-observed current observation이며 routing 결정의 입력,
 RT 전체 truth 또는 restart 명령이 아니다.
 
-## 현재 범위 밖
-
-```text
-Prometheus exporter / admin port
-OpenTelemetry exporter
-cross-process trace context propagation
-payload 또는 application-level delivery trace
-durable metric history
-```
-
 ## 요구사항
 
 | ID | 요구사항 |

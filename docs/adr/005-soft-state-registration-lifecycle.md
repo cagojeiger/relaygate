@@ -38,12 +38,6 @@ Gateway가 현재 소유한 live `ListenerSession`과 `ListenerBinding`이 truth
 - stale mapping이 선택되면 Owner Gateway가 binding을 재검증하고 같은 open은 실패할 수 있다. 새 후보 선택은 새 open의 책임이다.
 - 기존 Pipe의 lifecycle은 route mapping 복구와 분리된다.
 
-## 이 ADR에서 정하지 않는 것
-
-- registration key, snapshot schema, lease identity와 revision 규칙
-- lease 시간, keepalive 주기와 clock handling
-- RT restart 중 외부에 보이는 상태와 오류
-
 ## 참고
 
 - [RFC 1958](../rfc/rfc-1958-internet-architecture.md)

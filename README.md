@@ -37,23 +37,16 @@ let echoed = receive.await??;
 정리한다. RelayGate 오류 세부 정보가 필요한 코드는 `read_into()`와
 `write_all_bytes()` 구조화 메서드를 사용할 수 있다.
 
-현재 구현 단계는 **memory-only RouteTable과 Gateway 간 one-hop remote Pipe**입니다.
+RelayGate는 **memory-only RouteTable과 Gateway 간 one-hop remote Pipe**를 제공한다.
 
 - Rust workspace와 Rust public SDK
-- memory-only `ListenerBinding` registry
-- 하나의 Listener session 위에 여러 `ClientId`, 하나의 Connector session 위에 여러 Pipe
-- `ClientId` 하나에 여러 live Listener binding을 허용하는 N:M 모델
-- bounded queue와 `FIN` / `CLOSE` / `RESET`
-- SDK session reconnect; 이미 전송된 `OPEN`과 기존 Pipe는 replay하지 않음
-- exact-byte generation과 `sha256-modulo-v1`을 사용하는 immutable shard directory
-- memory-only registration lease와 `Register` / `Update` / `KeepAlive` / `Deregister` / `Resolve`
-- bounded TCP request/response와 local/CI Gateway 인증을 제공하는 RouteTable runtime
-- SDK-Gateway activity-aware heartbeat와 timeout 기반 session cleanup
-- Gateway가 보유한 complete current snapshot을 재연결·RT restart 뒤 다시 구성하는 registration manager
-- local-first OPEN, request-local `Resolve`, exact Owner binding 재검증
-- Gateway pair별 lazy shared PeerTransport와 Pipe별 multiplexed RelayStream
-- active PeerTransport heartbeat와 zero-stream idle retirement
-- remote `OPEN` / `DATA` / `FIN` / `CLOSE` / `RESET`; cache·fallback·reroute·replay 없음
+- `ClientId`와 live `ListenerBinding`의 N:M 관계를 보관하는 memory-only registry
+- exact-byte generation과 `sha256-modulo-v1`으로 고정된 shard directory
+- registration lease 기반 `Register` / `Update` / `KeepAlive` / `Deregister` / `Resolve`
+- local-first `OPEN`과 exact Owner binding 재검증을 거치는 one-hop remote `OPEN`
+- Gateway pair별 lazy shared `PeerTransport`와 Pipe별 multiplexed `RelayStream`
+- bounded queue, activity-aware heartbeat, zero-stream idle retirement와 `FIN` / `CLOSE` / `RESET`
+- SDK session 재연결과 current snapshot 재등록. commit된 `OPEN`과 기존 Pipe는 replay·reroute하지 않음
 
 ```text
 Connector SDK ──► Entry Gateway ══ shared PeerTransport ══► Owner Gateway ◄── Listener SDK
@@ -150,9 +143,9 @@ relaygate-server route-table
 
 RouteTable은 시작할 때 항상 빈 memory-only state이며 directory artifact와 shard를 process 수명 동안 고정합니다. `InternalGatewayKey` adapter와 plain TCP는 로컬·CI 검증용이며, 실수로 켜지지 않도록 `RELAYGATE_RT_TRUSTED_LOCAL=true`가 없으면 시작을 거부하고 활성화 시 경고를 기록합니다. 운영 channel identity와 기밀성은 배포 환경의 mTLS 또는 service identity 계층이 제공해야 합니다.
 
-현재 운영 준비 기준은 RT process 1개와 Gateway 여러 대입니다. RT sharding 증설, shard directory
-교체, online reconfiguration과 RT replication은 이번 배포 준비 범위가 아니며 후속 운영 절차에서
-정합니다.
+RouteTable shard는 replication이나 consensus 없이 stable logical endpoint 하나로 동작한다.
+ShardDirectory는 process 수명 동안 바뀌지 않으며, 변경은 coordinated restart와 current-state
+재등록으로 적용한다.
 
 ## 검증
 
