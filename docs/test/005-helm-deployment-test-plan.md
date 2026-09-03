@@ -64,6 +64,23 @@ CI는 render 결과의 resource 수, StatefulSet identity/locator env, ShardDire
 Secret reference와 volume 종류를 정적으로 검사한다. `helm test` Pod는 chart에 포함되지만 실제
 cluster 실행 결과는 정적 render만으로 증명되지 않는다.
 
+## 차트 배포 검증
+
+| 경계 | 검사 |
+| --- | --- |
+| PR / main CI | stable `X.Y.Z` 형식, 차트 변경 시 버전 증가, 감소·동일 버전 수정 거절 |
+| CI unit test | archive timestamp만 다른 재시도는 원래 bytes 유지, 같은 버전의 내용 변경·checksum 손상·이름 불일치 거절 |
+| main CI 성공 후 | 해당 main push SHA만 패키징. PR·실패 CI·다른 repository 실행은 발행하지 않음 |
+| `gh-pages` | 기존 package 보존, SHA256 생성, 전체 version을 담은 `index.yaml` 재생성 |
+| Pages 배포 후 | 공개 저장소에서 exact version을 `helm pull`, 공개 checksum과 workflow가 보관한 SHA256을 모두 검증 |
+| GitHub Release | 공개 다운로드 검증 후 package·checksum asset을 갖춘 draft를 공개. 완료한 version은 재발행하지 않음 |
+| 중단 복구 | 원래 실행 재시도. 불완전 draft는 같은 source SHA에서만 이어서 처리. 조회 권한·네트워크 오류는 미발행 상태로 간주하지 않고 실패 |
+
+버전·패키지 정책은 `.github/scripts/test_helm_release.py`를 Hygiene에서 실행한다.
+Pages와 GitHub Release의 실제 쓰기 권한·공개 전파는 PR CI로 증명하지 않는다. 최초 main
+릴리스에서 공개 다운로드 검증까지 통과해야 차트 배포가 완료된다. 이는 아래 cluster acceptance를
+대신하지 않는다.
+
 ## cluster acceptance
 
 실제 cluster 검증은 다음 순서로 수행한다.

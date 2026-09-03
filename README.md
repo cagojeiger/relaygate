@@ -223,6 +223,41 @@ GitHub Release의 전역 `Latest` 표시는 사용하지 않고, image별 `lates
 `VERSION.gateway`와 `VERSION.route-table`은 배포 image 버전이며 서로 독립적이다. Rust
 workspace version은 crate/API 버전이므로 image release version과 같은 수명주기를 강제하지 않는다.
 
+### Helm chart 배포
+
+차트 버전은 `deploy/helm/relaygate/Chart.yaml`의 `version: X.Y.Z` 한 곳에서 관리한다.
+숫자에 선행 0이 없는 stable 버전만 사용하며, 차트 디렉터리 안의 파일을 수정하면 버전도
+증가시켜야 한다. 차트 버전은 Gateway/RouteTable image 버전과 독립적이다.
+
+```text
+PR CI → main CI 성공 → Release Helm Chart
+                        ├── gh-pages: .tgz + SHA256 + index.yaml
+                        ├── GitHub Pages 배포 + 공개 다운로드 검증
+                        └── chart-vX.Y.Z GitHub Release 공개
+```
+
+Helm 저장소는 `https://cagojeiger.github.io/relaygate`다. GitHub Pages 설정은
+`GitHub Actions`를 사용한다. `gh-pages`는 배포한 패키지의 보관 브랜치이며, 별도의 PAT 없이
+`GITHUB_TOKEN`과 공식 Pages action으로 배포한다. 이전 차트 버전은 삭제하지 않고 같은 버전의
+내용도 덮어쓰지 않는다. 릴리스가 중단되면 원래 CI 또는 `Release Helm Chart` 실행을 다시
+실행한다. 재실행은 기존 패키지 bytes와 checksum을 유지하고 미완료 draft만 이어서 공개한다.
+
+외부 Secret과 네트워크 전제는 위의 [Kubernetes / Helm](#kubernetes--helm)과 동일하다.
+로컬 차트 경로 대신 저장소의 특정 버전을 설치할 수 있다.
+
+```bash
+helm repo add relaygate https://cagojeiger.github.io/relaygate
+helm repo update
+helm upgrade --install relaygate relaygate/relaygate \
+  --version 0.1.0 \
+  --namespace relaygate \
+  --set internalTransport.trustedLocalAdapter=true \
+  --wait
+```
+
+차트 공개는 Kubernetes workload 배포가 아니다. 실제 설치·Secret 생성·rollout은 운영자가
+수행한다. 기본 image tag를 차트에서 바꿀 때도 차트 버전을 함께 올린다.
+
 ## 구조
 
 ```text
