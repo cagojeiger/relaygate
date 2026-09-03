@@ -176,10 +176,15 @@ async fn cancelled_peer_open_case() -> TestResult {
         async move { connector.open(CLIENT_ID).await }
     });
     proxy.wait_until_open_blocked().await?;
-    assert_eq!(gateway_a.gateway.snapshot().remote_open_attempts, 1);
-    assert_eq!(gateway_a.gateway.snapshot().peer_streams, 1);
-    assert_eq!(gateway_b.gateway.snapshot().peer_streams, 0);
-    assert_eq!(gateway_b.gateway.snapshot().pending_offers, 0);
+    wait_until(Duration::from_secs(2), || {
+        let entry = gateway_a.gateway.snapshot();
+        let owner = gateway_b.gateway.snapshot();
+        entry.remote_open_attempts == 1
+            && entry.peer_streams == 1
+            && owner.peer_streams == 0
+            && owner.pending_offers == 0
+    })
+    .await?;
 
     opening.abort();
     assert!(opening.await.is_err());

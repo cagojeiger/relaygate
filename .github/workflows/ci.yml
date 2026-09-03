@@ -34,6 +34,15 @@ jobs:
       - name: Whitespace check
         run: git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
 
+      - name: Validate GitHub Actions workflows
+        run: >-
+          docker run --rm
+          --volume "$PWD:/repo"
+          --workdir /repo
+          rhysd/actionlint:1.7.12
+          -color
+          -ignore 'unexpected key "queue"'
+
   rust:
     name: Rust
     runs-on: ubuntu-latest
