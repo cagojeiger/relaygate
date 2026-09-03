@@ -64,6 +64,7 @@ x-route-table: &route-table
   build:
     context: .
     dockerfile: deploy/docker/Dockerfile
+    target: runtime
   command: ["relaygate-server", "route-table"]
   volumes:
     - *directory-volume
