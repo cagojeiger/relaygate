@@ -69,7 +69,7 @@ cluster 실행 결과는 정적 render만으로 증명되지 않는다.
 | 경계 | 검사 |
 | --- | --- |
 | PR / main CI | stable `X.Y.Z` 형식, 차트 변경 시 버전 증가, 감소·동일 버전 수정 거절 |
-| CI unit test | archive timestamp만 다른 재시도는 원래 bytes 유지, 같은 버전의 내용 변경·checksum 손상·이름 불일치 거절 |
+| CI unit test / Helm package | archive timestamp만 다른 재시도는 원래 bytes 유지, 같은 버전의 내용 변경·checksum 손상·이름 불일치 거절. 실제 Helm package 재생성과 staging 후 동일 SHA256 및 index 생성 확인 |
 | main CI 성공 후 | 해당 main push SHA만 패키징. PR·실패 CI·다른 repository 실행은 발행하지 않음 |
 | `gh-pages` | 기존 package 보존, SHA256 생성, 전체 version을 담은 `index.yaml` 재생성 |
 | Pages 배포 후 | 공개 저장소에서 exact version을 `helm pull`, 공개 checksum과 workflow가 보관한 SHA256을 모두 검증 |

@@ -304,6 +304,17 @@ jobs:
             /workdir/target/helm/minimal.yaml \
             /workdir/target/helm/ambiguous-name.yaml
           helm package deploy/helm/relaygate --destination target/helm
+          version=$(python3 .github/scripts/helm_release.py check-version)
+          package="relaygate-${version}.tgz"
+          digest=$(python3 .github/scripts/helm_release.py stage \
+            "target/helm/$package" target/helm/repository)
+          helm package deploy/helm/relaygate --destination target/helm/retry
+          retry_digest=$(python3 .github/scripts/helm_release.py stage \
+            "target/helm/retry/$package" target/helm/repository)
+          test "$digest" = "$retry_digest"
+          (cd target/helm/repository && sha256sum --check "$package.sha256")
+          helm repo index target/helm/repository --url https://cagojeiger.github.io/relaygate
+          helm show chart "target/helm/repository/$package"
 
   rust:
     name: Rust
