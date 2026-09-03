@@ -40,7 +40,7 @@ impl Gateway {
                                 %error,
                                 "Gateway SDK listener failed; stopping Gateway runtime"
                             );
-                            first_error.get_or_insert_with(|| GatewayError::Io(error));
+                            first_error.get_or_insert(GatewayError::Io(error));
                             shutdown.cancel();
                             break;
                         }
@@ -89,7 +89,7 @@ impl Gateway {
                             %error,
                             "SDK session task failed; stopping Gateway runtime"
                         );
-                        first_error.get_or_insert_with(|| session_task_failure(error));
+                        first_error.get_or_insert(session_task_failure(error));
                         shutdown.cancel();
                         break;
                     }
@@ -109,7 +109,7 @@ impl Gateway {
                         %error,
                         "SDK session task failed during shutdown"
                     );
-                    shutdown_error.get_or_insert_with(|| session_shutdown_task_failure(error));
+                    shutdown_error.get_or_insert(session_shutdown_task_failure(error));
                 }
             }
         }
