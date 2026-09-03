@@ -4,14 +4,14 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+    branches: [main]
 
 concurrency:
   group: release-${{ github.event.repository.default_branch }}
   queue: max
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 env:
   REGISTRY: ghcr.io
@@ -99,6 +99,9 @@ jobs:
     name: Release ${{ matrix.component }}
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '{"include":[]}' }}
+    permissions:
+      contents: write
+      packages: write
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:

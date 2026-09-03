@@ -180,8 +180,8 @@ image를 push하고 같은 컴포넌트의 `latest` tag와 GitHub Release를 갱
 릴리스하지 않는다. 각 GHCR package는 현재 `latest`가 가리키는 version을 포함해 semver
 release image 최근 20개를 유지한다.
 
-릴리스 실행은 순서대로 대기하므로 연속된 version 변경도 생략하지 않는다. 이미 생성된 tag가
-같은 commit을 가리키는 재실행은 허용하고, 다른 commit에서 같은 version을 재사용하는 것은 거절한다.
+릴리스 실행은 동시에 실행되지 않도록 대기열에 들어가며, 이미 발행된 version은 재발행하지 않는다.
+tag만 생성된 불완전한 릴리스는 같은 commit에서 재실행할 수 있고, 다른 commit이면 거절한다.
 GitHub Release의 전역 `Latest` 표시는 사용하지 않고, image별 `latest` tag만 갱신한다.
 
 `VERSION.gateway`와 `VERSION.route-table`은 배포 image 버전이며 서로 독립적이다. Rust
