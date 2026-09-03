@@ -1,16 +1,16 @@
-# TEST 002: 단일 Gateway Rust 회귀 profile
+# TEST 002: 단일 Gateway 회귀 검증
 
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active |
-| 실행 | 구현 완료, workspace CI 회귀 대상 |
+| 실행 | workspace CI |
 | 목적 | RT와 peer relay 없이 SDK↔Gateway local Pipe 계약을 결정적으로 검증한다. |
 | 상위 계약 | [SPEC 002](../spec/002-sdk-pipe-contract.md), [SPEC 003](../spec/003-listener-registration-contract.md), [SPEC 005](../spec/005-connection-establishment-contract.md), [SPEC 007](../spec/007-error-and-state-model.md), [SPEC 008](../spec/008-runtime-observability-contract.md) |
 | 전체 matrix | [TEST 001](001-requirement-test-matrix.md) |
-| 현재 Compose profile | [TEST 004](004-rt1-gw3-closed-loop-test-plan.md) |
+| Compose 검증 | [TEST 004](004-rt1-gw3-closed-loop-test-plan.md) |
 
-이 파일명은 기존 링크 호환을 위해 유지한다. 현재 root `docker-compose.yml`은 RT1/GW3 profile이며,
-단일 Gateway는 빠르고 결정적인 Rust unit·integration·process test가 소유한다.
+단일 Gateway는 Rust unit·integration·process test가 검증하고, root
+`docker-compose.yml`의 RT1/GW3 구성은 [TEST 004](004-rt1-gw3-closed-loop-test-plan.md)가 검증한다.
 
 ## 범위
 

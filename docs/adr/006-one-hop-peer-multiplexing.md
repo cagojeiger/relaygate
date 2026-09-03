@@ -32,7 +32,7 @@ RFC 7426의 용어로 local Pipe와 one-hop peer relay는 data/forwarding plane�
 
 양쪽 Gateway가 동시에 dial하면 서로 반대 방향의 두 transport를 모두 유지한다. cross-Gateway winner 합의나 total-order arbitration은 하지 않는다. 같은 Gateway가 같은 peer로 만드는 중복 candidate만 자기 방향 안에서 직렬화하고 제거한다.
 
-peer handshake의 Gateway identity는 배포 환경이 인증한 transport context와 일치해야 한다. handshake frame이 주장하는 `GatewayId`만으로 peer를 신뢰하지 않는다. TLS, mTLS 또는 service mesh의 구체적인 선택은 이 ADR이 정하지 않는다.
+peer handshake의 Gateway identity는 배포 환경이 인증한 transport context와 일치해야 한다. handshake frame이 주장하는 `GatewayId`만으로 peer를 신뢰하지 않는다. 구체적인 channel security 구현은 배포 환경이 소유한다.
 
 하나의 PeerTransport 안에서는 transport dialer와 acceptor가 서로 다른 initiator bit를 사용해 `StreamId` 공간을 나눈다. Pipe의 한 방향 graceful shutdown은 `FIN`, 정상적인 전체 종료는 `CLOSE`, 실패에 의한 전체 종료는 `RESET`으로 구분한다.
 
@@ -45,14 +45,6 @@ peer handshake의 Gateway identity는 배포 환경이 인증한 transport conte
 - 통신 중인 unordered Gateway pair 수가 `E`이면 READY transport 수는 최대 `2E`다.
 - 양쪽이 동시에 stream을 열어도 별도 stream-ID 합의 없이 충돌하지 않는다.
 - half-close와 정상 종료, 실패 종료가 하나의 최소 상태 모델로 구분된다.
-
-## 이 ADR에서 정하지 않는 것
-
-- 두 READY transport 사이의 stream scheduling
-- transport protocol과 wire format
-- transport identity와 integrity를 제공하는 TLS, mTLS 또는 service-mesh 구현
-- flow-control window, scheduling과 resource limit
-- transport liveness와 zero-stream idle retirement. 이는 [ADR 007](007-transport-liveness-and-idle-retirement.md)이 정한다.
 
 ## 참고
 

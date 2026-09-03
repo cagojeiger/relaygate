@@ -127,10 +127,3 @@ Gateway는 active lease가 없으면 `Register`로 RT가 발급한 `LeaseId`를 
 9. `ClientKey`는 각 `REGISTER` admission에서만 검증하고 binding, mapping 또는 Pipe state에 저장하지 않는다. 같은 Gateway process에서 config 변경이나 runtime revocation을 관찰하지 않는다.
 10. RT registration의 claimed `GatewayId`는 authenticated transport identity와 일치해야 하며 identity 또는 authorization 실패는 local binding truth를 제거하지 않는다.
 11. local binding의 활성 여부와 RT registration sync 상태는 독립적이다. `UNSYNCED`는 local admission을 막지 않으며 remote discovery만 약화시킨다.
-
-## 이 계약에서 정하지 않는 것
-
-- public Listener registration API signature
-- online 또는 rolling shard directory 변경
-- lease lifetime, keepalive interval과 retry backoff 수치
-- wire format과 transport

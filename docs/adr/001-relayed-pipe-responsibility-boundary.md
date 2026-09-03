@@ -25,13 +25,6 @@ RelayGate의 책임은 logical destination을 현재 Listener에 연결하여 �
 - application message의 처리·저장·전달 확인은 Pipe 수립과 별개의 의미다.
 - 닫힌 Pipe의 payload를 replay하거나 Pipe를 다른 Listener로 resume하지 않는다.
 
-## 이 ADR에서 정하지 않는 것
-
-- SDK API 형태와 연결 성공 시점
-- 상태, 오류, timeout, retry
-- buffer와 flow-control 크기
-- transport와 wire format
-
 ## 참고
 
 - [RFC 1928](../rfc/rfc-1928-socks5-relay.md)

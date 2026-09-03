@@ -1,4 +1,4 @@
-# TEST 004: RT 1개와 Gateway 3개 closed-loop 구현 profile
+# TEST 004: RT 1개와 Gateway 3개 closed-loop 검증
 
 | 항목 | 값 |
 | --- | --- |
@@ -7,17 +7,14 @@
 | 기준 | [SPEC 004](../spec/004-route-table-contract.md), [SPEC 005](../spec/005-connection-establishment-contract.md), [SPEC 006](../spec/006-peer-relay-contract.md), [SPEC 007](../spec/007-error-and-state-model.md), [TEST 001](001-requirement-test-matrix.md) |
 
 이 문서는 새 동작 규칙을 정의하지 않는다. SPEC 요구사항과 TEST 001 시나리오를
-`RT x 1`, `Gateway x 3`, Rust SDK, Docker Compose 실행 profile로 연결한다.
+`RT x 1`, `Gateway x 3`, Rust SDK, Docker Compose 구성에 연결한다.
 
-현재 in-process 통합 검증은 RT 1개와 Gateway 3개에서 local 3경로, directed remote 6경로,
+in-process 통합 검증은 RT 1개와 Gateway 3개에서 local 3경로, directed remote 6경로,
 N:M binding 단일 선택, pair별 shared PeerTransport, 양방향 bytes, RT 단절 뒤 기존 Pipe 지속과
 terminal cleanup을 결정적으로 증명한다. CI의 Docker Compose profile은 실제 process에서 GW-B
 restart, RT outage와 READY-empty restart 뒤 current-state 복구를 검증한다.
 
-RT sharding 증설, shard directory 교체와 online reconfiguration은 이번 profile의 목표가 아니다.
-운영 중 후속 절차로 다룬다.
-
-## 구현 profile
+## 검증 구성
 
 ```text
 Language       = Rust
@@ -182,21 +179,14 @@ deterministic하게 검증한다.
 | `AC-G3-FAIL-02` | Compose | RT outage 중 established Pipe는 유지되고 신규 remote open은 `UNAVAILABLE`로 terminal 실패한다. |
 | `AC-G3-FAIL-03` | integration/Compose | RT restart 뒤 Gateway가 current local snapshot으로만 재등록하여 신규 open이 복구된다. |
 | `AC-G3-STATE-01` | integration | 반복 실패 뒤 transient count와 buffer가 baseline으로 돌아가며 과거 operation 수에 비례한 누적 state가 없다. |
-| `AC-G3-SDK-01` | regression | public Rust SDK 사용 패턴과 single-Gateway profile의 기존 보장이 유지된다. |
+| `AC-G3-SDK-01` | regression | public Rust SDK 사용 패턴과 single-Gateway 계약이 통과한다. |
 
-## 제외 범위
+## 증거 경계
 
-이 profile은 다음을 완료 조건으로 삼지 않는다.
-
-| 제외 | 이유 |
-| --- | --- |
-| RT HA, replica, consensus | 이번 profile은 RT process 1개의 memory-only 동작과 restart 후 재구성만 검증한다. |
-| RT persistence | current state만 재등록한다는 SPEC 004/007의 범위를 유지한다. |
-| RT shard 2개 이상 E2E | sharding authority는 core/integration에서 검증하고 process-level multi-shard는 후속 profile로 둔다. |
-| RT sharding 운영 증설 | 이번 profile은 RT 1개 운영 준비를 기준으로 하며 shard 증설은 운영 중 후속 절차로 정한다. |
-| Kubernetes, Helm, mTLS | 배포와 production identity adapter는 runtime profile 밖이다. |
-| delivery acknowledgement, replay, resume | RelayGate는 opaque Pipe만 제공하고 payload 의미와 업무 retry를 소유하지 않는다. |
-| selection 품질, load balancing | 한 attempt가 후보 하나를 선택한다는 정확성만 검증한다. |
+이 검증은 RT1/GW3 local/CI 구성에 한정된다. process-level multi-shard,
+RT HA·replication·consensus·persistence, Kubernetes·Helm·mTLS 배포를 증명하지
+않는다. delivery acknowledgement·replay·resume과 selection 품질은 RelayGate의
+보장이 아니다.
 
 ## 완료 기준
 

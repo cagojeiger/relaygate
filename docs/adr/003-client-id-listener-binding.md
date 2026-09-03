@@ -34,13 +34,6 @@ many-to-many는 identity와 runtime location을 분리하는 모델이다. broad
 - 하나의 session이 사라져도 다른 live binding은 독립적으로 남을 수 있다.
 - 연결마다 후보 중 하나를 선택해야 하지만 selection policy는 별도 계약이다.
 
-## 이 ADR에서 정하지 않는 것
-
-- binding과 route mapping entry의 field 및 identifier 형식
-- binding selection, fairness, weight, locality와 stickiness
-- registration API, 중복 오류 code와 wire retry의 idempotency
-- binding lifetime과 cleanup 순서
-
 ## 참고
 
 - [RFC 9299](../rfc/rfc-9299-lisp-architecture.md)

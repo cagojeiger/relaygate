@@ -5,7 +5,7 @@
 | 상태 | Active |
 | 근거 | [ADR 001](../adr/001-relayed-pipe-responsibility-boundary.md), [ADR 002](../adr/002-application-protocol-boundary.md), [ADR 003](../adr/003-client-id-listener-binding.md), [ADR 004](../adr/004-current-state-routing-topology.md), [ADR 005](../adr/005-soft-state-registration-lifecycle.md), [ADR 006](../adr/006-one-hop-peer-multiplexing.md), [ADR 007](../adr/007-transport-liveness-and-idle-retirement.md) |
 
-이 문서는 RelayGate의 공통 용어, identity, 소유 관계와 cardinality를 정의한다. 등록, route mapping, 조회, 연결 수립과 오류는 각 후속 SPEC이 소유한다.
+이 문서는 RelayGate의 공통 용어, identity, 소유 관계와 cardinality를 정의한다. 등록, route mapping, 조회, 연결 수립과 오류는 각 관련 SPEC이 소유한다.
 
 ## 역할
 
@@ -28,7 +28,7 @@ Connector application                              Listener application
 | `ListenerSession` | Listener SDK runtime이 Gateway에 현재 연결된 한 번의 live incarnation |
 | `ClientId` | 위치가 아닌 non-empty UTF-8 logical destination identifier. identity 비교와 authority hash는 정규화하지 않은 exact bytes를 사용한다. |
 | `ClientKey` | Listener가 해당 `ClientId`에 binding을 등록할 권한을 증명하는 credential. configured `ClientId`마다 Gateway startup configuration에 하나만 존재한다. |
-| `InternalGatewayKey` | 최초 local/CI adapter가 configured `GatewayName`을 internal RT/peer connection의 fresh runtime `GatewayId`에 결합할 때만 쓰는 static test credential. `ClientKey`, application identity 또는 production channel security가 아니다. |
+| `InternalGatewayKey` | local/CI adapter가 configured `GatewayName`을 internal RT/peer connection의 fresh runtime `GatewayId`에 결합할 때만 쓰는 static test credential. `ClientKey`, application identity 또는 production channel security가 아니다. |
 | `BindingId` | 하나의 `ListenerSession` 안에서 모든 `ListenerBinding` incarnation을 lifetime 전체에 걸쳐 구분하는 재사용하지 않는 opaque identifier |
 | `ListenerBinding` | 하나의 `ClientId`와 하나의 live `ListenerSession`을 연결하는 Gateway-local association |
 | `MappingEntry` | authority shard가 resolve에 사용하는 하나의 `ListenerBinding`에 대한 shard-local soft-state view |
@@ -194,11 +194,3 @@ snapshot의 모든 mapping은 같은 `RegistrationKey`에 속하고 그 `ClientI
 - **`TERM-029`**: `ClientId`는 non-empty valid UTF-8이어야 하고 equality와 authority hash에 exact bytes를 사용해야 한다. Unicode normalization, case folding 또는 locale 변환을 암묵적으로 적용해서는 안 된다.
 - **`TERM-030`**: `InternalGatewayKey`는 local/CI internal component handshake에만 사용하고 `ClientKey`, application credential 또는 payload 권한과 동일시해서는 안 된다. startup configuration 밖의 mapping·lease·Pipe·RelayStream과 로그에 저장해서는 안 되며 plain TCP test adapter를 production confidentiality 또는 integrity 보장으로 표현해서는 안 된다.
 - **`TERM-031`**: `Heartbeat`는 transport liveness 전용이어야 하며 Pipe read idle, application response absence, payload delivery 또는 peer authorization 결과로 해석해서는 안 된다. `IdleRetirement`는 stream 수가 0인 `PeerTransport`에만 적용하고 live Pipe를 닫는 근거가 되어서는 안 된다.
-
-## 이 SPEC에서 정하지 않는 것
-
-- 등록, mapping 갱신과 제거 절차
-- binding selection policy
-- online 또는 rolling shard directory 변경
-- 위에서 정하지 않은 identifier encoding과 생성 방식
-- 상태명, 오류 code, timeout과 retry 값

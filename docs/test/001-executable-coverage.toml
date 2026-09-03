@@ -1,7 +1,7 @@
 # TEST 001 실행 증거 인덱스
 #
 # TEST 001은 시나리오와 requirement 의미의 canonical source다.
-# 이 파일은 현재 Rust test의 실행 증거만 연결한다.
+# 이 파일은 Rust test의 실행 증거만 연결한다.
 # check mode는 partial/gap을 보고하고, gate mode는 이를 거절한다.
 
 schema_version = 1
@@ -710,7 +710,7 @@ rust = ["state::tests::foreign_open_pipe_frames_terminate_each_offender_without_
 id = "T-EDGE-33"
 status = "executable"
 rust = ["session_loss_then_permanent_rejection_blocks_listener_until_recreated", "permanent_recovery_rejection_blocks_only_affected_listener"]
-reason = "한 fake-Gateway sequence에서 accepted Pipe와 queued Pipe를 만든 뒤 session loss, accepted Pipe의 UNAVAILABLE, old queue 비반환, recovery REGISTER의 UNAUTHENTICATED 거절, pending·후속 accept의 동일 오류, BLOCKED close와 corrected-key 새 listen 성공 및 old queue 비누출을 검증한다. 기존 sibling test를 합성해 영구 거절이 다른 Listener와 shared session을 닫지 않음을 함께 검증한다."
+reason = "한 fake-Gateway sequence에서 accepted Pipe와 queued Pipe를 만든 뒤 session loss, accepted Pipe의 UNAVAILABLE, old queue 비반환, recovery REGISTER의 UNAUTHENTICATED 거절, pending·후속 accept의 동일 오류, BLOCKED close와 corrected-key 새 listen 성공 및 old queue 비누출을 검증한다. sibling test와 함께 영구 거절이 다른 Listener와 shared session을 닫지 않음을 검증한다."
 
 [[case]]
 id = "T-EDGE-34"
