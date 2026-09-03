@@ -72,8 +72,8 @@ gateway:
   extraEnv: []
 
 routeTable:
-  # logical shard rt-0 .. rt-(shardCount-1)마다 stable Service 하나와
-  # single-replica Deployment 하나를 만든다.
+  # 하나의 StatefulSet이 logical shard rt-0 .. rt-(shardCount-1)를 각각 한 pod로
+  # 실행한다. replica 수가 아니라 shard 수이며 일반적인 scale 변경 대상이 아니다.
   shardCount: 2
 
   image:

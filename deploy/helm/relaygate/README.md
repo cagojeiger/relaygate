@@ -9,8 +9,8 @@ Rust SDK ── TCP ──► Gateway Service
                       │      └── pod별 stable peer DNS
                       │
                       └── hash(ClientId)
-                             └── RouteTable shard Service × M
-                                    └── Deployment desired replicas=1, Recreate
+                             └── RouteTable headless Service
+                                    └── StatefulSet × M logical shards
 ```
 
 SDK application, TLS ingress, service mesh, Secret 발급기, 저장소는 포함하지 않는다. Gateway와
@@ -18,6 +18,9 @@ RouteTable image version은 서로 독립적으로 지정한다. RouteTable은 m
 `emptyDir`를 사용하지 않는다.
 
 ## 사전 조건
+
+Kubernetes 1.32 이상이 필요하다. RouteTable StatefulSet은 stable
+`apps.kubernetes.io/pod-index` label을 logical shard ordinal로 사용한다.
 
 현재 runtime의 내부 TCP adapter는 Gateway 이름별 key allowlist를 요구한다. 차트는 Secret을
 생성하지 않으며 다음 두 key가 있는 기존 Secret만 참조한다.
@@ -64,9 +67,9 @@ service mesh를 통해 SDK Service로 연결한다.
   만든다. SDK Service는 ready Gateway 중 하나로 새 session을 전달한다.
 - peer headless Service는 특정 Owner Gateway pod를 one hop으로 찾는 DNS만 제공한다. payload가
   RouteTable을 통과하지 않는다.
-- `routeTable.shardCount=M`은 `rt-0..rt-(M-1)`의 directory와 shard별 Service/Deployment를
-  만든다. 각 logical shard는 desired replica 하나이며 일반 upgrade에서 old/new revision이
-  겹치지 않도록 Deployment strategy는 `Recreate`다.
+- `routeTable.shardCount=M`은 하나의 RouteTable StatefulSet에 pod `0..M-1`을 만든다. 각
+  ordinal은 정확히 하나의 logical shard `rt-0..rt-(M-1)`와 pod별 headless DNS endpoint를
+  소유한다. `M`은 replica 수가 아니라 shard 수다.
 - 모든 process는 같은 immutable ConfigMap의 exact JSON bytes를 read-only로 mount한다.
   Helm upgrade로 directory content를 바꾸면 immutable update가 거절된다.
 - RT restart는 빈 `READY` 상태로 시작한다. Gateway가 current Listener snapshot을 새 lease로
@@ -84,7 +87,7 @@ snapshot의 RT 재등록 완료나 end-to-end Pipe 성공을 뜻하지 않는다
 
 | 변경 | 절차와 영향 |
 | --- | --- |
-| image tag | Gateway는 ordinal별 rolling replacement, RT는 shard별 Recreate |
+| image tag | Gateway와 RT는 StatefulSet ordinal별 rolling replacement |
 | Secret startup config reload | Secret 갱신 뒤 `credentials.reloadToken`을 새 값으로 바꾸어 Gateway와 RT restart. 무중단 key rotation 보장은 아님 |
 | Gateway 수 증가 | 새 ordinal의 GatewayName/key 추가 → reloadToken 변경 rollout 완료 → replica 증가 |
 | Gateway 수 감소 | replica 감소 → 제거된 GatewayName/key 삭제 → reloadToken 변경 rollout 완료 |
@@ -95,8 +98,9 @@ RouteTable replication, online shard resize와 기존 Pipe 무중단 migration�
 내부 key adapter는 confidentiality를 제공하지 않는다. 실제 운영에서는 trusted network 또는
 service mesh/mTLS 같은 배포 계층으로 내부 channel identity와 integrity를 제공해야 한다.
 
-`Recreate`는 정상 Deployment upgrade의 old/new overlap만 막는다. partition된 node의 process
-fencing, force-delete 뒤의 단일 writer, RT replication과 consensus를 제공하지 않는다.
+StatefulSet identity는 partition된 node의 process fencing, force-delete 뒤의 단일 writer, RT
+replication과 consensus를 제공하지 않는다. RouteTable StatefulSet에는 PVC와
+`volumeClaimTemplates`가 없으므로 pod 재생성은 같은 shard identity의 빈 memory state로 시작한다.
 
 ShardDirectory를 바꿀 때는 terminating old RT와 새 RT가 겹치지 않도록 다음 순서를 지킨다.
 

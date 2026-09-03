@@ -51,13 +51,16 @@ jobs:
         run: |
           mkdir -p target/helm
           helm lint --strict deploy/helm/relaygate \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true
           helm template relaygate deploy/helm/relaygate \
             --namespace relaygate \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             > target/helm/default.yaml
           helm template minimal deploy/helm/relaygate \
             --namespace relaygate-test \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             --set gateway.replicaCount=1 \
             --set routeTable.shardCount=1 \
@@ -65,40 +68,60 @@ jobs:
             > target/helm/minimal.yaml
           helm template true deploy/helm/relaygate \
             --namespace relaygate-test \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             --set-string serviceAccount.name=true \
             > target/helm/ambiguous-name.yaml
+          long_release_prefix=$(printf 'a%.0s' {1..44})
+          for suffix in one two; do
+            helm template "${long_release_prefix}-${suffix}" deploy/helm/relaygate \
+              --namespace relaygate-test \
+              --kube-version 1.32.0 \
+              --set internalTransport.trustedLocalAdapter=true \
+              --show-only templates/shard-directory-configmap.yaml \
+              > "target/helm/long-name-${suffix}.yaml"
+          done
 
-          test "$(grep -c '^kind: StatefulSet$' target/helm/default.yaml)" -eq 1
-          test "$(grep -c '^kind: Deployment$' target/helm/default.yaml)" -eq 2
-          test "$(grep -c '^kind: Service$' target/helm/default.yaml)" -eq 4
-          test "$(grep -c '^  type: ClusterIP$' target/helm/default.yaml)" -eq 4
-          test "$(grep -c '^  clusterIP: None$' target/helm/default.yaml)" -eq 1
+          test "$(grep -c '^kind: StatefulSet$' target/helm/default.yaml)" -eq 2
+          deployment_count=$(grep -c '^kind: Deployment$' target/helm/default.yaml || true)
+          test "$deployment_count" -eq 0
+          test "$(grep -c '^kind: Service$' target/helm/default.yaml)" -eq 3
+          test "$(grep -c '^  type: ClusterIP$' target/helm/default.yaml)" -eq 3
+          test "$(grep -c '^  clusterIP: None$' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^  replicas: 3$' target/helm/default.yaml)" -eq 1
-          test "$(grep -c '^  replicas: 1$' target/helm/default.yaml)" -eq 2
-          test "$(grep -c '^    type: Recreate$' target/helm/default.yaml)" -eq 2
-          test "$(grep -c '^kind: Deployment$' target/helm/minimal.yaml)" -eq 1
+          test "$(grep -c '^  replicas: 2$' target/helm/default.yaml)" -eq 1
+          test "$(grep -c '^    type: RollingUpdate$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^kind: StatefulSet$' target/helm/minimal.yaml)" -eq 2
+          test "$(grep -c '^  replicas: 1$' target/helm/minimal.yaml)" -eq 2
           grep -A1 -Fq 'name: RELAYGATE_GATEWAY_NAME' target/helm/default.yaml
           grep -Fq "value: \"\$(POD_NAME)\"" target/helm/default.yaml
           grep -Fq "value: \"\$(POD_NAME).relaygate-gateway-peer.\$(POD_NAMESPACE).svc.cluster.local:27421\"" \
             target/helm/default.yaml
+          grep -Fq "fieldPath: \"metadata.labels['apps.kubernetes.io/pod-index']\"" \
+            target/helm/default.yaml
+          grep -Fq "value: \"rt-\$(POD_INDEX)\"" target/helm/default.yaml
           grep -Fq '"id":"rt-0"' target/helm/default.yaml
           grep -Fq '"id":"rt-1"' target/helm/default.yaml
-          grep -Fq 'relaygate-rt-0.relaygate.svc.cluster.local:27430' target/helm/default.yaml
-          grep -Fq 'relaygate-rt-1.relaygate.svc.cluster.local:27430' target/helm/default.yaml
+          grep -Fq 'relaygate-rt-0.relaygate-rt.relaygate.svc.cluster.local:27430' target/helm/default.yaml
+          grep -Fq 'relaygate-rt-1.relaygate-rt.relaygate.svc.cluster.local:27430' target/helm/default.yaml
           grep -Fq 'immutable: true' target/helm/default.yaml
           test "$(grep 'checksum/shard-directory:' target/helm/default.yaml | sort -u | wc -l)" -eq 1
           directory_json=$(awk '/^  shard-directory.json: \|-$/ { getline; sub(/^    /, ""); print; exit }' target/helm/default.yaml)
           directory_checksum=$(printf '%s' "$directory_json" | sha256sum | cut -d ' ' -f1)
           rendered_checksum=$(grep 'checksum/shard-directory:' target/helm/default.yaml | head -n1 | tr -d '"' | awk '{print $2}')
           test "$directory_checksum" = "$rendered_checksum"
-          test "$(grep -c 'key: "internal-gateway-keys"' target/helm/default.yaml)" -eq 3
+          test "$(grep -c 'key: "internal-gateway-keys"' target/helm/default.yaml)" -eq 2
           test "$(grep -c 'key: "client-keys"' target/helm/default.yaml)" -eq 1
-          test "$(grep -c '^        relaygate.io/credentials-reload: ""$' target/helm/default.yaml)" -eq 3
-          test "$(grep -c '^              mountPath: /etc/relaygate$' target/helm/default.yaml)" -eq 3
-          test "$(grep -c '^[[:space:]]*runAsNonRoot: true$' target/helm/default.yaml)" -eq 4
-          test "$(grep -c '^[[:space:]]*readOnlyRootFilesystem: true$' target/helm/default.yaml)" -eq 4
-          if grep -Eq '^kind: (Secret|PersistentVolumeClaim|Ingress|HorizontalPodAutoscaler)$|^[[:space:]]+(emptyDir|volumeClaimTemplates):' \
+          test "$(grep -c '^        relaygate.io/credentials-reload: ""$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^              mountPath: /etc/relaygate$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^[[:space:]]*runAsNonRoot: true$' target/helm/default.yaml)" -eq 3
+          test "$(grep -c '^[[:space:]]*readOnlyRootFilesystem: true$' target/helm/default.yaml)" -eq 3
+          long_name_one=$(awk '/^  name:/ { print $2; exit }' target/helm/long-name-one.yaml)
+          long_name_two=$(awk '/^  name:/ { print $2; exit }' target/helm/long-name-two.yaml)
+          test "$long_name_one" != "$long_name_two"
+          test "${#long_name_one}" -le 63
+          test "${#long_name_two}" -le 63
+          if grep -Eq '^kind: (Deployment|Secret|PersistentVolumeClaim|Ingress|HorizontalPodAutoscaler)$|^[[:space:]]+(emptyDir|volumeClaimTemplates):' \
             target/helm/default.yaml; then
             echo "Helm chart rendered a forbidden stateful or application-owned resource"
             exit 1
@@ -109,18 +132,28 @@ jobs:
             exit 1
           fi
 
-          if helm template invalid deploy/helm/relaygate >/dev/null 2>&1; then
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 >/dev/null 2>&1; then
             echo "Helm chart accepted the plain-TCP adapter without explicit opt-in"
             exit 1
           fi
 
           if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.31.0 \
+            --set internalTransport.trustedLocalAdapter=true >/dev/null 2>&1; then
+            echo "Helm chart accepted Kubernetes older than 1.32"
+            exit 1
+          fi
+
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             --set routeTable.shardCount=0 >/dev/null 2>&1; then
             echo "Helm schema accepted an empty RouteTable directory"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             --set 'gateway.extraEnv[0].name=RELAYGATE_BIND_ADDR' \
             --set 'gateway.extraEnv[0].value=invalid' >/dev/null 2>&1; then
@@ -128,6 +161,15 @@ jobs:
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set 'routeTable.extraEnv[0].name=POD_INDEX' \
+            --set 'routeTable.extraEnv[0].value=0' >/dev/null 2>&1; then
+            echo "Helm chart accepted an override of the RouteTable pod ordinal"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             --set gateway.sdkPort=27420 \
             --set gateway.peerPort=27420 >/dev/null 2>&1; then
@@ -135,6 +177,7 @@ jobs:
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             --set credentials.existingSecret=invalid..name >/dev/null 2>&1; then
             echo "Helm schema accepted an invalid Secret reference"
@@ -142,12 +185,14 @@ jobs:
           fi
           long_dns_label=$(printf 'a%.0s' {1..64})
           if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             --set "credentials.existingSecret=${long_dns_label}" >/dev/null 2>&1; then
             echo "Helm chart accepted a Secret reference with an oversized DNS label"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
             --set "clusterDomain=${long_dns_label}.local" >/dev/null 2>&1; then
             echo "Helm chart accepted a cluster domain with an oversized DNS label"

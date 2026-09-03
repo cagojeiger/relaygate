@@ -10,7 +10,7 @@ cluster 내부 SDK endpoint:
 
 workload 확인:
 
-  kubectl -n {{ .Release.Namespace }} get statefulset,deployment,pod,service \
+  kubectl -n {{ .Release.Namespace }} get statefulset,pod,service \
     -l app.kubernetes.io/instance={{ .Release.Name }}
 
 SDK admission chart test 실행:

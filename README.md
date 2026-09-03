@@ -87,14 +87,14 @@ SDK application과 credential은 배포하지 않습니다.
 ```text
 SDK ──► Gateway ClusterIP Service ──► Gateway StatefulSet × N
                                            │ pod별 peer DNS
-                                           └──► RouteTable Service × M
-                                                    └── Deployment × 1
+                                           └──► RouteTable headless Service
+                                                    └── StatefulSet × M shards
 ```
 
 기본값은 Gateway 3개와 memory-only RouteTable shard 2개입니다. Gateway는 안정적인 pod 이름과
-one-hop locator가 필요하므로 StatefulSet을 사용합니다. 각 RT shard는 일반 rollout 중 독립
-authority 두 개가 동시에 뜨는 것을 피하도록 single-replica `Recreate` Deployment로 실행합니다.
-PVC와 `emptyDir`는 만들지 않습니다.
+one-hop locator가 필요하므로 StatefulSet을 사용합니다. RouteTable도 StatefulSet ordinal 하나를
+logical shard 하나로 사용합니다. `routeTable.shardCount`는 replica 수가 아니라 shard 수입니다.
+PVC와 `emptyDir`는 만들지 않으며 Kubernetes 1.32 이상이 필요합니다.
 
 먼저 release namespace에 `internal-gateway-keys`와 `client-keys`를 가진 Secret을 생성한 뒤
 설치합니다. 기본 release 이름과 Secret 형식은 차트 [README](deploy/helm/relaygate/README.md)에

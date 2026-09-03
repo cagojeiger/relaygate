@@ -4,11 +4,15 @@
 {{- end }}
 
 {{- define "relaygate.fullname" -}}
-{{- $name := .Chart.Name }}
-{{- if contains $name .Release.Name }}
-{{- .Release.Name | trunc 45 | trimSuffix "-" }}
-{{- else }}
-{{- printf "%s-%s" .Release.Name $name | trunc 45 | trimSuffix "-" }}
+{{- $name := .Chart.Name -}}
+{{- $base := printf "%s-%s" .Release.Name $name -}}
+{{- if contains $name .Release.Name -}}
+{{- $base = .Release.Name -}}
+{{- end -}}
+{{- if gt (len $base) 45 -}}
+{{- printf "%s-%s" ($base | trunc 36 | trimSuffix "-") ($base | sha256sum | trunc 8) -}}
+{{- else -}}
+{{- $base | trimSuffix "-" -}}
 {{- end }}
 {{- end }}
 
@@ -29,7 +33,11 @@
 {{- end }}
 
 {{- define "relaygate.routeTableName" -}}
-{{- printf "%s-rt-%d" (include "relaygate.fullname" .root) .index | trunc 63 | trimSuffix "-" }}
+{{- printf "%s-rt" (include "relaygate.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "relaygate.routeTablePodName" -}}
+{{- printf "%s-%d" (include "relaygate.routeTableName" .root) .index }}
 {{- end }}
 
 {{- define "relaygate.shardDirectoryName" -}}
@@ -61,8 +69,9 @@ app.kubernetes.io/part-of: "relaygate"
 {{- $root := . -}}
 {{- $shards := list -}}
 {{- range $index := until (int .Values.routeTable.shardCount) -}}
-{{- $serviceName := include "relaygate.routeTableName" (dict "root" $root "index" $index) -}}
-{{- $endpoint := printf "%s.%s.svc.%s:%d" $serviceName $root.Release.Namespace $root.Values.clusterDomain (int $root.Values.routeTable.port) -}}
+{{- $podName := include "relaygate.routeTablePodName" (dict "root" $root "index" $index) -}}
+{{- $serviceName := include "relaygate.routeTableName" $root -}}
+{{- $endpoint := printf "%s.%s.%s.svc.%s:%d" $podName $serviceName $root.Release.Namespace $root.Values.clusterDomain (int $root.Values.routeTable.port) -}}
 {{- $shards = append $shards (dict "id" (printf "rt-%d" $index) "endpoint" $endpoint) -}}
 {{- end -}}
 {{- dict "format_version" 1 "authority_hash" "sha256-modulo-v1" "shards" $shards | toJson -}}
@@ -112,7 +121,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateGatewayPodMetadata" -}}
-{{- $reservedLabels := list "helm.sh/chart" "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "app.kubernetes.io/managed-by" "app.kubernetes.io/part-of" -}}
+{{- $reservedLabels := list "helm.sh/chart" "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "app.kubernetes.io/managed-by" "app.kubernetes.io/part-of" "apps.kubernetes.io/pod-index" -}}
 {{- range $key, $_ := .Values.gateway.podLabels }}
 {{- if has $key $reservedLabels }}
 {{- fail (printf "gateway.podLabels cannot override chart-managed label %s" $key) }}
@@ -127,7 +136,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateRouteTableExtraEnv" -}}
-{{- $managed := list "RELAYGATE_RT_TRUSTED_LOCAL" "RELAYGATE_RT_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_RT_SHARD_ID" "RELAYGATE_RT_LEASE_TTL_MS" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" -}}
+{{- $managed := list "POD_INDEX" "RELAYGATE_RT_TRUSTED_LOCAL" "RELAYGATE_RT_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_RT_SHARD_ID" "RELAYGATE_RT_LEASE_TTL_MS" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" -}}
 {{- range .Values.routeTable.extraEnv }}
 {{- if has .name $managed }}
 {{- fail (printf "routeTable.extraEnv cannot override chart-managed variable %s" .name) }}
@@ -136,7 +145,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateRouteTablePodMetadata" -}}
-{{- $reservedLabels := list "helm.sh/chart" "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "app.kubernetes.io/managed-by" "app.kubernetes.io/part-of" "relaygate.io/shard" -}}
+{{- $reservedLabels := list "helm.sh/chart" "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "app.kubernetes.io/managed-by" "app.kubernetes.io/part-of" "apps.kubernetes.io/pod-index" -}}
 {{- range $key, $_ := .Values.routeTable.podLabels }}
 {{- if has $key $reservedLabels }}
 {{- fail (printf "routeTable.podLabels cannot override chart-managed label %s" $key) }}
