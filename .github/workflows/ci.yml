@@ -218,6 +218,18 @@ jobs:
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=ghcr.io/Team/relaygate-gateway' >/dev/null 2>&1; then
+            echo "Helm schema accepted an uppercase image repository path"
+            exit 1
+          fi
+          helm template image-registry-port deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=registry.example:5000/team/relaygate' \
+            >/dev/null
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
             --set 'routeTable.extraEnv[0].name=POD_INDEX' \
             --set 'routeTable.extraEnv[0].value=0' >/dev/null 2>&1; then
             echo "Helm chart accepted an override of the RouteTable pod ordinal"

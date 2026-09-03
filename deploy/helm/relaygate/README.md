@@ -154,3 +154,7 @@ routeTable:
 resource request/limit은 부하 측정 없이 임의 기본값을 두지 않는다. `resources`, scheduling
 필드와 `extraEnv`는 환경별 values file에서 지정한다. `extraEnv`는 chart-managed identity,
 주소, directory, credential, log 변수를 중복 정의할 수 없다.
+
+`image.repository`는 tag와 digest를 제외한
+[distribution reference repository name](https://github.com/distribution/reference/blob/main/regexp.go)을
+사용한다. Registry host에는 대문자와 port를 사용할 수 있지만 repository path는 소문자여야 한다.
