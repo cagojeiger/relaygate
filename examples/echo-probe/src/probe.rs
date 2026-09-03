@@ -189,10 +189,9 @@ pub(crate) async fn expect_shard_isolation(
     }
 
     for (entry, connector) in connectors.iter().enumerate() {
-        let payload = format!(
-            "relaygate shard-isolation healthy entry={entry} client={available_client_id}"
-        )
-        .into_bytes();
+        let payload =
+            format!("relaygate shard-isolation healthy entry={entry} client={available_client_id}")
+                .into_bytes();
         assert_echo(
             open_when_registered(connector, available_client_id, ROUTE_WAIT).await?,
             &payload,

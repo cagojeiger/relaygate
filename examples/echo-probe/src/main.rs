@@ -166,12 +166,14 @@ mod tests {
 
     #[test]
     fn rejects_shard_isolation_with_missing_arguments() -> anyhow::Result<()> {
-        let error = command_from([
+        let error = match command_from([
             "expect-shard-isolation".to_owned(),
             "echo.b".to_owned(),
             "1".to_owned(),
-        ])
-        .expect_err("missing available ClientId must fail");
+        ]) {
+            Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
+            Err(error) => error,
+        };
         anyhow::ensure!(
             error.to_string().contains(SHARD_ISOLATION_USAGE),
             "unexpected error: {error}"
@@ -181,13 +183,15 @@ mod tests {
 
     #[test]
     fn rejects_non_numeric_shard_isolation_owner_index() -> anyhow::Result<()> {
-        let error = command_from([
+        let error = match command_from([
             "expect-shard-isolation".to_owned(),
             "echo.b".to_owned(),
             "gateway-b".to_owned(),
             "echo.c".to_owned(),
-        ])
-        .expect_err("non-numeric owner index must fail");
+        ]) {
+            Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
+            Err(error) => error,
+        };
         anyhow::ensure!(
             error
                 .to_string()
@@ -199,13 +203,15 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_shard_isolation_owner_index() -> anyhow::Result<()> {
-        let error = command_from([
+        let error = match command_from([
             "expect-shard-isolation".to_owned(),
             "echo.b".to_owned(),
             CLIENT_IDS.len().to_string(),
             "echo.c".to_owned(),
-        ])
-        .expect_err("out-of-range owner index must fail");
+        ]) {
+            Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
+            Err(error) => error,
+        };
         anyhow::ensure!(
             error.to_string().contains("must be in 0..3"),
             "unexpected error: {error}"
