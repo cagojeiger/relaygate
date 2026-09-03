@@ -214,7 +214,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           PACKAGE: ${{ matrix.image }}
         run: |
-          mapfile -t version_ids < <(
+          version_output=$(
             gh api --paginate \
               "/users/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100" \
               --jq '.[]
@@ -225,6 +225,10 @@ jobs:
               | sort -r \
               | cut -f2
           )
+          version_ids=()
+          if [ -n "$version_output" ]; then
+            mapfile -t version_ids <<< "$version_output"
+          fi
 
           versions_to_keep=20
           if (( ${#version_ids[@]} <= versions_to_keep )); then
