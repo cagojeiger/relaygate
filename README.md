@@ -122,7 +122,15 @@ Gateway lifecycle을 자세히 볼 때는 예를 들어 `RELAYGATE_LOG=relaygate
 
 ## RouteTable 설정
 
-같은 `relaygate-server` image를 `route-table` 역할로 실행합니다.
+Release image는 Gateway와 RouteTable을 분리한다. 로컬 Compose 검증 image는 echo 예제
+바이너리까지 포함하지만, GHCR runtime image는 `relaygate-server`만 포함한다.
+
+```text
+ghcr.io/cagojeiger/relaygate-gateway:<version>      -> relaygate-server gateway
+ghcr.io/cagojeiger/relaygate-route-table:<version>  -> relaygate-server route-table
+```
+
+개발 image에서 같은 `relaygate-server` image를 직접 쓴다면 `route-table` 역할로 실행합니다.
 
 ```bash
 relaygate-server route-table
@@ -156,6 +164,20 @@ cargo check --workspace --all-targets
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
+
+## 릴리스
+
+RelayGate runtime image는 컴포넌트별로 릴리스한다.
+
+| 파일 | Git tag | GHCR image |
+| --- | --- | --- |
+| `VERSION.gateway` | `gateway-vX.Y.Z` | `ghcr.io/cagojeiger/relaygate-gateway:X.Y.Z` |
+| `VERSION.route-table` | `route-table-vX.Y.Z` | `ghcr.io/cagojeiger/relaygate-route-table:X.Y.Z` |
+
+`main`에 해당 `VERSION.*` 변경이 들어오면 release workflow가 multi-arch image를 push하고
+같은 컴포넌트의 `latest` tag와 GitHub Release를 갱신한다. 두 파일을 함께 바꾸면 두 image가
+같이 릴리스되고, 하나만 바꾸면 해당 image만 릴리스된다. GHCR package version은 `latest`가
+아닌 항목 기준 최근 20개만 유지한다.
 
 ## 구조
 

@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - VERSION.gateway
+      - VERSION.route-table
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  changes:
+    name: Detect component releases
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed VERSION files
+        id: detect
+        env:
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            changed=$(git diff-tree --no-commit-id --name-only -r "$SHA")
+          else
+            changed=$(git diff --name-only "$BEFORE" "$SHA")
+          fi
+
+          gateway=false
+          route_table=false
+          if grep -qx 'VERSION.gateway' <<<"$changed"; then
+            gateway=true
+          fi
+          if grep -qx 'VERSION.route-table' <<<"$changed"; then
+            route_table=true
+          fi
+
+          python3 - "$gateway" "$route_table" <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import sys
+
+          include = []
+          if sys.argv[1] == "true":
+              include.append({
+                  "component": "gateway",
+                  "version_file": "VERSION.gateway",
+                  "image": "relaygate-gateway",
+                  "target": "gateway",
+              })
+          if sys.argv[2] == "true":
+              include.append({
+                  "component": "route-table",
+                  "version_file": "VERSION.route-table",
+                  "image": "relaygate-route-table",
+                  "target": "route-table",
+              })
+          print(f"matrix={json.dumps({'include': include}, separators=(',', ':'))}")
+          PY
+
+  release:
+    name: Release ${{ matrix.component }}
+    needs: changes
+    if: ${{ needs.changes.outputs.matrix != '{"include":[]}' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJson(needs.changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: ver
+        run: |
+          version=$(tr -d '[:space:]' < "${{ matrix.version_file }}")
+          if [ -z "$version" ]; then
+            echo "::error::${{ matrix.version_file }} is empty"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ matrix.component }}-v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Guard duplicate tag
+        run: |
+          tag="${{ steps.ver.outputs.tag }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "::error::tag $tag already exists; bump ${{ matrix.version_file }} before merging"
+            exit 1
+          fi
+
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ matrix.image }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.ver.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:latest
+
+      - name: Tag and create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.ver.outputs.tag }}"
+          git tag "$tag"
+          git push origin "$tag"
+          gh release create "$tag" --title "$tag" --generate-notes
+
+      - name: Keep recent 20 GHCR versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PACKAGE: ${{ matrix.image }}
+        run: |
+          mapfile -t version_ids < <(
+            gh api --paginate \
+              "/users/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100" \
+              --jq '.[] | select(((.metadata.container.tags // []) | index("latest")) | not) | .id'
+          )
+
+          versions_to_keep=20
+          if (( ${#version_ids[@]} <= versions_to_keep )); then
+            exit 0
+          fi
+
+          for version_id in "${version_ids[@]:versions_to_keep}"; do
+            gh api --method DELETE \
+              "/users/${OWNER}/packages/container/${PACKAGE}/versions/${version_id}"
+          done
