@@ -21,7 +21,7 @@ x-directory-volume: &directory-volume
 x-gateway-environment: &gateway-environment
   RELAYGATE_BIND_ADDR: 0.0.0.0:27420
   RELAYGATE_PEER_BIND_ADDR: 0.0.0.0:27421
-  RELAYGATE_CLIENT_KEYS: echo.a=dev-echo-a-v1,echo.b=dev-echo-b-v1,echo.c=dev-echo-c-v1,echo.shared=dev-echo-shared-v1
+  RELAYGATE_CLIENT_KEYS: echo.a=dev-echo-a-v1,echo.b=dev-echo-b-v1,echo.c=dev-echo-c-v1,echo.shared=dev-echo-shared-v1,echo.zero=dev-echo-zero-v1
   RELAYGATE_RT_TRUSTED_LOCAL: "true"
   RELAYGATE_RT_SHARD_DIRECTORY_PATH: /etc/relaygate/shard-directory.json
   RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
@@ -41,12 +41,32 @@ x-gateway: &gateway
   depends_on:
     rt-0:
       condition: service_started
+    rt-1:
+      condition: service_started
   healthcheck:
     test: ["CMD", "relaygate-server", "check", "127.0.0.1:27420"]
     interval: 1s
     timeout: 1s
     retries: 30
     start_period: 1s
+  stop_grace_period: 5s
+
+x-route-table-environment: &route-table-environment
+  RELAYGATE_RT_TRUSTED_LOCAL: "true"
+  RELAYGATE_RT_BIND_ADDR: 0.0.0.0:27430
+  RELAYGATE_RT_SHARD_DIRECTORY_PATH: /etc/relaygate/shard-directory.json
+  RELAYGATE_RT_LEASE_TTL_MS: "3000"
+  RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
+  RELAYGATE_LOG: info
+
+x-route-table: &route-table
+  <<: *runtime
+  build:
+    context: .
+    dockerfile: deploy/docker/Dockerfile
+  command: ["relaygate-server", "route-table"]
+  volumes:
+    - *directory-volume
   stop_grace_period: 5s
 
 x-listener: &listener
@@ -56,22 +76,16 @@ x-listener: &listener
 
 services:
   rt-0:
-    <<: *runtime
-    build:
-      context: .
-      dockerfile: deploy/docker/Dockerfile
-    command: ["relaygate-server", "route-table"]
+    <<: *route-table
     environment:
-      RELAYGATE_RT_TRUSTED_LOCAL: "true"
-      RELAYGATE_RT_BIND_ADDR: 0.0.0.0:27430
-      RELAYGATE_RT_SHARD_DIRECTORY_PATH: /etc/relaygate/shard-directory.json
+      <<: *route-table-environment
       RELAYGATE_RT_SHARD_ID: rt-0
-      RELAYGATE_RT_LEASE_TTL_MS: "3000"
-      RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
-      RELAYGATE_LOG: info
-    volumes:
-      - *directory-volume
-    stop_grace_period: 5s
+
+  rt-1:
+    <<: *route-table
+    environment:
+      <<: *route-table-environment
+      RELAYGATE_RT_SHARD_ID: rt-1
 
   gateway-a:
     <<: *gateway
@@ -120,7 +134,7 @@ services:
     <<: *listener
     environment:
       RELAYGATE_ADDR: gateway-c:27420
-      RELAYGATE_LISTENERS: echo.c=dev-echo-c-v1,echo.shared=dev-echo-shared-v1
+      RELAYGATE_LISTENERS: echo.c=dev-echo-c-v1,echo.shared=dev-echo-shared-v1,echo.zero=dev-echo-zero-v1
       RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-c:
@@ -132,6 +146,23 @@ services:
     environment:
       RELAYGATE_CONTINUITY_ADDR: gateway-a:27420
       RELAYGATE_CONTINUITY_CLIENT_ID: echo.c
+      RELAYGATE_CONTINUITY_STATE: /tmp/relaygate-continuity.state
+      RELAYGATE_LOG: relaygate_sdk=info
+    depends_on:
+      gateway-a:
+        condition: service_healthy
+      gateway-c:
+        condition: service_healthy
+      listener-c:
+        condition: service_started
+    stop_grace_period: 5s
+
+  continuity-a-zero:
+    <<: *runtime
+    command: ["relaygate-echo-probe", "continuity"]
+    environment:
+      RELAYGATE_CONTINUITY_ADDR: gateway-a:27420
+      RELAYGATE_CONTINUITY_CLIENT_ID: echo.zero
       RELAYGATE_CONTINUITY_STATE: /tmp/relaygate-continuity.state
       RELAYGATE_LOG: relaygate_sdk=info
     depends_on:

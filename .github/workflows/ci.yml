@@ -65,46 +65,68 @@ jobs:
             --test-list target/contract/tests.txt
 
   compose:
-    name: Docker Compose RT1/GW3 E2E
+    name: Docker Compose RT2/GW3 E2E
     needs: [hygiene, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
-      - name: Start RouteTable, three Gateways, Listeners, and continuity Pipe
+      - name: Start two RouteTables, three Gateways, Listeners, and continuity Pipes
         run: |
           docker compose up --build -d --wait \
-            rt-0 gateway-a gateway-b gateway-c \
-            listener-a listener-b listener-c continuity-ac
+            rt-0 rt-1 gateway-a gateway-b gateway-c \
+            listener-a listener-b listener-c continuity-ac continuity-a-zero
 
       - name: Verify all local and directed remote paths
         run: |
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
       - name: Verify unrelated pair continuity across Gateway B restart
         run: |
           docker compose restart gateway-b
           docker compose up -d --wait --no-deps gateway-b
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 
-      - name: Verify RouteTable outage boundary
+      - name: Verify rt-0 failure isolation and established Pipe continuity
         run: |
           docker compose stop rt-0
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-rt-unavailable
+          docker compose run --rm --no-deps topology-probe \
+            relaygate-echo-probe expect-shard-isolation echo.b 1 echo.c
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
-      - name: Verify current-state recovery after RouteTable restart
+      - name: Verify rt-0 current-state recovery
         run: |
           docker compose up -d rt-0
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.a
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.shared
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.zero
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+          docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
+
+      - name: Verify rt-1 failure isolation and established Pipe continuity
+        run: |
+          docker compose stop rt-1
+          docker compose run --rm --no-deps topology-probe \
+            relaygate-echo-probe expect-shard-isolation echo.c 2 echo.b
+          docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
+
+      - name: Verify rt-1 current-state recovery
+        run: |
+          docker compose up -d rt-1
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.a
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.c
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
       - name: Capture logs
         if: failure()

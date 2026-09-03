@@ -95,7 +95,7 @@ TEST는 새 규칙을 만들지 않는다.
 | [TEST 001 실행 증거](test/001-executable-coverage.toml) | TEST 001 시나리오와 현재 Rust test의 기계 검증 가능한 연결 |
 | [TEST 002](test/002-single-gateway-rust-compose-test-plan.md) | 단일 Gateway local Pipe 회귀 검증 |
 | [TEST 003](test/003-route-table-core-test-plan.md) | memory-only RouteTable shard core 검증 |
-| [TEST 004](test/004-rt1-gw3-closed-loop-test-plan.md) | RT 1개와 Gateway 3개의 one-hop closed-loop 검증 |
+| [TEST 004](test/004-rt2-gw3-closed-loop-test-plan.md) | 독립 RT shard 2개와 Gateway 3개의 one-hop closed-loop 검증 |
 
 TEST 문서의 존재 자체는 완전한 실행 증명을 뜻하지 않는다. 시나리오별 증거 수준은
 [`001-executable-coverage.toml`](test/001-executable-coverage.toml)의 `executable/partial/gap` 상태가 기준이다.

@@ -7,10 +7,10 @@
 | 목적 | RT와 peer relay 없이 SDK↔Gateway local Pipe 계약을 결정적으로 검증한다. |
 | 상위 계약 | [SPEC 002](../spec/002-sdk-pipe-contract.md), [SPEC 003](../spec/003-listener-registration-contract.md), [SPEC 005](../spec/005-connection-establishment-contract.md), [SPEC 007](../spec/007-error-and-state-model.md), [SPEC 008](../spec/008-runtime-observability-contract.md) |
 | 전체 matrix | [TEST 001](001-requirement-test-matrix.md) |
-| Compose 검증 | [TEST 004](004-rt1-gw3-closed-loop-test-plan.md) |
+| Compose 검증 | [TEST 004](004-rt2-gw3-closed-loop-test-plan.md) |
 
 단일 Gateway는 Rust unit·integration·process test가 검증하고, root
-`docker-compose.yml`의 RT1/GW3 구성은 [TEST 004](004-rt1-gw3-closed-loop-test-plan.md)가 검증한다.
+`docker-compose.yml`의 RT2/GW3 구성은 [TEST 004](004-rt2-gw3-closed-loop-test-plan.md)가 검증한다.
 
 ## 범위
 
@@ -42,7 +42,7 @@ REGISTER
   -> idle transport heartbeat timeout도 같은 cleanup/reconnect 경로
 ```
 
-RT lookup, lease, shard, Gateway 간 relay와 process-level 분산 장애는 [TEST 004](004-rt1-gw3-closed-loop-test-plan.md)가 소유한다.
+RT lookup, lease, shard, Gateway 간 relay와 process-level 분산 장애는 [TEST 004](004-rt2-gw3-closed-loop-test-plan.md)가 소유한다.
 
 ## 공개 API 경계
 
@@ -70,7 +70,7 @@ Pipe::into_split()                            -> read half + write half
 | SDK unit | managed reconnect, Listener recovery, Pipe I/O·half-close, operation deadline, heartbeat timeout, error observation |
 | Gateway integration | local Pipe, public SDK full duplex, 같은 ClientId의 surviving Listener 선택, disconnect·queue·foreign frame edge case |
 | Server process | config validation, SDK admission readiness check, structured log redaction, SIGTERM cleanup |
-| Docker image/process topology | [TEST 004](004-rt1-gw3-closed-loop-test-plan.md)의 RT1/GW3 Compose profile |
+| Docker image/process topology | [TEST 004](004-rt2-gw3-closed-loop-test-plan.md)의 RT2/GW3 Compose profile |
 
 핵심 executable regression은 다음과 같다.
 
