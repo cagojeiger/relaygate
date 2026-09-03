@@ -2,7 +2,7 @@ mod support;
 
 use std::{io, sync::Arc, time::Duration};
 
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{
     BindingId, ErrorCode as WireErrorCode, Frame, PipeId, SessionId, SessionRole,
 };
@@ -91,7 +91,13 @@ async fn session_loss_then_permanent_rejection_blocks_listener_until_recreated_c
             })
             .await?;
         let _ = done_rx.await;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        match timeout(Duration::from_secs(1), replacement.next()).await? {
+            None => Ok::<_, Box<dyn std::error::Error + Send + Sync>>(()),
+            Some(frame) => Err(io::Error::other(format!(
+                "replacement ListenerSession replayed data or failed to close cleanly: {frame:?}"
+            ))
+            .into()),
+        }
     });
 
     let runtime = ListenerRuntime::connect(
