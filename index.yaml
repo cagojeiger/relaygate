@@ -1,0 +1,17 @@
+apiVersion: v1
+entries:
+  relaygate:
+  - apiVersion: v2
+    created: "2026-09-03T12:38:07.129066028Z"
+    description: Memory-only RelayGate Gateway and RouteTable runtime
+    digest: ff108465dd57104070d087cfbf615df0c5aaf6aacf7c2a086e57c558cf2b42e4
+    home: https://github.com/cagojeiger/relaygate
+    kubeVersion: '>=1.32.0-0'
+    name: relaygate
+    sources:
+    - https://github.com/cagojeiger/relaygate
+    type: application
+    urls:
+    - https://cagojeiger.github.io/relaygate/relaygate-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-09-03T12:38:07.128329868Z"
