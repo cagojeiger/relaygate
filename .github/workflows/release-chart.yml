@@ -1,0 +1,189 @@
+name: Release Helm Chart
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: release-helm-chart
+  queue: max
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+  CHART_REPOSITORY: https://cagojeiger.github.io/relaygate
+
+jobs:
+  package:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      draft: ${{ steps.release.outputs.draft }}
+      digest: ${{ steps.package.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+
+      - name: Detect unpublished chart version
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(python3 .github/scripts/helm_release.py check-version)
+          tag="chart-v${version}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            if ! git diff --quiet "$tag" "$RELEASE_SHA" -- deploy/helm/relaygate; then
+              echo "::error::published chart source changed without a version bump"
+              exit 1
+            fi
+          fi
+          status=$(curl --silent --show-error --output "$RUNNER_TEMP/chart-release.json" \
+            --write-out '%{http_code}' \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$tag")
+          case "$status" in
+            200)
+              jq -e '.prerelease == false' "$RUNNER_TEMP/chart-release.json"
+              draft=$(jq -r .draft "$RUNNER_TEMP/chart-release.json")
+              echo "draft=$draft" >> "$GITHUB_OUTPUT"
+              if [ "$draft" = true ]; then
+                target=$(jq -r .target_commitish "$RUNNER_TEMP/chart-release.json")
+                if [ "$target" != "$RELEASE_SHA" ]; then
+                  echo "::error::incomplete draft belongs to $target; rerun its original CI/release"
+                  exit 1
+                fi
+                echo "publish=true" >> "$GITHUB_OUTPUT"
+              else
+                git rev-parse --verify "refs/tags/$tag"
+                echo "publish=false" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            404)
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              echo "draft=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::release lookup returned HTTP $status"; exit 1 ;;
+          esac
+
+      - uses: azure/setup-helm@v4
+        if: steps.release.outputs.publish == 'true'
+        with:
+          version: v3.15.2
+
+      - uses: actions/checkout@v7
+        if: steps.release.outputs.publish == 'true'
+        with:
+          ref: gh-pages
+          path: gh-pages
+
+      - name: Publish immutable chart repository
+        id: package
+        if: steps.release.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          helm package deploy/helm/relaygate --destination "$RUNNER_TEMP/chart"
+          package="relaygate-${VERSION}.tgz"
+          digest=$(python3 .github/scripts/helm_release.py stage \
+            "$RUNNER_TEMP/chart/$package" gh-pages)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          helm repo index gh-pages --url "$CHART_REPOSITORY"
+          touch gh-pages/.nojekyll
+          git -C gh-pages config user.name 'github-actions[bot]'
+          git -C gh-pages config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C gh-pages add "$package" "$package.sha256" index.yaml .nojekyll
+          if ! git -C gh-pages diff --cached --quiet; then
+            git -C gh-pages commit -m "Publish Helm chart $VERSION"
+            git -C gh-pages push origin HEAD:gh-pages
+          fi
+          mkdir -p "$RUNNER_TEMP/chart-site"
+          cp gh-pages/*.tgz gh-pages/*.sha256 gh-pages/index.yaml "$RUNNER_TEMP/chart-site/"
+
+      - uses: actions/upload-pages-artifact@v4
+        if: steps.release.outputs.publish == 'true'
+        with:
+          path: ${{ runner.temp }}/chart-site
+
+  deploy:
+    needs: package
+    if: needs.package.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy chart repository
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.15.2
+
+      - name: Verify public chart and checksum
+        env:
+          VERSION: ${{ needs.package.outputs.version }}
+          EXPECTED_DIGEST: ${{ needs.package.outputs.digest }}
+        run: |
+          mkdir -p dist
+          package="relaygate-${VERSION}.tgz"
+          for attempt in {1..12}; do
+            if helm pull relaygate --repo "$CHART_REPOSITORY" --version "$VERSION" --destination dist &&
+              curl --fail --silent --show-error --location \
+                "$CHART_REPOSITORY/$package.sha256" --output "dist/$package.sha256" &&
+              (cd dist && sha256sum --check "$package.sha256") &&
+              [ "$(sha256sum "dist/$package" | cut -d ' ' -f1)" = "$EXPECTED_DIGEST" ]; then
+              helm show chart "dist/$package"
+              exit 0
+            fi
+            echo "Public chart not ready (attempt $attempt/12)"
+            sleep 10
+          done
+          echo "::error::public chart failed version/checksum verification"
+          exit 1
+
+      - name: Create chart GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.package.outputs.version }}
+          TAG: ${{ needs.package.outputs.tag }}
+          DRAFT_EXISTS: ${{ needs.package.outputs.draft }}
+        run: |
+          if [ "$DRAFT_EXISTS" = true ]; then
+            gh release upload "$TAG" \
+              "dist/relaygate-${VERSION}.tgz" "dist/relaygate-${VERSION}.tgz.sha256" --clobber
+          else
+            gh release create "$TAG" \
+              "dist/relaygate-${VERSION}.tgz" "dist/relaygate-${VERSION}.tgz.sha256" \
+              --target "$RELEASE_SHA" --draft \
+              --title "Helm chart v$VERSION" \
+              --notes "Helm repository: $CHART_REPOSITORY. Chart version: $VERSION. Gateway and RouteTable image versions are configured independently." \
+              --latest=false
+          fi
+          gh release edit "$TAG" --draft=false --latest=false

@@ -24,6 +24,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check Helm release policy
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+          python3 .github/scripts/helm_release.py check-version --base "$BASE_SHA"
 
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
@@ -295,6 +304,17 @@ jobs:
             /workdir/target/helm/minimal.yaml \
             /workdir/target/helm/ambiguous-name.yaml
           helm package deploy/helm/relaygate --destination target/helm
+          version=$(python3 .github/scripts/helm_release.py check-version)
+          package="relaygate-${version}.tgz"
+          digest=$(python3 .github/scripts/helm_release.py stage \
+            "target/helm/$package" target/helm/repository)
+          helm package deploy/helm/relaygate --destination target/helm/retry
+          retry_digest=$(python3 .github/scripts/helm_release.py stage \
+            "target/helm/retry/$package" target/helm/repository)
+          test "$digest" = "$retry_digest"
+          (cd target/helm/repository && sha256sum --check "$package.sha256")
+          helm repo index target/helm/repository --url https://cagojeiger.github.io/relaygate
+          helm show chart "target/helm/repository/$package"
 
   rust:
     name: Rust
