@@ -156,6 +156,13 @@ jobs:
             exit 1
           fi
 
+          if helm template 1relay deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true >/dev/null 2>&1; then
+            echo "Helm chart accepted a digit-leading release name for RFC 1035 Services"
+            exit 1
+          fi
+
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
