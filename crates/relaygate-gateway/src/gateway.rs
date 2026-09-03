@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::{
     fmt,
     sync::{Arc, Mutex, MutexGuard},
@@ -47,6 +49,8 @@ struct Inner {
     peer: Option<PeerHandle>,
     control_effects: Option<ControlEffects>,
     distributed_runtime: Mutex<Option<DistributedRuntime>>,
+    #[cfg(test)]
+    panic_next_session_after_admission: AtomicBool,
 }
 
 impl fmt::Debug for Gateway {
@@ -136,6 +140,8 @@ impl Gateway {
                 peer,
                 control_effects,
                 distributed_runtime: Mutex::new(distributed),
+                #[cfg(test)]
+                panic_next_session_after_admission: AtomicBool::new(false),
             }),
         })
     }

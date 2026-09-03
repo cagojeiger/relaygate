@@ -140,6 +140,7 @@ fn test_inner(peer: PeerHandle) -> Arc<Inner> {
         peer: Some(peer),
         control_effects: None,
         distributed_runtime: Mutex::new(None),
+        panic_next_session_after_admission: std::sync::atomic::AtomicBool::new(false),
     })
 }
 

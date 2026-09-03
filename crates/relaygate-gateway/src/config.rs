@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use relaygate_protocol::DEFAULT_MAX_FRAME_LEN;
+use tokio::time::Instant;
 
 use crate::GatewayError;
 
@@ -157,6 +158,19 @@ impl GatewayConfig {
                 "Gateway timeouts must be greater than zero".to_owned(),
             ));
         }
+        validate_deadline_timeout("offer_timeout", self.offer_timeout)?;
+        validate_deadline_timeout(
+            "heartbeat_idle_interval",
+            jitter_upper_bound(self.heartbeat_idle_interval).ok_or_else(|| {
+                GatewayError::InvalidConfig(
+                    "heartbeat_idle_interval is too large after heartbeat jitter".to_owned(),
+                )
+            })?,
+        )?;
+        validate_deadline_timeout(
+            "heartbeat_response_timeout",
+            self.heartbeat_response_timeout,
+        )?;
         if self.client_keys.keys().any(String::is_empty) {
             return Err(GatewayError::InvalidConfig(
                 "ClientId must not be empty".to_owned(),
@@ -171,8 +185,48 @@ impl GatewayConfig {
     }
 }
 
+fn validate_deadline_timeout(name: &str, timeout: Duration) -> Result<(), GatewayError> {
+    Instant::now().checked_add(timeout).ok_or_else(|| {
+        GatewayError::InvalidConfig(format!("{name} is too large to form a monotonic deadline"))
+    })?;
+    Ok(())
+}
+
+fn jitter_upper_bound(duration: Duration) -> Option<Duration> {
+    duration_from_nanos(duration.as_nanos().checked_mul(1_100)?.checked_div(1_000)?)
+}
+
+fn duration_from_nanos(nanos: u128) -> Option<Duration> {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    let seconds = nanos / NANOS_PER_SECOND;
+    let subsecond_nanos = nanos % NANOS_PER_SECOND;
+    Some(Duration::new(
+        seconds.try_into().ok()?,
+        subsecond_nanos.try_into().ok()?,
+    ))
+}
+
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self::new([])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::GatewayConfig;
+
+    #[test]
+    fn unrepresentable_deadline_configuration_is_rejected() {
+        let valid = Duration::from_secs(1);
+        for config in [
+            GatewayConfig::new([]).with_offer_timeout(Duration::MAX),
+            GatewayConfig::new([]).with_heartbeat(Duration::MAX, valid),
+            GatewayConfig::new([]).with_heartbeat(valid, Duration::MAX),
+        ] {
+            assert!(config.validate().is_err());
+        }
     }
 }

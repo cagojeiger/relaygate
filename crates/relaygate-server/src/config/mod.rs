@@ -5,6 +5,7 @@ use std::{env, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use relaygate_route_table_transport::{GatewayName, InternalGatewayKey};
+use tokio::time::Instant;
 
 pub(crate) use gateway::GatewayRuntimeConfig;
 pub(crate) use route_table::RouteTableRuntimeConfig;
@@ -64,16 +65,33 @@ fn duration_millis(name: &str, value: &str) -> Result<Duration> {
     if milliseconds == 0 {
         bail!("{name} must be greater than zero");
     }
-    Ok(Duration::from_millis(milliseconds))
+    let duration = Duration::from_millis(milliseconds);
+    if Instant::now().checked_add(duration).is_none() {
+        bail!("{name} is too large to form a monotonic deadline");
+    }
+    Ok(duration)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
     use super::{duration_millis, parse_gateway_credentials};
 
     #[test]
     fn duration_rejects_zero_milliseconds() {
         assert!(duration_millis("RELAYGATE_STATS_INTERVAL_MS", "0").is_err());
+    }
+
+    #[test]
+    fn duration_matches_platform_deadline_representability() {
+        let duration = Duration::from_millis(u64::MAX);
+        assert_eq!(
+            duration_millis("RELAYGATE_STATS_INTERVAL_MS", &u64::MAX.to_string()).is_ok(),
+            Instant::now().checked_add(duration).is_some()
+        );
     }
 
     #[test]

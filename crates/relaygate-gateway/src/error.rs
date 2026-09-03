@@ -10,6 +10,8 @@ pub enum GatewayError {
     Routing(String),
     #[error("Gateway peer relay failed: {0}")]
     Peer(String),
+    #[error("Gateway runtime failed: {0}")]
+    Runtime(String),
     #[error("Gateway SDK admission readiness check timed out")]
     AdmissionCheckTimeout,
     #[error("Gateway SDK admission readiness check received an unexpected frame")]
