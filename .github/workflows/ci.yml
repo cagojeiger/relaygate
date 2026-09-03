@@ -204,6 +204,13 @@ jobs:
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=registry.example/team/' >/dev/null 2>&1; then
+            echo "Helm schema accepted an image repository ending in a path separator"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
             --set 'routeTable.extraEnv[0].name=POD_INDEX' \
             --set 'routeTable.extraEnv[0].value=0' >/dev/null 2>&1; then
             echo "Helm chart accepted an override of the RouteTable pod ordinal"

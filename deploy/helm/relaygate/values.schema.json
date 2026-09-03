@@ -297,7 +297,7 @@
         "repository": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^[^\\s\"\\\\]+$"
+          "pattern": "^[^\\s\"\\\\/](?:[^\\s\"\\\\]*[^\\s\"\\\\/])?$"
         },
         "tag": {
           "type": "string",
