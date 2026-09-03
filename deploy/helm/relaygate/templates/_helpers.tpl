@@ -104,7 +104,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- if contains "@" $image.repository }}
 {{- fail (printf "%s.image.repository must not contain a digest" $component) }}
 {{- end }}
-{{- if regexMatch ":[^/]+$" $image.repository }}
+{{- if regexMatch ":[^/]*$" $image.repository }}
 {{- fail (printf "%s.image.repository must not contain a tag" $component) }}
 {{- end }}
 {{- end }}
