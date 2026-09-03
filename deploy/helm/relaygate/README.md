@@ -21,7 +21,8 @@ RouteTable image version은 서로 독립적으로 지정한다. RouteTable은 m
 
 Kubernetes 1.32 이상이 필요하다. RouteTable StatefulSet은 stable
 `apps.kubernetes.io/pod-index` label을 logical shard ordinal로 사용한다.
-Helm release 이름은 생성되는 RFC 1035 Service 이름을 위해 소문자로 시작해야 한다.
+Helm release 이름은 생성되는 Service 이름과 동일한 RFC 1035 label이어야 한다. 영문 소문자로
+시작하고 영문 소문자, 숫자와 하이픈만 사용한다.
 
 현재 runtime의 내부 TCP adapter는 Gateway 이름별 key allowlist를 요구한다. 차트는 Secret을
 생성하지 않으며 다음 두 key가 있는 기존 Secret만 참조한다.

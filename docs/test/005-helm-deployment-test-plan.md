@@ -32,7 +32,7 @@ credential value   = chart 밖의 existing Secret
 | `AC-HELM-05` | chart는 Secret data, SDK workload, PVC, `emptyDir`, Ingress, HPA와 logical RT shard의 복제본을 만들지 않는다. credential은 existing Secret key reference로만 전달한다. |
 | `AC-HELM-06` | workload는 non-root UID/GID 10001, read-only root filesystem, dropped capabilities, RuntimeDefault seccomp와 service-account token 비활성화를 기본으로 한다. |
 | `AC-HELM-07` | Gateway readiness는 SDK `HELLO -> WELCOME` check를 사용하고 liveness는 RT dependency를 검사하지 않는다. RT socket readiness는 READY-empty를 정상으로 취급한다. |
-| `AC-HELM-08` | schema는 replica/shard 수와 shard 상한, port, image, log format, Secret reference의 잘못된 값을 거절한다. render는 숫자로 시작하는 release 이름, chart-managed extraEnv 충돌과 생성된 pod FQDN의 DNS 길이 초과를 거절한다. |
+| `AC-HELM-08` | schema는 replica/shard 수와 shard 상한, port, image, log format, Secret reference의 잘못된 값을 거절한다. render는 RFC 1035 label이 아닌 release 이름, chart-managed extraEnv 충돌과 생성된 pod FQDN의 DNS 길이 초과를 거절한다. |
 | `AC-HELM-09` | chart test가 SDK Service를 통해 새 Gateway admission session을 만들 수 있다. 이는 RT, Listener binding, Pipe 또는 application payload 성공을 뜻하지 않는다. |
 | `AC-HELM-10` | `credentials.reloadToken` 변경은 Gateway와 모든 RT pod template을 바꾸어 startup credential을 다시 읽게 한다. Gateway scale-out은 새 name/key의 additive reload가 끝난 뒤 수행한다. |
 | `AC-HELM-11` | SDK, peer와 RT Service는 ClusterIP 내부 endpoint만 만들고, current plain-TCP adapter는 `internalTransport.trustedLocalAdapter=true`를 명시하지 않으면 render를 거절한다. |

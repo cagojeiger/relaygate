@@ -77,8 +77,8 @@ app.kubernetes.io/part-of: "relaygate"
 {{- if not .Values.internalTransport.trustedLocalAdapter }}
 {{- fail "internalTransport.trustedLocalAdapter must be true to acknowledge the current local/CI plain-TCP key adapter" }}
 {{- end }}
-{{- if regexMatch "^[0-9]" .Release.Name }}
-{{- fail "the Helm release name must start with a lowercase letter so generated Service names satisfy RFC 1035" }}
+{{- if not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" .Release.Name) }}
+{{- fail "the Helm release name must be an RFC 1035 label so generated Service names are valid" }}
 {{- end }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "clusterDomain" "value" .Values.clusterDomain) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "credentials.existingSecret" "value" .Values.credentials.existingSecret) }}
