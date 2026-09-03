@@ -43,6 +43,259 @@ jobs:
           -color
           -ignore 'unexpected key "queue"'
 
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.15.2
+
+      - name: Validate Helm chart
+        run: |
+          mkdir -p target/helm
+          helm lint --strict deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true
+          helm template relaygate deploy/helm/relaygate \
+            --namespace relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            > target/helm/default.yaml
+          helm template minimal deploy/helm/relaygate \
+            --namespace relaygate-test \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set gateway.replicaCount=1 \
+            --set routeTable.shardCount=1 \
+            --set credentials.existingSecret=minimal-credentials \
+            > target/helm/minimal.yaml
+          helm template true deploy/helm/relaygate \
+            --namespace relaygate-test \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string serviceAccount.name=true \
+            > target/helm/ambiguous-name.yaml
+          long_release_prefix=$(printf 'a%.0s' {1..44})
+          for suffix in one two; do
+            helm template "${long_release_prefix}-${suffix}" deploy/helm/relaygate \
+              --namespace relaygate-test \
+              --kube-version 1.32.0 \
+              --set internalTransport.trustedLocalAdapter=true \
+              --show-only templates/shard-directory-configmap.yaml \
+              > "target/helm/long-name-${suffix}.yaml"
+          done
+          for release_name in foo foo-relaygate; do
+            helm template "$release_name" deploy/helm/relaygate \
+              --namespace relaygate-test \
+              --kube-version 1.32.0 \
+              --set internalTransport.trustedLocalAdapter=true \
+              --show-only templates/shard-directory-configmap.yaml \
+              > "target/helm/release-name-${release_name}.yaml"
+          done
+
+          test "$(grep -c '^kind: StatefulSet$' target/helm/default.yaml)" -eq 2
+          deployment_count=$(grep -c '^kind: Deployment$' target/helm/default.yaml || true)
+          test "$deployment_count" -eq 0
+          test "$(grep -c '^kind: Service$' target/helm/default.yaml)" -eq 3
+          test "$(grep -c '^  type: ClusterIP$' target/helm/default.yaml)" -eq 3
+          test "$(grep -c '^  clusterIP: None$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^  replicas: 3$' target/helm/default.yaml)" -eq 1
+          test "$(grep -c '^  replicas: 2$' target/helm/default.yaml)" -eq 1
+          test "$(grep -c '^    type: RollingUpdate$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^kind: StatefulSet$' target/helm/minimal.yaml)" -eq 2
+          test "$(grep -c '^  replicas: 1$' target/helm/minimal.yaml)" -eq 2
+          grep -A1 -Fq 'name: RELAYGATE_GATEWAY_NAME' target/helm/default.yaml
+          grep -Fq "value: \"\$(POD_NAME)\"" target/helm/default.yaml
+          grep -Fq "value: \"\$(POD_NAME).relaygate-gateway-peer.\$(POD_NAMESPACE).svc.cluster.local:27421\"" \
+            target/helm/default.yaml
+          grep -Fq "fieldPath: \"metadata.labels['apps.kubernetes.io/pod-index']\"" \
+            target/helm/default.yaml
+          grep -Fq "value: \"rt-\$(POD_INDEX)\"" target/helm/default.yaml
+          grep -Fq '"id":"rt-0"' target/helm/default.yaml
+          grep -Fq '"id":"rt-1"' target/helm/default.yaml
+          grep -Fq 'relaygate-rt-0.relaygate-rt.relaygate.svc.cluster.local:27430' target/helm/default.yaml
+          grep -Fq 'relaygate-rt-1.relaygate-rt.relaygate.svc.cluster.local:27430' target/helm/default.yaml
+          grep -Fq 'immutable: true' target/helm/default.yaml
+          test "$(grep 'checksum/shard-directory:' target/helm/default.yaml | sort -u | wc -l)" -eq 1
+          directory_json=$(awk '/^  shard-directory.json: \|-$/ { getline; sub(/^    /, ""); print; exit }' target/helm/default.yaml)
+          directory_checksum=$(printf '%s' "$directory_json" | sha256sum | cut -d ' ' -f1)
+          rendered_checksum=$(grep 'checksum/shard-directory:' target/helm/default.yaml | head -n1 | tr -d '"' | awk '{print $2}')
+          test "$directory_checksum" = "$rendered_checksum"
+          test "$(grep -c 'key: "internal-gateway-keys"' target/helm/default.yaml)" -eq 2
+          test "$(grep -c 'key: "client-keys"' target/helm/default.yaml)" -eq 1
+          test "$(grep -c '^        relaygate.io/credentials-reload: ""$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^              mountPath: /etc/relaygate$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^[[:space:]]*runAsNonRoot: true$' target/helm/default.yaml)" -eq 3
+          test "$(grep -c '^[[:space:]]*readOnlyRootFilesystem: true$' target/helm/default.yaml)" -eq 3
+          long_name_one=$(awk '/^  name:/ { print $2; exit }' target/helm/long-name-one.yaml)
+          long_name_two=$(awk '/^  name:/ { print $2; exit }' target/helm/long-name-two.yaml)
+          test "$long_name_one" != "$long_name_two"
+          test "${#long_name_one}" -le 63
+          test "${#long_name_two}" -le 63
+          release_name_foo=$(awk '/^  name:/ { print $2; exit }' target/helm/release-name-foo.yaml)
+          release_name_with_chart=$(awk '/^  name:/ { print $2; exit }' target/helm/release-name-foo-relaygate.yaml)
+          test "$release_name_foo" != "$release_name_with_chart"
+          if grep -Eq '^kind: (Deployment|Secret|PersistentVolumeClaim|Ingress|HorizontalPodAutoscaler)$|^[[:space:]]+(emptyDir|volumeClaimTemplates):' \
+            target/helm/default.yaml; then
+            echo "Helm chart rendered a forbidden stateful or application-owned resource"
+            exit 1
+          fi
+          if grep -Eq '^  type: (NodePort|LoadBalancer)$|^[[:space:]]+nodePort:' \
+            target/helm/default.yaml; then
+            echo "Helm chart exposed a public Service"
+            exit 1
+          fi
+
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 >/dev/null 2>&1; then
+            echo "Helm chart accepted the plain-TCP adapter without explicit opt-in"
+            exit 1
+          fi
+
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.31.0 \
+            --set internalTransport.trustedLocalAdapter=true >/dev/null 2>&1; then
+            echo "Helm chart accepted Kubernetes older than 1.32"
+            exit 1
+          fi
+
+          for invalid_release_name in 1relay foo.bar; do
+            if helm template "$invalid_release_name" deploy/helm/relaygate \
+              --kube-version 1.32.0 \
+              --set internalTransport.trustedLocalAdapter=true >/dev/null 2>&1; then
+              echo "Helm chart accepted a release name that is not an RFC 1035 label"
+              exit 1
+            fi
+          done
+
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set routeTable.shardCount=0 >/dev/null 2>&1; then
+            echo "Helm schema accepted an empty RouteTable directory"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set routeTable.shardCount=2049 >/dev/null 2>&1; then
+            echo "Helm schema accepted a RouteTable directory larger than the ConfigMap-safe bound"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set 'gateway.extraEnv[0].name=RELAYGATE_BIND_ADDR' \
+            --set 'gateway.extraEnv[0].value=invalid' >/dev/null 2>&1; then
+            echo "Helm chart accepted an override of a managed environment variable"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=registry/repo"' >/dev/null 2>&1; then
+            echo "Helm schema accepted an unsafe image repository"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=registry.example/relaygate:' >/dev/null 2>&1; then
+            echo "Helm chart accepted an image repository ending in a tag separator"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=registry.example/team/' >/dev/null 2>&1; then
+            echo "Helm schema accepted an image repository ending in a path separator"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=registry.example//relaygate' >/dev/null 2>&1; then
+            echo "Helm schema accepted an image repository with an empty path segment"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=ghcr.io/Team/relaygate-gateway' >/dev/null 2>&1; then
+            echo "Helm schema accepted an uppercase image repository path"
+            exit 1
+          fi
+          helm template image-registry-port deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string 'gateway.image.repository=registry.example:5000/team/relaygate' \
+            >/dev/null
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set 'routeTable.extraEnv[0].name=POD_INDEX' \
+            --set 'routeTable.extraEnv[0].value=0' >/dev/null 2>&1; then
+            echo "Helm chart accepted an override of the RouteTable pod ordinal"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set gateway.sdkPort=27420 \
+            --set gateway.peerPort=27420 >/dev/null 2>&1; then
+            echo "Helm chart accepted colliding Gateway container ports"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set credentials.existingSecret=invalid..name >/dev/null 2>&1; then
+            echo "Helm schema accepted an invalid Secret reference"
+            exit 1
+          fi
+          long_dns_label=$(printf 'a%.0s' {1..64})
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set "credentials.existingSecret=${long_dns_label}" >/dev/null 2>&1; then
+            echo "Helm chart accepted a Secret reference with an oversized DNS label"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set "clusterDomain=${long_dns_label}.local" >/dev/null 2>&1; then
+            echo "Helm chart accepted a cluster domain with an oversized DNS label"
+            exit 1
+          fi
+          dns_label_a=$(printf 'a%.0s' {1..63})
+          dns_label_b=$(printf 'b%.0s' {1..63})
+          dns_label_c=$(printf 'c%.0s' {1..63})
+          cluster_domain_prefix="${dns_label_a}.${dns_label_b}.${dns_label_c}"
+          cluster_domain_at_limit="${cluster_domain_prefix}.dddd"
+          cluster_domain_over_limit="${cluster_domain_prefix}.ddddd"
+          gateway_hostname_at_limit="relaygate-gateway-2.relaygate-gateway-peer.relaygate.svc.${cluster_domain_at_limit}"
+          test "${#gateway_hostname_at_limit}" -eq 253
+          helm template relaygate deploy/helm/relaygate \
+            --namespace relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set "clusterDomain=${cluster_domain_at_limit}" >/dev/null
+          if helm template relaygate deploy/helm/relaygate \
+            --namespace relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set "clusterDomain=${cluster_domain_over_limit}" >/dev/null 2>&1; then
+            echo "Helm chart accepted a generated Gateway hostname longer than 253 characters"
+            exit 1
+          fi
+
+          docker run --rm \
+            --volume "$PWD:/workdir" \
+            ghcr.io/yannh/kubeconform:v0.7.0 \
+            -strict -summary \
+            /workdir/target/helm/default.yaml \
+            /workdir/target/helm/minimal.yaml \
+            /workdir/target/helm/ambiguous-name.yaml
+          helm package deploy/helm/relaygate --destination target/helm
+
   rust:
     name: Rust
     runs-on: ubuntu-latest

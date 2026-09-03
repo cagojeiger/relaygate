@@ -79,6 +79,42 @@ exact-byte ShardDirectory artifact를 사용합니다. Compose의 ClientKey와 I
 운영 credential이 아닙니다. host에는 Gateway A의 SDK port `127.0.0.1:27420`만 노출하고 RT와
 peer port는 Compose network 안에만 둡니다.
 
+## Kubernetes / Helm
+
+[`deploy/helm/relaygate`](deploy/helm/relaygate/) 차트는 Gateway와 RouteTable만 배포합니다.
+SDK application과 credential은 배포하지 않습니다.
+
+```text
+SDK ──► Gateway ClusterIP Service ──► Gateway StatefulSet × N
+                                           │ pod별 peer DNS
+                                           └──► RouteTable headless Service
+                                                    └── StatefulSet × M shards
+```
+
+기본값은 Gateway 3개와 memory-only RouteTable shard 2개입니다. Gateway는 안정적인 pod 이름과
+one-hop locator가 필요하므로 StatefulSet을 사용합니다. RouteTable도 StatefulSet ordinal 하나를
+logical shard 하나로 사용합니다. `routeTable.shardCount`는 replica 수가 아니라 shard 수입니다.
+PVC와 `emptyDir`는 만들지 않으며 Kubernetes 1.32 이상이 필요합니다.
+
+먼저 release namespace에 `internal-gateway-keys`와 `client-keys`를 가진 Secret을 생성한 뒤
+설치합니다. 기본 release 이름과 Secret 형식은 차트 [README](deploy/helm/relaygate/README.md)에
+있습니다.
+
+```bash
+helm upgrade --install relaygate deploy/helm/relaygate \
+  --namespace relaygate \
+  --create-namespace \
+  --set internalTransport.trustedLocalAdapter=true \
+  --wait
+helm test relaygate --namespace relaygate
+```
+
+RT shard 수 변경은 단순 scale-out이 아닙니다. exact ShardDirectory generation과 ClientId
+authority가 함께 바뀌므로 maintenance window에서 `helm uninstall --wait`와 기존 pod 삭제 완료를
+확인한 뒤 새 구성으로 다시 설치해야 합니다.
+현재 내부 plain-TCP key adapter는 trusted network 또는 service mesh/mTLS가 보호하는 환경에서만
+사용합니다.
+
 ## Gateway 설정
 
 | 환경변수 | 기본값 | 의미 |
@@ -197,6 +233,9 @@ crates/
 ├── relaygate-route-table-transport/ # bounded internal TCP service/client
 ├── relaygate-sdk/        # public Connector, Listener, Pipe API
 └── relaygate-server/     # process config, health, shutdown, wiring
+deploy/
+├── docker/               # Gateway/RouteTable image targets
+└── helm/relaygate/       # Gateway/RouteTable Kubernetes chart
 examples/
 ├── echo-listener/
 └── echo-probe/

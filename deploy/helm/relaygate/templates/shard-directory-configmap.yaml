@@ -1,0 +1,11 @@
+{{- include "relaygate.validateValues" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "relaygate.shardDirectoryName" . | quote }}
+  labels:
+    {{- include "relaygate.labels" (dict "root" . "component" "route-table") | nindent 4 }}
+immutable: true
+data:
+  shard-directory.json: |-
+    {{- include "relaygate.shardDirectory" . | nindent 4 }}

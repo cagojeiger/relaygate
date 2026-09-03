@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "relaygate.routeTableName" . | quote }}
+  labels:
+    {{- include "relaygate.labels" (dict "root" . "component" "route-table") | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "relaygate.selectorLabels" (dict "root" . "component" "route-table") | nindent 4 }}
+  ports:
+    - name: route-table
+      port: {{ .Values.routeTable.port }}
+      targetPort: route-table
+      protocol: TCP
