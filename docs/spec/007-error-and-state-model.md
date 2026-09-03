@@ -51,7 +51,18 @@ cleanup과 replay 금지를 위해 보수적으로 `MAYBE_OBSERVED`로 분류한
 - **`ERR-013`**: terminal open 결과는 `PeerObservation`을 함께 결정해야 한다.
 - **`ERR-014`**: `MAYBE_OBSERVED` 결과는 같은 attempt의 자동 replay, 다른 binding 선택, Pipe resume를 발생시켜서는 안 된다.
 - **`ERR-015`**: 알 수 없는 `ConnectorSessionId`, active state에 없는 terminal open/stream identity의 늦은 frame은 새 live state를 만들지 않고 제거해야 한다. current Pipe identity를 다른 session이 사용한 frame은 target state를 변경하지 않고 offending session의 `PROTOCOL_ERROR`가 된다. 지연·재사용 SDK `OPEN`은 SDK→Entry `ConnectorSession`의 `ConnectionId` high-watermark로, peer `OPEN`은 `PeerTransport`의 `StreamId` high-watermark로 거절한다. Owner Gateway는 current RelayStream에 결합된 `OpenIdentity`만 조회하며 종료된 identity의 remote ConnectorSession high-watermark나 tombstone을 만들지 않는다. 종료된 RT lease의 `Update`와 `KeepAlive`도 새 live state를 만들지 않는다.
-- **`ERR-016`**: SDK의 `Error::is_retryable()`은 code가 `UNAVAILABLE`, `DEADLINE_EXCEEDED` 또는 `RESOURCE_EXHAUSTED`이고 observation이 `NOT_OBSERVED`일 때만 `true`여야 한다. `MAYBE_OBSERVED`와 `OBSERVED`는 code와 관계없이 `false`다. 이 값은 application이 새 operation을 시작할 수 있다는 보수적 힌트이며 SDK의 자동 replay 명령이 아니다.
+- **`ERR-016`**: SDK의 `Error::is_retryable()`은 code가 `UNAVAILABLE`, `DEADLINE_EXCEEDED` 또는 `RESOURCE_EXHAUSTED`이고 observation이 `NOT_OBSERVED`일 때만 `true`여야 한다. `MAYBE_OBSERVED`와 `OBSERVED`는 code와 관계없이 `false`다. 이 힌트의 사용 범위는 실패한 연결·등록 제어 호출 뒤 application이 새 호출을 시작할지 판단하는 것까지다. Pipe I/O 재시도나 payload replay의 판단 근거로 사용해서는 안 되며 SDK의 자동 replay 명령도 아니다.
+
+| 오류를 받은 위치 | observation / retry hint의 사용 범위 |
+| --- | --- |
+| `connect`, `open`, 최초 `listen` | 해당 제어 호출의 관측 결과와 새 호출을 고려할 힌트. 재시도 시점·횟수는 application 정책 |
+| returned Listener의 `accept`가 반환한 등록 오류 | Listener 등록 상태 진단. `BLOCKED` handle을 같은 호출로 복구한다는 의미가 아님 |
+| `Pipe`·owned half의 I/O, Tokio I/O에 포함된 SDK 오류 | 진단 metadata만 제공. 앞선 OPEN 성공을 취소하거나 payload의 도달·처리 여부를 증명하지 않음 |
+
+SDK session loss로 확립된 Pipe가 종료될 때도 `UNAVAILABLE`/`NOT_OBSERVED`와
+`is_retryable() == true`가 반환될 수 있다. 이미 주고받은 bytes가 없다는 뜻이 아니다.
+Pipe 실패 뒤에는 application의 ACK·중복 방지·업무 정책으로 재시도 여부를 결정하며,
+필요하면 별도의 새 `open`을 호출한다. SDK는 옛 Pipe나 bytes를 재생하지 않는다.
 
 `OFFER`는 Listener 쪽 Pipe 생성 frame이지만 conforming Gateway는 같은 open attempt에서 한 번만 보내고 같은 `PipeId`를 재사용하지 않는다. SDK-Gateway transport의 방향별 순서와 `ConnectorSessionId`를 포함한 `PipeId` incarnation을 신뢰하므로 Listener SDK는 종료된 Pipe마다 `OFFER` tombstone을 보관할 필요가 없다. `OFFER` 재전송에 대한 복구 동작은 protocol 계약이 아니며, Gateway는 결과가 불확실하면 재전송 대신 selected `ListenerSession`을 종료한다.
 

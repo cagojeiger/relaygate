@@ -19,7 +19,10 @@ pub enum ErrorCode {
     AlreadyExists,
 }
 
-/// Whether a failed operation can be proven to have reached its peer.
+/// Peer observation for a connection or registration control operation.
+///
+/// On Pipe I/O errors this metadata is diagnostic only: it does not describe
+/// payload delivery or revoke the fact that the Pipe was already established.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PeerObservation {
@@ -57,6 +60,8 @@ impl Error {
         self.code
     }
 
+    /// Returns control-operation observation metadata, not a payload receipt.
+    /// Do not use this value to decide whether to replay failed Pipe I/O.
     #[must_use]
     pub const fn observation(&self) -> PeerObservation {
         self.observation
@@ -67,9 +72,13 @@ impl Error {
         &self.message
     }
 
-    /// Returns `true` only when a transient failure is proven not to have
-    /// reached the peer. The SDK does not retry the operation automatically;
-    /// the application still decides whether to start a new operation.
+    /// Classifies transient, not-observed errors for a new connection or
+    /// registration control operation. The caller still decides whether to
+    /// start it; the SDK does not replay the failed operation.
+    ///
+    /// Do not apply this hint to Pipe I/O errors, including errors recovered
+    /// from Tokio I/O adapters. It can be `true` after payload was exchanged:
+    /// neither that value nor `false` determines delivery or safe payload retry.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
         matches!(self.observation, PeerObservation::NotObserved)

@@ -6,7 +6,8 @@ use futures_util::SinkExt;
 use relaygate_protocol::{
     BindingId, ErrorCode as WireErrorCode, Frame, PipeId, SessionId, SessionRole,
 };
-use relaygate_sdk::{Config, ErrorCode, ListenerRuntime, ListenerStatus};
+use relaygate_sdk::{Config, ErrorCode, ListenerRuntime, ListenerStatus, PeerObservation};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
@@ -50,9 +51,20 @@ async fn session_loss_then_permanent_rejection_blocks_listener_until_recreated_c
             })
             .await?;
 
-        offer_pipe(&mut first, first_binding, 40).await?;
+        let accepted_pipe_id = offer_pipe(&mut first, first_binding, 40).await?;
+        first
+            .send(Frame::Data {
+                pipe_id: accepted_pipe_id,
+                payload: b"first".as_slice().into(),
+            })
+            .await?;
         let _ = first_offer_tx.send(());
         let _ = first_accepted_rx.await;
+        match next_application_frame(&mut first).await? {
+            Frame::Data { pipe_id, payload }
+                if pipe_id == accepted_pipe_id && payload.as_ref() == b"written once" => {}
+            other => return Err(unexpected(other).into()),
+        }
 
         offer_pipe(&mut first, first_binding, 41).await?;
         let _ = queued_offer_tx.send(());
@@ -94,6 +106,10 @@ async fn session_loss_then_permanent_rejection_blocks_listener_until_recreated_c
 
     first_offer_rx.await?;
     let mut accepted_pipe = listener.accept().await?;
+    let mut payload = [0; 5];
+    accepted_pipe.read_exact(&mut payload).await?;
+    assert_eq!(&payload, b"first");
+    accepted_pipe.write_all_bytes(b"written once").await?;
     let _ = first_accepted_tx.send(());
     queued_offer_rx.await?;
     let _ = end_first_tx.send(());
@@ -104,6 +120,8 @@ async fn session_loss_then_permanent_rejection_blocks_listener_until_recreated_c
         .err()
         .ok_or_else(|| io::Error::other("accepted old-session Pipe did not fail"))?;
     assert_eq!(accepted_error.code(), ErrorCode::Unavailable);
+    assert_eq!(accepted_error.observation(), PeerObservation::NotObserved);
+    assert!(accepted_error.is_retryable());
     recovery_committed_rx.await?;
     assert_eq!(listener.status(), ListenerStatus::Registering);
 
@@ -137,6 +155,25 @@ async fn session_loss_then_permanent_rejection_blocks_listener_until_recreated_c
     assert_eq!(listener.status(), ListenerStatus::Closed);
     let replacement = runtime.listen(CLIENT_ID, NEW_KEY).await?;
     assert_eq!(replacement.status(), ListenerStatus::Active);
+    let (mut old_reader, mut old_writer) = accepted_pipe.into_split();
+    let read_error = old_reader
+        .read(&mut byte)
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("old Listener Pipe resumed reading after recovery"))?;
+    let write_error = old_writer
+        .write_all(b"must not replay")
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("old Listener Pipe resumed writing after recovery"))?;
+    for error in [read_error, write_error] {
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<relaygate_sdk::Error>()),
+            Some(&accepted_error)
+        );
+    }
     assert!(
         timeout(Duration::from_millis(50), replacement.accept())
             .await
@@ -165,7 +202,7 @@ async fn offer_pipe(
     transport: &mut TestTransport,
     binding_id: BindingId,
     connection_id: u64,
-) -> TestResult {
+) -> TestResult<PipeId> {
     let pipe_id = PipeId::new(SessionId::new(), connection_id);
     transport
         .send(Frame::Offer {
@@ -175,7 +212,7 @@ async fn offer_pipe(
         })
         .await?;
     match next_application_frame(transport).await? {
-        Frame::OfferAccepted { pipe_id: accepted } if accepted == pipe_id => Ok(()),
+        Frame::OfferAccepted { pipe_id: accepted } if accepted == pipe_id => Ok(pipe_id),
         other => Err(unexpected(other).into()),
     }
 }

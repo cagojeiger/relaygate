@@ -465,7 +465,8 @@ rust = ["concurrent_duplicate_listener_is_rejected_and_closed_id_can_be_reused",
 [[case]]
 id = "T-ERR-08"
 status = "executable"
-rust = ["error::tests::retryable_requires_a_transient_not_observed_failure", "committed_open_is_not_replayed_and_reports_maybe_observed", "initial_register_failure_is_terminal_until_application_retries"]
+rust = ["error::tests::retryable_requires_a_transient_not_observed_failure", "committed_open_is_not_replayed_and_reports_maybe_observed", "initial_register_failure_is_terminal_until_application_retries", "connector_runtime_cycles_through_loss_failed_reconnect_recovery_and_close", "session_loss_then_permanent_rejection_blocks_listener_until_recreated"]
+reason = "retry hint의 code/observation 조합과 제어 attempt replay 금지를 검증한다. Connector·Listener는 bytes 교환 뒤 session-loss I/O 오류가 retryable인 경우에도 old Pipe를 복구하거나 payload를 재전송하지 않으며, 재연결 후 old owned half의 Tokio read/write 오류가 원래 SDK Error를 보존함을 확인한다. Pipe I/O의 힌트는 delivery 또는 payload retry 판단 근거가 아니다."
 
 [[case]]
 id = "T-STATE-SDK"

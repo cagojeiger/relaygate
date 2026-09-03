@@ -54,6 +54,9 @@ struct PipeReader {
 }
 
 /// One ordered, opaque, bidirectional byte stream.
+///
+/// I/O errors do not report payload delivery. Do not use their
+/// [`Error::is_retryable`] hint to replay bytes on this or a replacement Pipe.
 pub struct Pipe {
     owner: Arc<PipeOwner>,
     reader: PipeReader,
