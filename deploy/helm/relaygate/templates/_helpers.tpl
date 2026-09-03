@@ -4,11 +4,7 @@
 {{- end }}
 
 {{- define "relaygate.fullname" -}}
-{{- $name := .Chart.Name -}}
-{{- $base := printf "%s-%s" .Release.Name $name -}}
-{{- if contains $name .Release.Name -}}
-{{- $base = .Release.Name -}}
-{{- end -}}
+{{- $base := .Release.Name -}}
 {{- if gt (len $base) 45 -}}
 {{- printf "%s-%s" ($base | trunc 36 | trimSuffix "-") ($base | sha256sum | trunc 8) -}}
 {{- else -}}

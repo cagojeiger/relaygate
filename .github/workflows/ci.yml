@@ -81,6 +81,14 @@ jobs:
               --show-only templates/shard-directory-configmap.yaml \
               > "target/helm/long-name-${suffix}.yaml"
           done
+          for release_name in foo foo-relaygate; do
+            helm template "$release_name" deploy/helm/relaygate \
+              --namespace relaygate-test \
+              --kube-version 1.32.0 \
+              --set internalTransport.trustedLocalAdapter=true \
+              --show-only templates/shard-directory-configmap.yaml \
+              > "target/helm/release-name-${release_name}.yaml"
+          done
 
           test "$(grep -c '^kind: StatefulSet$' target/helm/default.yaml)" -eq 2
           deployment_count=$(grep -c '^kind: Deployment$' target/helm/default.yaml || true)
@@ -121,6 +129,9 @@ jobs:
           test "$long_name_one" != "$long_name_two"
           test "${#long_name_one}" -le 63
           test "${#long_name_two}" -le 63
+          release_name_foo=$(awk '/^  name:/ { print $2; exit }' target/helm/release-name-foo.yaml)
+          release_name_with_chart=$(awk '/^  name:/ { print $2; exit }' target/helm/release-name-foo-relaygate.yaml)
+          test "$release_name_foo" != "$release_name_with_chart"
           if grep -Eq '^kind: (Deployment|Secret|PersistentVolumeClaim|Ingress|HorizontalPodAutoscaler)$|^[[:space:]]+(emptyDir|volumeClaimTemplates):' \
             target/helm/default.yaml; then
             echo "Helm chart rendered a forbidden stateful or application-owned resource"
