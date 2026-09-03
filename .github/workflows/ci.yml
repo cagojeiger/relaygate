@@ -72,6 +72,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Build production image targets
+        run: |
+          docker build --file deploy/docker/Dockerfile --target gateway --tag relaygate-gateway:ci .
+          docker build --file deploy/docker/Dockerfile --target route-table --tag relaygate-route-table:ci .
+
       - name: Start two RouteTables, three Gateways, Listeners, and continuity Pipes
         run: |
           docker compose up --build -d --wait \
