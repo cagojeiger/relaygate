@@ -10,7 +10,7 @@ metadata:
 spec:
   restartPolicy: Never
   activeDeadlineSeconds: 30
-  serviceAccountName: {{ include "relaygate.serviceAccountName" . }}
+  serviceAccountName: {{ include "relaygate.serviceAccountName" . | quote }}
   automountServiceAccountToken: false
   enableServiceLinks: false
   securityContext:

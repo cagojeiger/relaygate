@@ -45,16 +45,16 @@
 {{- end }}
 
 {{- define "relaygate.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "relaygate.name" .root }}
-app.kubernetes.io/instance: {{ .root.Release.Name }}
-app.kubernetes.io/component: {{ .component }}
+app.kubernetes.io/name: {{ include "relaygate.name" .root | quote }}
+app.kubernetes.io/instance: {{ .root.Release.Name | quote }}
+app.kubernetes.io/component: {{ .component | quote }}
 {{- end }}
 
 {{- define "relaygate.labels" -}}
-helm.sh/chart: {{ include "relaygate.chart" .root }}
+helm.sh/chart: {{ include "relaygate.chart" .root | quote }}
 {{ include "relaygate.selectorLabels" . }}
-app.kubernetes.io/managed-by: {{ .root.Release.Service }}
-app.kubernetes.io/part-of: relaygate
+app.kubernetes.io/managed-by: {{ .root.Release.Service | quote }}
+app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.shardDirectory" -}}

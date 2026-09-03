@@ -3,11 +3,11 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "relaygate.gatewayName" . }}
+  name: {{ include "relaygate.gatewayName" . | quote }}
   labels:
     {{- include "relaygate.labels" (dict "root" . "component" "gateway") | nindent 4 }}
 spec:
-  serviceName: {{ include "relaygate.gatewayPeerServiceName" . }}
+  serviceName: {{ include "relaygate.gatewayPeerServiceName" . | quote }}
   replicas: {{ .Values.gateway.replicaCount }}
   podManagementPolicy: Parallel
   updateStrategy:
@@ -29,7 +29,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "relaygate.serviceAccountName" . }}
+      serviceAccountName: {{ include "relaygate.serviceAccountName" . | quote }}
       automountServiceAccountToken: false
       enableServiceLinks: false
       terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
@@ -129,7 +129,7 @@ spec:
       volumes:
         - name: shard-directory
           configMap:
-            name: {{ include "relaygate.shardDirectoryName" . }}
+            name: {{ include "relaygate.shardDirectoryName" . | quote }}
             defaultMode: 0444
       {{- with .Values.gateway.nodeSelector }}
       nodeSelector:

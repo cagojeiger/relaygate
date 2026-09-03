@@ -63,6 +63,11 @@ jobs:
             --set routeTable.shardCount=1 \
             --set credentials.existingSecret=minimal-credentials \
             > target/helm/minimal.yaml
+          helm template true deploy/helm/relaygate \
+            --namespace relaygate-test \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set-string serviceAccount.name=true \
+            > target/helm/ambiguous-name.yaml
 
           test "$(grep -c '^kind: StatefulSet$' target/helm/default.yaml)" -eq 1
           test "$(grep -c '^kind: Deployment$' target/helm/default.yaml)" -eq 2
@@ -74,8 +79,8 @@ jobs:
           test "$(grep -c '^    type: Recreate$' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^kind: Deployment$' target/helm/minimal.yaml)" -eq 1
           grep -A1 -Fq 'name: RELAYGATE_GATEWAY_NAME' target/helm/default.yaml
-          grep -Fq 'value: "$(POD_NAME)"' target/helm/default.yaml
-          grep -Fq 'value: "$(POD_NAME).relaygate-gateway-peer.$(POD_NAMESPACE).svc.cluster.local:27421"' \
+          grep -Fq "value: \"\$(POD_NAME)\"" target/helm/default.yaml
+          grep -Fq "value: \"\$(POD_NAME).relaygate-gateway-peer.\$(POD_NAMESPACE).svc.cluster.local:27421\"" \
             target/helm/default.yaml
           grep -Fq '"id":"rt-0"' target/helm/default.yaml
           grep -Fq '"id":"rt-1"' target/helm/default.yaml
@@ -154,7 +159,8 @@ jobs:
             ghcr.io/yannh/kubeconform:v0.7.0 \
             -strict -summary \
             /workdir/target/helm/default.yaml \
-            /workdir/target/helm/minimal.yaml
+            /workdir/target/helm/minimal.yaml \
+            /workdir/target/helm/ambiguous-name.yaml
           helm package deploy/helm/relaygate --destination target/helm
 
   rust:
