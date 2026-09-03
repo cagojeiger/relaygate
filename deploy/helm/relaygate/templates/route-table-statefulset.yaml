@@ -41,7 +41,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: route-table
-          image: "{{ .Values.routeTable.image.repository }}:{{ .Values.routeTable.image.tag }}"
+          image: {{ printf "%s:%s" .Values.routeTable.image.repository .Values.routeTable.image.tag | quote }}
           imagePullPolicy: {{ .Values.routeTable.image.pullPolicy }}
           args:
             - route-table
