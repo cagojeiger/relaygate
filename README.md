@@ -179,6 +179,9 @@ RelayGate runtime image는 컴포넌트별로 릴리스한다.
 같이 릴리스되고, 하나만 바꾸면 해당 image만 릴리스된다. GHCR package version은 `latest`가
 아닌 항목 기준 최근 20개만 유지한다.
 
+`VERSION.gateway`와 `VERSION.route-table`은 배포 image 버전이며 서로 독립적이다. Rust
+workspace version은 crate/API 버전이므로 image release version과 같은 수명주기를 강제하지 않는다.
+
 ## 구조
 
 ```text

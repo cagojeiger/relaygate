@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix: ${{ fromJson(needs.changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
@@ -93,6 +93,10 @@ jobs:
           version=$(tr -d '[:space:]' < "${{ matrix.version_file }}")
           if [ -z "$version" ]; then
             echo "::error::${{ matrix.version_file }} is empty"
+            exit 1
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::${{ matrix.version_file }} must contain a Docker-compatible semantic version"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -132,18 +136,27 @@ jobs:
             org.opencontainers.image.version=${{ steps.ver.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.licenses=Apache-2.0
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.ver.outputs.version }}
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:latest
 
-      - name: Tag and create GitHub Release
+      - name: Create component GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ steps.ver.outputs.tag }}"
-          git tag "$tag"
-          git push origin "$tag"
-          gh release create "$tag" --title "$tag" --generate-notes
+          previous_tag=$(git tag --list '${{ matrix.component }}-v*' --sort=-version:refname | head -n 1)
+          args=(
+            "$tag"
+            --target "$GITHUB_SHA"
+            --title "${{ matrix.component }} v${{ steps.ver.outputs.version }}"
+            --generate-notes
+          )
+          if [ -n "$previous_tag" ]; then
+            args+=(--notes-start-tag "$previous_tag")
+          fi
+          gh release create "${args[@]}"
 
       - name: Keep recent 20 GHCR versions
         env:

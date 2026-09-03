@@ -64,27 +64,18 @@ jobs:
             --coverage docs/test/001-executable-coverage.toml \
             --test-list target/contract/tests.txt
 
-  container-images:
-    name: Production container targets
-    needs: [hygiene, rust]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Build Gateway image target
-        run: docker build --file deploy/docker/Dockerfile --target gateway .
-
-      - name: Build RouteTable image target
-        run: docker build --file deploy/docker/Dockerfile --target route-table .
-
   compose:
     name: Docker Compose RT2/GW3 E2E
-    needs: [hygiene, rust, container-images]
+    needs: [hygiene, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+
+      - name: Build production image targets
+        run: |
+          docker build --file deploy/docker/Dockerfile --target gateway --tag relaygate-gateway:ci .
+          docker build --file deploy/docker/Dockerfile --target route-table --tag relaygate-route-table:ci .
 
       - name: Start two RouteTables, three Gateways, Listeners, and continuity Pipes
         run: |

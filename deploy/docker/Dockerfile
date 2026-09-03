@@ -35,7 +35,7 @@ EXPOSE 27430
 ENTRYPOINT ["relaygate-server"]
 CMD ["route-table"]
 
-FROM server-runtime AS runtime
+FROM server-runtime AS test
 
 COPY --from=builder /workspace/target/release/relaygate-echo-listener /usr/local/bin/relaygate-echo-listener
 COPY --from=builder /workspace/target/release/relaygate-echo-probe /usr/local/bin/relaygate-echo-probe
