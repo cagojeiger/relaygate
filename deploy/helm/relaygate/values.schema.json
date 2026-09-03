@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "clusterDomain",
+    "internalTransport",
+    "credentials",
+    "serviceAccount",
+    "podSecurityContext",
+    "containerSecurityContext",
+    "gateway",
+    "routeTable"
+  ],
+  "properties": {
+    "clusterDomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "internalTransport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trustedLocalAdapter"],
+      "properties": {
+        "trustedLocalAdapter": {
+          "type": "boolean"
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253,
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+          }
+        }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "existingSecret",
+        "internalGatewayKeysKey",
+        "clientKeysKey",
+        "reloadToken"
+      ],
+      "properties": {
+        "existingSecret": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+        },
+        "internalGatewayKeysKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[-._a-zA-Z0-9]+$"
+        },
+        "clientKeysKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[-._a-zA-Z0-9]+$"
+        },
+        "reloadToken": {
+          "type": "string"
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "annotations", "name"],
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 253,
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+        }
+      }
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "containerSecurityContext": {
+      "type": "object"
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replicaCount",
+        "image",
+        "sdkPort",
+        "peerPort",
+        "service",
+        "log",
+        "logFormat",
+        "podAnnotations",
+        "podLabels",
+        "resources",
+        "nodeSelector",
+        "tolerations",
+        "affinity",
+        "topologySpreadConstraints",
+        "terminationGracePeriodSeconds",
+        "extraEnv"
+      ],
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "sdkPort": {
+          "$ref": "#/definitions/port"
+        },
+        "peerPort": {
+          "$ref": "#/definitions/port"
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "port",
+            "annotations"
+          ],
+          "properties": {
+            "port": {
+              "$ref": "#/definitions/port"
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "log": {
+          "type": "string",
+          "minLength": 1
+        },
+        "logFormat": {
+          "type": "string",
+          "enum": ["text", "json"]
+        },
+        "statsIntervalMs": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "extraEnv": {
+          "$ref": "#/definitions/envList"
+        }
+      }
+    },
+    "routeTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shardCount",
+        "image",
+        "port",
+        "leaseTtlMs",
+        "log",
+        "logFormat",
+        "podAnnotations",
+        "podLabels",
+        "resources",
+        "nodeSelector",
+        "tolerations",
+        "affinity",
+        "topologySpreadConstraints",
+        "terminationGracePeriodSeconds",
+        "extraEnv"
+      ],
+      "properties": {
+        "shardCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "port": {
+          "$ref": "#/definitions/port"
+        },
+        "leaseTtlMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "log": {
+          "type": "string",
+          "minLength": 1
+        },
+        "logFormat": {
+          "type": "string",
+          "enum": ["text", "json"]
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "extraEnv": {
+          "$ref": "#/definitions/envList"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "envList": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

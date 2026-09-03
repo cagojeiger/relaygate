@@ -1,0 +1,149 @@
+{{- include "relaygate.validateGatewayExtraEnv" . }}
+{{- include "relaygate.validateGatewayPodMetadata" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "relaygate.gatewayName" . }}
+  labels:
+    {{- include "relaygate.labels" (dict "root" . "component" "gateway") | nindent 4 }}
+spec:
+  serviceName: {{ include "relaygate.gatewayPeerServiceName" . }}
+  replicas: {{ .Values.gateway.replicaCount }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "relaygate.selectorLabels" (dict "root" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
+        relaygate.io/credentials-reload: {{ .Values.credentials.reloadToken | quote }}
+        {{- with .Values.gateway.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "relaygate.labels" (dict "root" . "component" "gateway") | nindent 8 }}
+        {{- with .Values.gateway.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "relaygate.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          args:
+            - gateway
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: sdk
+              containerPort: {{ .Values.gateway.sdkPort }}
+              protocol: TCP
+            - name: peer
+              containerPort: {{ .Values.gateway.peerPort }}
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RELAYGATE_BIND_ADDR
+              value: "0.0.0.0:{{ .Values.gateway.sdkPort }}"
+            - name: RELAYGATE_PEER_BIND_ADDR
+              value: "0.0.0.0:{{ .Values.gateway.peerPort }}"
+            - name: RELAYGATE_RT_TRUSTED_LOCAL
+              value: "true"
+            - name: RELAYGATE_RT_SHARD_DIRECTORY_PATH
+              value: /etc/relaygate/shard-directory.json
+            - name: RELAYGATE_GATEWAY_NAME
+              value: "$(POD_NAME)"
+            - name: RELAYGATE_GATEWAY_LOCATOR
+              value: "$(POD_NAME).{{ include "relaygate.gatewayPeerServiceName" . }}.$(POD_NAMESPACE).svc.{{ .Values.clusterDomain }}:{{ .Values.gateway.peerPort }}"
+            - name: RELAYGATE_INTERNAL_GATEWAY_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.existingSecret | quote }}
+                  key: {{ .Values.credentials.internalGatewayKeysKey | quote }}
+            - name: RELAYGATE_CLIENT_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.existingSecret | quote }}
+                  key: {{ .Values.credentials.clientKeysKey | quote }}
+            - name: RELAYGATE_LOG
+              value: {{ .Values.gateway.log | quote }}
+            - name: RELAYGATE_LOG_FORMAT
+              value: {{ .Values.gateway.logFormat | quote }}
+            {{- with .Values.gateway.statsIntervalMs }}
+            - name: RELAYGATE_STATS_INTERVAL_MS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            exec:
+              command:
+                - relaygate-server
+                - check
+                - "127.0.0.1:{{ .Values.gateway.sdkPort }}"
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - relaygate-server
+                - check
+                - "127.0.0.1:{{ .Values.gateway.sdkPort }}"
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: sdk
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: shard-directory
+              mountPath: /etc/relaygate
+              readOnly: true
+      volumes:
+        - name: shard-directory
+          configMap:
+            name: {{ include "relaygate.shardDirectoryName" . }}
+            defaultMode: 0444
+      {{- with .Values.gateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,126 @@
+{{- include "relaygate.validateRouteTableExtraEnv" . }}
+{{- include "relaygate.validateRouteTablePodMetadata" . }}
+{{- $root := . }}
+{{- range $index := until (int .Values.routeTable.shardCount) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "relaygate.routeTableName" (dict "root" $root "index" $index) }}
+  labels:
+    {{- include "relaygate.labels" (dict "root" $root "component" "route-table") | nindent 4 }}
+    relaygate.io/shard: {{ printf "rt-%d" $index | quote }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "relaygate.selectorLabels" (dict "root" $root "component" "route-table") | nindent 6 }}
+      relaygate.io/shard: {{ printf "rt-%d" $index | quote }}
+  template:
+    metadata:
+      annotations:
+        checksum/shard-directory: {{ include "relaygate.shardDirectory" $root | sha256sum | quote }}
+        relaygate.io/credentials-reload: {{ $root.Values.credentials.reloadToken | quote }}
+        {{- with $root.Values.routeTable.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "relaygate.labels" (dict "root" $root "component" "route-table") | nindent 8 }}
+        relaygate.io/shard: {{ printf "rt-%d" $index | quote }}
+        {{- with $root.Values.routeTable.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "relaygate.serviceAccountName" $root }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ $root.Values.routeTable.terminationGracePeriodSeconds }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: route-table
+          image: "{{ $root.Values.routeTable.image.repository }}:{{ $root.Values.routeTable.image.tag }}"
+          imagePullPolicy: {{ $root.Values.routeTable.image.pullPolicy }}
+          args:
+            - route-table
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: route-table
+              containerPort: {{ $root.Values.routeTable.port }}
+              protocol: TCP
+          env:
+            - name: RELAYGATE_RT_TRUSTED_LOCAL
+              value: "true"
+            - name: RELAYGATE_RT_BIND_ADDR
+              value: "0.0.0.0:{{ $root.Values.routeTable.port }}"
+            - name: RELAYGATE_RT_SHARD_DIRECTORY_PATH
+              value: /etc/relaygate/shard-directory.json
+            - name: RELAYGATE_RT_SHARD_ID
+              value: {{ printf "rt-%d" $index | quote }}
+            - name: RELAYGATE_RT_LEASE_TTL_MS
+              value: {{ $root.Values.routeTable.leaseTtlMs | quote }}
+            - name: RELAYGATE_INTERNAL_GATEWAY_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.credentials.existingSecret | quote }}
+                  key: {{ $root.Values.credentials.internalGatewayKeysKey | quote }}
+            - name: RELAYGATE_LOG
+              value: {{ $root.Values.routeTable.log | quote }}
+            - name: RELAYGATE_LOG_FORMAT
+              value: {{ $root.Values.routeTable.logFormat | quote }}
+            {{- with $root.Values.routeTable.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            tcpSocket:
+              port: route-table
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: route-table
+            periodSeconds: 5
+            timeoutSeconds: 1
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: route-table
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+          resources:
+            {{- toYaml $root.Values.routeTable.resources | nindent 12 }}
+          volumeMounts:
+            - name: shard-directory
+              mountPath: /etc/relaygate
+              readOnly: true
+      volumes:
+        - name: shard-directory
+          configMap:
+            name: {{ include "relaygate.shardDirectoryName" $root }}
+            defaultMode: 0444
+      {{- with $root.Values.routeTable.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.routeTable.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.routeTable.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.routeTable.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+{{- end }}

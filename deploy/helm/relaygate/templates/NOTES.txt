@@ -1,0 +1,28 @@
+RelayGate 구성:
+
+  Gateway replica:    {{ .Values.gateway.replicaCount }}
+  RouteTable shard:   {{ .Values.routeTable.shardCount }}
+  credential Secret:  {{ .Values.credentials.existingSecret }}
+
+cluster 내부 SDK endpoint:
+
+  {{ include "relaygate.gatewayServiceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ .Values.gateway.service.port }}
+
+workload 확인:
+
+  kubectl -n {{ .Release.Namespace }} get statefulset,deployment,pod,service \
+    -l app.kubernetes.io/instance={{ .Release.Name }}
+
+SDK admission chart test 실행:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+차트는 credential이나 persistent volume을 만들지 않는다. 예상되는 모든 Gateway pod
+이름은 Secret의 {{ .Values.credentials.internalGatewayKeysKey }} 값에 있어야 한다.
+Secret data 변경 뒤에는 workload를 재시작해야 한다. routeTable.shardCount 변경은 exact
+ShardDirectory generation을 바꾸므로 maintenance window에서 `helm uninstall --wait`와
+pod 삭제 완료를 확인한 뒤 새 구성으로 다시 설치해야 하며 zero-downtime shard resize가 아니다.
+
+Secret의 startup credential을 다시 읽게 하려면 credentials.reloadToken을 이전과 다른
+문자열로 바꾼다. Gateway replica를 늘릴 때는 새 GatewayName/key를 먼저 추가하고 token
+변경 rollout이 끝난 뒤 replicaCount를 늘린다.
