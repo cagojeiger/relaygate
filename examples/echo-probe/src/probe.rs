@@ -116,7 +116,7 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
         connector.close();
     }
     println!(
-        "relaygate RT1/GW3 matrix verified: 3 local, 6 directed remote, N:M shared, {} concurrent Pipes per path",
+        "relaygate GW3 matrix verified: 3 local, 6 directed remote, N:M shared, {} concurrent Pipes per path",
         CONCURRENT_PIPES_PER_PATH
     );
     Ok(())
@@ -143,34 +143,74 @@ pub(crate) async fn wait_client_registered(client_id: &str) -> anyhow::Result<()
     Ok(())
 }
 
-pub(crate) async fn expect_route_table_unavailable() -> anyhow::Result<()> {
+pub(crate) async fn expect_shard_isolation(
+    unavailable_client_id: &str,
+    local_owner_index: usize,
+    available_client_id: &str,
+) -> anyhow::Result<()> {
     let addresses = gateway_addresses()?;
     let connectors = connect_all(&addresses).await?;
+    ensure!(
+        local_owner_index < connectors.len(),
+        "local owner index {local_owner_index} is outside the configured Gateway range 0..{}",
+        connectors.len()
+    );
 
-    for index in 0..connectors.len() {
-        let payload = matrix_payload(index, index, 1);
+    let local_payload = format!(
+        "relaygate shard-isolation local owner={local_owner_index} client={unavailable_client_id}"
+    )
+    .into_bytes();
+    assert_echo(
+        open_when_registered(
+            &connectors[local_owner_index],
+            unavailable_client_id,
+            ROUTE_WAIT,
+        )
+        .await?,
+        &local_payload,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "local owner path for {unavailable_client_id:?} failed at Gateway index {local_owner_index}"
+        )
+    })?;
+
+    for (entry, connector) in connectors.iter().enumerate() {
+        if entry != local_owner_index {
+            assert_new_remote_open_unavailable(connector, unavailable_client_id)
+                .await
+                .with_context(|| {
+                    format!(
+                        "remote path entry={entry} client={unavailable_client_id:?} did not fail at the unavailable shard boundary"
+                    )
+                })?;
+        }
+    }
+
+    for (entry, connector) in connectors.iter().enumerate() {
+        let payload = format!(
+            "relaygate shard-isolation healthy entry={entry} client={available_client_id}"
+        )
+        .into_bytes();
         assert_echo(
-            open_when_registered(&connectors[index], CLIENT_IDS[index], ROUTE_WAIT).await?,
+            open_when_registered(connector, available_client_id, ROUTE_WAIT).await?,
             &payload,
         )
         .await
-        .with_context(|| format!("local path {index}->{index} failed while RouteTable was down"))?;
-
-        for (owner, client_id) in CLIENT_IDS.iter().enumerate() {
-            if owner != index {
-                assert_new_remote_open_unavailable(&connectors[index], client_id)
-                    .await
-                    .with_context(|| {
-                        format!("remote path {index}->{owner} did not fail at the RT boundary")
-                    })?;
-            }
-        }
+        .with_context(|| {
+            format!(
+                "healthy shard path failed from Gateway index {entry} to {available_client_id:?}"
+            )
+        })?;
     }
 
     for connector in connectors {
         connector.close();
     }
-    println!("RouteTable outage verified: local paths live, 6 new remote opens unavailable");
+    println!(
+        "RouteTable shard isolation verified: client {unavailable_client_id:?} stayed local-only at Gateway index {local_owner_index}; client {available_client_id:?} remained reachable from all Gateways"
+    );
     Ok(())
 }
 

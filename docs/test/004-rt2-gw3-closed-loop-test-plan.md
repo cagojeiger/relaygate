@@ -1,24 +1,25 @@
-# TEST 004: RT 1개와 Gateway 3개 closed-loop 검증
+# TEST 004: RT 2개와 Gateway 3개 closed-loop 검증
 
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active |
-| 목적 | RT 1개 아래 Gateway 3개가 local, Entry, Owner 역할을 모두 수행하는 최소 분산 구성을 검증한다. |
+| 목적 | 독립 shard 2개와 Gateway 3개가 local, Entry, Owner 역할을 모두 수행하는 최소 다중 shard 구성을 검증한다. |
 | 기준 | [SPEC 004](../spec/004-route-table-contract.md), [SPEC 005](../spec/005-connection-establishment-contract.md), [SPEC 006](../spec/006-peer-relay-contract.md), [SPEC 007](../spec/007-error-and-state-model.md), [TEST 001](001-requirement-test-matrix.md) |
 
 이 문서는 새 동작 규칙을 정의하지 않는다. SPEC 요구사항과 TEST 001 시나리오를
-`RT x 1`, `Gateway x 3`, Rust SDK, Docker Compose 구성에 연결한다.
+`RT x 2`, `Gateway x 3`, Rust SDK, Docker Compose 구성에 연결한다.
 
-in-process 통합 검증은 RT 1개와 Gateway 3개에서 local 3경로, directed remote 6경로,
-N:M binding 단일 선택, pair별 shared PeerTransport, 양방향 bytes, RT 단절 뒤 기존 Pipe 지속과
-terminal cleanup을 결정적으로 증명한다. CI의 Docker Compose profile은 실제 process에서 GW-B
-restart, RT outage와 READY-empty restart 뒤 current-state 복구를 검증한다.
+in-process 통합 검증은 다중 shard의 독립 lease lifecycle, local 3경로, directed remote 6경로,
+N:M binding 단일 선택, pair별 shared PeerTransport, 양방향 bytes와 terminal cleanup을
+결정적으로 증명한다. CI의 Docker Compose profile은 두 RT process와 세 Gateway를 실행해
+GW-B restart, shard별 격리, established Pipe 지속과 current-state 복구를 검증한다.
 
 ## 검증 구성
 
 ```text
 Language       = Rust
-RouteTable     = 1 process, memory-only, READY-empty restart
+RouteTable     = 2 independent shard processes, memory-only, READY-empty restart
+Directory      = 모든 RT와 Gateway가 동일한 exact-byte artifact를 고정
 Gateway count  = 3
 SDK            = public Rust SDK only
 Persistence    = 없음
@@ -30,20 +31,20 @@ Idle cleanup   = zero-stream PeerTransport idle retirement
 ```
 
 ```text
-                         control plane
-                   Register / Update / Resolve
-                              │
-                              ▼
-                         ┌────────┐
-                         │ RT-0   │
-                         │ memory │
-                         └───┬────┘
-                             │ BindingSet
-      ┌──────────────────────┼──────────────────────┐
-      │                      │                      │
-      ▼                      ▼                      ▼
-  Gateway A ═══════════ Gateway B ═══════════ Gateway C
-      ╚══════════════════════╩══════════════════════╝
+                  exact-byte ShardDirectory
+                 hash(ClientId) -> authority
+                            │
+             ┌──────────────┴──────────────┐
+             ▼                             ▼
+        ┌────────┐                    ┌────────┐
+        │ RT-0   │                    │ RT-1   │
+        │ memory │                    │ memory │
+        └───┬────┘                    └───┬────┘
+            │ Register / Update / Resolve │
+      ┌─────┴─────────────────────────────┴─────┐
+      ▼                   ▼                     ▼
+  Gateway A ═════════ Gateway B ═══════════ Gateway C
+      ╚═══════════════════╩═════════════════════╝
           shared one-hop PeerTransport, pair-local
 
 Connector SDK -> Entry Gateway -> Owner Gateway -> Listener SDK
@@ -57,18 +58,24 @@ application authentication, delivery acknowledgement, replay와 retry는 RT를 �
 
 | Service | 역할 | 주요 검증 |
 | --- | --- | --- |
-| `rt-0` | memory-only RouteTable service | `Register`, `Update`, `KeepAlive`, `Deregister`, `Resolve`, restart 뒤 READY-empty |
+| `rt-0` | `echo.b`, `echo.shared`, `echo.zero`의 memory-only authority | shard-local lifecycle, 격리, READY-empty restart와 current snapshot 복구 |
+| `rt-1` | `echo.a`, `echo.c`의 memory-only authority | shard-local lifecycle, 격리, READY-empty restart와 current snapshot 복구 |
 | `gateway-a` | Entry와 Owner Gateway | local `echo.a`, remote B/C 연결, peer pair A-B/A-C |
 | `gateway-b` | Entry와 Owner Gateway | local `echo.b`, remote A/C 연결, restart 대상 |
 | `gateway-c` | Entry와 Owner Gateway | local `echo.c`, remote A/B 연결, continuity 대상 |
 | `listener-a` | `echo.a` Listener SDK | A local binding과 remote Owner path |
 | `listener-b` | `echo.b`, `echo.shared` Listener SDK | N:M BindingSet의 한 binding |
-| `listener-c` | `echo.c`, `echo.shared` Listener SDK | N:M BindingSet의 다른 binding |
+| `listener-c` | `echo.c`, `echo.shared`, `echo.zero` Listener SDK | N:M BindingSet의 다른 binding과 shard별 continuity owner |
 | `topology-probe` | Connector SDK probe | local, remote, concurrency, half-close, byte equality |
-| `continuity-ac` | long-lived A -> C Pipe probe | GW-B restart와 RT outage가 A-C Pipe에 전파되지 않음 |
+| `continuity-a-zero` | long-lived A -> C `echo.zero` Pipe probe | rt-0 authority로 성립한 뒤 RT와 무관하게 지속하는 data path |
+| `continuity-ac` | long-lived A -> C `echo.c` Pipe probe | rt-1 authority로 성립한 뒤 RT와 무관하게 지속하는 data path |
 
 `echo.shared`는 B와 C의 Listener가 같은 `ClientId`를 동시에 제공하는 N:M 검증 대상이다.
-Compose probe는 public SDK만 사용한다. RT 내부 table 직접 검사는 Rust integration test가 수행한다.
+`sha256-modulo-v1`에서 `echo.b`, `echo.shared`, `echo.zero`는 rt-0에, `echo.a`, `echo.c`는
+rt-1에 배치된다. 모든 RT와 Gateway는 동일한 directory file을 mount하므로 exact-byte
+`ShardDirectoryGeneration`이 같다. 각 Gateway는 shard마다 독립적인 persistent RT connection을
+유지하며 정상 상태의 Gateway→RT connection은 총 6개다. Compose probe는 public SDK만 사용하고,
+RT 내부 table 직접 검사는 Rust integration test가 수행한다.
 
 ## 필수 검증 경로
 
@@ -94,8 +101,8 @@ Docker timing에 의존하면 불안정한 순서와 state cleanup은 Rust integ
 | `G3-I-RT-01` | RT service round-trip | core와 같은 `Register`, `Update`, `KeepAlive`, `Deregister`, `Resolve` 결과, bounded queue와 oversized Resolve의 명시적 `RESOURCE_EXHAUSTED` | `T-RT-01` ~ `T-RT-05` |
 | `G3-I-RT-02` | READY RT에 mapping 없음 | `NOT_FOUND`; RT down의 `UNAVAILABLE`과 구분 | `T-RT-04`, `T-ERR-03` |
 | `G3-I-AUTH-01` | unknown name·잘못된 key 또는 인증 뒤 다른 runtime owner·pair·direction 주장 | credential/name 실패는 `UNAUTHENTICATED`, authenticated claim mismatch는 `PERMISSION_DENIED`; RT·peer state 없음, valid connection만 fresh runtime identity에 결합 | `T-RT-01`, `T-PEER-02`, `T-EDGE-36` |
-| `G3-I-REG-01` | A/B/C 동시 registration | Gateway별 registration 격리, `echo.shared`의 BindingSet 2개 | `T-REG-01`, `T-REG-05`, `T-EDGE-01` |
-| `G3-I-REG-02` | RT restart 뒤 current snapshot 재등록 | 과거 mutation replay 없이 새 lease와 current snapshot으로만 복구 | `T-REG-06`, `T-RT-05`, `T-EDGE-06` |
+| `G3-I-REG-01` | A/B/C의 두 shard 동시 registration | Gateway·shard별 registration 격리, `echo.shared`의 BindingSet 2개 | `T-REG-01`, `T-REG-05`, `T-EDGE-01` |
+| `G3-I-REG-02` | 각 RT shard restart 뒤 current snapshot 재등록 | mutation replay 없이 새 lease와 current snapshot으로만 복구 | `T-REG-06`, `T-RT-05`, `T-EDGE-06` |
 | `G3-I-REG-03` | `echo.shared`의 B registration 제거 | RT BindingSet이 C 하나로 수렴하고 application의 새 open은 C에 정확히 하나의 Pipe를 만든다. 제거된 B로 same-attempt fallback하지 않는다. | `T-REG-04`, `T-RT-04`, `T-OPEN-03` |
 | `G3-I-OPEN-01` | Resolve 뒤 selected binding 제거 | Owner revalidation 실패, `UNAVAILABLE`, `NOT_OBSERVED`, same-attempt fallback 없음 | `T-OPEN-03`, `T-EDGE-07` |
 | `G3-I-OPEN-02` | peer OPEN commit 전 실패 | Pipe 없음, `NOT_OBSERVED`, candidate cleanup | `T-OPEN-17`, `T-PEER-09`, `T-ERR-06` |
@@ -121,36 +128,52 @@ Compose는 실제 container build, DNS, process startup, healthcheck, TCP discon
 검증한다. 정밀한 frame ordering은 integration test 책임이다.
 
 ```text
-1. docker compose up --build -d --wait rt-0 gateway-a gateway-b gateway-c listener-a listener-b listener-c continuity-ac
+1. docker compose up --build -d --wait rt-0 rt-1 gateway-a gateway-b gateway-c listener-a listener-b listener-c continuity-ac continuity-a-zero
 2. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 3. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
-4. docker compose restart gateway-b
-5. docker compose up -d --wait --no-deps gateway-b
-6. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
-7. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
-8. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-9. docker compose stop rt-0
-10. docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-rt-unavailable
-11. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
-12. docker compose up -d rt-0
-13. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.a
-14. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
-15. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.c
-16. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-17. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
-18. docker compose down --volumes --remove-orphans
+4. docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
+5. docker compose restart gateway-b
+6. docker compose up -d --wait --no-deps gateway-b
+7. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+8. docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
+9. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
+10. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+11. docker compose stop rt-0
+12. docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-shard-isolation echo.b 1 echo.c
+13. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+14. docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
+15. docker compose up -d rt-0
+16. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
+17. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.shared
+18. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.zero
+19. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+20. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+21. docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
+22. docker compose stop rt-1
+23. docker compose run --rm --no-deps topology-probe relaygate-echo-probe expect-shard-isolation echo.c 2 echo.b
+24. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+25. docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
+26. docker compose up -d rt-1
+27. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.a
+28. docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.c
+29. docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+30. docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+31. docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
+32. docker compose down --volumes --remove-orphans
 ```
 
 `matrix`는 local 3경로, remote 6방향, 경로별 65,537-byte payload, path별 32 concurrent Pipe,
 cross-dial과 public SDK를 통한 `echo.shared` 도달을 검증한다. `echo.shared`의 BindingSet 2개와
-exact-one 선택·no fan-out은 Rust integration snapshot이 결정적으로 검증한다. `continuity-ac`는
-A에서 C로 열린 기존 Pipe가 GW-B restart와 RT outage 중에도 freshness deadline 안에서 계속
-왕복하는지 확인한다.
+exact-one 선택·no fan-out은 Rust integration snapshot이 결정적으로 검증한다.
+`continuity-a-zero`와 `continuity-ac`는 rt-0과 rt-1에 속하는 A→C Pipe를 하나씩 먼저 열고,
+GW-B restart와 각 shard outage 중에도 freshness deadline 안에서 계속 왕복하는지 확인한다.
 
-`expect-rt-unavailable`에서는 local 3경로는 계속 성공하고 신규 remote 6방향만
-`UNAVAILABLE` terminal 결과인지 확인한다. RT 재시작 뒤 `matrix`의 bounded retry는 A/B/C의
-current snapshot publication을 기다리되 이전 attempt를 replay하지 않고 매번 새 `open`으로
-확인한다. configured deadline 안에 수렴하지 않으면 실패한다.
+`expect-shard-isolation <unavailable-client-id> <local-owner-index> <available-client-id>`는
+중단 shard의 ClientId가 Owner Gateway의 local path에서는 계속 성공하고 다른 두 Gateway의
+신규 remote open에서는 `UNAVAILABLE / NOT_OBSERVED`로 끝나는지 확인한다. 동시에 정상
+shard의 ClientId는 세 Gateway 모두에서 성공한다. 각 RT 재시작 뒤 `wait-client`와 `matrix`는
+Gateway의 current snapshot publication과 전체 경로 복구를 bounded 새 `open`으로 확인한다.
+configured deadline 안에 수렴하지 않으면 실패한다.
 
 `wait-client`는 full matrix 전에 특정 `ClientId`를 모든 Gateway entry에서 한 번씩 열어 RT
 publication과 Owner Gateway 도달성이 수렴했는지 확인한다. 이 단계는 새 semantic을 정의하지
@@ -176,15 +199,15 @@ deterministic하게 검증한다.
 | `AC-G3-PROC-01` | process integration | 실행 중 격리 불가능한 peer runtime failure가 bounded cleanup과 Gateway serve 오류를 거쳐 server process의 non-zero 종료로 전파된다. |
 | `AC-G3-PIPE-01` | integration/Compose | local/remote `DATA`, `FIN`, `CLOSE`, `RESET` 의미가 동일하다. |
 | `AC-G3-FAIL-01` | Compose | GW-B restart 중 A-C established Pipe가 유지되고 B 재등록 뒤 matrix가 다시 성공한다. |
-| `AC-G3-FAIL-02` | Compose | RT outage 중 established Pipe는 유지되고 신규 remote open은 `UNAVAILABLE`로 terminal 실패한다. |
-| `AC-G3-FAIL-03` | integration/Compose | RT restart 뒤 Gateway가 current local snapshot으로만 재등록하여 신규 open이 복구된다. |
+| `AC-G3-FAIL-02` | Compose | 한 RT shard outage 중 그 shard의 established Pipe와 local open은 유지되고 신규 remote open만 terminal 실패한다. 다른 shard의 신규 open은 유지된다. |
+| `AC-G3-FAIL-03` | integration/Compose | 각 RT shard restart 뒤 Gateway가 current local snapshot으로만 재등록하여 해당 shard의 신규 open과 전체 matrix가 복구된다. |
 | `AC-G3-STATE-01` | integration | 반복 실패 뒤 transient count와 buffer가 baseline으로 돌아가며 과거 operation 수에 비례한 누적 state가 없다. |
 | `AC-G3-SDK-01` | regression | public Rust SDK 사용 패턴과 single-Gateway 계약이 통과한다. |
 
 ## 증거 경계
 
-이 검증은 RT1/GW3 local/CI 구성에 한정된다. process-level multi-shard,
-RT HA·replication·consensus·persistence, Kubernetes·Helm·mTLS 배포를 증명하지
+이 검증은 RT2/GW3 local/CI 구성에 한정된다. 두 독립 shard의 process-level isolation은
+검증하지만 RT HA·replication·consensus·persistence, Kubernetes·Helm·mTLS 배포를 증명하지
 않는다. delivery acknowledgement·replay·resume과 selection 품질은 RelayGate의
 보장이 아니다.
 
