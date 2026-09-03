@@ -69,7 +69,8 @@ service mesh를 통해 SDK Service로 연결한다.
   RouteTable을 통과하지 않는다.
 - `routeTable.shardCount=M`은 하나의 RouteTable StatefulSet에 pod `0..M-1`을 만든다. 각
   ordinal은 정확히 하나의 logical shard `rt-0..rt-(M-1)`와 pod별 headless DNS endpoint를
-  소유한다. `M`은 replica 수가 아니라 shard 수다.
+  소유한다. `M`은 replica 수가 아니라 shard 수이며 ShardDirectory ConfigMap 크기를 제한하기
+  위해 `1..2048`만 허용한다.
 - 모든 process는 같은 immutable ConfigMap의 exact JSON bytes를 read-only로 mount한다.
   Helm upgrade로 directory content를 바꾸면 immutable update가 거절된다.
 - RT restart는 빈 `READY` 상태로 시작한다. Gateway가 current Listener snapshot을 새 lease로

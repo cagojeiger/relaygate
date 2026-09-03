@@ -230,7 +230,8 @@
       "properties": {
         "shardCount": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 2048
         },
         "image": {
           "$ref": "#/definitions/image"

@@ -83,6 +83,14 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "clusterDomain" "value" .Values.clusterDomain) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "credentials.existingSecret" "value" .Values.credentials.existingSecret) }}
+{{- $gatewayLastIndex := sub (int .Values.gateway.replicaCount) 1 -}}
+{{- $gatewayPodName := printf "%s-%d" (include "relaygate.gatewayName" .) $gatewayLastIndex -}}
+{{- $gatewayHostname := printf "%s.%s.%s.svc.%s" $gatewayPodName (include "relaygate.gatewayPeerServiceName" .) .Release.Namespace .Values.clusterDomain -}}
+{{- include "relaygate.validateGeneratedHostname" (dict "name" "Gateway peer hostname" "value" $gatewayHostname) }}
+{{- $routeTableLastIndex := sub (int .Values.routeTable.shardCount) 1 -}}
+{{- $routeTablePodName := include "relaygate.routeTablePodName" (dict "root" . "index" $routeTableLastIndex) -}}
+{{- $routeTableHostname := printf "%s.%s.%s.svc.%s" $routeTablePodName (include "relaygate.routeTableName" .) .Release.Namespace .Values.clusterDomain -}}
+{{- include "relaygate.validateGeneratedHostname" (dict "name" "RouteTable shard hostname" "value" $routeTableHostname) }}
 {{- range .Values.imagePullSecrets }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "imagePullSecrets[].name" "value" .name) }}
 {{- end }}
@@ -100,6 +108,13 @@ app.kubernetes.io/part-of: "relaygate"
 {{- if regexMatch ":[^/]+$" $image.repository }}
 {{- fail (printf "%s.image.repository must not contain a tag" $component) }}
 {{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "relaygate.validateGeneratedHostname" -}}
+{{- include "relaygate.validateDnsSubdomainLabels" . }}
+{{- if gt (len .value) 253 }}
+{{- fail (printf "%s must not exceed 253 characters" .name) }}
 {{- end }}
 {{- end }}
 

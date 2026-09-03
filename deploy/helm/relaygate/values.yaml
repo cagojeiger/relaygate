@@ -74,6 +74,7 @@ gateway:
 routeTable:
   # 하나의 StatefulSet이 logical shard rt-0 .. rt-(shardCount-1)를 각각 한 pod로
   # 실행한다. replica 수가 아니라 shard 수이며 일반적인 scale 변경 대상이 아니다.
+  # ShardDirectory ConfigMap 크기를 제한하기 위해 1..2048만 허용한다.
   shardCount: 2
 
   image:

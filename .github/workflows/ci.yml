@@ -155,6 +155,13 @@ jobs:
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
             --set internalTransport.trustedLocalAdapter=true \
+            --set routeTable.shardCount=2049 >/dev/null 2>&1; then
+            echo "Helm schema accepted a RouteTable directory larger than the ConfigMap-safe bound"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
             --set 'gateway.extraEnv[0].name=RELAYGATE_BIND_ADDR' \
             --set 'gateway.extraEnv[0].value=invalid' >/dev/null 2>&1; then
             echo "Helm chart accepted an override of a managed environment variable"
@@ -196,6 +203,27 @@ jobs:
             --set internalTransport.trustedLocalAdapter=true \
             --set "clusterDomain=${long_dns_label}.local" >/dev/null 2>&1; then
             echo "Helm chart accepted a cluster domain with an oversized DNS label"
+            exit 1
+          fi
+          dns_label_a=$(printf 'a%.0s' {1..63})
+          dns_label_b=$(printf 'b%.0s' {1..63})
+          dns_label_c=$(printf 'c%.0s' {1..63})
+          cluster_domain_prefix="${dns_label_a}.${dns_label_b}.${dns_label_c}"
+          cluster_domain_at_limit="${cluster_domain_prefix}.dddd"
+          cluster_domain_over_limit="${cluster_domain_prefix}.ddddd"
+          gateway_hostname_at_limit="relaygate-gateway-2.relaygate-gateway-peer.relaygate.svc.${cluster_domain_at_limit}"
+          test "${#gateway_hostname_at_limit}" -eq 253
+          helm template relaygate deploy/helm/relaygate \
+            --namespace relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set "clusterDomain=${cluster_domain_at_limit}" >/dev/null
+          if helm template relaygate deploy/helm/relaygate \
+            --namespace relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set "clusterDomain=${cluster_domain_over_limit}" >/dev/null 2>&1; then
+            echo "Helm chart accepted a generated Gateway hostname longer than 253 characters"
             exit 1
           fi
 
