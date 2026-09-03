@@ -276,6 +276,7 @@ fn test_inner(route_resolver: Arc<dyn RouteResolver>) -> Arc<Inner> {
             CancellationToken::new(),
         )),
         distributed_runtime: Mutex::new(None),
+        panic_next_session_after_admission: std::sync::atomic::AtomicBool::new(false),
     })
 }
 

@@ -1,6 +1,13 @@
-use std::{sync::Arc, time::Duration};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+use std::{
+    future::Future,
+    panic::{AssertUnwindSafe, resume_unwind},
+    sync::Arc,
+    time::Duration,
+};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use relaygate_protocol::{Frame, FrameCodec};
 use tokio::{
     net::TcpStream,
@@ -42,26 +49,30 @@ impl Inner {
         else {
             return Err(SessionError::ResourceExhausted);
         };
-        if let Err(error) = framed.send(Frame::Welcome { session_id }).await {
-            self.cleanup(session_id).await;
-            return Err(SessionError::Protocol(error));
-        }
-        let (sink, source) = framed.split();
-        let read = Arc::clone(&self).read_frames(
-            session_id,
-            heartbeat_sender,
-            source,
-            cancellation.clone(),
-        );
-        let write = write_frames(receiver, sink);
-        let result = tokio::select! {
-            _ = cancellation.cancelled() => Ok(()),
-            result = read => result,
-            result = write => result,
-        };
-        cancellation.cancel();
-        self.cleanup(session_id).await;
-        result
+        let run_inner = Arc::clone(&self);
+        let run_cancellation = cancellation.clone();
+        let read_cancellation = cancellation.clone();
+        run_admitted_session(
+            async move {
+                #[cfg(test)]
+                run_inner.panic_after_admission_if_armed();
+                framed.send(Frame::Welcome { session_id }).await?;
+                let (sink, source) = framed.split();
+                let read =
+                    run_inner.read_frames(session_id, heartbeat_sender, source, read_cancellation);
+                let write = write_frames(receiver, sink);
+                tokio::select! {
+                    _ = run_cancellation.cancelled() => Ok(()),
+                    result = read => result,
+                    result = write => result,
+                }
+            },
+            || async {
+                cancellation.cancel();
+                self.cleanup(session_id).await;
+            },
+        )
+        .await
     }
 
     async fn read_frames(
@@ -130,6 +141,33 @@ impl Inner {
             actions
         };
         self.execute_all(actions).await;
+    }
+
+    #[cfg(test)]
+    fn panic_after_admission_if_armed(&self) {
+        if self
+            .panic_next_session_after_admission
+            .swap(false, Ordering::SeqCst)
+        {
+            resume_unwind(Box::new("synthetic admitted SDK session panic"));
+        }
+    }
+}
+
+async fn run_admitted_session<Run, Cleanup, CleanupFuture>(
+    run: Run,
+    cleanup: Cleanup,
+) -> Result<(), SessionError>
+where
+    Run: Future<Output = Result<(), SessionError>>,
+    Cleanup: FnOnce() -> CleanupFuture,
+    CleanupFuture: Future<Output = ()>,
+{
+    let result = AssertUnwindSafe(run).catch_unwind().await;
+    cleanup().await;
+    match result {
+        Ok(result) => result,
+        Err(payload) => resume_unwind(payload),
     }
 }
 

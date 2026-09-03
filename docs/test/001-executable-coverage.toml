@@ -180,8 +180,8 @@ reason = "SDK-Gateway heartbeat timeout과 실제 socket 기반 PeerTransport he
 [[case]]
 id = "T-HEALTH-01"
 status = "executable"
-rust = ["server_boots_health_checks_and_exits_on_sigterm", "distributed_peer_accept_failure_exits_process_nonzero_within_bound", "sdk_admission_check_leaves_no_persistent_gateway_state", "session_limit_includes_connections_waiting_for_hello", "peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait"]
-reason = "check의 HELLO/WELCOME 성공과 지속 state 비생성, session capacity 소진 중 실패·회수 뒤 성공을 검증한다. peer event queue 포화는 runtime fail-closed를, 실제 peer listener accept 실패는 distributed Gateway의 bounded cleanup과 server process non-zero 종료 전파를 검증한다."
+rust = ["server_boots_health_checks_and_exits_on_sigterm", "distributed_peer_accept_failure_exits_process_nonzero_within_bound", "sdk_admission_check_leaves_no_persistent_gateway_state", "session_limit_includes_connections_waiting_for_hello", "peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait", "gateway::sdk_server::tests::admitted_session_panic_cleans_siblings_and_stops_gateway"]
+reason = "check의 HELLO/WELCOME 성공과 지속 state 비생성, session capacity 소진 중 실패·회수 뒤 성공을 검증한다. admitted SDK session panic은 해당 session과 sibling session을 cleanup·drain한 뒤 Gateway runtime error로 닫힌다. peer event queue 포화는 runtime fail-closed를, 실제 peer listener accept 실패는 distributed Gateway의 bounded cleanup과 server process non-zero 종료 전파를 검증한다."
 
 [[case]]
 id = "T-HEALTH-02"
@@ -425,8 +425,8 @@ rust = ["peer::transport::liveness::tests::zero_stream_idle_retirement_waits_the
 [[case]]
 id = "T-ERR-01"
 status = "executable"
-rust = ["typed_non_empty_identifiers_reject_empty_values", "invalid_snapshot_is_rejected_before_existing_state_changes", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "routing::tests::projection_rejects_a_binding_from_another_session", "unrepresentable_deadline_configuration_is_rejected_before_connect", "error::tests::retryable_requires_a_transient_not_observed_failure"]
-reason = "malformed identifier, invalid snapshot·scope·authority와 runtime timer로 표현할 수 없는 SDK configuration을 INVALID_ARGUMENT로 거절하고 state나 runtime을 만들지 않음을 검증한다. SDK retry hint도 INVALID_ARGUMENT에는 false이므로 application이 입력을 고쳐 새 operation을 시작하기 전 내부 재시도를 지시하지 않는다."
+rust = ["typed_non_empty_identifiers_reject_empty_values", "invalid_snapshot_is_rejected_before_existing_state_changes", "wrong_authority_snapshot_and_resolve_are_invalid_and_atomic", "routing::tests::projection_rejects_a_binding_from_another_session", "unrepresentable_deadline_configuration_is_rejected_before_connect", "config::tests::unrepresentable_deadline_configuration_is_rejected", "peer::config::tests::unrepresentable_deadline_configuration_is_rejected", "config::tests::duration_matches_platform_deadline_representability", "error::tests::retryable_requires_a_transient_not_observed_failure"]
+reason = "malformed identifier, invalid snapshot·scope·authority와 runtime timer로 표현할 수 없는 SDK·Gateway·Peer configuration을 INVALID_ARGUMENT 또는 invalid configuration으로 거절하고 state나 runtime을 만들지 않음을 검증한다. env millisecond duration은 현재 platform의 monotonic deadline 표현 가능성과 같은 판정을 사용한다. SDK retry hint도 INVALID_ARGUMENT에는 false이므로 application이 입력을 고쳐 새 operation을 시작하기 전 내부 재시도를 지시하지 않는다."
 
 [[case]]
 id = "T-ERR-02"
@@ -448,8 +448,8 @@ reason = "await를 완료한 deadline·resource limit과 닫힌 Connector·Liste
 [[case]]
 id = "T-ERR-05"
 status = "executable"
-rust = ["state::tests::owner_invalid_phase_resets_only_the_target_pipe", "state::tests::foreign_open_pipe_frames_terminate_each_offender_without_mutating_target", "foreign_pipe_frame_closes_offender_and_preserves_target_pipe", "peer::transport::tests::terminal::fin::duplicate_fin_and_data_after_fin_are_stream_scoped", "service::tests::unexpected_actor_exit_terminates_service_and_live_connection", "internal_register_deadline_overflow_leaves_no_partial_route_table_state", "gateway::effects::tests::internal_resolve_failure_cleans_attempt_and_preserves_sibling_state"]
-reason = "Pipe-local protocol error는 target만 reset하고 non-owner·role 위반은 offending session에 격리한다. 실제 RT deadline overflow는 INTERNAL을 반환하면서 shard index를 전혀 만들지 않고, Gateway Resolve의 INTERNAL은 current remote OPEN state를 제거해 late success를 무시하면서 unrelated local session, binding과 Pipe를 보존한다. 예상 밖 RT actor 종료는 service를 INTERNAL로 끝내고 live Gateway connection까지 닫는다."
+rust = ["state::tests::owner_invalid_phase_resets_only_the_target_pipe", "state::tests::foreign_open_pipe_frames_terminate_each_offender_without_mutating_target", "foreign_pipe_frame_closes_offender_and_preserves_target_pipe", "peer::transport::tests::terminal::fin::duplicate_fin_and_data_after_fin_are_stream_scoped", "service::tests::unexpected_actor_exit_terminates_service_and_live_connection", "internal_register_deadline_overflow_leaves_no_partial_route_table_state", "gateway::effects::tests::internal_resolve_failure_cleans_attempt_and_preserves_sibling_state", "gateway::sdk_server::tests::admitted_session_panic_cleans_siblings_and_stops_gateway"]
+reason = "Pipe-local protocol error는 target만 reset하고 non-owner·role 위반은 offending session에 격리한다. 실제 RT deadline overflow는 INTERNAL을 반환하면서 shard index를 전혀 만들지 않고, Gateway Resolve의 INTERNAL은 current remote OPEN state를 제거해 late success를 무시하면서 unrelated local session, binding과 Pipe를 보존한다. 예상 밖 RT actor 종료는 service를 INTERNAL로 끝내고 live Gateway connection까지 닫는다. admitted SDK session task panic은 cleanup 뒤 JoinError로 전파되어 Gateway runtime failure로 닫힌다."
 
 [[case]]
 id = "T-ERR-06"

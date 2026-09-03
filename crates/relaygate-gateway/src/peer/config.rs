@@ -7,7 +7,7 @@ use std::sync::{
 };
 #[cfg(test)]
 use tokio::sync::Notify;
-use tokio::sync::Semaphore;
+use tokio::{sync::Semaphore, time::Instant};
 
 use crate::GatewayError;
 
@@ -407,6 +407,19 @@ impl GatewayPeerConfig {
                 "peer runtime timeouts must be greater than zero",
             ));
         }
+        validate_deadline_timeout("connect_timeout", self.connect_timeout)?;
+        validate_deadline_timeout("handshake_timeout", self.handshake_timeout)?;
+        validate_deadline_timeout("open_response_timeout", self.open_response_timeout)?;
+        validate_deadline_timeout(
+            "heartbeat_idle_interval",
+            jitter_upper_bound(self.heartbeat_idle_interval)
+                .ok_or(PeerError::InvalidArgument("heartbeat_idle_interval"))?,
+        )?;
+        validate_deadline_timeout(
+            "heartbeat_response_timeout",
+            self.heartbeat_response_timeout,
+        )?;
+        validate_deadline_timeout("idle_retirement_timeout", self.idle_retirement_timeout)?;
 
         for (index, peer) in self.trusted_peers.iter().enumerate() {
             if peer.gateway_name == self.local_gateway_name {
@@ -425,6 +438,27 @@ impl GatewayPeerConfig {
         }
         Ok(())
     }
+}
+
+fn validate_deadline_timeout(name: &'static str, timeout: Duration) -> Result<(), PeerError> {
+    Instant::now()
+        .checked_add(timeout)
+        .ok_or(PeerError::InvalidArgument(name))?;
+    Ok(())
+}
+
+fn jitter_upper_bound(duration: Duration) -> Option<Duration> {
+    duration_from_nanos(duration.as_nanos().checked_mul(1_100)?.checked_div(1_000)?)
+}
+
+fn duration_from_nanos(nanos: u128) -> Option<Duration> {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    let seconds = nanos / NANOS_PER_SECOND;
+    let subsecond_nanos = nanos % NANOS_PER_SECOND;
+    Some(Duration::new(
+        seconds.try_into().ok()?,
+        subsecond_nanos.try_into().ok()?,
+    ))
 }
 
 fn config_error(error: PeerError) -> GatewayError {
@@ -457,5 +491,54 @@ impl std::fmt::Debug for GatewayPeerConfig {
             )
             .field("idle_retirement_timeout", &self.idle_retirement_timeout)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::GatewayPeerConfig;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn unrepresentable_deadline_configuration_is_rejected() -> TestResult {
+        let valid = Duration::from_secs(1);
+        for config in [
+            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_timeouts(
+                Duration::MAX,
+                valid,
+                valid,
+            ),
+            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_timeouts(
+                valid,
+                Duration::MAX,
+                valid,
+            ),
+            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_timeouts(
+                valid,
+                valid,
+                Duration::MAX,
+            ),
+            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_liveness(
+                Duration::MAX,
+                valid,
+                valid,
+            ),
+            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_liveness(
+                valid,
+                Duration::MAX,
+                valid,
+            ),
+            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_liveness(
+                valid,
+                valid,
+                Duration::MAX,
+            ),
+        ] {
+            assert!(config.validate().is_err());
+        }
+        Ok(())
     }
 }

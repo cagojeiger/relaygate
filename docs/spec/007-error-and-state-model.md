@@ -259,6 +259,7 @@ acknowledgement 또는 cluster 전체의 생존을 나타내지 않는다.
 | 실행 중 `PeerEvent` queue Full 또는 receiver 종료 | peer runtime terminal, distributed Gateway fail-closed shutdown, `ProcessLiveness`는 `NOT_LIVE`로 수렴, current PeerTransport·SDK session·attempt·Pipe 정리 | 다른 Gateway process와 RT의 current state | 해당 Gateway의 새 operation은 `RESOURCE_EXHAUSTED` 또는 `UNAVAILABLE`; supervisor가 새 process를 시작하고 Listener SDK가 current state를 재등록한 뒤 새 operation 가능. 이미 시작된 정상 shutdown의 Full/Closed는 추가 장애가 아님 |
 | stream `FIN` 뒤 같은 방향 `DATA` | 해당 RelayStream과 Pipe `RESET` | 다른 RelayStream과 PeerTransport | `PROTOCOL_ERROR`; 새 open만 가능 |
 | SDK-Gateway heartbeat timeout | current SDK session과 그 session의 pending attempt·Pipe 종료 | 다른 SDK session, Gateway local binding, RT mapping | SDK runtime은 새 session으로 managed reconnect 가능. commit된 open, Pipe와 payload replay 없음 |
+| admitted SDK session task panic | 해당 session cleanup 완료 뒤 Gateway runtime fail-closed 종료 | 다른 Gateway process와 RT current state | serve error를 반환하고 deployment supervisor가 새 process를 시작할 수 있음. 기존 Pipe·payload replay 없음 |
 | active PeerTransport heartbeat timeout | 해당 PeerTransport와 포함된 RelayStream·Pipe 종료, 해당 방향 slot `IDLE` | 반대 방향 PeerTransport, 다른 Gateway pair, RT mapping과 Listener binding | 이후 새 open은 surviving transport 또는 새 lazy transport만 사용. 기존 Pipe replay·reroute 없음 |
 | zero-stream PeerTransport idle-retirement timeout | 빈 PeerTransport 정상 종료, 해당 방향 slot `IDLE` | Listener binding, RT mapping, established Pipe 없음 | 이후 필요할 때 lazy reconnect. keepalive traffic 없음 |
 
@@ -297,5 +298,7 @@ acknowledgement 또는 cluster 전체의 생존을 나타내지 않는다.
 31. 실행 중 내부 `PeerEvent`는 Gateway 상태 전이 입력이므로 관측성 event처럼 버리지 않는다. bounded queue 포화나 receiver 종료는 distributed Gateway를 fail-closed로 끝내고, 정상 shutdown과 경쟁한 전달 실패만 idempotent cleanup으로 처리한다.
 32. `stream_count == 0`인 PeerTransport는 heartbeat를 보내지 않고 idle-retirement timeout 뒤 정상 종료한다. 새 stream이 재사용하면 retirement timer를 취소한다.
 33. `ProcessLiveness`, `SdkAdmissionReadiness`와 `RouteDependencyHealth`는 서로 독립적으로 관찰한다. 한 축의 저하만으로 다른 축이나 payload 결과를 추론하지 않는다.
+34. configured timeout과 liveness interval은 process 시작 또는 SDK runtime 시작 전에 monotonic deadline으로 표현 가능해야 한다. 표현 불가능한 값은 runtime panic이나 overflow 대신 `INVALID_ARGUMENT` 또는 invalid configuration으로 거절한다.
+35. admitted SDK session task가 panic하면 Gateway는 해당 session cleanup을 먼저 완료한다. SDK accept loop는 이를 fatal runtime failure로 처리하고 shutdown을 전파하며 sibling session task를 drain한 뒤 serve error를 반환한다.
 
 shard lease expiry나 RT restart로 mapping이 사라져도 Gateway-local `ListenerBinding`이나 live `ListenerSession`은 닫히지 않는다. `ACTIVE` local binding은 local OPEN에 계속 사용할 수 있고, Gateway가 새 lease를 `Register`한 뒤 current snapshot을 `Update`하여 RT mapping을 다시 구성한다.
