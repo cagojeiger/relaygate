@@ -174,10 +174,11 @@ RelayGate runtime image는 컴포넌트별로 릴리스한다.
 | `VERSION.gateway` | `gateway-vX.Y.Z` | `ghcr.io/cagojeiger/relaygate-gateway:X.Y.Z` |
 | `VERSION.route-table` | `route-table-vX.Y.Z` | `ghcr.io/cagojeiger/relaygate-route-table:X.Y.Z` |
 
-`main`에 해당 `VERSION.*` 변경이 들어오면 release workflow가 multi-arch image를 push하고
-같은 컴포넌트의 `latest` tag와 GitHub Release를 갱신한다. 두 파일을 함께 바꾸면 두 image가
-같이 릴리스되고, 하나만 바꾸면 해당 image만 릴리스된다. 각 GHCR package는 현재 `latest`가
-가리키는 version을 포함해 semver release image 최근 20개를 유지한다.
+`main` CI가 성공하면 release workflow가 아직 발행하지 않은 `VERSION.*`를 찾아 multi-arch
+image를 push하고 같은 컴포넌트의 `latest` tag와 GitHub Release를 갱신한다. 두 파일을 함께
+바꾸면 두 image가 같이 릴리스되고, 하나만 바꾸면 해당 image만 릴리스된다. CI가 실패하면
+릴리스하지 않는다. 각 GHCR package는 현재 `latest`가 가리키는 version을 포함해 semver
+release image 최근 20개를 유지한다.
 
 릴리스 실행은 순서대로 대기하므로 연속된 version 변경도 생략하지 않는다. 이미 생성된 tag가
 같은 commit을 가리키는 재실행은 허용하고, 다른 commit에서 같은 version을 재사용하는 것은 거절한다.

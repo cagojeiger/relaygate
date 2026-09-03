@@ -1,14 +1,12 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - VERSION.gateway
-      - VERSION.route-table
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.repository.default_branch }}
   queue: max
 
 permissions:
@@ -18,38 +16,62 @@ permissions:
 env:
   REGISTRY: ghcr.io
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
 
 jobs:
   changes:
     name: Detect component releases
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.detect.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
 
-      - name: Detect changed VERSION files
+      - name: Detect unpublished component versions
         id: detect
         env:
-          BEFORE: ${{ github.event.before }}
-          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            changed=$(git diff-tree --no-commit-id --name-only -r "$SHA")
-          else
-            changed=$(git diff --name-only "$BEFORE" "$SHA")
-          fi
+          needs_release() {
+            local component="$1"
+            local version_file="$2"
+            local version tag existing_commit
 
-          gateway=false
-          route_table=false
-          if grep -qx 'VERSION.gateway' <<<"$changed"; then
-            gateway=true
-          fi
-          if grep -qx 'VERSION.route-table' <<<"$changed"; then
-            route_table=true
-          fi
+            version=$(tr -d '[:space:]' < "$version_file")
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+              echo "::error::${version_file} must contain a Docker-compatible semantic version" >&2
+              return 1
+            fi
+            tag="${component}-v${version}"
+
+            if ! git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+              echo true
+              return
+            fi
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo false
+              return
+            fi
+
+            existing_commit=$(git rev-list -n 1 "$tag")
+            if [ "$existing_commit" = "$RELEASE_SHA" ]; then
+              echo true
+              return
+            fi
+
+            echo "::error::tag $tag exists at $existing_commit without a release; rerun its original release or bump $version_file" >&2
+            return 1
+          }
+
+          gateway=$(needs_release gateway VERSION.gateway)
+          route_table=$(needs_release route-table VERSION.route-table)
 
           python3 - "$gateway" "$route_table" <<'PY' >> "$GITHUB_OUTPUT"
           import json
@@ -85,6 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
 
       - name: Read version
@@ -134,7 +157,7 @@ jobs:
           fi
 
           existing_commit=$(git rev-list -n 1 "$tag")
-          if [ "$existing_commit" != "$GITHUB_SHA" ]; then
+          if [ "$existing_commit" != "$RELEASE_SHA" ]; then
             echo "::error::tag $tag already points to $existing_commit; bump ${{ matrix.version_file }} before merging"
             exit 1
           fi
@@ -175,7 +198,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.ver.outputs.version }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ env.RELEASE_SHA }}
             org.opencontainers.image.title=${{ matrix.image }}
             org.opencontainers.image.licenses=Apache-2.0
           tags: ${{ steps.ver.outputs.image_tags }}
@@ -201,7 +224,7 @@ jobs:
           if [ "${{ steps.existing.outputs.tag_exists }}" = "true" ]; then
             args+=(--verify-tag)
           else
-            args+=(--target "$GITHUB_SHA")
+            args+=(--target "$RELEASE_SHA")
           fi
           if [ -n "$previous_tag" ]; then
             args+=(--notes-start-tag "$previous_tag")

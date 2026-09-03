@@ -34,9 +34,9 @@ const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 #[cfg(unix)]
-const PROCESS_NOFILE_LIMIT: usize = 32;
+const PROCESS_NOFILE_LIMIT: usize = 128;
 #[cfg(unix)]
-const PEER_FD_PRESSURE_ATTEMPTS: usize = 128;
+const PEER_FD_PRESSURE_ATTEMPTS: usize = 512;
 #[cfg(unix)]
 const PEER_CONNECT_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -707,8 +707,9 @@ fn wait_until_healthy(address: &str, server: &mut ChildGuard) -> Result<(), Box<
 
     loop {
         if let Some(status) = server.try_wait()? {
+            let (stdout, stderr) = server.read_captured()?;
             return Err(io::Error::other(format!(
-                "server exited before becoming healthy: {status}"
+                "server exited before becoming healthy: {status}; stdout: {stdout}; stderr: {stderr}"
             ))
             .into());
         }
