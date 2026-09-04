@@ -210,8 +210,8 @@ reason = "handshake와 transport 종료 metric의 bounded 차원을 검증한다
 [[case]]
 id = "T-OBS-10"
 status = "executable"
-rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", "route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm", "route_table_expiry_metric_counts_removed_soft_state_once"]
-reason = "실제 process HTTP scrape에서 Listener 등록 승인·인증 실패·용량 거절, RT handshake 승인·거절과 request code를 검증한다. 짧은 lease 만료 뒤 registration과 expiry index가 0으로 수렴하고 제거 counter가 1인지 검증한다."
+rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", "route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm", "route_table_expiry_metric_counts_removed_soft_state_once", "service::connection::tests::handshake_metrics_include_connection_capacity_rejection", "connection_limit_rejects_the_next_handshake_as_resource_exhausted"]
+reason = "실제 process HTTP scrape에서 Listener 등록 승인·인증 실패·용량 거절, RT handshake 승인·거절과 request code를 검증하고 connection limit 거절이 resource_exhausted handshake로 집계되는지 확인한다. 짧은 lease 만료 뒤 registration과 expiry index가 0으로 수렴하고 제거 counter가 1인지 검증한다. actor는 요청 처리 전에 due lease를 먼저 정리하므로 timer와 request 경합에서도 제거 수를 누락하지 않는다."
 
 [[case]]
 id = "T-OBS-11"

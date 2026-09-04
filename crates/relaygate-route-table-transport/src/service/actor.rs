@@ -43,6 +43,7 @@ pub(super) async fn run_shard_actor(
                 let now = tokio::time::Instant::now().into_std();
                 let started_at = std::time::Instant::now();
                 let operation = request.request.operation_name();
+                observe_expired(shard.expire_due(now));
                 let response = request.request
                     .validate_preconditions(request.context, shard.generation())
                     .and_then(|()| request.request.into_domain())
@@ -68,16 +69,19 @@ pub(super) async fn run_shard_actor(
                 let _ = request.reply.send(response);
             }
             () = wait_until(next_expiry) => {
-                let expired = shard.expire_due(tokio::time::Instant::now().into_std());
-                if expired > 0 {
-                    metrics::counter!("relaygate_route_table_expired_registrations_total")
-                        .increment(expired as u64);
-                }
+                observe_expired(shard.expire_due(tokio::time::Instant::now().into_std()));
                 observe_shard(&shard);
             }
         }
     }
     shard
+}
+
+fn observe_expired(expired: usize) {
+    if expired > 0 {
+        metrics::counter!("relaygate_route_table_expired_registrations_total")
+            .increment(expired as u64);
+    }
 }
 
 fn observe_shard(shard: &RouteTableShard) {

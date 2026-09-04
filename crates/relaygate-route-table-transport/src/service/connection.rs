@@ -279,6 +279,7 @@ pub(super) async fn reject_over_capacity(
 ) {
     let mut framed = Framed::new(stream, FrameCodec::new(config.max_frame_len));
     let error = TransportError::resource_exhausted("RouteTable connection limit reached");
+    observe_handshake("error", error.code().metric_name());
     let send = framed.send(WireFrame::HandshakeRejected {
         role: ROUTE_TABLE_ROLE.to_owned(),
         code: error.code(),
@@ -305,5 +306,35 @@ pub(super) fn map_receive_codec_error(error: CodecError) -> TransportError {
         TransportError::unavailable(error.to_string())
     } else {
         TransportError::protocol(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::observe_handshake;
+
+    #[test]
+    fn handshake_metrics_include_connection_capacity_rejection() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            observe_handshake("error", "resource_exhausted");
+        });
+
+        let values = snapshotter.snapshot().into_vec();
+        assert!(values.iter().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_route_table_handshakes_total"
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "outcome" && label.value() == "error")
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "code" && label.value() == "resource_exhausted")
+                && matches!(value, DebugValue::Counter(1))
+        }));
     }
 }
