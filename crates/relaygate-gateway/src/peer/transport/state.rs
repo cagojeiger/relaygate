@@ -11,7 +11,7 @@ use relaygate_route_table::GatewayId;
 use tokio::{sync::mpsc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::{ActiveOpenSet, TransportNotice};
+use super::{ActiveOpenSet, TransportCloseReason, TransportNotice};
 use crate::peer::{
     config::GatewayPeerConfig,
     event::{LostPeerStream, PeerEvent, PeerFailure, PeerStreamKey},
@@ -53,6 +53,7 @@ pub(super) struct TransportActor {
     pub(super) active_opens: Arc<ActiveOpenSet>,
     pub(super) stream_count: Arc<AtomicUsize>,
     pub(super) close: CancellationToken,
+    pub(super) failure_reason: Option<TransportCloseReason>,
     pub(super) config: GatewayPeerConfig,
 }
 
@@ -84,8 +85,16 @@ impl TransportActor {
             active_opens,
             stream_count,
             close,
+            failure_reason: None,
             config,
         }
+    }
+
+    pub(super) fn fail_transport(&mut self, reason: TransportCloseReason) {
+        if self.failure_reason.is_none() {
+            self.failure_reason = Some(reason);
+        }
+        self.close.cancel();
     }
 
     pub(super) fn next_open_deadline(&self) -> Option<Instant> {
@@ -125,7 +134,7 @@ impl TransportActor {
                 continue;
             };
             let Some(open_identity) = stream.relay.owner() else {
-                self.close.cancel();
+                self.fail_transport(TransportCloseReason::ProtocolError);
                 return;
             };
             let reset = PeerFrame::Reset {
@@ -134,7 +143,7 @@ impl TransportActor {
                 message: "peer OPEN response timed out".to_owned(),
             };
             if enqueue_stream_frame(stream, queue_capacity, reset, true).is_err() {
-                self.close.cancel();
+                self.fail_transport(TransportCloseReason::WriterFailed);
                 return;
             }
             stream.open_deadline = None;
@@ -176,7 +185,7 @@ impl TransportActor {
                         break;
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
-                        self.close.cancel();
+                        self.fail_transport(TransportCloseReason::WriterFailed);
                         return;
                     }
                 }
@@ -197,7 +206,7 @@ impl TransportActor {
             .await
             .is_err()
         {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::ProtocolError);
         }
     }
 
@@ -206,7 +215,7 @@ impl TransportActor {
             return;
         };
         let Some(open_identity) = stream.relay.owner() else {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::ProtocolError);
             return;
         };
         self.active_opens.release(open_identity);

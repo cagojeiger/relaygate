@@ -21,7 +21,7 @@ use crate::peer::{
         OpenIdentity, PeerOpenProgress, PeerTransportId, RemoteStreamGuard, StreamEndpoint,
         StreamId, StreamIdAllocator,
     },
-    transport::{ActiveOpenSet, TransportCommand, state::TransportActor},
+    transport::{ActiveOpenSet, TransportCloseReason, TransportCommand, state::TransportActor},
 };
 
 struct DropTrackedPayload {
@@ -88,6 +88,7 @@ async fn saturated_stream_and_aggregate_buffers_are_released_on_transport_loss()
         active_opens,
         stream_count: Arc::clone(&stream_count),
         close: close.clone(),
+        failure_reason: None,
         config,
     };
 
@@ -143,6 +144,10 @@ async fn saturated_stream_and_aggregate_buffers_are_released_on_transport_loss()
         .ok_or("expected saturated terminal queue to close the transport")?;
     assert_eq!(reset_failure.code(), ErrorCode::ResourceExhausted);
     assert!(close.is_cancelled());
+    assert_eq!(
+        actor.failure_reason,
+        Some(TransportCloseReason::WriterFailed)
+    );
 
     let losses = actor.drain_losses();
     assert_eq!(losses.len(), 2);

@@ -190,6 +190,9 @@ pub(super) async fn run_transport_actor(
         }
     }
 
+    if let Some(failure_reason) = actor.failure_reason {
+        close_reason = failure_reason;
+    }
     close.cancel();
     let losses = actor.drain_losses();
     drop(actor.aggregate_writer);

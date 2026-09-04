@@ -204,8 +204,8 @@ reason = "반복 연결 실패와 성공이 bounded attempt counter로 집계되
 [[case]]
 id = "T-OBS-09"
 status = "executable"
-rust = ["peer::runtime::manager::handshake::tests::peer_handshake_metrics_separate_direction_outcome_and_code", "peer::runtime::manager::notice::tests::transport_close_metrics_keep_terminal_reasons_separate", "peer::transport::tests::lifecycle::competing_local_cancel_and_peer_eof_emit_exactly_one_transport_loss", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
-reason = "handshake와 transport 종료 metric의 bounded 차원을 검증한다. 실제 handshake 거절, active heartbeat timeout, idle retirement와 cancel/EOF 경합은 하나의 terminal notice 및 stream cleanup으로 수렴하는지 검증한다."
+rust = ["peer::runtime::manager::handshake::tests::peer_handshake_metrics_separate_direction_outcome_and_code", "peer::runtime::manager::notice::tests::transport_close_metrics_keep_terminal_reasons_separate", "peer::transport::tests::lifecycle::competing_local_cancel_and_peer_eof_emit_exactly_one_transport_loss", "peer::transport::tests::capacity::saturated_stream_and_aggregate_buffers_are_released_on_transport_loss", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
+reason = "handshake와 transport 종료 metric의 bounded 차원을 검증한다. 실제 handshake 거절, active heartbeat timeout, idle retirement와 cancel/EOF 경합은 하나의 terminal notice 및 stream cleanup으로 수렴하는지 검증한다. actor의 terminal frame queue failure는 강제 종료 원인을 writer_failed로 보존한다."
 
 [[case]]
 id = "T-OBS-10"

@@ -74,6 +74,7 @@ fn actor_for_remote_open() -> Result<RemoteActor, Box<dyn Error>> {
         active_opens: Arc::new(ActiveOpenSet::default()),
         stream_count: Arc::new(AtomicUsize::new(0)),
         close: CancellationToken::new(),
+        failure_reason: None,
         config,
     };
     Ok((actor, aggregate_receiver, notice_receiver, peer_gateway_id))

@@ -4,7 +4,7 @@ use relaygate_protocol::ErrorCode;
 use tokio::{sync::mpsc, time::Instant};
 
 use super::{
-    TransportCommand, TransportNotice,
+    TransportCloseReason, TransportCommand, TransportNotice,
     state::{RuntimeStream, StreamOrigin, TransportActor, enqueue_stream_frame},
 };
 use crate::peer::{
@@ -202,7 +202,7 @@ impl TransportActor {
             message: failure.message().to_owned(),
         };
         if let Err(error) = enqueue_stream_frame(stream, queue_capacity, frame, true) {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::WriterFailed);
             return Err(error);
         }
         Ok(())
@@ -279,7 +279,7 @@ impl TransportActor {
         if let Err(error) =
             enqueue_stream_frame(stream, queue_capacity, PeerFrame::Close { stream_id }, true)
         {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::WriterFailed);
             return Err(error);
         }
         Ok(())
@@ -308,7 +308,7 @@ impl TransportActor {
             },
             true,
         ) {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::WriterFailed);
             return Err(error);
         }
         Ok(())

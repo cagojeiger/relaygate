@@ -144,6 +144,7 @@ async fn duplicate_fin_and_data_after_fin_are_stream_scoped() -> Result<(), Box<
         active_opens,
         stream_count: Arc::clone(&stream_count),
         close: close.clone(),
+        failure_reason: None,
         config,
     };
 
