@@ -60,6 +60,7 @@ test 목록과 대조한다.
 | `T-OBS-03` | `OBS-004`, `OBS-005`, `OBS-006` | session·registration·open·Pipe terminal event가 고정된 `component`와 `event`, current identity와 기존 결과에 정의된 terminal error field를 갖는지 확인한다. 정상 close와 `PeerObservation`이 없는 operation에는 오류 field를 합성하지 않는다. configured `ClientKey`, `InternalGatewayKey`와 payload marker가 출력에 없고 DATA 반복 수에 비례한 event가 생기지 않아야 한다. |
 | `T-OBS-04` | `OBS-007`, `OBS-008` | library만 포함해도 전역 subscriber나 listener가 생기지 않는다. server의 기본 설정은 snapshot event를 만들지 않고, 명시적으로 활성화하면 JSON current-state event를 남기되 Gateway protocol port 외 새 port를 열지 않는다. |
 | `T-OBS-05` | `OBS-009` | SDK-Gateway heartbeat timeout, active PeerTransport heartbeat timeout과 zero-stream PeerTransport idle retirement event가 transport lifecycle로만 기록되고 payload bytes, application data와 delivery acknowledgement를 기록하지 않는지 확인한다. |
+| `T-OBS-06` | `OBS-013`, `OBS-014`, `OBS-015` | exporter가 opt-in일 때 Gateway current-state와 RT current-state gauge를 HTTP로 노출하고 role/state 외 unbounded identity, credential과 payload가 없는지 확인한다. 잘못되거나 점유된 address, interval 단독 설정과 0 interval은 serve 전에 실패하며 exporter가 꺼진 기본 process는 metrics port를 열지 않는다. |
 
 ## 운영 health
 

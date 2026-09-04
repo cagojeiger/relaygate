@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 relaygate-gateway.workspace = true
 relaygate-route-table.workspace = true
 relaygate-route-table-transport.workspace = true

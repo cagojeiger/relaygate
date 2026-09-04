@@ -8,7 +8,7 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::io::Read;
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::{
     fs,
@@ -22,7 +22,10 @@ use futures_util::{SinkExt, StreamExt};
 #[cfg(unix)]
 use relaygate_protocol::{Frame, FrameCodec, SessionRole};
 #[cfg(unix)]
-use relaygate_route_table::{ClientId, GatewayId, ShardDirectory};
+use relaygate_route_table::{
+    BindingId, ClientId, GatewayId, GatewayLocator, ListenerSessionId, MappingEntry,
+    MappingSnapshot, RegistrationKey, RegistrationRevision, ShardDirectory, ShardId,
+};
 #[cfg(unix)]
 use relaygate_route_table_transport::{
     ErrorCode as RouteTableErrorCode, GatewayName, InternalGatewayKey, RouteTableClient,
@@ -75,9 +78,11 @@ fn server_boots_health_checks_and_exits_on_sigterm() -> Result<(), Box<dyn Error
 async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
 -> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
+    let metrics_address = unused_loopback_address()?;
     let artifact = ShardDirectoryArtifact::create()?;
     let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
     let secret = "must-not-appear-route-table-key";
+    let gateway_id = GatewayId::new();
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .arg("route-table")
@@ -86,11 +91,12 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_RT_SHARD_ID", "rt-0")
             .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", format!("gw-a={secret}"))
+            .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
             .env("RELAYGATE_LOG", "info")
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
-    let client = wait_until_route_table_ready(&address, secret, &mut server).await?;
+    let client = wait_until_route_table_ready(&address, gateway_id, secret, &mut server).await?;
     let error = match client
         .resolve(directory.generation(), &ClientId::new("missing")?)
         .await
@@ -104,6 +110,44 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
         Err(error) => error,
     };
     assert_eq!(error.code(), RouteTableErrorCode::NotFound);
+
+    let listener_session_id = ListenerSessionId::new();
+    let key = RegistrationKey::new(gateway_id, listener_session_id, ShardId::new("rt-0")?);
+    let registration = client.register(directory.generation(), &key).await?;
+    let snapshot = MappingSnapshot::new([MappingEntry::new(
+        ClientId::new("metrics.listener")?,
+        gateway_id,
+        listener_session_id,
+        BindingId::new(),
+        GatewayLocator::new("127.0.0.1:27421")?,
+    )])?;
+    client
+        .update(
+            directory.generation(),
+            &key,
+            registration.lease_id(),
+            RegistrationRevision::FIRST,
+            &snapshot,
+        )
+        .await?;
+    let metrics = wait_for_metrics(
+        &metrics_address,
+        &mut server,
+        "relaygate_route_table_registrations",
+    )?;
+    assert!(metrics.contains("role=\"route_table\""));
+    for metric in [
+        "relaygate_route_table_registrations",
+        "relaygate_route_table_mappings",
+        "relaygate_route_table_routes",
+        "relaygate_route_table_expiry_records",
+    ] {
+        assert!(
+            metrics.contains(&format!("{metric}{{role=\"route_table\"}} 1")),
+            "expected {metric} to report the one current registration/mapping/route/expiry record"
+        );
+    }
+    assert!(!metrics.contains(secret));
 
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
@@ -356,6 +400,34 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         "RELAYGATE_STATS_INTERVAL_MS must be greater than zero",
     );
 
+    let malformed_metrics_address = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_METRICS_BIND_ADDR", "not-a-socket-address")
+        .output()?;
+    assert_unsuccessful_output(
+        &malformed_metrics_address,
+        "RELAYGATE_METRICS_BIND_ADDR must be a socket address",
+    );
+
+    let metrics_interval_without_exporter = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_METRICS_INTERVAL_MS", "100")
+        .output()?;
+    assert_unsuccessful_output(
+        &metrics_interval_without_exporter,
+        "RELAYGATE_METRICS_BIND_ADDR is required",
+    );
+
+    let zero_metrics_interval = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_METRICS_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_METRICS_INTERVAL_MS", "0")
+        .output()?;
+    assert_unsuccessful_output(
+        &zero_metrics_interval,
+        "RELAYGATE_METRICS_INTERVAL_MS must be greater than zero",
+    );
+
     let zero_sdk_heartbeat_idle = server_command()
         .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
         .env("RELAYGATE_SDK_HEARTBEAT_IDLE_MS", "0")
@@ -547,6 +619,71 @@ fn default_json_logs_do_not_emit_gateway_snapshots() -> Result<(), Box<dyn Error
 }
 
 #[cfg(unix)]
+#[test]
+fn gateway_metrics_expose_current_state_without_secrets() -> Result<(), Box<dyn Error>> {
+    let address = unused_loopback_address()?;
+    let metrics_address = unused_loopback_address()?;
+    let secret = "must-not-appear-in-metrics-output";
+    let mut server = ChildGuard::spawn_captured(
+        server_command()
+            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_CLIENT_KEYS", format!("echo.alpha={secret}"))
+            .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
+            .env("RELAYGATE_METRICS_INTERVAL_MS", "20"),
+    )?;
+
+    wait_until_healthy(&address, &mut server)?;
+    let body = wait_for_metrics(&metrics_address, &mut server, "relaygate_gateway_sessions")?;
+    assert!(body.contains("role=\"gateway\""));
+    assert!(body.contains("relaygate_gateway_sessions"));
+    assert!(body.contains("relaygate_gateway_route_dependency"));
+    assert!(!body.contains(secret));
+    assert!(!body.contains("client_key"));
+    assert!(!body.contains("payload"));
+
+    let signal_status = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()?;
+    assert!(signal_status.success(), "failed to send SIGTERM to server");
+    let exit_status = server.wait_until(SHUTDOWN_DEADLINE)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "metrics-enabled server did not exit before the shutdown deadline",
+        )
+    })?;
+    assert!(
+        exit_status.success(),
+        "metrics-enabled server shutdown failed"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn occupied_metrics_address_fails_before_gateway_serve() -> Result<(), Box<dyn Error>> {
+    let occupied = TcpListener::bind("127.0.0.1:0")?;
+    let metrics_address = occupied.local_addr()?.to_string();
+    let mut server = ChildGuard::spawn_captured(
+        server_command()
+            .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+            .env("RELAYGATE_METRICS_BIND_ADDR", metrics_address),
+    )?;
+    let status = server
+        .wait_until(STARTUP_DEADLINE)?
+        .ok_or("server did not fail after the metrics address bind conflict")?;
+    assert!(
+        !status.success(),
+        "server ignored the metrics bind conflict"
+    );
+    let (_, stderr) = server.read_captured()?;
+    assert!(
+        stderr.contains("failed to start Prometheus metrics exporter"),
+        "unexpected metrics bind error: {stderr}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets()
 -> Result<(), Box<dyn Error>> {
@@ -634,6 +771,8 @@ fn clean_server_command(mut command: Command) -> Command {
         "RELAYGATE_PEER_IDLE_TIMEOUT_MS",
         "RELAYGATE_LOG",
         "RELAYGATE_LOG_FORMAT",
+        "RELAYGATE_METRICS_BIND_ADDR",
+        "RELAYGATE_METRICS_INTERVAL_MS",
         "RELAYGATE_MAX_BINDINGS",
         "RELAYGATE_MAX_FRAME_LEN",
         "RELAYGATE_MAX_LIVE_PIPES",
@@ -734,8 +873,46 @@ fn wait_until_healthy(address: &str, server: &mut ChildGuard) -> Result<(), Box<
 }
 
 #[cfg(unix)]
+fn wait_for_metrics(
+    address: &str,
+    server: &mut ChildGuard,
+    required_metric: &str,
+) -> Result<String, Box<dyn Error>> {
+    let deadline = Instant::now() + STARTUP_DEADLINE;
+    loop {
+        if let Some(status) = server.try_wait()? {
+            let (stdout, stderr) = server.read_captured()?;
+            return Err(io::Error::other(format!(
+                "server exited before metrics became ready: {status}; stdout: {stdout}; stderr: {stderr}"
+            ))
+            .into());
+        }
+        if let Ok(mut stream) = TcpStream::connect(address) {
+            stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+            stream.write_all(
+                b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )?;
+            let mut response = String::new();
+            stream.read_to_string(&mut response)?;
+            if response.starts_with("HTTP/1.1 200") && response.contains(required_metric) {
+                return Ok(response);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "metrics endpoint did not become ready before the startup deadline",
+            )
+            .into());
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+#[cfg(unix)]
 async fn wait_until_route_table_ready(
     address: &str,
+    gateway_id: GatewayId,
     secret: &str,
     server: &mut ChildGuard,
 ) -> Result<RouteTableClient, Box<dyn Error>> {
@@ -758,7 +935,7 @@ async fn wait_until_route_table_ready(
         let connected = RouteTableClient::connect(
             endpoint,
             GatewayName::new("gw-a")?,
-            GatewayId::new(),
+            gateway_id,
             InternalGatewayKey::new(secret)?,
             config,
         )

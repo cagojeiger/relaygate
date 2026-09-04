@@ -178,6 +178,12 @@ rust = ["gateway_heartbeat_timeout_removes_sdk_session_state", "gateway_sdk_hear
 reason = "SDK-Gateway heartbeat timeout과 실제 socket 기반 PeerTransport heartbeat timeout·zero-stream idle retirement를 검증한다. 각 JSON lifecycle event의 component, event, peer Gateway·transport identity, current stream 수와 ClientKey·InternalGatewayKey·실제 전송한 payload marker·application delivery field 비노출을 확인한다."
 
 [[case]]
+id = "T-OBS-06"
+status = "executable"
+rust = ["gateway_metrics_expose_current_state_without_secrets", "route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm", "occupied_metrics_address_fails_before_gateway_serve", "invalid_environment_configuration_fails_before_serving"]
+reason = "opt-in Prometheus endpoint의 Gateway/RT current-state gauge, bounded role/state label과 secret 비노출을 실제 process HTTP scrape로 검증한다. malformed·점유 address, interval 단독 설정과 0 interval은 serve 전에 실패한다."
+
+[[case]]
 id = "T-HEALTH-01"
 status = "executable"
 rust = ["server_boots_health_checks_and_exits_on_sigterm", "distributed_peer_accept_failure_exits_process_nonzero_within_bound", "sdk_admission_check_leaves_no_persistent_gateway_state", "session_limit_includes_connections_waiting_for_hello", "peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait", "gateway::sdk_server::tests::admitted_session_panic_cleans_siblings_and_stops_gateway"]

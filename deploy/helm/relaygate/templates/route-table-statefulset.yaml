@@ -20,6 +20,11 @@ spec:
       annotations:
         checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
         relaygate.io/credentials-reload: {{ .Values.credentials.reloadToken | quote }}
+        {{- if .Values.metrics.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: {{ .Values.metrics.routeTablePort | quote }}
+        {{- end }}
         {{- with .Values.routeTable.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -51,6 +56,11 @@ spec:
             - name: route-table
               containerPort: {{ .Values.routeTable.port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.routeTablePort }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: POD_INDEX
               valueFrom:
@@ -75,6 +85,12 @@ spec:
               value: {{ .Values.routeTable.log | quote }}
             - name: RELAYGATE_LOG_FORMAT
               value: {{ .Values.routeTable.logFormat | quote }}
+            {{- if .Values.metrics.enabled }}
+            - name: RELAYGATE_METRICS_BIND_ADDR
+              value: "0.0.0.0:{{ .Values.metrics.routeTablePort }}"
+            - name: RELAYGATE_METRICS_INTERVAL_MS
+              value: {{ .Values.metrics.intervalMs | quote }}
+            {{- end }}
             {{- with .Values.routeTable.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

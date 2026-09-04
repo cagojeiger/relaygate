@@ -15,3 +15,9 @@ spec:
       port: {{ .Values.routeTable.port }}
       targetPort: route-table
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.routeTablePort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}

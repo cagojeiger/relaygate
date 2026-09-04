@@ -20,6 +20,11 @@ spec:
       annotations:
         checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
         relaygate.io/credentials-reload: {{ .Values.credentials.reloadToken | quote }}
+        {{- if .Values.metrics.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: {{ .Values.metrics.gatewayPort | quote }}
+        {{- end }}
         {{- with .Values.gateway.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -54,6 +59,11 @@ spec:
             - name: peer
               containerPort: {{ .Values.gateway.peerPort }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.gatewayPort }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
@@ -92,6 +102,12 @@ spec:
             {{- with .Values.gateway.statsIntervalMs }}
             - name: RELAYGATE_STATS_INTERVAL_MS
               value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: RELAYGATE_METRICS_BIND_ADDR
+              value: "0.0.0.0:{{ .Values.metrics.gatewayPort }}"
+            - name: RELAYGATE_METRICS_INTERVAL_MS
+              value: {{ .Values.metrics.intervalMs | quote }}
             {{- end }}
             {{- with .Values.gateway.extraEnv }}
             {{- toYaml . | nindent 12 }}

@@ -37,6 +37,8 @@ credential value   = chart 밖의 existing Secret
 | `AC-HELM-10` | `credentials.reloadToken` 변경은 Gateway와 모든 RT pod template을 바꾸어 startup credential을 다시 읽게 한다. Gateway scale-out은 새 name/key의 additive reload가 끝난 뒤 수행한다. |
 | `AC-HELM-11` | SDK, peer와 RT Service는 ClusterIP 내부 endpoint만 만들고, current plain-TCP adapter는 `internalTransport.trustedLocalAdapter=true`를 명시하지 않으면 render를 거절한다. |
 | `AC-HELM-12` | chart는 stable `apps.kubernetes.io/pod-index`를 사용할 수 있는 Kubernetes 1.32 이상만 허용한다. |
+| `AC-HELM-13` | metrics 활성화 시 Gateway/RT pod별 내부 metrics port, headless Service port와 scrape annotation을 렌더한다. metrics를 끄면 exporter env와 port가 없어야 하며 protocol port와 충돌하는 metrics port는 거절한다. |
+| `AC-HELM-14` | 마지막으로 성공한 `helm test` Pod는 다음 test 시작 전까지 남아 `helm test --logs`의 terminal evidence를 제공하고, 다음 실행의 `before-hook-creation`에서 교체한다. |
 
 ## CI 정적 검증
 
@@ -90,7 +92,7 @@ Pages와 GitHub Release의 실제 쓰기 권한·공개 전파는 PR CI로 증�
 2. helm upgrade --install
 3. Gateway N개와 RT M개 Ready 확인
 4. RT ordinal, ShardId, pod FQDN과 directory generation 일치 확인
-5. helm test로 SDK admission 확인
+5. helm test --logs로 SDK admission과 보존된 terminal evidence 확인
 6. public Rust SDK Listener/Connector로 local 및 one-hop Pipe 확인
 7. Gateway pod 하나 삭제
    -> 해당 Pipe 종료, SDK session 재연결, Listener current binding 재등록
@@ -98,6 +100,7 @@ Pages와 GitHub Release의 실제 쓰기 권한·공개 전파는 PR CI로 증�
    -> READY-empty, 해당 shard current snapshot 재등록, established Pipe 유지
 9. StatefulSet rolling restart와 Helm upgrade 뒤 새 Pipe matrix 재수렴 확인
 10. PVC/emptyDir와 chart-managed Secret이 없음을 확인
+11. Gateway/RT pod metrics endpoint를 scrape하고 credential·payload가 없는지 확인
 ```
 
 ## 증거 경계

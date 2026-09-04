@@ -63,6 +63,12 @@ helm test relaygate --namespace relaygate
 Service는 모두 cluster 내부 전용이다. 외부 진입이 필요하면 이 차트 밖의 TLS-enabled L4 proxy나
 service mesh를 통해 SDK Service로 연결한다.
 
+기본값은 Gateway `27422`, RouteTable `27431`에 pod별 Prometheus endpoint를 활성화하고
+headless Service port와 `prometheus.io/*` pod annotation을 만든다. metric에는 credential,
+payload와 routing/session identity가 없다. 자동 discovery를 사용하지 않으면 pod에 직접
+port-forward하여 확인할 수 있다. `metrics.enabled=false`면 exporter env, port와 annotation을
+렌더하지 않는다.
+
 ## 배포 계약
 
 - Gateway는 StatefulSet이다. pod ordinal이 `GatewayName`과 pod별 peer locator를 안정적으로
@@ -140,7 +146,7 @@ gateway:
   replicaCount: 3
   image:
     repository: ghcr.io/cagojeiger/relaygate-gateway
-    tag: "0.1.0"
+    tag: "0.1.1"
   service:
     port: 27420
 
@@ -148,7 +154,11 @@ routeTable:
   shardCount: 2
   image:
     repository: ghcr.io/cagojeiger/relaygate-route-table
-    tag: "0.1.0"
+    tag: "0.1.1"
+
+metrics:
+  enabled: true
+  intervalMs: 5000
 ```
 
 resource request/limit은 부하 측정 없이 임의 기본값을 두지 않는다. `resources`, scheduling

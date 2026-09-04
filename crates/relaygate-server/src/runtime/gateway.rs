@@ -6,8 +6,13 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::GatewayRuntimeConfig;
+use crate::metrics::{self, MetricsRuntime};
 
-pub(crate) async fn serve(config: GatewayRuntimeConfig, shutdown: CancellationToken) -> Result<()> {
+pub(crate) async fn serve(
+    config: GatewayRuntimeConfig,
+    shutdown: CancellationToken,
+    metrics: Option<MetricsRuntime>,
+) -> Result<()> {
     let listener = TcpListener::bind(&config.bind_address)
         .await
         .with_context(|| {
@@ -67,6 +72,14 @@ pub(crate) async fn serve(config: GatewayRuntimeConfig, shutdown: CancellationTo
             log_gateway_stats(stats_gateway, stats_shutdown, interval).await;
         });
     }
+    if let Some(metrics) = metrics {
+        metrics::observe_gateway(gateway.snapshot());
+        let metrics_gateway = gateway.clone();
+        let metrics_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            publish_gateway_metrics(metrics_gateway, metrics_shutdown, metrics.interval()).await;
+        });
+    }
 
     match peer_listener {
         Some(peer_listener) => {
@@ -83,6 +96,22 @@ pub(crate) async fn serve(config: GatewayRuntimeConfig, shutdown: CancellationTo
         "RelayGate Gateway stopped"
     );
     Ok(())
+}
+
+async fn publish_gateway_metrics(
+    gateway: Gateway,
+    shutdown: CancellationToken,
+    interval_duration: Duration,
+) {
+    let start = tokio::time::Instant::now() + interval_duration;
+    let mut interval = tokio::time::interval_at(start, interval_duration);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = interval.tick() => metrics::observe_gateway(gateway.snapshot()),
+        }
+    }
 }
 
 async fn log_gateway_stats(
