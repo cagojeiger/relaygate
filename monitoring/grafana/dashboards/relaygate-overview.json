@@ -749,7 +749,9 @@
         "uid": "prometheus"
       },
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "cores"
+        },
         "overrides": []
       },
       "gridPos": {
@@ -758,7 +760,7 @@
         "x": 12,
         "y": 34
       },
-      "description": "Kubernetes/cAdvisor가 제공하는 CPU·working set·network USE다. 로컬 Prometheus에 해당 exporter가 없으면 이 panel만 No data가 정상이다.",
+      "description": "Kubernetes/cAdvisor가 제공하는 RelayGate container별 CPU core 사용량이다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
       "id": 16,
       "options": {
         "legend": {
@@ -772,26 +774,92 @@
       "targets": [
         {
           "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"}[$__rate_interval]))",
-          "legendFormat": "CPU cores / {{container}}",
+          "legendFormat": "{{container}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Kubernetes CPU usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "description": "Kubernetes/cAdvisor가 제공하는 RelayGate container별 working set memory다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
+      "id": 17,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (container) (container_memory_working_set_bytes{namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"})",
+          "legendFormat": "{{container}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Kubernetes memory working set",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      },
+      "description": "Kubernetes/cAdvisor가 제공하는 RelayGate pod 전체의 network receive/transmit 처리량이다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
+      "id": 18,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(container_network_receive_bytes_total{namespace=~\"$namespace\",pod=~\".*relaygate.*\"}[$__rate_interval]))",
+          "legendFormat": "receive",
           "refId": "A"
         },
         {
-          "expr": "sum by (container) (container_memory_working_set_bytes{namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"})",
-          "legendFormat": "memory bytes / {{container}}",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(rate(container_network_receive_bytes_total{namespace=~\"$namespace\",pod=~\".*relaygate.*\"}[$__rate_interval]))",
-          "legendFormat": "network receive bytes/s",
-          "refId": "C"
-        },
-        {
           "expr": "sum(rate(container_network_transmit_bytes_total{namespace=~\"$namespace\",pod=~\".*relaygate.*\"}[$__rate_interval]))",
-          "legendFormat": "network transmit bytes/s",
-          "refId": "D"
+          "legendFormat": "transmit",
+          "refId": "B"
         }
       ],
-      "title": "Kubernetes resource USE",
+      "title": "Kubernetes network throughput",
       "type": "timeseries"
     }
   ],
