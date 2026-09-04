@@ -146,7 +146,7 @@ gateway:
   replicaCount: 3
   image:
     repository: ghcr.io/cagojeiger/relaygate-gateway
-    tag: "0.1.1"
+    tag: "0.1.2"
   service:
     port: 27420
 
@@ -154,7 +154,7 @@ routeTable:
   shardCount: 2
   image:
     repository: ghcr.io/cagojeiger/relaygate-route-table
-    tag: "0.1.1"
+    tag: "0.1.2"
 
 metrics:
   enabled: true
