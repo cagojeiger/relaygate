@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::config::{
     CLIENT_IDS, CONCURRENT_PIPES_PER_PATH, ECHO_DEADLINE, ROUTE_WAIT, SHARED_CLIENT_ID,
-    environment, gateway_addresses, soak_concurrency, soak_duration,
+    environment, gateway_addresses, soak_concurrency, soak_duration, storm_pause, storm_sessions,
 };
 
 pub(crate) async fn run_single() -> anyhow::Result<()> {
@@ -230,6 +230,48 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
+    let default_address = gateway_addresses()?
+        .into_iter()
+        .next()
+        .context("at least one Gateway address is required")?;
+    let address = environment("RELAYGATE_ADDR", &default_address);
+    let client_id = environment("RELAYGATE_CLIENT_ID", CLIENT_IDS[0]);
+    let session_count = storm_sessions()?;
+    let pause = storm_pause()?;
+    let connectors = connect_many(&address, session_count).await?;
+    let marker_pipes = open_marker_pipes(&connectors, &client_id).await?;
+
+    println!(
+        "relaygate reconnect storm ready: {session_count} Connector sessions and marker Pipes; interrupt and restore the Gateway path within {}s",
+        pause.as_secs()
+    );
+    await_marker_pipes_closed(marker_pipes, pause).await?;
+    println!("relaygate reconnect storm observed all original Connector sessions close");
+
+    let mut operations = JoinSet::new();
+    for (index, connector) in connectors.iter().enumerate() {
+        let payload = format!("relaygate reconnect storm session={index}").into_bytes();
+        spawn_echo(
+            &mut operations,
+            connector.clone(),
+            client_id.clone(),
+            payload,
+            format!("phase=reconnect-storm session={index} client_id={client_id}"),
+        );
+    }
+    let result = join_all(&mut operations).await;
+    for connector in connectors {
+        connector.close();
+    }
+    result?;
+
+    println!(
+        "relaygate reconnect storm verified: {session_count} Connector sessions opened a new Pipe after the recovery window"
+    );
+    Ok(())
+}
+
 pub(crate) async fn wait_client_registered(client_id: &str) -> anyhow::Result<()> {
     let connectors = connect_all(&gateway_addresses()?).await?;
     for (entry, connector) in connectors.iter().enumerate() {
@@ -358,6 +400,96 @@ async fn connect_all(addresses: &[String]) -> anyhow::Result<Vec<Connector>> {
         connectors.push(connect(address).await?);
     }
     Ok(connectors)
+}
+
+async fn connect_many(address: &str, count: usize) -> anyhow::Result<Vec<Connector>> {
+    let mut operations = JoinSet::new();
+    for _ in 0..count {
+        let address = address.to_owned();
+        operations.spawn(async move {
+            Connector::connect(
+                Config::new(&address)
+                    .with_connect_timeout(Duration::from_secs(30))
+                    .with_operation_timeout(Duration::from_secs(30)),
+            )
+            .await
+            .with_context(|| format!("failed to connect Connector SDK to {address}"))
+        });
+    }
+
+    let mut connectors = Vec::with_capacity(count);
+    while let Some(result) = operations.join_next().await {
+        match result {
+            Ok(Ok(connector)) => connectors.push(connector),
+            Ok(Err(error)) => {
+                operations.abort_all();
+                while operations.join_next().await.is_some() {}
+                for connector in connectors {
+                    connector.close();
+                }
+                return Err(error);
+            }
+            Err(error) => {
+                operations.abort_all();
+                while operations.join_next().await.is_some() {}
+                for connector in connectors {
+                    connector.close();
+                }
+                return Err(anyhow::anyhow!("Connector task failed to join: {error}"));
+            }
+        }
+    }
+    Ok(connectors)
+}
+
+async fn open_marker_pipes(connectors: &[Connector], client_id: &str) -> anyhow::Result<Vec<Pipe>> {
+    let mut operations = JoinSet::new();
+    for (index, connector) in connectors.iter().enumerate() {
+        let connector = connector.clone();
+        let client_id = client_id.to_owned();
+        operations.spawn(async move {
+            let mut pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT).await?;
+            let marker = format!("relaygate reconnect marker session={index}").into_bytes();
+            timeout(ECHO_DEADLINE, async {
+                pipe.write_all(&marker).await?;
+                let mut echoed = vec![0_u8; marker.len()];
+                pipe.read_exact(&mut echoed).await?;
+                ensure!(echoed == marker, "marker echo mismatch for session {index}");
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .with_context(|| format!("marker echo timed out for session {index}"))??;
+            Ok::<_, anyhow::Error>(pipe)
+        });
+    }
+
+    let mut pipes = Vec::with_capacity(connectors.len());
+    while let Some(result) = operations.join_next().await {
+        pipes.push(result.context("marker Pipe task failed to join")??);
+    }
+    Ok(pipes)
+}
+
+async fn await_marker_pipes_closed(pipes: Vec<Pipe>, deadline: Duration) -> anyhow::Result<()> {
+    let mut operations = JoinSet::new();
+    for (index, mut pipe) in pipes.into_iter().enumerate() {
+        operations.spawn(async move {
+            timeout(deadline, async {
+                let mut unexpected = [0_u8; 1];
+                match pipe.read(&mut unexpected).await {
+                    Ok(0) | Err(_) => Ok(()),
+                    Ok(count) => bail!(
+                        "marker Pipe {index} received {count} unexpected bytes before disconnect"
+                    ),
+                }
+            })
+            .await
+            .with_context(|| {
+                format!("marker Pipe {index} did not close before the outage deadline")
+            })?
+        });
+    }
+    join_all(&mut operations).await
 }
 
 fn spawn_echo(
