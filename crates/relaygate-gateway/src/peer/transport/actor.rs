@@ -37,8 +37,8 @@ pub(super) async fn run_transport_actor(
     let idle_retirement_timeout = config.idle_retirement_timeout;
     let (aggregate_writer, aggregate_receiver) = mpsc::channel(config.writer_queue_capacity);
     let (writer_wake, mut writer_wakes) = mpsc::channel(1);
-    let (writer_failure, mut writer_failures) = mpsc::channel(1);
     let close = closure.token().clone();
+    let writer_closure = closure.clone();
     let actor_config = config.clone();
     let mut actor = TransportActor::new(
         &established,
@@ -55,8 +55,7 @@ pub(super) async fn run_transport_actor(
         sink,
         aggregate_receiver,
         writer_wake,
-        writer_failure,
-        close.clone(),
+        writer_closure,
     ));
     let mut liveness = TransportLiveness::new(
         heartbeat_idle_interval,
@@ -179,12 +178,6 @@ pub(super) async fn run_transport_actor(
                 }
                 actor.flush_stream_queues().await;
                 liveness.sync_stream_state(actor.streams.is_empty());
-            }
-            failure = writer_failures.recv() => {
-                if failure.is_some() || !close.is_cancelled() {
-                    close_reason = TransportCloseReason::WriterFailed;
-                }
-                break;
             }
         }
     }

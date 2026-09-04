@@ -1,7 +1,8 @@
 use futures_util::{SinkExt, stream::SplitSink};
 use tokio::{net::TcpStream, sync::mpsc};
-use tokio_util::{codec::Framed, sync::CancellationToken};
+use tokio_util::codec::Framed;
 
+use super::{TransportCloseReason, TransportClosure};
 use crate::peer::{codec::PeerFrameCodec, frame::PeerFrame};
 
 /// Runs the only ordered socket sink for one PeerTransport. The coalesced wake
@@ -11,9 +12,9 @@ pub(super) async fn run_writer(
     mut sink: SplitSink<Framed<TcpStream, PeerFrameCodec>, PeerFrame>,
     mut frames: mpsc::Receiver<PeerFrame>,
     wake: mpsc::Sender<()>,
-    failure: mpsc::Sender<()>,
-    close: CancellationToken,
+    closure: TransportClosure,
 ) {
+    let close = closure.token().clone();
     loop {
         tokio::select! {
             () = close.cancelled() => break,
@@ -24,7 +25,7 @@ pub(super) async fn run_writer(
                     () = close.cancelled() => break,
                     result = send => {
                         if result.is_err() {
-                            let _ = failure.try_send(());
+                            closure.fail(TransportCloseReason::WriterFailed);
                             break;
                         }
                         match wake.try_send(()) {
