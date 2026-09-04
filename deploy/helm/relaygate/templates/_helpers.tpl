@@ -105,6 +105,9 @@ app.kubernetes.io/part-of: "relaygate"
 {{- if and .Values.metrics.enabled (eq (int .Values.metrics.routeTablePort) (int .Values.routeTable.port)) }}
 {{- fail "metrics.routeTablePort must be different from the RouteTable service port" }}
 {{- end }}
+{{- if le (mul (int .Values.gateway.terminationGracePeriodSeconds) 1000) (int .Values.gateway.drainTimeoutMs) }}
+{{- fail "gateway.terminationGracePeriodSeconds must exceed gateway.drainTimeoutMs" }}
+{{- end }}
 {{- range $component := list "gateway" "routeTable" }}
 {{- $image := index $.Values $component "image" -}}
 {{- if contains "@" $image.repository }}
@@ -132,7 +135,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateGatewayExtraEnv" -}}
-{{- $managed := list "POD_NAME" "POD_NAMESPACE" "RELAYGATE_BIND_ADDR" "RELAYGATE_PEER_BIND_ADDR" "RELAYGATE_RT_TRUSTED_LOCAL" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_GATEWAY_NAME" "RELAYGATE_GATEWAY_LOCATOR" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_CLIENT_KEYS" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_STATS_INTERVAL_MS" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
+{{- $managed := list "POD_NAME" "POD_NAMESPACE" "RELAYGATE_BIND_ADDR" "RELAYGATE_PEER_BIND_ADDR" "RELAYGATE_RT_TRUSTED_LOCAL" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_GATEWAY_NAME" "RELAYGATE_GATEWAY_LOCATOR" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_CLIENT_KEYS" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_DRAIN_TIMEOUT_MS" "RELAYGATE_STATS_INTERVAL_MS" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
 {{- range .Values.gateway.extraEnv }}
 {{- if has .name $managed }}
 {{- fail (printf "gateway.extraEnv cannot override chart-managed variable %s" .name) }}

@@ -84,7 +84,11 @@ port-forward하여 확인할 수 있다. `metrics.enabled=false`면 exporter env
 - RT restart는 빈 `READY` 상태로 시작한다. Gateway가 current Listener snapshot을 새 lease로
   등록하면서 복구한다. RT 중단만으로 established Pipe를 닫지 않는다.
 - Gateway 교체로 해당 pod의 session과 Pipe는 끝난다. SDK는 transport session을 재연결하지만
-  commit된 `OPEN`, 기존 Pipe, application request를 replay하지 않는다.
+  정상 SIGTERM에서는 신규 admission과 `REGISTER`·`OPEN`을 중단하고 RT의 current Listener
+  publication을 철회한 뒤 기존 pending attempt와 Pipe를
+  `gateway.drainTimeoutMs`까지 drain한다. active work가 먼저 0이 되면 즉시 종료하고 timeout이면
+  남은 session과 Pipe를 강제 종료한다. SDK는 jitter된 bounded backoff로 transport session을
+  재연결하지만 commit된 `OPEN`, 기존 Pipe, application request를 replay하지 않는다.
 - Gateway가 비정상 종료되어 `Deregister`하지 못하면 old mapping은 최대
   `routeTable.leaseTtlMs` 동안 남을 수 있다. 이 구간의 새 remote `OPEN`은 실패할 수 있으며
   application이 새 `OPEN` 시도를 결정한다.
@@ -144,9 +148,11 @@ credentials:
 
 gateway:
   replicaCount: 3
+  drainTimeoutMs: 120000
+  terminationGracePeriodSeconds: 135
   image:
     repository: ghcr.io/cagojeiger/relaygate-gateway
-    tag: "0.1.3"
+    tag: "0.1.4"
   service:
     port: 27420
 
@@ -164,6 +170,10 @@ metrics:
 resource request/limit은 부하 측정 없이 임의 기본값을 두지 않는다. `resources`, scheduling
 필드와 `extraEnv`는 환경별 values file에서 지정한다. `extraEnv`는 chart-managed identity,
 주소, directory, credential, log 변수를 중복 정의할 수 없다.
+
+`gateway.terminationGracePeriodSeconds`는 `gateway.drainTimeoutMs`보다 길어야 한다. 기본값은
+120초 drain 뒤 process cleanup을 위한 15초 여유를 둔다. 시간을 늘려도 무기한 Pipe migration이나
+resume가 생기지는 않으며 deadline 뒤 남은 Pipe는 종료된다.
 
 `image.repository`는 tag와 digest를 제외한
 [distribution reference repository name](https://github.com/distribution/reference/blob/main/regexp.go)을
