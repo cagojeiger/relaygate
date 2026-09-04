@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::config::{
     CLIENT_IDS, CONCURRENT_PIPES_PER_PATH, ECHO_DEADLINE, ROUTE_WAIT, SHARED_CLIENT_ID,
-    environment, gateway_addresses, soak_concurrency, soak_duration,
+    environment, gateway_addresses, soak_concurrency, soak_duration, storm_pause, storm_sessions,
 };
 
 pub(crate) async fn run_single() -> anyhow::Result<()> {
@@ -230,6 +230,42 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
+    let address = environment("RELAYGATE_ADDR", "gateway:27420");
+    let client_id = environment("RELAYGATE_CLIENT_ID", "echo.alpha");
+    let session_count = storm_sessions()?;
+    let pause = storm_pause()?;
+    let connectors = connect_many(&address, session_count).await?;
+
+    println!(
+        "relaygate reconnect storm ready: {session_count} Connector sessions; interrupt and restore the Gateway path within {}s",
+        pause.as_secs()
+    );
+    tokio::time::sleep(pause).await;
+
+    let mut operations = JoinSet::new();
+    for (index, connector) in connectors.iter().enumerate() {
+        let payload = format!("relaygate reconnect storm session={index}").into_bytes();
+        spawn_echo(
+            &mut operations,
+            connector.clone(),
+            client_id.clone(),
+            payload,
+            format!("phase=reconnect-storm session={index} client_id={client_id}"),
+        );
+    }
+    let result = join_all(&mut operations).await;
+    for connector in connectors {
+        connector.close();
+    }
+    result?;
+
+    println!(
+        "relaygate reconnect storm verified: {session_count} Connector sessions opened a new Pipe after the recovery window"
+    );
+    Ok(())
+}
+
 pub(crate) async fn wait_client_registered(client_id: &str) -> anyhow::Result<()> {
     let connectors = connect_all(&gateway_addresses()?).await?;
     for (entry, connector) in connectors.iter().enumerate() {
@@ -356,6 +392,46 @@ async fn connect_all(addresses: &[String]) -> anyhow::Result<Vec<Connector>> {
     let mut connectors = Vec::with_capacity(addresses.len());
     for address in addresses {
         connectors.push(connect(address).await?);
+    }
+    Ok(connectors)
+}
+
+async fn connect_many(address: &str, count: usize) -> anyhow::Result<Vec<Connector>> {
+    let mut operations = JoinSet::new();
+    for _ in 0..count {
+        let address = address.to_owned();
+        operations.spawn(async move {
+            Connector::connect(
+                Config::new(&address)
+                    .with_connect_timeout(Duration::from_secs(30))
+                    .with_operation_timeout(Duration::from_secs(30)),
+            )
+            .await
+            .with_context(|| format!("failed to connect Connector SDK to {address}"))
+        });
+    }
+
+    let mut connectors = Vec::with_capacity(count);
+    while let Some(result) = operations.join_next().await {
+        match result {
+            Ok(Ok(connector)) => connectors.push(connector),
+            Ok(Err(error)) => {
+                operations.abort_all();
+                while operations.join_next().await.is_some() {}
+                for connector in connectors {
+                    connector.close();
+                }
+                return Err(error);
+            }
+            Err(error) => {
+                operations.abort_all();
+                while operations.join_next().await.is_some() {}
+                for connector in connectors {
+                    connector.close();
+                }
+                return Err(anyhow::anyhow!("Connector task failed to join: {error}"));
+            }
+        }
     }
     Ok(connectors)
 }

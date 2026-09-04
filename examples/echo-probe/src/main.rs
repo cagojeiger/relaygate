@@ -18,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Single => probe::run_single().await,
         Command::Matrix => probe::run_matrix().await,
         Command::Soak => probe::run_soak().await,
+        Command::ReconnectStorm => probe::run_reconnect_storm().await,
         Command::WaitClient(client_id) => probe::wait_client_registered(&client_id).await,
         Command::ExpectShardIsolation {
             unavailable_client_id,
@@ -41,6 +42,7 @@ enum Command {
     Single,
     Matrix,
     Soak,
+    ReconnectStorm,
     WaitClient(String),
     ExpectShardIsolation {
         unavailable_client_id: String,
@@ -61,6 +63,7 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         None | Some("single") => Command::Single,
         Some("matrix") => Command::Matrix,
         Some("soak") => Command::Soak,
+        Some("reconnect-storm") => Command::ReconnectStorm,
         Some("wait-client") => {
             let Some(client_id) = args.next() else {
                 bail!("wait-client requires a ClientId argument");
@@ -94,7 +97,7 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         Some("continuity") => Command::Continuity,
         Some("continuity-check") => Command::ContinuityCheck,
         Some(other) => bail!(
-            "unknown command {other:?}; expected single, matrix, soak, wait-client, expect-shard-isolation, continuity, or continuity-check"
+            "unknown command {other:?}; expected single, matrix, soak, reconnect-storm, wait-client, expect-shard-isolation, continuity, or continuity-check"
         ),
     };
     if args.next().is_some() {
@@ -136,6 +139,15 @@ mod tests {
         anyhow::ensure!(matches!(
             command_from(["soak".to_owned()]),
             Ok(Command::Soak)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_reconnect_storm_command() -> anyhow::Result<()> {
+        anyhow::ensure!(matches!(
+            command_from(["reconnect-storm".to_owned()]),
+            Ok(Command::ReconnectStorm)
         ));
         Ok(())
     }
