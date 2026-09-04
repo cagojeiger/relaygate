@@ -231,8 +231,12 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
 }
 
 pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
-    let address = environment("RELAYGATE_ADDR", "gateway:27420");
-    let client_id = environment("RELAYGATE_CLIENT_ID", "echo.alpha");
+    let default_address = gateway_addresses()?
+        .into_iter()
+        .next()
+        .context("at least one Gateway address is required")?;
+    let address = environment("RELAYGATE_ADDR", &default_address);
+    let client_id = environment("RELAYGATE_CLIENT_ID", CLIENT_IDS[0]);
     let session_count = storm_sessions()?;
     let pause = storm_pause()?;
     let connectors = connect_many(&address, session_count).await?;
