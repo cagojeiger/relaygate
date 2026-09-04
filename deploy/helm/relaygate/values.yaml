@@ -52,7 +52,7 @@ gateway:
 
   image:
     repository: ghcr.io/cagojeiger/relaygate-gateway
-    tag: "0.1.3"
+    tag: "0.1.4"
     pullPolicy: IfNotPresent
 
   sdkPort: 27420
@@ -73,7 +73,8 @@ gateway:
   tolerations: []
   affinity: {}
   topologySpreadConstraints: []
-  terminationGracePeriodSeconds: 30
+  drainTimeoutMs: 120000
+  terminationGracePeriodSeconds: 135
 
   # capacity와 timeout override를 추가할 수 있다. 차트가 관리하는 identity, address,
   # directory와 credential 변수는 재정의할 수 없다.

@@ -144,6 +144,9 @@ jobs:
           test "$(grep -c '^[[:space:]]*prometheus.io/scrape: \"true\"$' target/helm/default.yaml)" -eq 2
           grep -Fq 'value: "0.0.0.0:27422"' target/helm/default.yaml
           grep -Fq 'value: "0.0.0.0:27431"' target/helm/default.yaml
+          grep -A1 -Fq 'name: RELAYGATE_DRAIN_TIMEOUT_MS' target/helm/default.yaml
+          grep -Fq 'value: "120000"' target/helm/default.yaml
+          grep -Fq 'terminationGracePeriodSeconds: 135' target/helm/default.yaml
           grep -Fq 'helm.sh/hook-delete-policy: before-hook-creation' target/helm/default.yaml
           if grep -Fq 'RELAYGATE_METRICS_BIND_ADDR' target/helm/minimal.yaml; then
             echo "Helm chart rendered metrics while metrics.enabled=false"
@@ -280,6 +283,14 @@ jobs:
             --set internalTransport.trustedLocalAdapter=true \
             --set metrics.routeTablePort=27430 >/dev/null 2>&1; then
             echo "Helm chart accepted a RouteTable metrics port colliding with its service port"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set gateway.drainTimeoutMs=120000 \
+            --set gateway.terminationGracePeriodSeconds=120 >/dev/null 2>&1; then
+            echo "Helm chart accepted a termination grace period that cannot cover Gateway drain"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
