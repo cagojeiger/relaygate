@@ -79,6 +79,13 @@ exact-byte ShardDirectory artifact를 사용합니다. Compose의 ClientKey와 I
 운영 credential이 아닙니다. host에는 Gateway A의 SDK port `127.0.0.1:27420`만 노출하고 RT와
 peer port는 Compose network 안에만 둡니다.
 
+장기 부하는 Gateway별 Connector session을 하나씩 재사용하고 Pipe만 반복 생성합니다.
+
+```bash
+RELAYGATE_SOAK_DURATION_SECS=600 RELAYGATE_SOAK_CONCURRENCY=256 \
+  docker compose run --rm --no-deps topology-probe relaygate-echo-probe soak
+```
+
 ### 로컬 RED/USE 대시보드
 
 `observability` profile은 같은 RT2/GW3 topology에 Prometheus와 Grafana를 추가합니다.

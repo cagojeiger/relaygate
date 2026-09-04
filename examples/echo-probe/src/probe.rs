@@ -1,4 +1,10 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, bail, ensure};
 use relaygate_sdk::{Config, Connector, ErrorCode, PeerObservation, Pipe};
@@ -10,7 +16,7 @@ use tokio::{
 
 use crate::config::{
     CLIENT_IDS, CONCURRENT_PIPES_PER_PATH, ECHO_DEADLINE, ROUTE_WAIT, SHARED_CLIENT_ID,
-    environment, gateway_addresses,
+    environment, gateway_addresses, soak_concurrency, soak_duration,
 };
 
 pub(crate) async fn run_single() -> anyhow::Result<()> {
@@ -118,6 +124,108 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
     println!(
         "relaygate GW3 matrix verified: 3 local, 6 directed remote, N:M shared, {} concurrent Pipes per path",
         CONCURRENT_PIPES_PER_PATH
+    );
+    Ok(())
+}
+
+pub(crate) async fn run_soak() -> anyhow::Result<()> {
+    let addresses = gateway_addresses()?;
+    let connectors = connect_all(&addresses).await?;
+    let duration = soak_duration()?;
+    let concurrency = soak_concurrency()?;
+    let deadline = Instant::now() + duration;
+    let completed = Arc::new(AtomicU64::new(0));
+    let mut workers = JoinSet::new();
+
+    for worker in 0..concurrency {
+        let connector = connectors[worker % connectors.len()].clone();
+        let completed = Arc::clone(&completed);
+        workers.spawn(async move {
+            let mut sequence = 0_u64;
+            while Instant::now() < deadline {
+                let target = (worker + sequence as usize) % (CLIENT_IDS.len() + 1);
+                let client_id = if target == CLIENT_IDS.len() {
+                    SHARED_CLIENT_ID
+                } else {
+                    CLIENT_IDS[target]
+                };
+                let payload = format!(
+                    "relaygate soak worker={worker} sequence={sequence} client={client_id}"
+                )
+                .into_bytes();
+                assert_echo(
+                    open_when_registered(&connector, client_id, ROUTE_WAIT)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "phase=soak worker={worker} sequence={sequence} client_id={client_id}: OPEN failed"
+                            )
+                        })?,
+                    &payload,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "phase=soak worker={worker} sequence={sequence} client_id={client_id}: echo failed"
+                    )
+                })?;
+                completed.fetch_add(1, Ordering::Relaxed);
+                sequence += 1;
+            }
+            Ok::<_, anyhow::Error>(sequence)
+        });
+    }
+
+    let progress = Arc::clone(&completed);
+    let reporter = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        interval.tick().await;
+        while Instant::now() < deadline {
+            interval.tick().await;
+            println!(
+                "relaygate soak progress: {} Pipes completed",
+                progress.load(Ordering::Relaxed)
+            );
+        }
+    });
+
+    let mut worker_total = 0_u64;
+    let mut failure = None;
+    while let Some(result) = workers.join_next().await {
+        match result {
+            Ok(Ok(count)) => worker_total += count,
+            Ok(Err(error)) => {
+                failure = Some(error);
+                break;
+            }
+            Err(error) => {
+                failure = Some(anyhow::anyhow!("soak worker failed to join: {error}"));
+                break;
+            }
+        }
+    }
+
+    if failure.is_some() {
+        workers.abort_all();
+        while workers.join_next().await.is_some() {}
+    }
+    reporter.abort();
+    let _ = reporter.await;
+    for connector in connectors {
+        connector.close();
+    }
+    if let Some(error) = failure {
+        return Err(error);
+    }
+
+    ensure!(
+        worker_total == completed.load(Ordering::Relaxed),
+        "soak completion accounting mismatch"
+    );
+    println!(
+        "relaygate soak verified: {worker_total} Pipes completed in {}s with {concurrency} workers over {} long-lived Connector sessions",
+        duration.as_secs(),
+        addresses.len()
     );
     Ok(())
 }

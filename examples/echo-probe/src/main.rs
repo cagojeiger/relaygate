@@ -17,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
     match command()? {
         Command::Single => probe::run_single().await,
         Command::Matrix => probe::run_matrix().await,
+        Command::Soak => probe::run_soak().await,
         Command::WaitClient(client_id) => probe::wait_client_registered(&client_id).await,
         Command::ExpectShardIsolation {
             unavailable_client_id,
@@ -39,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
 enum Command {
     Single,
     Matrix,
+    Soak,
     WaitClient(String),
     ExpectShardIsolation {
         unavailable_client_id: String,
@@ -58,6 +60,7 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
     let command = match args.next().as_deref() {
         None | Some("single") => Command::Single,
         Some("matrix") => Command::Matrix,
+        Some("soak") => Command::Soak,
         Some("wait-client") => {
             let Some(client_id) = args.next() else {
                 bail!("wait-client requires a ClientId argument");
@@ -91,7 +94,7 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         Some("continuity") => Command::Continuity,
         Some("continuity-check") => Command::ContinuityCheck,
         Some(other) => bail!(
-            "unknown command {other:?}; expected single, matrix, wait-client, expect-shard-isolation, continuity, or continuity-check"
+            "unknown command {other:?}; expected single, matrix, soak, wait-client, expect-shard-isolation, continuity, or continuity-check"
         ),
     };
     if args.next().is_some() {
@@ -125,6 +128,15 @@ mod tests {
             Ok(other) => anyhow::bail!("unexpected command: {other:?}"),
             Err(error) => anyhow::bail!("unexpected error: {error}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn parses_soak_command() -> anyhow::Result<()> {
+        anyhow::ensure!(matches!(
+            command_from(["soak".to_owned()]),
+            Ok(Command::Soak)
+        ));
         Ok(())
     }
 
