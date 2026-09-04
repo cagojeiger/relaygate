@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 bytes.workspace = true
 futures-util.workspace = true
+metrics.workspace = true
 relaygate-protocol.workspace = true
 relaygate-route-table.workspace = true
 relaygate-route-table-transport.workspace = true

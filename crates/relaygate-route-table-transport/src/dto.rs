@@ -45,6 +45,16 @@ pub(crate) enum WireRequest {
 }
 
 impl WireRequest {
+    pub(crate) const fn operation_name(&self) -> &'static str {
+        match self {
+            Self::Register { .. } => "register",
+            Self::Update { .. } => "update",
+            Self::KeepAlive { .. } => "keep_alive",
+            Self::Deregister { .. } => "deregister",
+            Self::Resolve { .. } => "resolve",
+        }
+    }
+
     pub(crate) fn validate_preconditions(
         &self,
         context: RequestContext,

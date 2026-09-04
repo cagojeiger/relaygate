@@ -49,6 +49,11 @@ impl Delivery {
                 error_code = ?ErrorCode::ResourceExhausted,
                 "closing a session whose bounded writer queue cannot accept a frame"
             );
+            metrics::counter!(
+                "relaygate_gateway_writer_queue_rejections_total",
+                "reason" => queue_state
+            )
+            .increment(1);
             self.cancellation.cancel();
             return Some(self.target);
         }
@@ -158,6 +163,7 @@ struct PipeEntry {
     open_identity: Option<OpenIdentity>,
     phase: PipePhase,
     offered_at: Instant,
+    open_started_at: Option<Instant>,
     connector_finished: bool,
     listener_finished: bool,
 }
@@ -214,6 +220,7 @@ impl PipeEndpoint {
 struct RemoteOpenAttempt {
     pipe_id: PipeId,
     client_id: String,
+    started_at: Instant,
     phase: RemoteOpenPhase,
 }
 
@@ -481,6 +488,49 @@ impl GatewayState {
             session_id,
             bindings: self.registry.bindings_for_session(session_id),
         }
+    }
+}
+
+fn observe_open_request() {
+    metrics::counter!("relaygate_gateway_open_requests_total").increment(1);
+}
+
+fn observe_open_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
+    let Some(started_at) = started_at else {
+        return;
+    };
+    let (outcome, code) = match code {
+        None => ("success", "ok"),
+        Some(ErrorCode::Cancelled) => ("cancelled", "cancelled"),
+        Some(code) => ("error", error_code_name(code)),
+    };
+    metrics::counter!(
+        "relaygate_gateway_open_results_total",
+        "outcome" => outcome,
+        "code" => code
+    )
+    .increment(1);
+    metrics::histogram!(
+        "relaygate_gateway_open_duration_seconds",
+        "outcome" => outcome
+    )
+    .record(started_at.elapsed().as_secs_f64());
+}
+
+const fn error_code_name(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::InvalidArgument => "invalid_argument",
+        ErrorCode::Unauthenticated => "unauthenticated",
+        ErrorCode::PermissionDenied => "permission_denied",
+        ErrorCode::NotFound => "not_found",
+        ErrorCode::FailedPrecondition => "failed_precondition",
+        ErrorCode::Unavailable => "unavailable",
+        ErrorCode::DeadlineExceeded => "deadline_exceeded",
+        ErrorCode::ResourceExhausted => "resource_exhausted",
+        ErrorCode::Cancelled => "cancelled",
+        ErrorCode::ProtocolError => "protocol_error",
+        ErrorCode::Internal => "internal",
+        ErrorCode::AlreadyExists => "already_exists",
     }
 }
 

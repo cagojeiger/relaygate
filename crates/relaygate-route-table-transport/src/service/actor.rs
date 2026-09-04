@@ -41,10 +41,25 @@ pub(super) async fn run_shard_actor(
                     break;
                 };
                 let now = tokio::time::Instant::now().into_std();
+                let started_at = std::time::Instant::now();
+                let operation = request.request.operation_name();
                 let response = request.request
                     .validate_preconditions(request.context, shard.generation())
                     .and_then(|()| request.request.into_domain())
                     .and_then(|operation| execute(&mut shard, request.context, operation, now));
+                let outcome = if response.is_ok() { "success" } else { "error" };
+                metrics::counter!(
+                    "relaygate_route_table_requests_total",
+                    "operation" => operation,
+                    "outcome" => outcome
+                )
+                .increment(1);
+                metrics::histogram!(
+                    "relaygate_route_table_request_duration_seconds",
+                    "operation" => operation,
+                    "outcome" => outcome
+                )
+                .record(started_at.elapsed().as_secs_f64());
                 observe_shard(&shard);
                 let _ = request.reply.send(response);
             }

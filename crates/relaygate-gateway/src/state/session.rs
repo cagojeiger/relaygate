@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     Delivery, GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipePhase, RemoteOpenPhase,
-    SessionEntry,
+    SessionEntry, observe_open_result,
 };
 
 impl GatewayState {
@@ -52,6 +52,7 @@ impl GatewayState {
             let Some(attempt) = self.remote_open_attempts.remove(&open_identity) else {
                 continue;
             };
+            observe_open_result(Some(attempt.started_at), Some(ErrorCode::Cancelled));
             self.active_peer_opens.remove(&open_identity);
             match attempt.phase {
                 RemoteOpenPhase::Resolving => {}
@@ -85,6 +86,9 @@ impl GatewayState {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
+            if pipe.connector == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
+                observe_open_result(pipe.open_started_at, Some(ErrorCode::Cancelled));
+            }
             if pipe.listener == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
                 actions.extend(self.connector_failure(
                     &pipe,

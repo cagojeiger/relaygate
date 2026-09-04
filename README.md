@@ -159,6 +159,10 @@ remote OPEN은 Entry Gateway가 Resolve 결과에서 선택한 정확히 한 Own
 소유합니다. 구조화 로그와 metric은 `ClientKey`와 payload를 기록하지 않으며, snapshot gauge는
 현재 process 상태일 뿐 전달 성공을 뜻하지 않습니다.
 
+기본 metric은 Gateway/RT의 current resource gauge(USE 기반), Gateway OPEN과 RT operation의
+request/result/duration(RED), bounded writer queue rejection을 포함합니다. label은 bounded
+`role/state/operation/outcome/code/reason`만 사용합니다.
+
 Gateway lifecycle을 자세히 볼 때는 예를 들어 `RELAYGATE_LOG=relaygate_server=info,relaygate_gateway=debug`를 사용합니다. SDK를 포함한 application은 자신의 subscriber filter에 `relaygate_sdk=debug`를 추가합니다.
 
 ## RouteTable 설정

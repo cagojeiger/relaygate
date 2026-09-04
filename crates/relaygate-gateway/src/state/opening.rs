@@ -9,7 +9,8 @@ use crate::{peer::OpenIdentity, registry::Binding};
 
 use super::{
     GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipeEntry, PipePhase,
-    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase,
+    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase, observe_open_request,
+    observe_open_result,
 };
 
 impl GatewayState {
@@ -30,56 +31,62 @@ impl GatewayState {
             return Vec::new();
         }
         session.highest_connection_id = Some(connection_id);
+        observe_open_request();
 
         if client_id.is_empty() {
-            return self.open_failed(
+            return self.new_open_failed(
                 connector,
                 connection_id,
                 ErrorCode::InvalidArgument,
                 PeerObservation::NotObserved,
                 "ClientId must not be empty",
+                now,
             );
         }
         if self.live_pipe_count() >= self.limits.max_live_pipes {
-            return self.open_failed(
+            return self.new_open_failed(
                 connector,
                 connection_id,
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
                 "Gateway live Pipe limit reached",
+                now,
             );
         }
         if self.pending_capacity_reached() {
-            return self.open_failed(
+            return self.new_open_failed(
                 connector,
                 connection_id,
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
                 "Gateway pending open limit reached",
+                now,
             );
         }
 
         let pipe_id = PipeId::new(connector, connection_id);
         if let Some(binding) = self.registry.select(&client_id) {
-            return self.offer_local_at(connector, pipe_id, binding, client_id, now);
+            return self.offer_local_at(connector, pipe_id, binding, client_id, now, Some(now));
         }
 
         let Some(gateway_id) = self.gateway_id else {
-            return self.open_failed(
+            return self.new_open_failed(
                 connector,
                 connection_id,
                 ErrorCode::NotFound,
                 PeerObservation::NotObserved,
                 "no live ListenerBinding exists",
+                now,
             );
         };
         let Ok(route_client_id) = RouteClientId::new(client_id.clone()) else {
-            return self.open_failed(
+            return self.new_open_failed(
                 connector,
                 connection_id,
                 ErrorCode::InvalidArgument,
                 PeerObservation::NotObserved,
                 "ClientId is invalid",
+                now,
             );
         };
         let open_identity = OpenIdentity::new(gateway_id, connector, connection_id);
@@ -88,6 +95,7 @@ impl GatewayState {
             RemoteOpenAttempt {
                 pipe_id,
                 client_id,
+                started_at: now,
                 phase: RemoteOpenPhase::Resolving,
             },
         );
@@ -98,16 +106,6 @@ impl GatewayState {
         }]
     }
 
-    pub(super) fn offer_local(
-        &mut self,
-        connector: SessionId,
-        pipe_id: PipeId,
-        binding: Binding,
-        client_id: String,
-    ) -> Vec<GatewayAction> {
-        self.offer_local_at(connector, pipe_id, binding, client_id, Instant::now())
-    }
-
     pub(super) fn offer_local_at(
         &mut self,
         connector: SessionId,
@@ -115,6 +113,7 @@ impl GatewayState {
         binding: Binding,
         client_id: String,
         now: Instant,
+        open_started_at: Option<Instant>,
     ) -> Vec<GatewayAction> {
         let listener_is_live = self
             .sessions
@@ -122,6 +121,7 @@ impl GatewayState {
             .is_some_and(|session| session.role == SessionRole::Listener);
         if !listener_is_live {
             self.registry.remove_owned(binding.session_id, binding.id);
+            observe_open_result(open_started_at, Some(ErrorCode::Unavailable));
             let mut actions = self.open_failed(
                 connector,
                 pipe_id.connection_id(),
@@ -154,6 +154,7 @@ impl GatewayState {
                 open_identity: None,
                 phase: PipePhase::Offered,
                 offered_at: now,
+                open_started_at,
                 connector_finished: false,
                 listener_finished: false,
             },
@@ -200,6 +201,19 @@ impl GatewayState {
         .map(GatewayAction::SendSdkFrame)
         .into_iter()
         .collect()
+    }
+
+    fn new_open_failed(
+        &self,
+        connector: SessionId,
+        connection_id: u64,
+        code: ErrorCode,
+        observation: PeerObservation,
+        message: &str,
+        started_at: Instant,
+    ) -> Vec<GatewayAction> {
+        observe_open_result(Some(started_at), Some(code));
+        self.open_failed(connector, connection_id, code, observation, message)
     }
 
     pub(super) fn offer_accepted(
@@ -300,6 +314,9 @@ impl GatewayState {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Ok(Vec::new());
         };
+        if pipe.phase == PipePhase::Offered {
+            observe_open_result(pipe.open_started_at, Some(ErrorCode::Cancelled));
+        }
         Ok(self.endpoint_reset(
             pipe.listener,
             pipe_id,
@@ -374,6 +391,7 @@ impl GatewayState {
     }
 
     pub(super) fn connector_opened(&self, pipe: &PipeEntry, pipe_id: PipeId) -> Vec<GatewayAction> {
+        observe_open_result(pipe.open_started_at, None);
         match pipe.connector {
             PipeEndpoint::Sdk(connector) => self
                 .to(connector, Frame::Opened { pipe_id })
@@ -392,6 +410,9 @@ impl GatewayState {
         observation: PeerObservation,
         message: &str,
     ) -> Vec<GatewayAction> {
+        if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+            observe_open_result(pipe.open_started_at, Some(code));
+        }
         match pipe.connector {
             PipeEndpoint::Sdk(connector) => self.open_failed(
                 connector,

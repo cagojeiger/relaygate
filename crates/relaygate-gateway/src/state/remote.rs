@@ -9,7 +9,7 @@ use crate::peer::{OpenIdentity, PeerStreamKey};
 
 use super::{
     GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipeEntry, PipePhase,
-    RemoteOpenAttempt, RemoteOpenPhase,
+    RemoteOpenAttempt, RemoteOpenPhase, observe_open_result,
 };
 
 impl GatewayState {
@@ -26,6 +26,7 @@ impl GatewayState {
         }
         let client_id = attempt.client_id.clone();
         let pipe_id = attempt.pipe_id;
+        let started_at = attempt.started_at;
         let Some(mapping) = bindings.entries().first().cloned() else {
             return self.fail_remote_attempt(
                 open_identity,
@@ -53,6 +54,7 @@ impl GatewayState {
                 .registry
                 .exact(listener_session_id, binding_id, &client_id)
             else {
+                observe_open_result(Some(started_at), Some(ErrorCode::Unavailable));
                 return self.open_failed(
                     pipe_id.connector_session_id(),
                     pipe_id.connection_id(),
@@ -61,7 +63,14 @@ impl GatewayState {
                     "selected local ListenerBinding is stale",
                 );
             };
-            return self.offer_local(pipe_id.connector_session_id(), pipe_id, binding, client_id);
+            return self.offer_local_at(
+                pipe_id.connector_session_id(),
+                pipe_id,
+                binding,
+                client_id,
+                Instant::now(),
+                Some(started_at),
+            );
         }
 
         let Some(attempt) = self.remote_open_attempts.get_mut(&open_identity) else {
@@ -286,6 +295,7 @@ impl GatewayState {
                 open_identity: Some(open_identity),
                 phase: PipePhase::Offered,
                 offered_at: now,
+                open_started_at: None,
                 connector_finished: false,
                 listener_finished: false,
             },
@@ -369,6 +379,7 @@ impl GatewayState {
                 "peer OPENED after the local endpoint became unavailable",
             );
             if connector_is_live {
+                observe_open_result(Some(attempt.started_at), Some(code));
                 actions.extend(self.open_failed(
                     connector,
                     attempt.pipe_id.connection_id(),
@@ -376,10 +387,13 @@ impl GatewayState {
                     PeerObservation::MaybeObserved,
                     "Gateway live Pipe limit reached during remote admission",
                 ));
+            } else {
+                observe_open_result(Some(attempt.started_at), Some(ErrorCode::Cancelled));
             }
             return actions;
         }
 
+        observe_open_result(Some(attempt.started_at), None);
         self.insert_open(
             attempt.pipe_id,
             PipeEntry {
@@ -389,6 +403,7 @@ impl GatewayState {
                 open_identity: Some(open_identity),
                 phase: PipePhase::Open,
                 offered_at: now,
+                open_started_at: None,
                 connector_finished: false,
                 listener_finished: false,
             },
@@ -498,6 +513,7 @@ impl GatewayState {
         let Some(attempt) = self.take_remote_attempt(open_identity) else {
             return Vec::new();
         };
+        observe_open_result(Some(attempt.started_at), Some(ErrorCode::Cancelled));
         match attempt.phase {
             RemoteOpenPhase::Resolving => Vec::new(),
             RemoteOpenPhase::StartingPeer { .. } => {
@@ -522,6 +538,7 @@ impl GatewayState {
         let Some(attempt) = self.take_remote_attempt(open_identity) else {
             return Vec::new();
         };
+        observe_open_result(Some(attempt.started_at), Some(code));
         self.open_failed(
             attempt.pipe_id.connector_session_id(),
             attempt.pipe_id.connection_id(),

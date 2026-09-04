@@ -1,7 +1,7 @@
 use std::{env, net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use metrics::{describe_gauge, gauge};
+use metrics::{describe_counter, describe_gauge, describe_histogram, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use relaygate_gateway::{GatewaySnapshot, RouteDependencyHealth};
 
@@ -83,6 +83,22 @@ pub(crate) fn observe_gateway(snapshot: GatewaySnapshot) {
 }
 
 fn describe_metrics() {
+    describe_counter!(
+        "relaygate_gateway_open_requests_total",
+        "Accepted Connector OPEN requests on this Gateway."
+    );
+    describe_counter!(
+        "relaygate_gateway_open_results_total",
+        "Terminal results for accepted Connector OPEN requests."
+    );
+    describe_histogram!(
+        "relaygate_gateway_open_duration_seconds",
+        "Time from accepted Connector OPEN to its terminal result."
+    );
+    describe_counter!(
+        "relaygate_gateway_writer_queue_rejections_total",
+        "Frames rejected by a full or closed bounded SDK writer queue."
+    );
     describe_gauge!(
         "relaygate_gateway_sessions",
         "Current SDK sessions on this Gateway."
@@ -150,5 +166,13 @@ fn describe_metrics() {
     describe_gauge!(
         "relaygate_route_table_expiry_records",
         "Current lease expiry index records on this RouteTable shard."
+    );
+    describe_counter!(
+        "relaygate_route_table_requests_total",
+        "RouteTable requests by bounded operation and outcome."
+    );
+    describe_histogram!(
+        "relaygate_route_table_request_duration_seconds",
+        "RouteTable actor service time by bounded operation and outcome."
     );
 }
