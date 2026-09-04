@@ -282,7 +282,7 @@ Helm 저장소는 `https://cagojeiger.github.io/relaygate`다. GitHub Pages 설�
 helm repo add relaygate https://cagojeiger.github.io/relaygate
 helm repo update
 helm upgrade --install relaygate relaygate/relaygate \
-  --version 0.1.2 \
+  --version 0.1.3 \
   --namespace relaygate \
   --set internalTransport.trustedLocalAdapter=true \
   --wait
