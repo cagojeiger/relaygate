@@ -27,6 +27,8 @@ x-gateway-environment: &gateway-environment
   RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
   RELAYGATE_LOG: info
   RELAYGATE_STATS_INTERVAL_MS: "1000"
+  RELAYGATE_METRICS_BIND_ADDR: 0.0.0.0:27422
+  RELAYGATE_METRICS_INTERVAL_MS: "1000"
   RELAYGATE_SDK_HEARTBEAT_IDLE_MS: "60000"
   RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS: "20000"
   RELAYGATE_PEER_HEARTBEAT_IDLE_MS: "60000"
@@ -58,6 +60,7 @@ x-route-table-environment: &route-table-environment
   RELAYGATE_RT_LEASE_TTL_MS: "3000"
   RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
   RELAYGATE_LOG: info
+  RELAYGATE_METRICS_BIND_ADDR: 0.0.0.0:27431
 
 x-route-table: &route-table
   <<: *runtime
@@ -193,4 +196,88 @@ services:
       listener-b:
         condition: service_started
       listener-c:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    profiles: ["observability"]
+    read_only: true
+    restart: "no"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2h
+      - --storage.tsdb.retention.size=256MB
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    tmpfs:
+      - /prometheus:size=256m,mode=1777
+    ports:
+      - "127.0.0.1:${RELAYGATE_PROMETHEUS_PORT:-29090}:9090"
+    depends_on:
+      gateway-a:
+        condition: service_healthy
+      gateway-b:
+        condition: service_healthy
+      gateway-c:
+        condition: service_healthy
+      rt-0:
+        condition: service_started
+      rt-1:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:13.1.1
+    profiles: ["observability"]
+    restart: "no"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${RELAYGATE_GRAFANA_PORT:-23000}:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+
+  observability-probe:
+    image: grafana/grafana:13.1.1
+    profiles: ["observability"]
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        attempts=0
+        until curl -fsS http://prometheus:9090/-/ready >/dev/null; do
+          attempts=$$((attempts + 1)); test "$$attempts" -lt 60; sleep 1
+        done
+        attempts=0
+        until curl -fsSG --data-urlencode 'query=count(up{job=~"relaygate-(gateway|route-table)"} == 1)' \
+          http://prometheus:9090/api/v1/query | grep -q '"5"'; do
+          attempts=$$((attempts + 1)); test "$$attempts" -lt 60; sleep 1
+        done
+        for expression in \
+          'histogram_quantile(0.95, sum by (le) (relaygate_gateway_open_duration_seconds_bucket)) > 0' \
+          'histogram_quantile(0.95, sum by (le) (relaygate_route_table_request_duration_seconds_bucket)) > 0'; do
+          attempts=0
+          until curl -fsSG --data-urlencode "query=$$expression" \
+            http://prometheus:9090/api/v1/query | grep -Fq '"result":[{'; do
+            attempts=$$((attempts + 1)); test "$$attempts" -lt 60; sleep 1
+          done
+        done
+        attempts=0
+        until curl -fsS http://grafana:3000/api/health | grep -Eq '"database"[[:space:]]*:[[:space:]]*"ok"'; do
+          attempts=$$((attempts + 1)); test "$$attempts" -lt 60; sleep 1
+        done
+        curl -fsS 'http://grafana:3000/api/search?query=RelayGate' |
+          grep -q '"uid":"relaygate-overview"'
+        echo 'RelayGate Prometheus targets and Grafana dashboard verified'
+    depends_on:
+      prometheus:
+        condition: service_started
+      grafana:
         condition: service_started

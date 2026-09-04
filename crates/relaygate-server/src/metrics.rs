@@ -8,6 +8,10 @@ use relaygate_gateway::{GatewaySnapshot, RouteDependencyHealth};
 use crate::config::optional_duration_millis;
 
 const DEFAULT_METRICS_INTERVAL: Duration = Duration::from_secs(5);
+const LATENCY_BUCKETS_SECONDS: &[f64] = &[
+    0.000_1, 0.000_25, 0.000_5, 0.001, 0.002_5, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+    1.0, 2.5, 5.0, 10.0,
+];
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MetricsRuntime {
@@ -34,6 +38,8 @@ impl MetricsRuntime {
         PrometheusBuilder::new()
             .with_http_listener(bind_address)
             .add_global_label("role", role)
+            .set_buckets(LATENCY_BUCKETS_SECONDS)
+            .context("failed to configure Prometheus latency buckets")?
             .install()
             .context("failed to start Prometheus metrics exporter")?;
         describe_metrics();

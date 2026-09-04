@@ -166,6 +166,32 @@ RouteTable RED
   request_duration_seconds{operation,outcome}
 ```
 
+### RED/USE 대시보드 해석
+
+대시보드는 한 개의 종합 health 값을 만들지 않고 다음 질문을 순서대로 좁힌다.
+
+| 질문 | 1차 신호 | 함께 볼 신호 |
+| --- | --- | --- |
+| process를 관찰할 수 있는가 | Gateway/RT `up` 비율 | 배포 환경의 liveness와 로그 |
+| 새 Pipe를 열 수 있는가 | OPEN 요청률·결과·p95 | pending offer, remote attempt, terminal gap |
+| owner route가 수렴했는가 | route dependency READY 비율 | unsynced registration, RT 요청 결과·p95 |
+| one-hop relay가 포화됐는가 | writer queue rejection | connecting/ready PeerTransport, RelayStream |
+| current state가 정리되는가 | session·binding·live Pipe | RT registration·mapping·route·expiry record |
+
+`up`은 Prometheus scrape 성공이고 `SdkAdmissionReadiness`가 아니다. `cancelled`는 caller가
+종료한 terminal 결과이므로 system `error`와 합산하지 않는다. OPEN terminal gap은 진행 중인
+요청 때문에 순간적으로 생길 수 있으며 지속될 때만 누락·지연 후보로 해석한다. duration은
+고정 bucket histogram으로 내보내며 p95는 선택한 instance별 bucket rate로 계산한다.
+
+CPU·memory·network 같은 host/container USE는 RelayGate process metric이 아니라 배포 환경의
+기본 exporter에서 가져온다. Gateway current-state gauge는 resource 사용량의 분자이며 그 자체가
+capacity 비율은 아니다. hard saturation은 bounded writer queue rejection으로 관찰한다. alert와
+SLO threshold는 실제 부하 측정 전에는 고정하지 않는다.
+
+기본 dashboard는 Gateway와 RouteTable instance filter를 제공한다. `All`에서는 process의
+current-state를 합산하고 특정 instance를 선택하면 같은 panel에서 drill-down한다. OPEN과 RT p95는
+filter에 맞는 histogram bucket을 instance별로 집계한다.
+
 `ClientId`, session/binding/connection/stream identity, credential, payload와 error message는 label이나
 metric 값에 포함하지 않는다. `operation`, `outcome`, protocol `code`, queue `reason`은 구현이
 닫힌 bounded enum만 사용한다.
