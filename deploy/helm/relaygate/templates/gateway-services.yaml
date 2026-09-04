@@ -35,3 +35,9 @@ spec:
       port: {{ .Values.gateway.peerPort }}
       targetPort: peer
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.gatewayPort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}

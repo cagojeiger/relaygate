@@ -3,7 +3,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 상태 | Active |
-| 역할 | process 로그, lifecycle event, current-state snapshot의 최소 계약 |
+| 역할 | process 로그, lifecycle event, current-state snapshot과 metrics의 최소 계약 |
 
 관측성은 새 상태를 만들지 않는다. Gateway와 SDK가 이미 소유한 현재 상태와 전이를
 구조화된 event로 관찰할 뿐이며, 로그는 복구 원본이나 전달 증명이 아니다.
@@ -11,13 +11,14 @@
 ```text
 Gateway / SDK ── emit event ──► host subscriber ──► stdout collector
       │
-      └── current state ───────► GatewaySnapshot ──► optional periodic event
+      ├── current state ───────► GatewaySnapshot ──► optional periodic event
+      └── bounded gauges ──────► optional Prometheus exporter
 ```
 
 ## 소유권
 
-- `relaygate-gateway`와 `relaygate-sdk`는 `tracing` event만 발행한다.
-- 독립 process인 `relaygate-server`는 subscriber와 출력 형식을 소유한다.
+- library crate는 `tracing` event와 low-cardinality metric 값만 발행한다.
+- 독립 process인 `relaygate-server`는 subscriber, 출력 형식과 exporter를 소유한다.
 - SDK 또는 Gateway를 포함하는 application은 process당 subscriber 하나를 설치한다.
 - library는 전역 subscriber, exporter, listening port를 만들지 않는다.
 
@@ -30,6 +31,8 @@ Gateway / SDK ── emit event ──► host subscriber ──► stdout colle
 | `RELAYGATE_LOG` | `info` | `tracing-subscriber` filter |
 | `RELAYGATE_LOG_FORMAT` | `text` | `text` 또는 `json` |
 | `RELAYGATE_STATS_INTERVAL_MS` | unset | 0보다 큰 millisecond; unset이면 snapshot event 비활성화 |
+| `RELAYGATE_METRICS_BIND_ADDR` | unset | Prometheus HTTP listener socket; unset이면 exporter 비활성화 |
+| `RELAYGATE_METRICS_INTERVAL_MS` | `5000` | Gateway gauge sampling interval; exporter가 활성화될 때만 유효 |
 
 모든 구조화 event는 `component`와 안정적인 `event` 이름을 가진다. 객체를 식별할 수 있을
 때는 해당 identity를 별도 field로 기록한다.
@@ -133,6 +136,30 @@ message delivery acknowledgement가 아니다.
 Heartbeat와 idle-retirement event는 transport lifecycle 관찰값이다. 해당 event를 Pipe
 application health, payload delivery acknowledgement 또는 retry 명령으로 해석해서는 안 된다.
 
+## Prometheus metrics
+
+Exporter는 명시적으로 활성화한 `relaygate-server` process에만 생긴다. SDK를 포함한 application과
+library crate는 port를 열지 않는다. metric은 process 재시작으로 초기화되는 현재 상태이며
+`role=gateway|route_table` 외 동적 identity label을 사용하지 않는다. image version과 digest는
+배포 metadata에서 관찰한다.
+
+```text
+Gateway gauges
+  sessions / listener_sessions / connector_sessions
+  listener_bindings / pending_offers / live_pipes
+  route_registrations_synced / route_registrations_unsynced
+  remote_open_attempts
+  peer_transports_connecting / peer_transports_ready / peer_streams
+  route_dependency{state=DISABLED|READY|DEGRADED|TERMINAL}  one-hot
+
+RouteTable gauges
+  registrations / mappings / routes / expiry_records
+```
+
+`ClientId`, session/binding/connection/stream identity, credential, payload와 error message는 label이나
+metric 값에 포함하지 않는다. operation counter와 latency histogram은 실제 부하·장애 데이터를
+확인한 뒤 별도 계약으로 추가한다.
+
 ## 운영 health 관찰
 
 운영 health는 하나의 종합 신호로 노출하지 않는다.
@@ -178,3 +205,6 @@ RT 전체 truth 또는 restart 명령이 아니다.
 | `OBS-010` | `relaygate-server check`는 새 ConnectorSession의 TCP 연결과 `HELLO -> WELCOME`만 검증하는 `SdkAdmissionReadiness` probe여야 한다. RT, binding, open, Pipe와 application 결과를 검증하거나 지속 state를 남겨서는 안 된다. |
 | `OBS-011` | `GatewaySnapshot`은 `RouteDependencyHealth`를 제공해야 한다. local-only는 `DISABLED`, distributed mode는 terminal failure, unavailable shard와 `UNSYNCED` registration을 우선순위에 따라 `TERMINAL`, `DEGRADED`, `READY`로 집계해야 한다. 한 shard의 terminal failure는 summary를 `TERMINAL`로 만들지만 unaffected shard operation의 실패를 뜻하지 않아야 한다. |
 | `OBS-012` | `ProcessLiveness`, `SdkAdmissionReadiness`와 `RouteDependencyHealth`는 별도 신호여야 한다. RT 저하는 process 또는 admission 실패를 직접 만들지 않고, admission 저하는 process failure를 뜻하지 않아야 한다. |
+| `OBS-013` | Prometheus exporter는 `RELAYGATE_METRICS_BIND_ADDR`가 있을 때만 `relaygate-server`가 소유하며 library 또는 SDK가 listening port를 만들지 않아야 한다. interval만 단독 지정하거나 잘못된 address·0 interval이면 serve 전에 실패해야 한다. |
+| `OBS-014` | Gateway metric은 `GatewaySnapshot`의 current count와 route dependency one-hot state를 bounded interval로 반영하고, RT metric은 actor가 소유한 `RouteTableStats`를 mutation·expiry 뒤 반영해야 한다. |
+| `OBS-015` | metric label은 process role과 route dependency state처럼 bounded한 값만 사용하고 routing/session/Pipe identity, credential, payload와 application data를 포함하지 않아야 한다. image version과 digest는 metric에 복제하지 않고 배포 metadata에서 관찰해야 한다. |

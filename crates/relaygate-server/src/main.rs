@@ -1,4 +1,5 @@
 mod config;
+mod metrics;
 mod runtime;
 
 use std::{env, time::Duration};
@@ -15,13 +16,16 @@ async fn main() -> Result<()> {
     init_tracing()?;
     match command()? {
         Command::Serve(RuntimeRole::Gateway) => {
+            let config = config::GatewayRuntimeConfig::from_env()?;
+            let metrics = metrics::MetricsRuntime::install("gateway")?;
             let shutdown = process_shutdown();
-            runtime::gateway::serve(config::GatewayRuntimeConfig::from_env()?, shutdown).await
+            runtime::gateway::serve(config, shutdown, metrics).await
         }
         Command::Serve(RuntimeRole::RouteTable) => {
+            let config = config::RouteTableRuntimeConfig::from_env()?;
+            let _metrics = metrics::MetricsRuntime::install("route_table")?;
             let shutdown = process_shutdown();
-            runtime::route_table::serve(config::RouteTableRuntimeConfig::from_env()?, shutdown)
-                .await
+            runtime::route_table::serve(config, shutdown).await
         }
         Command::CheckGateway { address } => check(address, DEFAULT_CHECK_DEADLINE)
             .await

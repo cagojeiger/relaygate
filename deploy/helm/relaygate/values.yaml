@@ -39,12 +39,20 @@ containerSecurityContext:
     drop:
       - ALL
 
+metrics:
+  # relaygate-server가 제공하는 low-cardinality Prometheus endpoint다.
+  # Service는 cluster 내부 전용이며 payload와 credential은 노출하지 않는다.
+  enabled: true
+  intervalMs: 5000
+  gatewayPort: 27422
+  routeTablePort: 27431
+
 gateway:
   replicaCount: 3
 
   image:
     repository: ghcr.io/cagojeiger/relaygate-gateway
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
 
   sdkPort: 27420
@@ -79,7 +87,7 @@ routeTable:
 
   image:
     repository: ghcr.io/cagojeiger/relaygate-route-table
-    tag: "0.1.0"
+    tag: "0.1.1"
     pullPolicy: IfNotPresent
 
   port: 27430

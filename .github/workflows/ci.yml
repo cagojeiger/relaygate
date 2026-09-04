@@ -73,6 +73,7 @@ jobs:
             --set internalTransport.trustedLocalAdapter=true \
             --set gateway.replicaCount=1 \
             --set routeTable.shardCount=1 \
+            --set metrics.enabled=false \
             --set credentials.existingSecret=minimal-credentials \
             > target/helm/minimal.yaml
           helm template true deploy/helm/relaygate \
@@ -133,6 +134,15 @@ jobs:
           test "$(grep -c '^              mountPath: /etc/relaygate$' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^[[:space:]]*runAsNonRoot: true$' target/helm/default.yaml)" -eq 3
           test "$(grep -c '^[[:space:]]*readOnlyRootFilesystem: true$' target/helm/default.yaml)" -eq 3
+          test "$(grep -c '^[[:space:]]*- name: metrics$' target/helm/default.yaml)" -eq 4
+          test "$(grep -c '^[[:space:]]*prometheus.io/scrape: \"true\"$' target/helm/default.yaml)" -eq 2
+          grep -Fq 'value: "0.0.0.0:27422"' target/helm/default.yaml
+          grep -Fq 'value: "0.0.0.0:27431"' target/helm/default.yaml
+          grep -Fq 'helm.sh/hook-delete-policy: before-hook-creation' target/helm/default.yaml
+          if grep -Fq 'RELAYGATE_METRICS_BIND_ADDR' target/helm/minimal.yaml; then
+            echo "Helm chart rendered metrics while metrics.enabled=false"
+            exit 1
+          fi
           long_name_one=$(awk '/^  name:/ { print $2; exit }' target/helm/long-name-one.yaml)
           long_name_two=$(awk '/^  name:/ { print $2; exit }' target/helm/long-name-two.yaml)
           test "$long_name_one" != "$long_name_two"
@@ -250,6 +260,20 @@ jobs:
             --set gateway.sdkPort=27420 \
             --set gateway.peerPort=27420 >/dev/null 2>&1; then
             echo "Helm chart accepted colliding Gateway container ports"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set metrics.gatewayPort=27420 >/dev/null 2>&1; then
+            echo "Helm chart accepted a Gateway metrics port colliding with the SDK port"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set internalTransport.trustedLocalAdapter=true \
+            --set metrics.routeTablePort=27430 >/dev/null 2>&1; then
+            echo "Helm chart accepted a RouteTable metrics port colliding with its service port"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \

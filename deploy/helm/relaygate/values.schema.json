@@ -9,6 +9,7 @@
     "serviceAccount",
     "podSecurityContext",
     "containerSecurityContext",
+    "metrics",
     "gateway",
     "routeTable"
   ],
@@ -104,6 +105,26 @@
     },
     "containerSecurityContext": {
       "type": "object"
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "intervalMs", "gatewayPort", "routeTablePort"],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "intervalMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "gatewayPort": {
+          "$ref": "#/definitions/port"
+        },
+        "routeTablePort": {
+          "$ref": "#/definitions/port"
+        }
+      }
     },
     "gateway": {
       "type": "object",

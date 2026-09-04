@@ -23,6 +23,8 @@ repository = "https://github.com/cagojeiger/relaygate"
 anyhow = "1"
 bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
 relaygate-gateway = { path = "crates/relaygate-gateway" }
 relaygate-protocol = { path = "crates/relaygate-protocol" }
 relaygate-route-table = { path = "crates/relaygate-route-table" }

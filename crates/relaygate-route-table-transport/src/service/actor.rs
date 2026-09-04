@@ -31,6 +31,7 @@ pub(super) async fn run_shard_actor(
     mut requests: mpsc::Receiver<ServiceCommand>,
     shutdown: CancellationToken,
 ) -> RouteTableShard {
+    observe_shard(&shard);
     loop {
         let next_expiry = shard.next_expiry_deadline();
         tokio::select! {
@@ -44,14 +45,24 @@ pub(super) async fn run_shard_actor(
                     .validate_preconditions(request.context, shard.generation())
                     .and_then(|()| request.request.into_domain())
                     .and_then(|operation| execute(&mut shard, request.context, operation, now));
+                observe_shard(&shard);
                 let _ = request.reply.send(response);
             }
             () = wait_until(next_expiry) => {
                 shard.expire_due(tokio::time::Instant::now().into_std());
+                observe_shard(&shard);
             }
         }
     }
     shard
+}
+
+fn observe_shard(shard: &RouteTableShard) {
+    let stats = shard.stats();
+    metrics::gauge!("relaygate_route_table_registrations").set(stats.registration_count as f64);
+    metrics::gauge!("relaygate_route_table_mappings").set(stats.mapping_count as f64);
+    metrics::gauge!("relaygate_route_table_routes").set(stats.route_count as f64);
+    metrics::gauge!("relaygate_route_table_expiry_records").set(stats.expiry_record_count as f64);
 }
 
 fn execute(
