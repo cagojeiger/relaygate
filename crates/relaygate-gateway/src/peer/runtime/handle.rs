@@ -204,7 +204,7 @@ impl PeerHandle {
         let Some(transport) = transports.get(&key.peer_transport_id()) else {
             return false;
         };
-        transport.force_close();
+        transport.force_close(crate::peer::transport::TransportCloseReason::WriterFailed);
         true
     }
 

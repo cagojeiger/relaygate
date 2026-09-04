@@ -21,7 +21,9 @@ use crate::peer::{
         OpenIdentity, PeerTransportId, RemoteStreamGuard, StreamEndpoint, StreamId,
         StreamIdAllocator,
     },
-    transport::{ActiveOpenSet, TransportCommand, TransportNotice, state::TransportActor},
+    transport::{
+        ActiveOpenSet, TransportClosure, TransportCommand, TransportNotice, state::TransportActor,
+    },
 };
 
 fn late_stream_frames(stream_id: StreamId) -> [PeerFrame; 6] {
@@ -73,8 +75,7 @@ fn actor_for_remote_open() -> Result<RemoteActor, Box<dyn Error>> {
         notices,
         active_opens: Arc::new(ActiveOpenSet::default()),
         stream_count: Arc::new(AtomicUsize::new(0)),
-        close: CancellationToken::new(),
-        failure_reason: None,
+        closure: TransportClosure::new(CancellationToken::new()),
         config,
     };
     Ok((actor, aggregate_receiver, notice_receiver, peer_gateway_id))
@@ -300,7 +301,7 @@ async fn endpoint_bits_isolate_remote_open_replay() -> Result<(), Box<dyn Error>
             (local_stream_id, local_identity),
         ],
     );
-    assert!(!actor.close.is_cancelled());
+    assert!(!actor.closure.token().is_cancelled());
     assert!(notices.try_recv().is_err());
 
     assert!(
@@ -350,7 +351,7 @@ async fn endpoint_bits_isolate_remote_open_replay() -> Result<(), Box<dyn Error>
             (fresh_remote_stream_id, fresh_remote_identity),
         ],
     );
-    assert!(!actor.close.is_cancelled());
+    assert!(!actor.closure.token().is_cancelled());
     assert!(frames.try_recv().is_err());
     assert!(notices.try_recv().is_err());
     Ok(())

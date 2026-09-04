@@ -14,7 +14,7 @@ use tokio::{
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
-use super::super::{ActiveOpenSet, TransportNotice, actor::run_transport_actor};
+use super::super::{ActiveOpenSet, TransportClosure, TransportNotice, actor::run_transport_actor};
 use crate::peer::{
     GatewayPeerConfig,
     codec::PeerFrameCodec,
@@ -51,7 +51,7 @@ async fn competing_local_cancel_and_peer_eof_emit_exactly_one_transport_loss() -
         notice_sender,
         Arc::new(ActiveOpenSet::default()),
         Arc::clone(&stream_count),
-        close.clone(),
+        TransportClosure::new(close.clone()),
     ));
     tokio::task::yield_now().await;
 

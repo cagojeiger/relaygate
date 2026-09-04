@@ -105,6 +105,46 @@ pub(super) enum TransportCloseReason {
     IdleRetired,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct TransportClosure {
+    token: CancellationToken,
+    failure_reason: Arc<Mutex<Option<TransportCloseReason>>>,
+}
+
+impl TransportClosure {
+    pub(super) fn new(token: CancellationToken) -> Self {
+        Self {
+            token,
+            failure_reason: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(super) fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+
+    pub(super) fn close(&self) {
+        self.token.cancel();
+    }
+
+    pub(super) fn fail(&self, reason: TransportCloseReason) {
+        if let Ok(mut current) = self.failure_reason.lock()
+            && current.is_none()
+        {
+            *current = Some(reason);
+        }
+        self.token.cancel();
+    }
+
+    pub(super) fn failure_reason(&self) -> Option<TransportCloseReason> {
+        self.failure_reason
+            .lock()
+            .map_or(Some(TransportCloseReason::ProtocolError), |current| {
+                *current
+            })
+    }
+}
+
 impl TransportCloseReason {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
@@ -123,7 +163,7 @@ pub(super) struct TransportHandle {
     pub(super) peer_gateway_id: GatewayId,
     pub(super) peer_transport_id: PeerTransportId,
     commands: mpsc::Sender<TransportCommand>,
-    close: CancellationToken,
+    closure: TransportClosure,
 }
 
 impl std::fmt::Debug for TransportHandle {
@@ -150,8 +190,12 @@ impl TransportHandle {
         }
     }
 
-    pub(super) fn force_close(&self) {
-        self.close.cancel();
+    pub(super) fn close(&self) {
+        self.closure.close();
+    }
+
+    pub(super) fn force_close(&self, reason: TransportCloseReason) {
+        self.closure.fail(reason);
     }
 }
 
@@ -231,12 +275,12 @@ pub(super) fn spawn_transport(
     tasks: &mut JoinSet<()>,
 ) -> TransportHandle {
     let (commands, command_receiver) = mpsc::channel(config.transport_queue_capacity);
-    let close = parent_shutdown.child_token();
+    let closure = TransportClosure::new(parent_shutdown.child_token());
     let handle = TransportHandle {
         peer_gateway_id: established.remote_gateway_id,
         peer_transport_id: established.peer_transport_id,
         commands,
-        close: close.clone(),
+        closure: closure.clone(),
     };
     let actor_config = config.clone();
     tasks.spawn(async move {
@@ -247,7 +291,7 @@ pub(super) fn spawn_transport(
             notices,
             active_opens,
             stream_count,
-            close,
+            closure,
         )
         .await;
     });

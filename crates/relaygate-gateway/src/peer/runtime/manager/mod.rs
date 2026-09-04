@@ -180,7 +180,7 @@ impl Manager {
             )));
         }
         for transport in self.transports.values() {
-            transport.force_close();
+            transport.close();
         }
     }
 }

@@ -9,9 +9,8 @@ use std::{
 use relaygate_protocol::{ErrorCode, PeerObservation};
 use relaygate_route_table::GatewayId;
 use tokio::{sync::mpsc, time::Instant};
-use tokio_util::sync::CancellationToken;
 
-use super::{ActiveOpenSet, TransportCloseReason, TransportNotice};
+use super::{ActiveOpenSet, TransportCloseReason, TransportClosure, TransportNotice};
 use crate::peer::{
     config::GatewayPeerConfig,
     event::{LostPeerStream, PeerEvent, PeerFailure, PeerStreamKey},
@@ -52,8 +51,7 @@ pub(super) struct TransportActor {
     pub(super) notices: mpsc::Sender<TransportNotice>,
     pub(super) active_opens: Arc<ActiveOpenSet>,
     pub(super) stream_count: Arc<AtomicUsize>,
-    pub(super) close: CancellationToken,
-    pub(super) failure_reason: Option<TransportCloseReason>,
+    pub(super) closure: TransportClosure,
     pub(super) config: GatewayPeerConfig,
 }
 
@@ -65,7 +63,7 @@ impl TransportActor {
         notices: mpsc::Sender<TransportNotice>,
         active_opens: Arc<ActiveOpenSet>,
         stream_count: Arc<AtomicUsize>,
-        close: CancellationToken,
+        closure: TransportClosure,
     ) -> Self {
         let local_endpoint = established.local_endpoint;
         let remote_endpoint = match local_endpoint {
@@ -84,17 +82,13 @@ impl TransportActor {
             notices,
             active_opens,
             stream_count,
-            close,
-            failure_reason: None,
+            closure,
             config,
         }
     }
 
     pub(super) fn fail_transport(&mut self, reason: TransportCloseReason) {
-        if self.failure_reason.is_none() {
-            self.failure_reason = Some(reason);
-        }
-        self.close.cancel();
+        self.closure.fail(reason);
     }
 
     pub(super) fn next_open_deadline(&self) -> Option<Instant> {

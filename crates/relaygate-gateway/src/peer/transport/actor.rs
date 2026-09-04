@@ -1,20 +1,18 @@
 use std::{cmp::min, future::pending, sync::Arc};
 
+use super::{
+    ActiveOpenSet, TransportCloseReason, TransportClosure, TransportCommand, TransportNotice,
+    liveness::{LivenessAction, TransportLiveness, staggered_interval},
+    state::TransportActor,
+    writer::run_writer,
+};
+use crate::peer::{config::GatewayPeerConfig, handshake::EstablishedPeer};
 use futures_util::StreamExt;
 use tokio::{
     sync::mpsc,
     task::JoinSet,
     time::{Instant, sleep_until},
 };
-use tokio_util::sync::CancellationToken;
-
-use super::{
-    ActiveOpenSet, TransportCloseReason, TransportCommand, TransportNotice,
-    liveness::{LivenessAction, TransportLiveness, staggered_interval},
-    state::TransportActor,
-    writer::run_writer,
-};
-use crate::peer::{config::GatewayPeerConfig, handshake::EstablishedPeer};
 
 /// Owns the read-side lifecycle for one authenticated peer transport.
 /// Protocol state transitions live in `command`, `inbound`, and `state`;
@@ -26,7 +24,7 @@ pub(super) async fn run_transport_actor(
     notices: mpsc::Sender<TransportNotice>,
     active_opens: Arc<ActiveOpenSet>,
     stream_count: Arc<std::sync::atomic::AtomicUsize>,
-    close: CancellationToken,
+    closure: TransportClosure,
 ) {
     let peer_gateway_id = established.remote_gateway_id;
     let peer_transport_id = established.peer_transport_id;
@@ -40,6 +38,7 @@ pub(super) async fn run_transport_actor(
     let (aggregate_writer, aggregate_receiver) = mpsc::channel(config.writer_queue_capacity);
     let (writer_wake, mut writer_wakes) = mpsc::channel(1);
     let (writer_failure, mut writer_failures) = mpsc::channel(1);
+    let close = closure.token().clone();
     let actor_config = config.clone();
     let mut actor = TransportActor::new(
         &established,
@@ -48,7 +47,7 @@ pub(super) async fn run_transport_actor(
         notices.clone(),
         active_opens,
         stream_count,
-        close.clone(),
+        closure,
     );
     let (sink, mut source) = established.framed.split();
     let mut writer_tasks = JoinSet::new();
@@ -190,7 +189,7 @@ pub(super) async fn run_transport_actor(
         }
     }
 
-    if let Some(failure_reason) = actor.failure_reason {
+    if let Some(failure_reason) = actor.closure.failure_reason() {
         close_reason = failure_reason;
     }
     close.cancel();

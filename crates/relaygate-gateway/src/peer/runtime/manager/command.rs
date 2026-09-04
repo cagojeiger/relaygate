@@ -242,7 +242,7 @@ impl Manager {
             open_identity: identity,
             reply,
         }) {
-            transport.force_close();
+            transport.force_close(crate::peer::transport::TransportCloseReason::WriterFailed);
             let _ = error;
         }
     }
