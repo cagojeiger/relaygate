@@ -69,6 +69,9 @@ impl GatewayRuntimeConfig {
         if let Some(timeout) = optional_duration_millis("RELAYGATE_OFFER_TIMEOUT_MS")? {
             gateway = gateway.with_offer_timeout(timeout);
         }
+        if let Some(timeout) = optional_duration_millis("RELAYGATE_DRAIN_TIMEOUT_MS")? {
+            gateway = gateway.with_drain_timeout(timeout);
+        }
         let heartbeat_idle = optional_duration_millis("RELAYGATE_SDK_HEARTBEAT_IDLE_MS")?;
         let heartbeat_response = optional_duration_millis("RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS")?;
         if heartbeat_idle.is_some() || heartbeat_response.is_some() {

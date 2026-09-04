@@ -96,6 +96,7 @@ DATA frame별 event
 Gateway는 같은 local state index에서 다음 현재값을 계산한다.
 
 ```text
+draining
 sessions
 listener_sessions
 connector_sessions
@@ -236,7 +237,7 @@ RT 전체 truth 또는 restart 명령이 아니다.
 | --- | --- |
 | `OBS-001` | 로그 형식은 `text`와 `json`만 허용하고 잘못된 값이면 serve 전에 실패해야 한다. |
 | `OBS-002` | snapshot interval은 unset 또는 0보다 큰 millisecond만 허용해야 한다. |
-| `OBS-003` | `GatewaySnapshot`은 session, binding, pending offer, live Pipe와 remote open attempt 수를 같은 local state index에서 계산해야 한다. distributed runtime이 있으면 routing worker의 session-shard registration `SYNCED/UNSYNCED` 및 peer manager의 connecting/ready transport와 current stream 수를 함께 제공하되 각 source 사이 원자적 시점을 보장하지 않는다. local-only mode의 분산 count는 0이어야 하며 RT 전체 mapping 수, cluster 합계 또는 routing 진실로 해석해서는 안 된다. |
+| `OBS-003` | `GatewaySnapshot`은 drain 여부, session, binding, pending offer, live Pipe와 remote open attempt 수를 같은 local state index에서 계산해야 한다. distributed runtime이 있으면 routing worker의 session-shard registration `SYNCED/UNSYNCED` 및 peer manager의 connecting/ready transport와 current stream 수를 함께 제공하되 각 source 사이 원자적 시점을 보장하지 않는다. local-only mode의 분산 count는 0이어야 하며 RT 전체 mapping 수, cluster 합계 또는 routing 진실로 해석해서는 안 된다. |
 | `OBS-004` | 구조화 event는 `component`, `event`와 현재 객체를 구분할 수 있는 identity field를 사용해야 한다. |
 | `OBS-005` | event는 `ClientKey`, `InternalGatewayKey`, payload, application data를 기록하지 않고 DATA hot path에 per-frame 로그를 만들지 않아야 한다. |
 | `OBS-006` | SDK와 Gateway terminal failure event는 source protocol/state 결과에 있는 `error_code`와, 정의된 경우 `observation`을 바꾸지 않고 관찰해야 한다. 정상 close와 source 결과에 `PeerObservation`이 없는 registration 같은 operation에는 오류 field를 합성하지 않는다. |
@@ -249,3 +250,4 @@ RT 전체 truth 또는 restart 명령이 아니다.
 | `OBS-013` | Prometheus exporter는 `RELAYGATE_METRICS_BIND_ADDR`가 있을 때만 `relaygate-server`가 소유하며 library 또는 SDK가 listening port를 만들지 않아야 한다. interval만 단독 지정하거나 잘못된 address·0 interval이면 serve 전에 실패해야 한다. |
 | `OBS-014` | Gateway metric은 `GatewaySnapshot`의 current count와 route dependency one-hot state, accepted OPEN의 request/result/duration, bounded writer queue rejection을 반영해야 한다. RT metric은 actor가 소유한 `RouteTableStats`와 operation request/outcome/service duration을 반영해야 한다. |
 | `OBS-015` | metric label은 process role, route dependency state, bounded operation/outcome/code/reason만 사용하고 routing/session/Pipe identity, credential, payload와 application data를 포함하지 않아야 한다. image version과 digest는 metric에 복제하지 않고 배포 metadata에서 관찰해야 한다. |
+| `OBS-016` | Gateway drain 시작, 정상 완료와 timeout 강제 종료는 bounded lifecycle event로 구분해야 한다. `GatewaySnapshot.draining`과 `relaygate_gateway_draining` gauge는 `RUNNING=0`, `DRAINING/STOPPING=1`을 나타내며 Pipe migration이나 drain 성공을 뜻하지 않아야 한다. |

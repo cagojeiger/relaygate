@@ -321,7 +321,7 @@ async fn tcp_reconnect_resets_listener_backoff_only_after_recovery_registered_ca
         let _ = expect_echo_register(&mut tcp_only_reconnect).await?;
         drop(tcp_only_reconnect);
 
-        match timeout(Duration::from_millis(180), gateway.accept()).await {
+        match timeout(Duration::from_millis(150), gateway.accept()).await {
             Err(_) => {}
             Ok(Ok(_)) => {
                 return Err(io::Error::other(

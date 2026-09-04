@@ -12,7 +12,16 @@ impl GatewayState {
         client_id: String,
         client_key: ClientKey,
     ) -> Vec<GatewayAction> {
-        let (response, publish) = if client_id.is_empty() {
+        let (response, publish) = if self.draining {
+            (
+                Frame::RegisterFailed {
+                    request_id,
+                    code: ErrorCode::Unavailable,
+                    message: "Gateway is draining".to_owned(),
+                },
+                false,
+            )
+        } else if client_id.is_empty() {
             tracing::debug!(
                 component = "gateway",
                 event = "gateway.listener.registration_rejected",

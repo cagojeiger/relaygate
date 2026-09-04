@@ -439,10 +439,10 @@ impl RunningGateway {
                 (CLIENT_C.to_owned(), CLIENT_KEY.to_owned()),
                 (CLIENT_SHARED.to_owned(), CLIENT_KEY.to_owned()),
             ])
-            .with_max_pending_offers(16),
+            .with_max_pending_offers(16)
+            .with_drain_timeout(Duration::from_millis(100)),
             routing,
             peer,
-            shutdown.clone(),
         )?;
         let served = gateway.clone();
         let serve_shutdown = shutdown.clone();

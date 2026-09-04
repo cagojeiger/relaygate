@@ -40,12 +40,7 @@ pub(crate) async fn serve(
                 "local/CI RouteTable and peer key adapter is enabled; channel security must be supplied by the deployment environment"
             );
             (
-                Gateway::new_distributed(
-                    config.gateway,
-                    distributed.routing,
-                    distributed.peer,
-                    shutdown.child_token(),
-                )?,
+                Gateway::new_distributed(config.gateway, distributed.routing, distributed.peer)?,
                 Some(peer_listener),
                 Some(peer_address),
             )
@@ -135,6 +130,7 @@ fn log_gateway_snapshot(gateway: &Gateway) {
     tracing::info!(
         component = "gateway",
         event = "gateway.snapshot",
+        draining = snapshot.draining,
         sessions = snapshot.sessions,
         listener_sessions = snapshot.listener_sessions,
         connector_sessions = snapshot.connector_sessions,

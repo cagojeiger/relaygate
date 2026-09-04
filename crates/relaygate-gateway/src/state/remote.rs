@@ -203,6 +203,17 @@ impl GatewayState {
         binding_id: BindingId,
         now: Instant,
     ) -> Vec<GatewayAction> {
+        if self.draining {
+            return vec![
+                PeerDelivery::Failed {
+                    key,
+                    code: ErrorCode::Unavailable,
+                    observation: PeerObservation::NotObserved,
+                    message: "Gateway is draining".to_owned(),
+                }
+                .into(),
+            ];
+        }
         if open_identity.entry_gateway() != key.peer_gateway_id() {
             return vec![
                 PeerDelivery::Failed {

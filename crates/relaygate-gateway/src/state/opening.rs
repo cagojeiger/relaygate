@@ -33,6 +33,17 @@ impl GatewayState {
         session.highest_connection_id = Some(connection_id);
         observe_open_request();
 
+        if self.draining {
+            return self.new_open_failed(
+                connector,
+                connection_id,
+                ErrorCode::Unavailable,
+                PeerObservation::NotObserved,
+                "Gateway is draining",
+                now,
+            );
+        }
+
         if client_id.is_empty() {
             return self.new_open_failed(
                 connector,

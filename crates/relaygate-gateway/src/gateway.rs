@@ -44,6 +44,7 @@ struct Inner {
     offer_timeout: Duration,
     heartbeat_idle_interval: Duration,
     heartbeat_response_timeout: Duration,
+    drain_timeout: Duration,
     session_slots: Arc<Semaphore>,
     routing: Option<RoutingHandle>,
     peer: Option<PeerHandle>,
@@ -77,7 +78,6 @@ impl Gateway {
         config: GatewayConfig,
         routing_config: GatewayRoutingConfig,
         peer_config: GatewayPeerConfig,
-        shutdown: CancellationToken,
     ) -> Result<Self, GatewayError> {
         config.validate()?;
         tokio::runtime::Handle::try_current().map_err(|error| {
@@ -92,7 +92,7 @@ impl Gateway {
             routing_config,
             peer_config,
             action_result_capacity,
-            shutdown,
+            CancellationToken::new(),
         )?;
         Self::build(config, Some(distributed))
     }
@@ -135,6 +135,7 @@ impl Gateway {
                 offer_timeout: config.offer_timeout,
                 heartbeat_idle_interval: config.heartbeat_idle_interval,
                 heartbeat_response_timeout: config.heartbeat_response_timeout,
+                drain_timeout: config.drain_timeout,
                 session_slots: Arc::new(Semaphore::new(config.max_sessions)),
                 routing,
                 peer,
@@ -162,6 +163,15 @@ impl Gateway {
 }
 
 impl Inner {
+    fn begin_draining(&self) {
+        let actions = self.lock_state().begin_draining();
+        self.commit_registration_actions(&actions);
+    }
+
+    fn is_drained(&self) -> bool {
+        self.lock_state().is_drained()
+    }
+
     /// Commits the latest complete snapshot while the Gateway state lock still
     /// orders the corresponding local mutation. The manager wake is bounded
     /// and synchronous; no network I/O occurs under this lock. This prevents a

@@ -268,6 +268,7 @@ pub(crate) struct GatewayState {
     remote_open_attempts: HashMap<OpenIdentity, RemoteOpenAttempt>,
     pending_offer_count: usize,
     live_pipe_count: usize,
+    draining: bool,
     gateway_id: Option<GatewayId>,
     limits: GatewayLimits,
 }
@@ -296,6 +297,7 @@ impl GatewayState {
             remote_open_attempts: HashMap::new(),
             pending_offer_count: 0,
             live_pipe_count: 0,
+            draining: false,
             gateway_id,
             limits,
         }
@@ -382,6 +384,7 @@ impl GatewayState {
             self.registry.binding_count(),
             self.pending_offer_count,
             self.live_pipe_count,
+            self.draining,
         );
         snapshot.remote_open_attempts = self.remote_open_attempts.len();
         snapshot
@@ -403,6 +406,30 @@ impl GatewayState {
 
     fn live_pipe_count(&self) -> usize {
         self.live_pipe_count
+    }
+
+    pub(crate) fn begin_draining(&mut self) -> Vec<GatewayAction> {
+        if self.draining {
+            return Vec::new();
+        }
+        self.draining = true;
+        self.sessions
+            .iter()
+            .filter_map(|(session_id, session)| {
+                (session.role == SessionRole::Listener).then_some(
+                    GatewayAction::PublishRegistration {
+                        session_id: *session_id,
+                        bindings: Vec::new(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn is_drained(&self) -> bool {
+        self.pending_offer_count == 0
+            && self.live_pipe_count == 0
+            && self.remote_open_attempts.is_empty()
     }
 
     #[cfg(test)]

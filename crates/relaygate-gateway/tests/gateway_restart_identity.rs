@@ -159,10 +159,10 @@ impl RunningGateway {
         let shutdown = CancellationToken::new();
         let gateway = Gateway::new_distributed(
             GatewayConfig::new([(CLIENT_ID.to_owned(), CLIENT_KEY.to_owned())])
-                .with_offer_timeout(Duration::from_millis(100)),
+                .with_offer_timeout(Duration::from_millis(100))
+                .with_drain_timeout(Duration::from_millis(100)),
             routing,
             peer,
-            shutdown.clone(),
         )?;
         let served = gateway.clone();
         let serve_shutdown = shutdown.clone();

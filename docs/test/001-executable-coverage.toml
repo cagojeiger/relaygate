@@ -149,6 +149,12 @@ rust = ["unrepresentable_deadline_configuration_is_rejected_before_connect"]
 reason = "public SDK timeout deadline과 reconnect backoff wake-up timer의 표현 가능성을 공통 validation gate에서 검사하고 Connector와 Listener runtime이 transport 연결 전 INVALID_ARGUMENT/NOT_OBSERVED로 거절하는지 확인한다."
 
 [[case]]
+id = "T-SDK-19"
+status = "executable"
+rust = ["session::tests::reconnect_backoff_uses_bounded_jitter_and_resets"]
+reason = "runtime별 entropy를 사용하는 reconnect delay가 각 exponential 단계의 2/3..1 범위와 configured maximum을 지키고 reset 뒤 초기 단계로 돌아오는지 검증한다."
+
+[[case]]
 id = "T-OBS-01"
 status = "executable"
 rust = ["tests::log_format_accepts_text_and_json_only", "config::tests::duration_rejects_zero_milliseconds", "invalid_environment_configuration_fails_before_serving", "server_boots_health_checks_and_exits_on_sigterm"]
@@ -194,6 +200,12 @@ id = "T-HEALTH-02"
 status = "executable"
 rust = ["local_pipe_opens_only_after_listener_acceptance_and_relays_bytes", "remote_pipes_share_one_peer_transport_and_survive_route_table_loss", "routed_gateway_republishes_current_listener_state_after_route_table_restart", "generation_mismatch_recovers_only_after_coordinated_restart", "route_table_authentication_failure_keeps_local_binding_and_stops_retries", "routing::tests::multi_shard::one_session_keeps_independent_lease_lifecycles_across_two_shards", "routing::tests::multi_shard::terminal_shard_does_not_block_unaffected_shard_resolve", "routing::runtime::tests::worker_counts_distinguish_terminal_desired_registration", "json_logs_expose_stable_startup_and_snapshot_fields_without_secrets"]
 reason = "local-only DISABLED, desired registration이 없는 distributed READY, RT 단절의 DEGRADED와 admission·established Pipe 유지, 재시작 뒤 READY 복구, generation/auth terminal의 TERMINAL, 다중 shard 중 한 shard의 retryable 단절 또는 terminal auth failure 시 unaffected shard Resolve 유지를 검증한다. JSON snapshot은 canonical 대문자 health field를 노출한다."
+
+[[case]]
+id = "T-HEALTH-03"
+status = "executable"
+rust = ["gateway::sdk_server::tests::graceful_shutdown_stops_admission_and_waits_for_existing_pipe", "gateway::sdk_server::tests::graceful_shutdown_forces_remaining_pipe_closed_at_deadline", "gateway::sdk_server::tests::forced_shutdown_skips_drain_and_closes_existing_pipe", "state::tests::drain_withdraws_listener_publications_without_removing_local_state", "graceful_drain_withdraws_route_before_closing_existing_pipe"]
+reason = "normal shutdown 뒤 신규 SDK admission, REGISTER와 OPEN이 중단되고 current Listener publication은 빈 snapshot으로 철회되지만 Gateway-local binding과 기존 Pipe는 유지되는지 검증한다. active work가 끝나면 즉시 종료하고 deadline까지 남은 Pipe는 강제 cleanup하여 session과 Pipe count 0으로 수렴한다. critical runtime failure의 force 신호는 drain을 건너뛰고 즉시 기존 cleanup으로 수렴한다."
 
 [[case]]
 id = "T-REG-01"
@@ -271,7 +283,7 @@ reason = "complete live set과 frame 상한은 검증하지만 선택, 정렬, �
 [[case]]
 id = "T-RT-05"
 status = "executable"
-rust = ["service_loss_is_reported_as_unavailable_without_reconnect", "a_new_shard_instance_starts_ready_and_empty", "restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot", "routed_gateway_republishes_current_listener_state_after_route_table_restart"]
+rust = ["service_loss_is_reported_as_unavailable_without_reconnect", "a_new_shard_instance_starts_ready_and_empty", "restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot", "routed_gateway_republishes_current_listener_state_after_route_table_restart", "routing::runtime::worker::tests::route_table_reconnect_backoff_uses_bounded_jitter_and_resets"]
 
 [[case]]
 id = "T-RT-06"

@@ -13,6 +13,7 @@ pub const DEFAULT_MAX_LIVE_PIPES: usize = 100_000;
 pub const DEFAULT_OFFER_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_HEARTBEAT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
 pub const DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
+pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Immutable runtime configuration for one Gateway process.
 #[derive(Clone)]
@@ -27,6 +28,7 @@ pub struct GatewayConfig {
     pub(crate) offer_timeout: Duration,
     pub(crate) heartbeat_idle_interval: Duration,
     pub(crate) heartbeat_response_timeout: Duration,
+    pub(crate) drain_timeout: Duration,
 }
 
 impl std::fmt::Debug for GatewayConfig {
@@ -46,6 +48,7 @@ impl std::fmt::Debug for GatewayConfig {
                 "heartbeat_response_timeout",
                 &self.heartbeat_response_timeout,
             )
+            .field("drain_timeout", &self.drain_timeout)
             .finish()
     }
 }
@@ -64,6 +67,7 @@ impl GatewayConfig {
             offer_timeout: DEFAULT_OFFER_TIMEOUT,
             heartbeat_idle_interval: DEFAULT_HEARTBEAT_IDLE_INTERVAL,
             heartbeat_response_timeout: DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT,
+            drain_timeout: DEFAULT_DRAIN_TIMEOUT,
         }
     }
 
@@ -130,6 +134,12 @@ impl GatewayConfig {
         self.heartbeat_response_timeout
     }
 
+    #[must_use]
+    pub const fn with_drain_timeout(mut self, timeout: Duration) -> Self {
+        self.drain_timeout = timeout;
+        self
+    }
+
     pub(crate) fn validate(&self) -> Result<(), GatewayError> {
         if self.writer_queue_capacity == 0 {
             return Err(GatewayError::InvalidConfig(
@@ -153,6 +163,7 @@ impl GatewayConfig {
         if self.offer_timeout.is_zero()
             || self.heartbeat_idle_interval.is_zero()
             || self.heartbeat_response_timeout.is_zero()
+            || self.drain_timeout.is_zero()
         {
             return Err(GatewayError::InvalidConfig(
                 "Gateway timeouts must be greater than zero".to_owned(),
@@ -171,6 +182,7 @@ impl GatewayConfig {
             "heartbeat_response_timeout",
             self.heartbeat_response_timeout,
         )?;
+        validate_deadline_timeout("drain_timeout", self.drain_timeout)?;
         if self.client_keys.keys().any(String::is_empty) {
             return Err(GatewayError::InvalidConfig(
                 "ClientId must not be empty".to_owned(),
@@ -225,6 +237,7 @@ mod tests {
             GatewayConfig::new([]).with_offer_timeout(Duration::MAX),
             GatewayConfig::new([]).with_heartbeat(Duration::MAX, valid),
             GatewayConfig::new([]).with_heartbeat(valid, Duration::MAX),
+            GatewayConfig::new([]).with_drain_timeout(Duration::MAX),
         ] {
             assert!(config.validate().is_err());
         }
