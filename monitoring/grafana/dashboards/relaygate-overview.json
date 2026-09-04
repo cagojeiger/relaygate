@@ -660,7 +660,9 @@
         "uid": "prometheus"
       },
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "reqps"
+        },
         "overrides": []
       },
       "gridPos": {
@@ -669,7 +671,7 @@
         "x": 12,
         "y": 26
       },
-      "description": "SDK embedding application이 recorder를 설치한 경우 보이는 managed reconnect attempt와 복구 시간이다. RelayGate SDK 자체는 exporter를 열지 않는다.",
+      "description": "SDK embedding application이 recorder를 설치한 경우 보이는 role·outcome별 managed reconnect attempt rate다. RelayGate SDK 자체는 exporter를 열지 않는다.",
       "id": 14,
       "options": {
         "legend": {
@@ -683,16 +685,11 @@
       "targets": [
         {
           "expr": "sum by (role, outcome) (rate(relaygate_sdk_reconnect_attempts_total[$__rate_interval]))",
-          "legendFormat": "attempt {{role}} / {{outcome}}",
+          "legendFormat": "{{role}} / {{outcome}}",
           "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le, role) (rate(relaygate_sdk_reconnect_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "recovery p95 / {{role}}",
-          "refId": "B"
         }
       ],
-      "title": "SDK reconnect episodes",
+      "title": "SDK reconnect attempt rate",
       "type": "timeseries"
     },
     {
@@ -750,7 +747,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "cores"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -759,6 +756,44 @@
         "w": 12,
         "x": 12,
         "y": 34
+      },
+      "description": "SDK embedding application이 recorder를 설치한 경우 보이는 role별 managed reconnect 복구 시간 p95다. RelayGate SDK 자체는 exporter를 열지 않는다.",
+      "id": 19,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, role) (rate(relaygate_sdk_reconnect_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{role}}",
+          "refId": "A"
+        }
+      ],
+      "title": "SDK reconnect recovery p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cores"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 42
       },
       "description": "Kubernetes/cAdvisor가 제공하는 RelayGate container별 CPU core 사용량이다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
       "id": 16,
@@ -794,8 +829,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 0,
+        "w": 8,
+        "x": 8,
         "y": 42
       },
       "description": "Kubernetes/cAdvisor가 제공하는 RelayGate container별 working set memory다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
@@ -832,8 +867,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 16,
         "y": 42
       },
       "description": "Kubernetes/cAdvisor가 제공하는 RelayGate pod 전체의 network receive/transmit 처리량이다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
