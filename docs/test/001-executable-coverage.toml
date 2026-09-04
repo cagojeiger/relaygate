@@ -192,8 +192,8 @@ reason = "opt-in Prometheus endpoint의 Gateway/RT current-state gauge와 OPEN/R
 [[case]]
 id = "T-OBS-07"
 status = "executable"
-rust = ["observability::tests::reconnect_episode_records_bounded_attempts_and_one_duration", "connector_runtime_cycles_through_loss_failed_reconnect_recovery_and_close", "tcp_reconnect_resets_listener_backoff_only_after_recovery_registered"]
-reason = "episode helper의 시작·복구 event와 attempt/duration metric을 검증하고, Connector의 실패 후 새 session 복구 및 close 뒤 무재시도와 Listener의 REGISTERED 이후 수렴을 실제 socket lifecycle로 검증한다."
+rust = ["observability::tests::reconnect_episode_records_recovery_and_runtime_close", "connector_runtime_cycles_through_loss_failed_reconnect_recovery_and_close", "tcp_reconnect_resets_listener_backoff_only_after_recovery_registered"]
+reason = "episode helper의 시작·복구·runtime close event와 attempt/duration metric을 검증하고, Connector의 실패 후 새 session 복구 및 close 뒤 무재시도와 Listener의 REGISTERED 이후 수렴을 실제 socket lifecycle로 검증한다."
 
 [[case]]
 id = "T-OBS-08"
@@ -210,8 +210,8 @@ reason = "handshake와 transport 종료 metric의 bounded 차원을 검증한다
 [[case]]
 id = "T-OBS-10"
 status = "executable"
-rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", "route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm", "route_table_expiry_metric_counts_removed_soft_state_once", "service::connection::tests::handshake_metrics_include_connection_capacity_rejection", "connection_limit_rejects_the_next_handshake_as_resource_exhausted"]
-reason = "실제 process HTTP scrape에서 Listener 등록 승인·인증 실패·용량 거절, RT handshake 승인·거절과 request code를 검증하고 connection limit 거절이 resource_exhausted handshake로 집계되는지 확인한다. 짧은 lease 만료 뒤 registration과 expiry index가 0으로 수렴하고 제거 counter가 1인지 검증한다. actor는 요청 처리 전에 due lease를 먼저 정리하므로 timer와 request 경합에서도 제거 수를 누락하지 않는다."
+rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", "route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm", "route_table_expiry_metric_counts_removed_soft_state_once", "service::connection::tests::handshake_metrics_include_connection_capacity_rejection", "service::response::tests::bounded_response_metric_uses_terminal_wire_code", "service::response::tests::rejected_writer_queue_does_not_count_a_response", "connection_limit_rejects_the_next_handshake_as_resource_exhausted", "oversized_binding_set_returns_resource_exhausted_and_connection_stays_usable"]
+reason = "실제 process HTTP scrape에서 Listener 등록 승인·인증 실패·용량 거절, RT handshake 승인·거절과 request code를 검증하고 connection limit 거절이 resource_exhausted handshake로 집계되는지 확인한다. response frame 상한으로 바뀐 최종 code를 집계하되 writer queue가 거절한 응답은 집계하지 않는다. 짧은 lease 만료 뒤 registration과 expiry index가 0으로 수렴하고 제거 counter가 1인지 검증한다. actor는 요청 처리 전에 due lease를 먼저 정리하므로 timer와 request 경합에서도 제거 수를 누락하지 않는다."
 
 [[case]]
 id = "T-OBS-11"

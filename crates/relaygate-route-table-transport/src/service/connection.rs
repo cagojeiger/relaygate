@@ -193,6 +193,7 @@ async fn run_reader(
             let _ = try_write_protocol_fault(&writer, "expected Gateway request frame");
             break;
         };
+        let operation = request.operation_name();
         if role != GATEWAY_ROLE || request_id == 0 || request_id <= last_request_id {
             let _ = try_write_protocol_fault(
                 &writer,
@@ -205,13 +206,16 @@ async fn run_reader(
         let response = match submit_service_request(&requests, context, request) {
             Ok(response) => response,
             Err(error) if error.code() == ErrorCode::ResourceExhausted => {
-                if try_write_response(&writer, request_id, Err(error), max_frame_len).is_err() {
+                if try_write_response(&writer, request_id, operation, Err(error), max_frame_len)
+                    .is_err()
+                {
                     break;
                 }
                 continue;
             }
             Err(error) => {
-                let _ = try_write_response(&writer, request_id, Err(error), max_frame_len);
+                let _ =
+                    try_write_response(&writer, request_id, operation, Err(error), max_frame_len);
                 break;
             }
         };
@@ -222,7 +226,7 @@ async fn run_reader(
                 Err(TransportError::internal("RouteTable state actor dropped a response"))
             }),
         };
-        if try_write_response(&writer, request_id, result, max_frame_len).is_err() {
+        if try_write_response(&writer, request_id, operation, result, max_frame_len).is_err() {
             break;
         }
     }

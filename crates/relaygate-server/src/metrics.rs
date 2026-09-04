@@ -204,7 +204,7 @@ fn describe_metrics() {
     );
     describe_counter!(
         "relaygate_route_table_requests_total",
-        "RouteTable requests by bounded operation, outcome, and stable result code."
+        "RouteTable terminal wire responses by bounded operation, outcome, and stable result code."
     );
     describe_histogram!(
         "relaygate_route_table_request_duration_seconds",

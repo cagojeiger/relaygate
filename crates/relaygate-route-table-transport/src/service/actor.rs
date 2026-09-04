@@ -48,17 +48,7 @@ pub(super) async fn run_shard_actor(
                     .validate_preconditions(request.context, shard.generation())
                     .and_then(|()| request.request.into_domain())
                     .and_then(|operation| execute(&mut shard, request.context, operation, now));
-                let (outcome, code) = match &response {
-                    Ok(_) => ("success", "ok"),
-                    Err(error) => ("error", error.code().metric_name()),
-                };
-                metrics::counter!(
-                    "relaygate_route_table_requests_total",
-                    "operation" => operation,
-                    "outcome" => outcome,
-                    "code" => code
-                )
-                .increment(1);
+                let outcome = if response.is_ok() { "success" } else { "error" };
                 metrics::histogram!(
                     "relaygate_route_table_request_duration_seconds",
                     "operation" => operation,

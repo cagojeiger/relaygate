@@ -12,11 +12,41 @@ use crate::{
 pub(super) fn try_write_response(
     writer: &mpsc::Sender<WireFrame>,
     request_id: u64,
+    operation: &'static str,
     result: Result<WireResponse, TransportError>,
     max_frame_len: usize,
 ) -> Result<(), BoundedSendError> {
     let frame = bounded_response_frame(request_id, result, max_frame_len)?;
-    try_send_frame(writer, frame)
+    let observation = response_observation(&frame);
+    try_send_frame(writer, frame)?;
+    if let Some((outcome, code)) = observation {
+        observe_response(operation, outcome, code);
+    }
+    Ok(())
+}
+
+fn response_observation(frame: &WireFrame) -> Option<(&'static str, &'static str)> {
+    match frame {
+        WireFrame::Response {
+            result: WireResult::Ok { .. },
+            ..
+        } => Some(("success", "ok")),
+        WireFrame::Response {
+            result: WireResult::Error { code, .. },
+            ..
+        } => Some(("error", code.metric_name())),
+        _ => None,
+    }
+}
+
+fn observe_response(operation: &'static str, outcome: &'static str, code: &'static str) {
+    metrics::counter!(
+        "relaygate_route_table_requests_total",
+        "operation" => operation,
+        "outcome" => outcome,
+        "code" => code
+    )
+    .increment(1);
 }
 
 fn bounded_response_frame(
@@ -126,4 +156,89 @@ pub(super) async fn send_protocol_fault(framed: &mut Framed<TcpStream, FrameCode
             message: message.to_owned(),
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn bounded_response_metric_uses_terminal_wire_code() -> Result<(), Box<dyn std::error::Error>> {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let (writer, mut receiver) = mpsc::channel(1);
+        let result = metrics::with_local_recorder(&recorder, || {
+            try_write_response(
+                &writer,
+                1,
+                "resolve",
+                Err(TransportError::unavailable("x".repeat(1024))),
+                256,
+            )
+        });
+        assert!(result.is_ok(), "bounded error response should fit");
+
+        let frame = receiver.try_recv()?;
+        assert!(matches!(
+            frame,
+            WireFrame::Response {
+                result: WireResult::Error {
+                    code: ErrorCode::ResourceExhausted,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(
+            snapshotter
+                .snapshot()
+                .into_vec()
+                .iter()
+                .any(|(key, _, _, value)| {
+                    key.key().name() == "relaygate_route_table_requests_total"
+                        && key
+                            .key()
+                            .labels()
+                            .any(|label| label.key() == "outcome" && label.value() == "error")
+                        && key.key().labels().any(|label| {
+                            label.key() == "code" && label.value() == "resource_exhausted"
+                        })
+                        && matches!(value, DebugValue::Counter(1))
+                })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_writer_queue_does_not_count_a_response() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let (writer, _receiver) = mpsc::channel(1);
+        assert!(
+            writer
+                .try_send(error_response_frame(1, ErrorCode::Unavailable, "occupied"))
+                .is_ok()
+        );
+
+        let result = metrics::with_local_recorder(&recorder, || {
+            try_write_response(
+                &writer,
+                2,
+                "deregister",
+                Ok(WireResponse::Deregistered),
+                256,
+            )
+        });
+        assert_eq!(result, Err(BoundedSendError::Full));
+        assert!(
+            snapshotter
+                .snapshot()
+                .into_vec()
+                .iter()
+                .all(|(key, _, _, _)| key.key().name() != "relaygate_route_table_requests_total")
+        );
+    }
 }

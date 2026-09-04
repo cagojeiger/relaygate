@@ -13,7 +13,7 @@ use tokio::time::Instant;
 
 use super::{ListenerRuntimeInner, ListenerState};
 use crate::{
-    observability::ReconnectEpisode,
+    observability::{ReconnectEpisode, close_reconnect_episode},
     pipe::PipeState,
     session::{EstablishedSession, ReconnectBackoff, establish},
 };
@@ -32,6 +32,7 @@ pub(super) async fn listener_supervisor(
     let mut reconnect_episode: Option<ReconnectEpisode> = None;
     loop {
         if inner.cancel.is_cancelled() {
+            close_reconnect_episode(&mut reconnect_episode);
             inner.close_all();
             return;
         }
@@ -57,7 +58,10 @@ pub(super) async fn listener_supervisor(
                         "Listener session reconnect failed"
                     );
                     tokio::select! {
-                        _ = inner.cancel.cancelled() => return,
+                        _ = inner.cancel.cancelled() => {
+                            close_reconnect_episode(&mut reconnect_episode);
+                            return;
+                        },
                         _ = tokio::time::sleep(backoff.next_delay()) => {}
                     }
                     continue;
@@ -68,6 +72,7 @@ pub(super) async fn listener_supervisor(
         let registration_succeeded =
             run_listener_session(next, &inner, session_cancel, &mut reconnect_episode).await;
         if inner.cancel.is_cancelled() {
+            close_reconnect_episode(&mut reconnect_episode);
             inner.close_all();
             return;
         }
@@ -79,6 +84,7 @@ pub(super) async fn listener_supervisor(
         }
         tokio::select! {
             _ = inner.cancel.cancelled() => {
+                close_reconnect_episode(&mut reconnect_episode);
                 inner.close_all();
                 return;
             }

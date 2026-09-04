@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use super::{ConnectorCommand, ConnectorInner, ConnectorSession};
 use crate::{
     Error, ErrorCode, PeerObservation, Pipe, Result,
-    observability::ReconnectEpisode,
+    observability::{ReconnectEpisode, close_reconnect_episode},
     pipe::{PipeState, to_wire_code},
     session::{
         EstablishedSession, ReconnectBackoff, SessionHeartbeat, SessionOutbound,
@@ -29,6 +29,7 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
     let mut reconnect_episode: Option<ReconnectEpisode> = None;
     loop {
         if inner.cancel.is_cancelled() {
+            close_reconnect_episode(&mut reconnect_episode);
             inner.current.send_replace(None);
             return;
         }
@@ -54,7 +55,10 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
                         "Connector session reconnect failed"
                     );
                     tokio::select! {
-                        _ = inner.cancel.cancelled() => return,
+                        _ = inner.cancel.cancelled() => {
+                            close_reconnect_episode(&mut reconnect_episode);
+                            return;
+                        },
                         _ = tokio::time::sleep(backoff.next_delay()) => {}
                     }
                     continue;
@@ -100,6 +104,7 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             inner.current.send_replace(None);
         }
         if inner.cancel.is_cancelled() {
+            close_reconnect_episode(&mut reconnect_episode);
             return;
         }
         reconnect_episode = Some(ReconnectEpisode::start(SessionRole::Connector));
@@ -107,7 +112,10 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             backoff.reset();
         }
         tokio::select! {
-            _ = inner.cancel.cancelled() => return,
+            _ = inner.cancel.cancelled() => {
+                close_reconnect_episode(&mut reconnect_episode);
+                return;
+            },
             _ = tokio::time::sleep(backoff.next_delay()) => {}
         }
     }

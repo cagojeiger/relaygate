@@ -85,7 +85,7 @@ normal
 
 | 경계 | 시작·terminal | 복구 |
 | --- | --- | --- |
-| SDK–Gateway | `sdk.session.reconnect_started` | `sdk.session.reconnect_recovered` 또는 runtime close |
+| SDK–Gateway | `sdk.session.reconnect_started` | `sdk.session.reconnect_recovered` 또는 `sdk.session.reconnect_closed` |
 | Gateway–RouteTable | shard dependency `DEGRADED` 또는 `TERMINAL` | shard dependency `READY` |
 | Gateway–Gateway | peer handshake failure, active PeerTransport loss | handshake success와 current ready transport |
 | Gateway drain | drain 시작 또는 timeout | drain 정상 완료 |
@@ -247,6 +247,8 @@ Gateway OPEN duration은 유효한 새 `ConnectionId`의 `OPEN`을 수락한 시
 `OPEN_FAILED` 또는 local cancellation까지다. 중복·과거 `ConnectionId`처럼 protocol상 수락하지
 않은 frame은 요청률에 포함하지 않는다. RouteTable duration은 인증된 요청을 shard actor가 꺼낸
 뒤 domain 결과를 만들 때까지의 service time이며 network와 actor queue 대기시간은 포함하지 않는다.
+RouteTable request counter의 outcome/code는 actor의 domain 결과가 아니라 frame 상한을 적용하고
+writer queue가 수락한 최종 wire response를 기준으로 한다.
 
 ## 운영 health 관찰
 
@@ -297,7 +299,7 @@ RT 전체 truth 또는 restart 명령이 아니다.
 | `OBS-014` | Gateway metric은 `GatewaySnapshot`의 current count와 route dependency one-hot state, accepted OPEN의 request/result/duration, bounded writer queue rejection을 반영해야 한다. RT metric은 actor가 소유한 `RouteTableStats`와 operation request/outcome/service duration을 반영해야 한다. |
 | `OBS-015` | metric label은 process role, route dependency state, bounded operation/outcome/code/reason만 사용하고 routing/session/Pipe identity, credential, payload와 application data를 포함하지 않아야 한다. image version과 digest는 metric에 복제하지 않고 배포 metadata에서 관찰해야 한다. |
 | `OBS-016` | Gateway drain 시작, 정상 완료와 timeout 강제 종료는 bounded lifecycle event로 구분해야 한다. `GatewaySnapshot.draining`과 `relaygate_gateway_draining` gauge는 `RUNNING=0`, `DRAINING/STOPPING=1`을 나타내며 Pipe migration이나 drain 성공을 뜻하지 않아야 한다. |
-| `OBS-017` | SDK reconnect는 session loss 뒤 episode 시작, bounded retry attempt와 desired state 복구를 구분해야 한다. 반복 attempt는 counter와 `debug`로 관찰하고 Connector는 새 session 수립, Listener는 desired Listener 재등록 수렴 시 episode를 한 번만 복구로 끝내야 한다. library는 exporter나 current reconnect gauge를 만들지 않아야 한다. |
+| `OBS-017` | SDK reconnect는 session loss 뒤 episode 시작, bounded retry attempt와 desired state 복구를 구분해야 한다. 반복 attempt는 counter와 `debug`로 관찰하고 Connector는 새 session 수립, Listener는 desired Listener 재등록 수렴 시 episode를 한 번만 복구로 끝내야 한다. 복구 전 runtime close는 episode를 `reconnect_closed`로 끝내야 한다. library는 exporter나 current reconnect gauge를 만들지 않아야 한다. |
 | `OBS-018` | Gateway routing worker는 RT shard availability가 `STARTING`, `READY`, `DEGRADED` 또는 `TERMINAL` 사이에서 실제로 바뀔 때만 전이 counter와 lifecycle event를 만들고, 각 connection attempt를 bounded outcome/code로 집계해야 한다. retryable episode가 `READY`로 복구되면 경과 시간을 한 번 기록해야 한다. shard identity와 오류 message를 metric label에 넣지 않아야 한다. |
 | `OBS-019` | peer handshake 결과와 PeerTransport 종료는 bounded direction, outcome, code와 reason으로 집계해야 한다. 경쟁하는 종료 원인이 있어도 하나의 PeerTransport는 terminal counter와 event를 정확히 한 번만 만들고, idle retirement와 정상 shutdown을 active failure와 구분해야 한다. |
 | `OBS-020` | Listener registration 결과와 RT handshake·request 결과는 bounded outcome과 protocol code로 집계해야 한다. 인증 key와 자유 형식 오류 message를 label로 사용해서는 안 된다. |
