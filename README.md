@@ -86,8 +86,9 @@ RELAYGATE_SOAK_DURATION_SECS=600 RELAYGATE_SOAK_CONCURRENCY=256 \
   docker compose run --rm --no-deps topology-probe relaygate-echo-probe soak
 ```
 
-동시 재연결은 지정한 수의 Connector session을 먼저 만든 뒤 pause 동안 Gateway 경로를 중단·복구하고,
-모든 session에서 새 Pipe를 열어 확인합니다. probe 자체는 이전 Pipe나 payload를 replay하지 않습니다.
+동시 재연결은 지정한 수의 Connector session과 marker Pipe를 먼저 만든 뒤 pause 안에 Gateway 경로를
+중단·복구합니다. 모든 기존 marker Pipe의 종료를 관측한 경우에만 각 Connector에서 새 Pipe를 열어
+확인합니다. probe 자체는 이전 Pipe나 payload를 replay하지 않습니다.
 
 ```bash
 RELAYGATE_STORM_SESSIONS=100 RELAYGATE_STORM_PAUSE_SECS=30 \

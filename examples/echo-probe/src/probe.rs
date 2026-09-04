@@ -240,12 +240,14 @@ pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
     let session_count = storm_sessions()?;
     let pause = storm_pause()?;
     let connectors = connect_many(&address, session_count).await?;
+    let marker_pipes = open_marker_pipes(&connectors, &client_id).await?;
 
     println!(
-        "relaygate reconnect storm ready: {session_count} Connector sessions; interrupt and restore the Gateway path within {}s",
+        "relaygate reconnect storm ready: {session_count} Connector sessions and marker Pipes; interrupt and restore the Gateway path within {}s",
         pause.as_secs()
     );
-    tokio::time::sleep(pause).await;
+    await_marker_pipes_closed(marker_pipes, pause).await?;
+    println!("relaygate reconnect storm observed all original Connector sessions close");
 
     let mut operations = JoinSet::new();
     for (index, connector) in connectors.iter().enumerate() {
@@ -438,6 +440,56 @@ async fn connect_many(address: &str, count: usize) -> anyhow::Result<Vec<Connect
         }
     }
     Ok(connectors)
+}
+
+async fn open_marker_pipes(connectors: &[Connector], client_id: &str) -> anyhow::Result<Vec<Pipe>> {
+    let mut operations = JoinSet::new();
+    for (index, connector) in connectors.iter().enumerate() {
+        let connector = connector.clone();
+        let client_id = client_id.to_owned();
+        operations.spawn(async move {
+            let mut pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT).await?;
+            let marker = format!("relaygate reconnect marker session={index}").into_bytes();
+            timeout(ECHO_DEADLINE, async {
+                pipe.write_all(&marker).await?;
+                let mut echoed = vec![0_u8; marker.len()];
+                pipe.read_exact(&mut echoed).await?;
+                ensure!(echoed == marker, "marker echo mismatch for session {index}");
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .with_context(|| format!("marker echo timed out for session {index}"))??;
+            Ok::<_, anyhow::Error>(pipe)
+        });
+    }
+
+    let mut pipes = Vec::with_capacity(connectors.len());
+    while let Some(result) = operations.join_next().await {
+        pipes.push(result.context("marker Pipe task failed to join")??);
+    }
+    Ok(pipes)
+}
+
+async fn await_marker_pipes_closed(pipes: Vec<Pipe>, deadline: Duration) -> anyhow::Result<()> {
+    let mut operations = JoinSet::new();
+    for (index, mut pipe) in pipes.into_iter().enumerate() {
+        operations.spawn(async move {
+            timeout(deadline, async {
+                let mut unexpected = [0_u8; 1];
+                match pipe.read(&mut unexpected).await {
+                    Ok(0) | Err(_) => Ok(()),
+                    Ok(count) => bail!(
+                        "marker Pipe {index} received {count} unexpected bytes before disconnect"
+                    ),
+                }
+            })
+            .await
+            .with_context(|| {
+                format!("marker Pipe {index} did not close before the outage deadline")
+            })?
+        });
+    }
+    join_all(&mut operations).await
 }
 
 fn spawn_echo(
