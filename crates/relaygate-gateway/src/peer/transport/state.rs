@@ -9,9 +9,8 @@ use std::{
 use relaygate_protocol::{ErrorCode, PeerObservation};
 use relaygate_route_table::GatewayId;
 use tokio::{sync::mpsc, time::Instant};
-use tokio_util::sync::CancellationToken;
 
-use super::{ActiveOpenSet, TransportNotice};
+use super::{ActiveOpenSet, TransportCloseReason, TransportClosure, TransportNotice};
 use crate::peer::{
     config::GatewayPeerConfig,
     event::{LostPeerStream, PeerEvent, PeerFailure, PeerStreamKey},
@@ -52,7 +51,7 @@ pub(super) struct TransportActor {
     pub(super) notices: mpsc::Sender<TransportNotice>,
     pub(super) active_opens: Arc<ActiveOpenSet>,
     pub(super) stream_count: Arc<AtomicUsize>,
-    pub(super) close: CancellationToken,
+    pub(super) closure: TransportClosure,
     pub(super) config: GatewayPeerConfig,
 }
 
@@ -64,7 +63,7 @@ impl TransportActor {
         notices: mpsc::Sender<TransportNotice>,
         active_opens: Arc<ActiveOpenSet>,
         stream_count: Arc<AtomicUsize>,
-        close: CancellationToken,
+        closure: TransportClosure,
     ) -> Self {
         let local_endpoint = established.local_endpoint;
         let remote_endpoint = match local_endpoint {
@@ -83,9 +82,13 @@ impl TransportActor {
             notices,
             active_opens,
             stream_count,
-            close,
+            closure,
             config,
         }
+    }
+
+    pub(super) fn fail_transport(&mut self, reason: TransportCloseReason) {
+        self.closure.fail(reason);
     }
 
     pub(super) fn next_open_deadline(&self) -> Option<Instant> {
@@ -125,7 +128,7 @@ impl TransportActor {
                 continue;
             };
             let Some(open_identity) = stream.relay.owner() else {
-                self.close.cancel();
+                self.fail_transport(TransportCloseReason::ProtocolError);
                 return;
             };
             let reset = PeerFrame::Reset {
@@ -134,7 +137,7 @@ impl TransportActor {
                 message: "peer OPEN response timed out".to_owned(),
             };
             if enqueue_stream_frame(stream, queue_capacity, reset, true).is_err() {
-                self.close.cancel();
+                self.fail_transport(TransportCloseReason::WriterFailed);
                 return;
             }
             stream.open_deadline = None;
@@ -176,7 +179,7 @@ impl TransportActor {
                         break;
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
-                        self.close.cancel();
+                        self.fail_transport(TransportCloseReason::WriterFailed);
                         return;
                     }
                 }
@@ -197,7 +200,7 @@ impl TransportActor {
             .await
             .is_err()
         {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::ProtocolError);
         }
     }
 
@@ -206,7 +209,7 @@ impl TransportActor {
             return;
         };
         let Some(open_identity) = stream.relay.owner() else {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::ProtocolError);
             return;
         };
         self.active_opens.release(open_identity);

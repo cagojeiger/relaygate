@@ -52,10 +52,22 @@ error_code / observation
 
 | Level | 용도 |
 | --- | --- |
-| `info` | process 시작·종료와 명시적으로 활성화한 snapshot |
-| `debug` | session, registration, open과 Pipe lifecycle |
-| `warn` | Gateway resource limit, offer expiry와 writer queue failure |
-| `error` | 내부 invariant 또는 lock 복구 실패 |
+| `info` | process 시작·종료, 장애 episode 시작·복구와 명시적으로 활성화한 snapshot |
+| `debug` | session, registration, open, Pipe와 반복 가능한 handshake/retry detail |
+| `warn` | dependency 저하, active transport loss, resource limit, offer expiry와 writer queue failure |
+| `error` | terminal dependency, 내부 invariant 또는 lock 복구 실패 |
+
+반복 가능한 장애는 개별 재시도마다 `info`나 `warn`을 만들지 않고 하나의 episode로 관찰한다.
+episode가 처음 시작되거나 상태가 실제로 바뀔 때 한 번 기록하고, 복구되면 시도 횟수와
+경과 시간을 포함한 종료 event를 한 번 기록한다. 중간 재시도는 `debug` event와 counter로만
+관찰한다.
+
+```text
+normal
+  └── failure detected ──► episode started
+                              ├── retry failure × N   debug + counter
+                              └── recovered | terminal
+```
 
 ## Lifecycle event
 
@@ -68,6 +80,20 @@ error_code / observation
 | Pipe | close / reset / session-loss terminal cleanup |
 | transport liveness | SDK-Gateway heartbeat timeout, active PeerTransport heartbeat timeout |
 | peer | handshake admission, PeerTransport loss, zero-stream idle retirement과 frame commit failure |
+
+다음 운영 전이는 lifecycle event와 누적 metric을 함께 사용해 원인과 종료를 연결할 수 있어야 한다.
+
+| 경계 | 시작·terminal | 복구 |
+| --- | --- | --- |
+| SDK–Gateway | `sdk.session.reconnect_started` | `sdk.session.reconnect_recovered` 또는 `sdk.session.reconnect_closed` |
+| Gateway–RouteTable | shard dependency `DEGRADED` 또는 `TERMINAL` | shard dependency `READY` |
+| Gateway–Gateway | peer handshake failure, active PeerTransport loss | handshake success와 current ready transport |
+| Gateway drain | drain 시작 또는 timeout | drain 정상 완료 |
+
+같은 상태의 반복 관찰은 새 전이가 아니다. SDK Listener reconnect는 TCP handshake 성공이 아니라
+현재 desired Listener 등록이 다시 수렴한 시점에 복구된 것으로 본다. PeerTransport의 정상
+shutdown과 zero-stream idle retirement는 `debug`이고, active stream을 잃는 transport failure는
+`warn`이다.
 
 성공·실패 event는 기존 protocol/state 결과를 그대로 관찰한다. 여기서 관측성 event는
 tracing/metrics event이며 Gateway 상태 전이를 전달하는 내부 `PeerEvent`가 아니다. 관측성 event
@@ -158,13 +184,25 @@ Gateway RED/USE
   open_results_total{outcome=success|error|cancelled,code}
   open_duration_seconds{outcome}
   writer_queue_rejections_total{reason=full|closed}
+  listener_registration_results_total{outcome,code}
+  route_dependency_transitions_total{previous,current}
+  route_connection_attempts_total{outcome,code}
+  route_recovery_duration_seconds
+  peer_handshakes_total{direction,outcome,code}
+  peer_transport_closed_total{reason}
+
+SDK reconnect
+  reconnect_attempts_total{role,outcome}
+  reconnect_duration_seconds{role}
 
 RouteTable gauges
   registrations / mappings / routes / expiry_records
 
 RouteTable RED
-  requests_total{operation,outcome=success|error}
+  handshakes_total{outcome,code}
+  requests_total{operation,outcome=success|error,code}
   request_duration_seconds{operation,outcome}
+  expired_registrations_total
 ```
 
 ### RED/USE 대시보드 해석
@@ -197,10 +235,20 @@ filter에 맞는 histogram bucket을 instance별로 집계한다.
 metric 값에 포함하지 않는다. `operation`, `outcome`, protocol `code`, queue `reason`은 구현이
 닫힌 bounded enum만 사용한다.
 
+`route_dependency_transitions_total`의 상태 집합은 `starting`, `ready`, `degraded`, `terminal`이다.
+`peer_transport_closed_total`의 reason 집합은 `local_close`, `remote_closed`, `protocol_error`,
+`writer_failed`, `heartbeat_timeout`, `idle_retired`이다. reconnect, dependency와 transport metric의
+label도 닫힌 값만 사용한다. SDK metric은 library가
+호출만 하며 embedding application이 recorder를 설치하지 않으면 no-op이다. SDK는 exporter나
+listening port를 만들지 않는다. 하나의 process에 여러 SDK runtime이 있을 수 있으므로 SDK는
+process-wide current reconnect gauge를 설정하지 않고 counter와 histogram만 사용한다.
+
 Gateway OPEN duration은 유효한 새 `ConnectionId`의 `OPEN`을 수락한 시점부터 `OPENED`,
 `OPEN_FAILED` 또는 local cancellation까지다. 중복·과거 `ConnectionId`처럼 protocol상 수락하지
 않은 frame은 요청률에 포함하지 않는다. RouteTable duration은 인증된 요청을 shard actor가 꺼낸
 뒤 domain 결과를 만들 때까지의 service time이며 network와 actor queue 대기시간은 포함하지 않는다.
+RouteTable request counter의 outcome/code는 actor의 domain 결과가 아니라 frame 상한을 적용하고
+writer queue가 수락한 최종 wire response를 기준으로 한다.
 
 ## 운영 health 관찰
 
@@ -251,3 +299,9 @@ RT 전체 truth 또는 restart 명령이 아니다.
 | `OBS-014` | Gateway metric은 `GatewaySnapshot`의 current count와 route dependency one-hot state, accepted OPEN의 request/result/duration, bounded writer queue rejection을 반영해야 한다. RT metric은 actor가 소유한 `RouteTableStats`와 operation request/outcome/service duration을 반영해야 한다. |
 | `OBS-015` | metric label은 process role, route dependency state, bounded operation/outcome/code/reason만 사용하고 routing/session/Pipe identity, credential, payload와 application data를 포함하지 않아야 한다. image version과 digest는 metric에 복제하지 않고 배포 metadata에서 관찰해야 한다. |
 | `OBS-016` | Gateway drain 시작, 정상 완료와 timeout 강제 종료는 bounded lifecycle event로 구분해야 한다. `GatewaySnapshot.draining`과 `relaygate_gateway_draining` gauge는 `RUNNING=0`, `DRAINING/STOPPING=1`을 나타내며 Pipe migration이나 drain 성공을 뜻하지 않아야 한다. |
+| `OBS-017` | SDK reconnect는 session loss 뒤 episode 시작, bounded retry attempt와 desired state 복구를 구분해야 한다. 반복 attempt는 counter와 `debug`로 관찰하고 Connector는 새 session 수립, Listener는 desired Listener 재등록 수렴 시 episode를 한 번만 복구로 끝내야 한다. 복구 전 runtime close는 episode를 `reconnect_closed`로 끝내야 한다. library는 exporter나 current reconnect gauge를 만들지 않아야 한다. |
+| `OBS-018` | Gateway routing worker는 RT shard availability가 `STARTING`, `READY`, `DEGRADED` 또는 `TERMINAL` 사이에서 실제로 바뀔 때만 전이 counter와 lifecycle event를 만들고, 각 connection attempt를 bounded outcome/code로 집계해야 한다. retryable episode가 `READY`로 복구되면 경과 시간을 한 번 기록해야 한다. shard identity와 오류 message를 metric label에 넣지 않아야 한다. |
+| `OBS-019` | peer handshake 결과와 PeerTransport 종료는 bounded direction, outcome, code와 reason으로 집계해야 한다. 경쟁하는 종료 원인이 있어도 하나의 PeerTransport는 terminal counter와 event를 정확히 한 번만 만들고, 내부·외부 강제 종료의 첫 원인을 보존하며 idle retirement와 정상 shutdown을 active failure와 구분해야 한다. |
+| `OBS-020` | Listener registration 결과와 RT handshake·request 결과는 bounded outcome과 protocol code로 집계해야 한다. 인증 key와 자유 형식 오류 message를 label로 사용해서는 안 된다. |
+| `OBS-021` | RT lease expiry는 제거된 registration 수를 누적 집계하되 0건 sweep이나 registration identity를 로그로 기록하지 않고, 이미 제거된 registration을 다음 sweep에서 다시 집계해서는 안 된다. |
+| `OBS-022` | metrics publisher는 Gateway drain이 진행되는 동안 current-state sampling을 중단해서는 안 된다. 종료 중 Pod가 배포 환경의 scrape target에서 제거될 수 있으므로 중앙 수집에서 drain gauge 관측을 보장하지 않으며, 직접 endpoint scrape, Kubernetes terminating state와 drain lifecycle log를 함께 사용해야 한다. |

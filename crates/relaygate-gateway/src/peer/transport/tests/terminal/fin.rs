@@ -22,7 +22,7 @@ use crate::peer::{
         OpenIdentity, PeerTransportId, RemoteStreamGuard, StreamEndpoint, StreamId,
         StreamIdAllocator,
     },
-    transport::{ActiveOpenSet, TransportNotice, state::TransportActor},
+    transport::{ActiveOpenSet, TransportClosure, TransportNotice, state::TransportActor},
 };
 
 use super::super::{actor_for_open, opened_local_stream};
@@ -143,7 +143,7 @@ async fn duplicate_fin_and_data_after_fin_are_stream_scoped() -> Result<(), Box<
         notices: notice_writer,
         active_opens,
         stream_count: Arc::clone(&stream_count),
-        close: close.clone(),
+        closure: TransportClosure::new(close.clone()),
         config,
     };
 

@@ -40,6 +40,14 @@ pub(super) enum ListenerLifecycle {
 }
 
 impl ListenerRuntimeInner {
+    pub(super) fn desired_is_converged(&self) -> bool {
+        self.desired.lock().is_ok_and(|desired| {
+            desired
+                .values()
+                .all(|state| *state.status.borrow() == ListenerStatus::Active)
+        })
+    }
+
     pub(super) fn detach_listener(&self, state: &Arc<ListenerState>) {
         state.close(None);
         let mut desired = match self.desired.lock() {

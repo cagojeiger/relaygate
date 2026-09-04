@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{
     listener::ListenerRuntimeInner,
+    observability::ReconnectEpisode,
     session::{
         EstablishedSession, SessionHeartbeat, send_bounded, session_outbound_channel,
         wait_for_heartbeat,
@@ -21,6 +22,7 @@ pub(super) async fn run_listener_session(
     mut established: EstablishedSession,
     inner: &ListenerRuntimeInner,
     session_cancel: CancellationToken,
+    reconnect_episode: &mut Option<ReconnectEpisode>,
 ) -> bool {
     let (outbound_tx, mut outbound_rx) = session_outbound_channel(inner.config.outbound_capacity);
     // One unique Pipe value can abandon one current PipeId, so this lane is
@@ -39,6 +41,11 @@ pub(super) async fn run_listener_session(
             break;
         }
         needs_reconcile = false;
+        if inner.desired_is_converged()
+            && let Some(episode) = reconnect_episode.take()
+        {
+            episode.recover();
+        }
         let registration_deadline = state
             .pending
             .iter()

@@ -44,6 +44,14 @@ impl Manager {
 
     pub(super) fn start_inbound_handshake(&mut self, stream: TcpStream) {
         if self.handshakes_inflight >= self.config.max_handshakes {
+            observe_handshake("inbound", "error", "resource_exhausted");
+            tracing::warn!(
+                component = "gateway",
+                event = "gateway.peer.handshake.rejected",
+                direction = "inbound",
+                error_code = "resource_exhausted",
+                "Gateway peer handshake capacity is exhausted"
+            );
             return;
         }
         self.handshakes_inflight += 1;
@@ -65,16 +73,38 @@ impl Manager {
                 peer_transport_id,
                 result,
             } => match result {
-                Ok(established) => self.admit_established(established),
+                Ok(established) => {
+                    observe_handshake("outbound", "success", "ok");
+                    self.admit_established(established);
+                }
                 Err(error) => {
+                    observe_handshake("outbound", "error", error.metric_code());
+                    tracing::debug!(
+                        component = "gateway",
+                        event = "gateway.peer.handshake.failed",
+                        direction = "outbound",
+                        error_code = error.metric_code(),
+                        "Outbound Gateway peer handshake failed"
+                    );
                     self.pool.remove_transport(peer_transport_id);
                     self.counts.update_pool(&self.pool);
                     self.fail_pending_for(remote_gateway_id, error);
                 }
             },
             HandshakeNotice::InboundHello(result) => {
-                let Ok(hello) = result else {
-                    return;
+                let hello = match result {
+                    Ok(hello) => hello,
+                    Err(error) => {
+                        observe_handshake("inbound", "error", error.metric_code());
+                        tracing::debug!(
+                            component = "gateway",
+                            event = "gateway.peer.handshake.failed",
+                            direction = "inbound",
+                            error_code = error.metric_code(),
+                            "Inbound Gateway peer HELLO failed"
+                        );
+                        return;
+                    }
                 };
                 match self.pool.connect(
                     hello.remote_gateway_id,
@@ -110,6 +140,7 @@ impl Manager {
                         });
                     }
                     Err(PeerError::AlreadyExists(_)) => {
+                        observe_handshake("inbound", "error", "already_exists");
                         self.handshakes_inflight += 1;
                         let sender = self.handshake_notice_sender.clone();
                         let timeout = self.config.handshake_timeout;
@@ -118,7 +149,9 @@ impl Manager {
                             let _ = sender.send(HandshakeNotice::Rejected).await;
                         });
                     }
-                    Err(_) => {}
+                    Err(error) => {
+                        observe_handshake("inbound", "error", error.metric_code());
+                    }
                 }
             }
             HandshakeNotice::InboundComplete {
@@ -126,8 +159,19 @@ impl Manager {
                 peer_transport_id,
                 result,
             } => match result {
-                Ok(established) => self.admit_established(established),
-                Err(_) => {
+                Ok(established) => {
+                    observe_handshake("inbound", "success", "ok");
+                    self.admit_established(established);
+                }
+                Err(error) => {
+                    observe_handshake("inbound", "error", error.metric_code());
+                    tracing::debug!(
+                        component = "gateway",
+                        event = "gateway.peer.handshake.failed",
+                        direction = "inbound",
+                        error_code = error.metric_code(),
+                        "Inbound Gateway peer handshake failed"
+                    );
                     self.pool.remove_transport(peer_transport_id);
                     self.counts.update_pool(&self.pool);
                     self.fail_pending_for(
@@ -181,5 +225,45 @@ impl Manager {
         }
         self.counts.update_pool(&self.pool);
         self.flush_pending_for(remote_gateway_id, transport_id);
+    }
+}
+
+fn observe_handshake(direction: &'static str, outcome: &'static str, code: &'static str) {
+    metrics::counter!(
+        "relaygate_gateway_peer_handshakes_total",
+        "direction" => direction,
+        "outcome" => outcome,
+        "code" => code
+    )
+    .increment(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::observe_handshake;
+
+    #[test]
+    fn peer_handshake_metrics_separate_direction_outcome_and_code() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            observe_handshake("outbound", "success", "ok");
+            observe_handshake("inbound", "error", "unauthenticated");
+        });
+
+        let values = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, _, _, _)| key.key().name() == "relaygate_gateway_peer_handshakes_total")
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        assert!(
+            values
+                .iter()
+                .all(|(_, _, _, value)| matches!(value, DebugValue::Counter(1)))
+        );
     }
 }

@@ -97,6 +97,25 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
     )?;
 
     let client = wait_until_route_table_ready(&address, gateway_id, secret, &mut server).await?;
+    let rejected = match RouteTableClient::connect(
+        address.as_str(),
+        GatewayName::new("gw-a")?,
+        GatewayId::new(),
+        InternalGatewayKey::new("wrong-key")?,
+        RouteTableClientConfig::new(
+            8,
+            1024 * 1024,
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+        )?,
+    )
+    .await
+    {
+        Ok(_) => return Err(io::Error::other("wrong internal key was accepted").into()),
+        Err(error) => error,
+    };
+    assert_eq!(rejected.code(), RouteTableErrorCode::Unauthenticated);
     let error = match client
         .resolve(directory.generation(), &ClientId::new("missing")?)
         .await
@@ -153,7 +172,8 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
         &[
             "role=\"route_table\"",
             "operation=\"resolve\"",
-            "outcome=\"error\""
+            "outcome=\"error\"",
+            "code=\"not_found\""
         ]
     ));
     assert!(metric_has_labels(
@@ -162,8 +182,14 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
         &[
             "role=\"route_table\"",
             "operation=\"register\"",
-            "outcome=\"success\""
+            "outcome=\"success\"",
+            "code=\"ok\""
         ]
+    ));
+    assert!(metric_has_labels(
+        &metrics,
+        "relaygate_route_table_handshakes_total",
+        &["role=\"route_table\"", "outcome=\"success\"", "code=\"ok\""]
     ));
     assert!(metrics.contains("relaygate_route_table_request_duration_seconds_bucket"));
     assert!(!metrics.contains("quantile="));
@@ -204,6 +230,53 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
         .ok_or("missing RouteTable trusted-local warning event")?;
     assert_eq!(trusted_local_warning["component"], "route_table");
     assert_eq!(trusted_local_warning["transport"], "plain_tcp");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn route_table_expiry_metric_counts_removed_soft_state_once() -> Result<(), Box<dyn Error>> {
+    let address = unused_loopback_address()?;
+    let metrics_address = unused_loopback_address()?;
+    let artifact = ShardDirectoryArtifact::create()?;
+    let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
+    let gateway_id = GatewayId::new();
+    let secret = "expiry-test-key";
+    let mut server = ChildGuard::spawn_captured(
+        server_command()
+            .arg("route-table")
+            .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
+            .env("RELAYGATE_RT_BIND_ADDR", &address)
+            .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
+            .env("RELAYGATE_RT_SHARD_ID", "rt-0")
+            .env("RELAYGATE_RT_LEASE_TTL_MS", "100")
+            .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", format!("gw-a={secret}"))
+            .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address),
+    )?;
+
+    let client = wait_until_route_table_ready(&address, gateway_id, secret, &mut server).await?;
+    let key = RegistrationKey::new(gateway_id, ListenerSessionId::new(), ShardId::new("rt-0")?);
+    client.register(directory.generation(), &key).await?;
+
+    let metrics = wait_for_metrics(
+        &metrics_address,
+        &mut server,
+        "relaygate_route_table_expired_registrations_total{role=\"route_table\"} 1",
+    )?;
+    assert!(metrics.contains("relaygate_route_table_registrations{role=\"route_table\"} 0"));
+    assert!(metrics.contains("relaygate_route_table_expiry_records{role=\"route_table\"} 0"));
+
+    let signal_status = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()?;
+    assert!(signal_status.success(), "failed to send SIGTERM to server");
+    let exit_status = server.wait_until(SHUTDOWN_DEADLINE)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "RouteTable server did not exit before the shutdown deadline",
+        )
+    })?;
+    assert!(exit_status.success());
     Ok(())
 }
 
@@ -650,8 +723,11 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
         server_command()
             .env("RELAYGATE_BIND_ADDR", &address)
             .env("RELAYGATE_CLIENT_KEYS", format!("echo.alpha={secret}"))
+            .env("RELAYGATE_MAX_BINDINGS", "1")
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
-            .env("RELAYGATE_METRICS_INTERVAL_MS", "20"),
+            .env("RELAYGATE_METRICS_INTERVAL_MS", "20")
+            .env("RELAYGATE_LOG", "info")
+            .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
     wait_until_healthy(&address, &mut server)?;
@@ -670,6 +746,45 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
             Some(Ok(Frame::Registered { request_id: 1, .. }))
         ),
         "Listener should register before the successful OPEN metric case: {registered:?}"
+    );
+    listener
+        .send(Frame::Register {
+            request_id: 2,
+            client_id: "echo.alpha".to_owned(),
+            client_key: ClientKey::new("wrong-key"),
+        })
+        .await?;
+    let rejected = tokio::time::timeout(Duration::from_secs(1), listener.next()).await?;
+    assert!(
+        matches!(
+            rejected,
+            Some(Ok(Frame::RegisterFailed {
+                request_id: 2,
+                code: ErrorCode::Unauthenticated,
+                ..
+            }))
+        ),
+        "wrong ClientKey should reject registration without removing the live binding: {rejected:?}"
+    );
+    let mut capacity_listener = connect_sdk_session(&address, SessionRole::Listener).await?;
+    capacity_listener
+        .send(Frame::Register {
+            request_id: 1,
+            client_id: "echo.alpha".to_owned(),
+            client_key: ClientKey::new(secret),
+        })
+        .await?;
+    let exhausted = tokio::time::timeout(Duration::from_secs(1), capacity_listener.next()).await?;
+    assert!(
+        matches!(
+            exhausted,
+            Some(Ok(Frame::RegisterFailed {
+                request_id: 1,
+                code: ErrorCode::ResourceExhausted,
+                ..
+            }))
+        ),
+        "binding limit should reject another valid Listener registration: {exhausted:?}"
     );
 
     let mut sdk = connect_sdk_session(&address, SessionRole::Connector).await?;
@@ -722,6 +837,29 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     ));
     assert!(metric_has_labels(
         &body,
+        "relaygate_gateway_listener_registration_results_total",
+        &[
+            "role=\"gateway\"",
+            "outcome=\"error\"",
+            "code=\"resource_exhausted\""
+        ]
+    ));
+    assert!(metric_has_labels(
+        &body,
+        "relaygate_gateway_listener_registration_results_total",
+        &["role=\"gateway\"", "outcome=\"success\"", "code=\"ok\""]
+    ));
+    assert!(metric_has_labels(
+        &body,
+        "relaygate_gateway_listener_registration_results_total",
+        &[
+            "role=\"gateway\"",
+            "outcome=\"error\"",
+            "code=\"unauthenticated\""
+        ]
+    ));
+    assert!(metric_has_labels(
+        &body,
         "relaygate_gateway_open_results_total",
         &["role=\"gateway\"", "outcome=\"success\"", "code=\"ok\""]
     ));
@@ -740,6 +878,17 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     assert!(!body.contains("client_key"));
     assert!(!body.contains("payload"));
 
+    let signal_status = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()?;
+    assert!(signal_status.success(), "failed to send SIGTERM to server");
+    let draining = wait_for_metrics(
+        &metrics_address,
+        &mut server,
+        "relaygate_gateway_draining{role=\"gateway\"} 1",
+    )?;
+    assert!(draining.contains("relaygate_gateway_draining{role=\"gateway\"} 1"));
+
     sdk.send(Frame::Close { pipe_id }).await?;
     let closed = tokio::time::timeout(Duration::from_secs(1), listener.next()).await?;
     assert!(
@@ -747,10 +896,6 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
         "Listener should observe the test Pipe closing before process shutdown: {closed:?}"
     );
 
-    let signal_status = Command::new("kill")
-        .args(["-TERM", &server.id().to_string()])
-        .status()?;
-    assert!(signal_status.success(), "failed to send SIGTERM to server");
     let exit_status = server.wait_until(SHUTDOWN_DEADLINE)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::TimedOut,
@@ -760,6 +905,25 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     assert!(
         exit_status.success(),
         "metrics-enabled server shutdown failed"
+    );
+    let (stdout, stderr) = server.read_captured()?;
+    assert!(
+        stderr.is_empty(),
+        "server wrote unexpected stderr: {stderr}"
+    );
+    let records = stdout
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(
+        records
+            .iter()
+            .any(|record| record["event"] == "gateway.drain.started")
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record["event"] == "gateway.drain.completed")
     );
     Ok(())
 }

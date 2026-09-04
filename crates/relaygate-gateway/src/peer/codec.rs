@@ -65,6 +65,12 @@ pub(crate) enum PeerCodecError {
     LengthOverflow,
 }
 
+impl PeerCodecError {
+    pub(crate) const fn is_io(&self) -> bool {
+        matches!(self, Self::Io(_))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PeerFrameCodec {
     max_frame_len: usize,

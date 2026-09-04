@@ -191,6 +191,24 @@ impl PeerFailure {
     pub(crate) fn message(&self) -> &str {
         &self.message
     }
+
+    #[must_use]
+    pub(crate) const fn metric_code(&self) -> &'static str {
+        match self.code {
+            ErrorCode::InvalidArgument => "invalid_argument",
+            ErrorCode::Unauthenticated => "unauthenticated",
+            ErrorCode::PermissionDenied => "permission_denied",
+            ErrorCode::NotFound => "not_found",
+            ErrorCode::FailedPrecondition => "failed_precondition",
+            ErrorCode::Unavailable => "unavailable",
+            ErrorCode::DeadlineExceeded => "deadline_exceeded",
+            ErrorCode::ResourceExhausted => "resource_exhausted",
+            ErrorCode::Cancelled => "cancelled",
+            ErrorCode::ProtocolError => "protocol_error",
+            ErrorCode::Internal => "internal",
+            ErrorCode::AlreadyExists => "already_exists",
+        }
+    }
 }
 
 impl std::fmt::Display for PeerFailure {

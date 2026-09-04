@@ -38,8 +38,32 @@ impl Manager {
             TransportNotice::TransportLost {
                 peer_gateway_id,
                 peer_transport_id,
+                reason,
                 streams,
             } => {
+                let stream_count = streams.len();
+                observe_transport_closed(reason);
+                if !shutting_down && stream_count > 0 {
+                    tracing::warn!(
+                        component = "gateway",
+                        event = "gateway.peer.transport.closed",
+                        peer_gateway_id = %peer_gateway_id.as_uuid(),
+                        peer_transport_id = %peer_transport_id.as_uuid(),
+                        reason = reason.as_str(),
+                        streams = stream_count,
+                        "Gateway peer transport closed with active streams"
+                    );
+                } else {
+                    tracing::debug!(
+                        component = "gateway",
+                        event = "gateway.peer.transport.closed",
+                        peer_gateway_id = %peer_gateway_id.as_uuid(),
+                        peer_transport_id = %peer_transport_id.as_uuid(),
+                        reason = reason.as_str(),
+                        streams = stream_count,
+                        "Gateway peer transport closed"
+                    );
+                }
                 self.pool.remove_transport(peer_transport_id);
                 self.transports.remove(&peer_transport_id);
                 if let Ok(mut shared) = self.shared_transports.write() {
@@ -77,6 +101,14 @@ impl Manager {
     }
 }
 
+fn observe_transport_closed(reason: crate::peer::transport::TransportCloseReason) {
+    metrics::counter!(
+        "relaygate_gateway_peer_transport_closed_total",
+        "reason" => reason.as_str()
+    )
+    .increment(1);
+}
+
 fn try_emit_event(
     events: &mpsc::Sender<PeerEvent>,
     shutdown: &CancellationToken,
@@ -107,12 +139,14 @@ fn try_emit_event(
 
 #[cfg(test)]
 mod tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
     use std::error::Error;
 
     use relaygate_route_table::GatewayId;
 
     use super::*;
     use crate::peer::identity::PeerTransportId;
+    use crate::peer::transport::TransportCloseReason;
 
     fn loss_event() -> PeerEvent {
         PeerEvent::TransportLost {
@@ -156,5 +190,30 @@ mod tests {
             .ok_or("live full event queue must fail")?;
         assert_eq!(full.code(), ErrorCode::ResourceExhausted);
         Ok(())
+    }
+
+    #[test]
+    fn transport_close_metrics_keep_terminal_reasons_separate() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            observe_transport_closed(TransportCloseReason::IdleRetired);
+            observe_transport_closed(TransportCloseReason::HeartbeatTimeout);
+        });
+
+        let values = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, _, _, _)| {
+                key.key().name() == "relaygate_gateway_peer_transport_closed_total"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        assert!(
+            values
+                .iter()
+                .all(|(_, _, _, value)| matches!(value, DebugValue::Counter(1)))
+        );
     }
 }

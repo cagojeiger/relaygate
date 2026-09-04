@@ -14,7 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ActiveOpenSet, TransportCommand, TransportNotice,
+    ActiveOpenSet, TransportCloseReason, TransportClosure, TransportCommand, TransportHandle,
+    TransportNotice,
     state::{RuntimeStream, StreamOrigin, TransportActor},
 };
 use crate::peer::{
@@ -40,6 +41,40 @@ type TestActor = (
     OpenIdentity,
     PeerOpenRequest,
 );
+
+#[test]
+fn external_force_close_preserves_first_failure_reason() {
+    let (commands, _receiver) = mpsc::channel(1);
+    let close = CancellationToken::new();
+    let closure = TransportClosure::new(close.clone());
+    let handle = TransportHandle {
+        peer_gateway_id: GatewayId::new(),
+        peer_transport_id: PeerTransportId::new(),
+        commands,
+        closure: closure.clone(),
+    };
+
+    handle.force_close(TransportCloseReason::WriterFailed);
+    handle.force_close(TransportCloseReason::ProtocolError);
+    assert!(close.is_cancelled());
+    assert_eq!(
+        closure.failure_reason(),
+        Some(TransportCloseReason::WriterFailed)
+    );
+
+    let (commands, _receiver) = mpsc::channel(1);
+    let close = CancellationToken::new();
+    let closure = TransportClosure::new(close.clone());
+    let handle = TransportHandle {
+        peer_gateway_id: GatewayId::new(),
+        peer_transport_id: PeerTransportId::new(),
+        commands,
+        closure: closure.clone(),
+    };
+    handle.close();
+    assert!(close.is_cancelled());
+    assert_eq!(closure.failure_reason(), None);
+}
 
 fn actor_for_open(writer_capacity: usize) -> Result<TestActor, Box<dyn Error>> {
     let config = GatewayPeerConfig::new("gateway-a", "key-a", [])?
@@ -77,7 +112,7 @@ fn actor_for_open(writer_capacity: usize) -> Result<TestActor, Box<dyn Error>> {
         notices,
         active_opens,
         stream_count: Arc::new(AtomicUsize::new(0)),
-        close: CancellationToken::new(),
+        closure: TransportClosure::new(CancellationToken::new()),
         config,
     };
     Ok((
@@ -576,7 +611,7 @@ async fn cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport()
         notices,
         active_opens,
         stream_count: Arc::clone(&stream_count),
-        close: close.clone(),
+        closure: TransportClosure::new(close.clone()),
         config,
     };
 
@@ -643,6 +678,10 @@ async fn cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport()
         .ok_or("expected saturated RESET queue failure")?;
     assert_eq!(failure.code(), ErrorCode::ResourceExhausted);
     assert!(close.is_cancelled());
+    assert_eq!(
+        actor.closure.failure_reason(),
+        Some(TransportCloseReason::WriterFailed)
+    );
     let losses = actor.drain_losses();
     assert_eq!(losses.len(), 2);
     for index in [1, 2] {
@@ -695,7 +734,7 @@ async fn invalid_frame_during_local_opening_emits_failed_not_reset() -> Result<(
         notices,
         active_opens,
         stream_count: Arc::new(AtomicUsize::new(1)),
-        close,
+        closure: TransportClosure::new(close),
         config,
     };
 

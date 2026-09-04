@@ -595,6 +595,204 @@
       ],
       "title": "RouteTable current state",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "description": "정상 OPEN hot path를 제외한 Gateway 제어 경계의 실패·전이·종료율이다. label은 닫힌 code/reason만 사용한다.",
+      "id": 13,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(relaygate_gateway_listener_registration_results_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+          "legendFormat": "registration / {{code}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (previous, current) (rate(relaygate_gateway_route_dependency_transitions_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "legendFormat": "RT {{previous}} -> {{current}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (direction, code) (rate(relaygate_gateway_peer_handshakes_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+          "legendFormat": "peer handshake {{direction}} / {{code}}",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (reason) (rate(relaygate_gateway_peer_transport_closed_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "legendFormat": "peer closed / {{reason}}",
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (outcome, code) (rate(relaygate_gateway_route_connection_attempts_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "legendFormat": "RT connect {{outcome}} / {{code}}",
+          "refId": "E"
+        }
+      ],
+      "title": "Gateway lifecycle and failure episodes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "description": "SDK embedding application이 recorder를 설치한 경우 보이는 managed reconnect attempt와 복구 시간이다. RelayGate SDK 자체는 exporter를 열지 않는다.",
+      "id": 14,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (role, outcome) (rate(relaygate_sdk_reconnect_attempts_total[$__rate_interval]))",
+          "legendFormat": "attempt {{role}} / {{outcome}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, role) (rate(relaygate_sdk_reconnect_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "recovery p95 / {{role}}",
+          "refId": "B"
+        }
+      ],
+      "title": "SDK reconnect episodes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "description": "RouteTable 인증 실패, operation별 오류와 lease 만료 정리율을 함께 본다. 만료는 영속 손실이 아니라 refresh되지 않은 soft state 정리다.",
+      "id": 15,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(relaygate_route_table_handshakes_total{instance=~\"$route_table\",outcome=\"error\"}[$__rate_interval]))",
+          "legendFormat": "handshake / {{code}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (operation, code) (rate(relaygate_route_table_requests_total{instance=~\"$route_table\",outcome=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{operation}} / {{code}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(relaygate_route_table_expired_registrations_total{instance=~\"$route_table\"}[$__rate_interval]))",
+          "legendFormat": "expired registrations",
+          "refId": "C"
+        }
+      ],
+      "title": "RouteTable failures and cleanup",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "description": "Kubernetes/cAdvisor가 제공하는 CPU·working set·network USE다. 로컬 Prometheus에 해당 exporter가 없으면 이 panel만 No data가 정상이다.",
+      "id": 16,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"}[$__rate_interval]))",
+          "legendFormat": "CPU cores / {{container}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (container) (container_memory_working_set_bytes{namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"})",
+          "legendFormat": "memory bytes / {{container}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(container_network_receive_bytes_total{namespace=~\"$namespace\",pod=~\".*relaygate.*\"}[$__rate_interval]))",
+          "legendFormat": "network receive bytes/s",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(container_network_transmit_bytes_total{namespace=~\"$namespace\",pod=~\".*relaygate.*\"}[$__rate_interval]))",
+          "legendFormat": "network transmit bytes/s",
+          "refId": "D"
+        }
+      ],
+      "title": "Kubernetes resource USE",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
@@ -606,6 +804,32 @@
   ],
   "templating": {
     "list": [
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, namespace)",
+        "includeAll": true,
+        "label": "Namespace",
+        "multi": false,
+        "name": "namespace",
+        "options": [],
+        "query": {
+          "query": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, namespace)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
       {
         "allValue": ".*",
         "current": {

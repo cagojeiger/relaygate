@@ -2,7 +2,10 @@ use std::collections::VecDeque;
 
 use relaygate_protocol::{BindingId, ErrorCode, PeerObservation, SessionId};
 
-use super::state::{RuntimeStream, StreamOrigin, TransportActor, failed_not_observed};
+use super::{
+    TransportCloseReason,
+    state::{RuntimeStream, StreamOrigin, TransportActor, failed_not_observed},
+};
 use crate::peer::{
     event::{PeerEvent, PeerFailure},
     frame::PeerFrame,
@@ -73,7 +76,7 @@ impl TransportActor {
                     .try_send(PeerFrame::Pong { nonce })
                     .is_err()
                 {
-                    self.close.cancel();
+                    self.fail_transport(TransportCloseReason::WriterFailed);
                     return false;
                 }
                 true
@@ -128,7 +131,7 @@ impl TransportActor {
                 return;
             }
             Err(_) => {
-                self.close.cancel();
+                self.fail_transport(TransportCloseReason::ProtocolError);
                 return;
             }
         }
@@ -179,7 +182,7 @@ impl TransportActor {
         stream.progress = PeerOpenProgress::Opened;
         stream.open_deadline = None;
         let Some(open_identity) = stream.relay.owner() else {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::ProtocolError);
             return;
         };
         self.emit(PeerEvent::Opened {
@@ -208,7 +211,7 @@ impl TransportActor {
             return;
         }
         let Some(open_identity) = stream.relay.owner() else {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::ProtocolError);
             return;
         };
         self.emit(PeerEvent::Failed {
@@ -308,7 +311,7 @@ impl TransportActor {
             .try_send(failed_not_observed(stream_id, code, message))
             .is_err()
         {
-            self.close.cancel();
+            self.fail_transport(TransportCloseReason::WriterFailed);
         }
     }
 
@@ -332,7 +335,7 @@ impl TransportActor {
         let open_identity = stream.relay.owner();
         if local_opening {
             let Some(open_identity) = open_identity else {
-                self.close.cancel();
+                self.fail_transport(TransportCloseReason::ProtocolError);
                 return;
             };
             self.emit(PeerEvent::Failed {

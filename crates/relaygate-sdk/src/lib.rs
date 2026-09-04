@@ -8,6 +8,7 @@ mod connector;
 mod error;
 mod lifetime;
 mod listener;
+mod observability;
 mod pipe;
 mod session;
 

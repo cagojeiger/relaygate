@@ -106,6 +106,10 @@ fn describe_metrics() {
         "relaygate_gateway_writer_queue_rejections_total",
         "Frames rejected by a full or closed bounded SDK writer queue."
     );
+    describe_counter!(
+        "relaygate_gateway_listener_registration_results_total",
+        "Terminal Listener registration results by bounded outcome and code."
+    );
     describe_gauge!(
         "relaygate_gateway_draining",
         "Whether this Gateway has stopped admitting new work and is draining existing work."
@@ -162,6 +166,26 @@ fn describe_metrics() {
         "relaygate_gateway_route_dependency",
         "One-hot current RouteTable dependency state."
     );
+    describe_counter!(
+        "relaygate_gateway_route_dependency_transitions_total",
+        "RouteTable dependency transitions using bounded lifecycle states."
+    );
+    describe_counter!(
+        "relaygate_gateway_route_connection_attempts_total",
+        "Gateway RouteTable connection attempts by bounded outcome and stable result code."
+    );
+    describe_histogram!(
+        "relaygate_gateway_route_recovery_duration_seconds",
+        "Time from a RouteTable dependency degradation episode to recovery."
+    );
+    describe_counter!(
+        "relaygate_gateway_peer_handshakes_total",
+        "Terminal Gateway peer handshake results by direction, outcome, and bounded code."
+    );
+    describe_counter!(
+        "relaygate_gateway_peer_transport_closed_total",
+        "Gateway peer transport closures by bounded terminal reason."
+    );
     describe_gauge!(
         "relaygate_route_table_registrations",
         "Current live registrations on this RouteTable shard."
@@ -180,10 +204,18 @@ fn describe_metrics() {
     );
     describe_counter!(
         "relaygate_route_table_requests_total",
-        "RouteTable requests by bounded operation and outcome."
+        "RouteTable terminal wire responses by bounded operation, outcome, and stable result code."
     );
     describe_histogram!(
         "relaygate_route_table_request_duration_seconds",
         "RouteTable actor service time by bounded operation and outcome."
+    );
+    describe_counter!(
+        "relaygate_route_table_handshakes_total",
+        "Terminal Gateway-to-RouteTable handshake results by bounded outcome and code."
+    );
+    describe_counter!(
+        "relaygate_route_table_expired_registrations_total",
+        "Registrations removed after their soft-state lease expired."
     );
 }

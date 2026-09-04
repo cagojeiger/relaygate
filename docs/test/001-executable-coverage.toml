@@ -190,6 +190,36 @@ rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", 
 reason = "opt-in Prometheus endpoint의 Gateway/RT current-state gauge와 OPEN/RT operation RED signal, bounded label과 secret 비노출을 실제 process HTTP scrape로 검증한다. malformed·점유 address, interval 단독 설정과 0 interval은 serve 전에 실패한다."
 
 [[case]]
+id = "T-OBS-07"
+status = "executable"
+rust = ["observability::tests::reconnect_episode_records_recovery_and_runtime_close", "connector_runtime_cycles_through_loss_failed_reconnect_recovery_and_close", "tcp_reconnect_resets_listener_backoff_only_after_recovery_registered"]
+reason = "episode helper의 시작·복구·runtime close event와 attempt/duration metric을 검증하고, Connector의 실패 후 새 session 복구 및 close 뒤 무재시도와 Listener의 REGISTERED 이후 수렴을 실제 socket lifecycle로 검증한다."
+
+[[case]]
+id = "T-OBS-08"
+status = "executable"
+rust = ["routing::runtime::observation::tests::repeated_failures_form_one_transition_and_one_recovery_duration", "routing::runtime::observation::tests::terminal_connection_failure_records_attempt_and_transition", "routed_gateway_republishes_current_listener_state_after_route_table_restart", "route_table_authentication_failure_keeps_local_binding_and_stops_retries"]
+reason = "반복 연결 실패와 성공이 bounded attempt counter로 집계되고 단일 DEGRADED 전이와 단일 복구 duration/event로 수렴하는지 검증한다. 실제 RT restart 복구 및 terminal 인증 실패가 local binding과 분리되는지도 검증한다."
+
+[[case]]
+id = "T-OBS-09"
+status = "executable"
+rust = ["peer::runtime::manager::handshake::tests::peer_handshake_metrics_separate_direction_outcome_and_code", "peer::runtime::manager::notice::tests::transport_close_metrics_keep_terminal_reasons_separate", "peer::transport::tests::external_force_close_preserves_first_failure_reason", "peer::transport::tests::lifecycle::competing_local_cancel_and_peer_eof_emit_exactly_one_transport_loss", "peer::transport::tests::capacity::saturated_stream_and_aggregate_buffers_are_released_on_transport_loss", "peer::transport::tests::cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit", "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily", "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily"]
+reason = "handshake와 transport 종료 metric의 bounded 차원을 검증한다. 실제 handshake 거절, active heartbeat timeout, idle retirement와 cancel/EOF 경합은 하나의 terminal notice 및 stream cleanup으로 수렴하는지 검증한다. actor의 terminal frame queue failure와 외부 force-close는 첫 강제 종료 원인을 writer_failed로 보존하고 정상 close는 원인을 만들지 않는다."
+
+[[case]]
+id = "T-OBS-10"
+status = "executable"
+rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", "route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm", "route_table_expiry_metric_counts_removed_soft_state_once", "service::connection::tests::handshake_metrics_include_connection_capacity_rejection", "service::response::tests::bounded_response_metric_uses_terminal_wire_code", "service::response::tests::rejected_writer_queue_does_not_count_a_response", "connection_limit_rejects_the_next_handshake_as_resource_exhausted", "oversized_binding_set_returns_resource_exhausted_and_connection_stays_usable"]
+reason = "실제 process HTTP scrape에서 Listener 등록 승인·인증 실패·용량 거절, RT handshake 승인·거절과 request code를 검증하고 connection limit 거절이 resource_exhausted handshake로 집계되는지 확인한다. response frame 상한으로 바뀐 최종 code를 집계하되 writer queue가 거절한 응답은 집계하지 않는다. 짧은 lease 만료 뒤 registration과 expiry index가 0으로 수렴하고 제거 counter가 1인지 검증한다. actor는 요청 처리 전에 due lease를 먼저 정리하므로 timer와 request 경합에서도 제거 수를 누락하지 않는다."
+
+[[case]]
+id = "T-OBS-11"
+status = "executable"
+rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets"]
+reason = "활성 Pipe를 유지한 Gateway에 SIGTERM을 보낸 뒤 직접 metrics endpoint에서 draining=1을 scrape하고, Pipe 종료 뒤 drain started/completed event와 process 정상 종료를 검증한다."
+
+[[case]]
 id = "T-HEALTH-01"
 status = "executable"
 rust = ["server_boots_health_checks_and_exits_on_sigterm", "distributed_peer_accept_failure_exits_process_nonzero_within_bound", "sdk_admission_check_leaves_no_persistent_gateway_state", "session_limit_includes_connections_waiting_for_hello", "peer::runtime_tests::saturated_event_queue_fails_closed_without_cyclic_wait", "gateway::sdk_server::tests::admitted_session_panic_cleans_siblings_and_stops_gateway"]

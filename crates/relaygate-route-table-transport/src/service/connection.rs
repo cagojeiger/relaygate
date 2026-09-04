@@ -32,8 +32,21 @@ pub(super) async fn handle_connection(
     let mut framed = Framed::new(stream, FrameCodec::new(config.max_frame_len));
     let context = match authenticate(&mut framed, &keys, config.handshake_timeout, &shutdown).await
     {
-        Ok(Some(context)) => context,
-        Ok(None) | Err(_) => return,
+        Ok(Some(context)) => {
+            observe_handshake("success", "ok");
+            context
+        }
+        Ok(None) => return,
+        Err(error) => {
+            observe_handshake("error", error.code().metric_name());
+            tracing::debug!(
+                event = "route_table.handshake.failed",
+                error_code = error.code().metric_name(),
+                error = %error,
+                "RouteTable rejected or lost a Gateway handshake"
+            );
+            return;
+        }
     };
     let (sink, stream) = framed.split();
     let (writer, writer_receiver) = mpsc::channel(config.writer_queue_capacity);
@@ -82,10 +95,12 @@ async fn authenticate(
             internal_gateway_key,
         } = frame
         else {
+            observe_handshake("error", "protocol_error");
             send_protocol_fault(framed, "expected Gateway HELLO").await;
             return Ok(None);
         };
         if role != GATEWAY_ROLE {
+            observe_handshake("error", "protocol_error");
             send_protocol_fault(framed, "Gateway HELLO has an invalid role").await;
             return Ok(None);
         }
@@ -98,6 +113,12 @@ async fn authenticate(
             .is_some_and(|name| keys.authenticate(name, &key));
         if !authenticated || gateway_id.is_none() {
             let error = TransportError::unauthenticated();
+            observe_handshake("error", error.code().metric_name());
+            tracing::debug!(
+                event = "route_table.handshake.rejected",
+                error_code = error.code().metric_name(),
+                "RouteTable rejected Gateway authentication"
+            );
             let _ = framed
                 .send(WireFrame::HandshakeRejected {
                     role: ROUTE_TABLE_ROLE.to_owned(),
@@ -128,6 +149,15 @@ async fn authenticate(
                 .map_err(|_| TransportError::deadline_exceeded("Gateway handshake timed out"))?
         }
     }
+}
+
+fn observe_handshake(outcome: &'static str, code: &'static str) {
+    metrics::counter!(
+        "relaygate_route_table_handshakes_total",
+        "outcome" => outcome,
+        "code" => code
+    )
+    .increment(1);
 }
 
 async fn run_reader(
@@ -163,6 +193,7 @@ async fn run_reader(
             let _ = try_write_protocol_fault(&writer, "expected Gateway request frame");
             break;
         };
+        let operation = request.operation_name();
         if role != GATEWAY_ROLE || request_id == 0 || request_id <= last_request_id {
             let _ = try_write_protocol_fault(
                 &writer,
@@ -175,13 +206,16 @@ async fn run_reader(
         let response = match submit_service_request(&requests, context, request) {
             Ok(response) => response,
             Err(error) if error.code() == ErrorCode::ResourceExhausted => {
-                if try_write_response(&writer, request_id, Err(error), max_frame_len).is_err() {
+                if try_write_response(&writer, request_id, operation, Err(error), max_frame_len)
+                    .is_err()
+                {
                     break;
                 }
                 continue;
             }
             Err(error) => {
-                let _ = try_write_response(&writer, request_id, Err(error), max_frame_len);
+                let _ =
+                    try_write_response(&writer, request_id, operation, Err(error), max_frame_len);
                 break;
             }
         };
@@ -192,7 +226,7 @@ async fn run_reader(
                 Err(TransportError::internal("RouteTable state actor dropped a response"))
             }),
         };
-        if try_write_response(&writer, request_id, result, max_frame_len).is_err() {
+        if try_write_response(&writer, request_id, operation, result, max_frame_len).is_err() {
             break;
         }
     }
@@ -249,6 +283,7 @@ pub(super) async fn reject_over_capacity(
 ) {
     let mut framed = Framed::new(stream, FrameCodec::new(config.max_frame_len));
     let error = TransportError::resource_exhausted("RouteTable connection limit reached");
+    observe_handshake("error", error.code().metric_name());
     let send = framed.send(WireFrame::HandshakeRejected {
         role: ROUTE_TABLE_ROLE.to_owned(),
         code: error.code(),
@@ -275,5 +310,35 @@ pub(super) fn map_receive_codec_error(error: CodecError) -> TransportError {
         TransportError::unavailable(error.to_string())
     } else {
         TransportError::protocol(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::observe_handshake;
+
+    #[test]
+    fn handshake_metrics_include_connection_capacity_rejection() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            observe_handshake("error", "resource_exhausted");
+        });
+
+        let values = snapshotter.snapshot().into_vec();
+        assert!(values.iter().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_route_table_handshakes_total"
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "outcome" && label.value() == "error")
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "code" && label.value() == "resource_exhausted")
+                && matches!(value, DebugValue::Counter(1))
+        }));
     }
 }

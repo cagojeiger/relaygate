@@ -412,10 +412,30 @@ jobs:
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
+      - name: Verify Prometheus targets and Grafana provisioning
+        run: |
+          docker compose --profile observability up -d --no-deps prometheus grafana
+          docker compose --profile observability run --rm --no-deps observability-probe
+
       - name: Verify unrelated pair continuity across Gateway B restart
         run: |
+          prometheus_has() {
+            expression="$1"
+            for _ in {1..30}; do
+              if curl -fsSG --data-urlencode "query=${expression}" \
+                http://127.0.0.1:29090/api/v1/query |
+                jq -e '.data.result | length > 0' >/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "Prometheus expression did not converge: ${expression}" >&2
+            return 1
+          }
+
           docker compose restart gateway-b
           docker compose up -d --wait --no-deps gateway-b
+          prometheus_has 'sum(relaygate_gateway_peer_transport_closed_total) > 0'
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
@@ -456,11 +476,6 @@ jobs:
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
-      - name: Verify Prometheus targets and Grafana provisioning
-        run: |
-          docker compose --profile observability up -d prometheus grafana
-          docker compose --profile observability run --rm observability-probe
-
       - name: Verify dashboard fault signals and recovery
         run: |
           prometheus_has() {
@@ -481,12 +496,14 @@ jobs:
           prometheus_has 'sum(up{job="relaygate-route-table"} == 1) == 1'
           prometheus_has 'sum(relaygate_gateway_route_dependency{state="READY"}) < 3'
           prometheus_has 'sum(relaygate_gateway_route_registrations_unsynced) > 0'
+          prometheus_has 'sum(relaygate_gateway_route_dependency_transitions_total{current="degraded"}) > 0'
 
           docker compose up -d rt-0
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-          docker compose --profile observability run --rm observability-probe
+          docker compose --profile observability run --rm --no-deps observability-probe
           prometheus_has 'sum(relaygate_gateway_route_dependency{state="READY"}) == 3'
           prometheus_has 'sum(relaygate_gateway_route_registrations_unsynced) == 0'
+          prometheus_has 'sum(relaygate_gateway_route_dependency_transitions_total{previous="degraded",current="ready"}) > 0'
 
       - name: Capture logs
         if: failure()

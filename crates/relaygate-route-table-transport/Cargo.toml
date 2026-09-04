@@ -18,9 +18,11 @@ subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+metrics-util.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

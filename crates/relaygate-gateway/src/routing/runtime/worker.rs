@@ -27,6 +27,7 @@ use super::{
     },
     BoxFuture,
     desired::DesiredStore,
+    observation::RouteDependencyObservation,
     operation::{
         OperationCompletion, apply_epoch_scoped_operation_completion, execute_operation,
         is_connection_error, is_terminal_control_error,
@@ -128,6 +129,7 @@ pub(super) async fn run_shard_worker(
     let mut dirty = true;
     let mut observed_desired_version = 0_u64;
     let mut scan = tokio::time::interval(config.scan_interval);
+    let mut observation = RouteDependencyObservation::new();
     scan.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
@@ -202,12 +204,14 @@ pub(super) async fn run_shard_worker(
                     && connected.as_ref().is_some_and(|current| current.epoch == observed.epoch)
                 {
                     if is_terminal_control_error(observed.error.code()) {
+                        observation.terminal(&config.shard_id, &observed.error);
                         terminal = true;
                         connected = None;
                         mark_all_terminal(&mut registrations);
                         counts.update(&registrations);
                         client_sender.send_replace(ClientAvailability::Terminal(observed.error));
                     } else if is_connection_error(observed.error.code()) {
+                        observation.connection_lost(&config.shard_id, &observed.error);
                         connected = None;
                         client_sender.send_replace(ClientAvailability::Unavailable);
                         mark_connection_lost(&mut registrations, Instant::now());
@@ -226,15 +230,18 @@ pub(super) async fn run_shard_worker(
                         let current = ConnectedClient { epoch: connection_epoch, client };
                         connected = Some(current.clone());
                         client_sender.send_replace(ClientAvailability::Ready(current));
+                        observation.ready(&config.shard_id);
                         reconnect_backoff.reset();
                     }
                     Err(error) if is_terminal_control_error(error.code()) => {
+                        observation.connect_terminal(&config.shard_id, &error);
                         terminal = true;
                         mark_all_terminal(&mut registrations);
                         counts.update(&registrations);
                         client_sender.send_replace(ClientAvailability::Terminal(error));
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        observation.connect_failed(&config.shard_id, &error);
                         client_sender.send_replace(ClientAvailability::Unavailable);
                         reconnect_at = Instant::now() + reconnect_backoff.next_delay();
                     }
@@ -252,6 +259,7 @@ pub(super) async fn run_shard_worker(
                 if let Some(error) = result {
                     if is_terminal_control_error(error.code()) {
                         if matches!(completion.ticket.action, RegistrationAction::Register { .. }) {
+                            observation.terminal(&config.shard_id, &error);
                             terminal = true;
                             connected = None;
                             mark_all_terminal(&mut registrations);
@@ -259,6 +267,7 @@ pub(super) async fn run_shard_worker(
                             client_sender.send_replace(ClientAvailability::Terminal(error));
                         }
                     } else if is_connection_error(error.code()) {
+                        observation.connection_lost(&config.shard_id, &error);
                         connected = None;
                         client_sender.send_replace(ClientAvailability::Unavailable);
                         mark_connection_lost(&mut registrations, Instant::now());

@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use super::{ConnectorCommand, ConnectorInner, ConnectorSession};
 use crate::{
     Error, ErrorCode, PeerObservation, Pipe, Result,
+    observability::{ReconnectEpisode, close_reconnect_episode},
     pipe::{PipeState, to_wire_code},
     session::{
         EstablishedSession, ReconnectBackoff, SessionHeartbeat, SessionOutbound,
@@ -25,26 +26,39 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
         inner.config.reconnect_initial,
         inner.config.reconnect_maximum,
     );
+    let mut reconnect_episode: Option<ReconnectEpisode> = None;
     loop {
         if inner.cancel.is_cancelled() {
+            close_reconnect_episode(&mut reconnect_episode);
             inner.current.send_replace(None);
             return;
         }
         let next = match established.take() {
             Some(session) => session,
             None => match establish(&inner.config, SessionRole::Connector).await {
-                Ok(session) => session,
+                Ok(session) => {
+                    if let Some(episode) = reconnect_episode.as_mut() {
+                        episode.record_attempt("success");
+                    }
+                    session
+                }
                 Err(error) => {
+                    if let Some(episode) = reconnect_episode.as_mut() {
+                        episode.record_attempt("error");
+                    }
                     tracing::debug!(
                         component = "sdk",
                         event = "sdk.session.reconnect_failed",
                         role = "connector",
-                        error_code = ?error.code(),
+                        error_code = error.code().metric_name(),
                         observation = ?error.observation(),
                         "Connector session reconnect failed"
                     );
                     tokio::select! {
-                        _ = inner.cancel.cancelled() => return,
+                        _ = inner.cancel.cancelled() => {
+                            close_reconnect_episode(&mut reconnect_episode);
+                            return;
+                        },
                         _ = tokio::time::sleep(backoff.next_delay()) => {}
                     }
                     continue;
@@ -65,6 +79,9 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             cancel: session_cancel.clone(),
         });
         inner.current.send_replace(Some(Arc::clone(&session)));
+        if let Some(episode) = reconnect_episode.take() {
+            episode.recover();
+        }
         run_connector_session(
             next,
             control_rx,
@@ -87,13 +104,18 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             inner.current.send_replace(None);
         }
         if inner.cancel.is_cancelled() {
+            close_reconnect_episode(&mut reconnect_episode);
             return;
         }
+        reconnect_episode = Some(ReconnectEpisode::start(SessionRole::Connector));
         if started_at.elapsed() >= inner.config.reconnect_maximum {
             backoff.reset();
         }
         tokio::select! {
-            _ = inner.cancel.cancelled() => return,
+            _ = inner.cancel.cancelled() => {
+                close_reconnect_episode(&mut reconnect_episode);
+                return;
+            },
             _ = tokio::time::sleep(backoff.next_delay()) => {}
         }
     }
