@@ -414,8 +414,8 @@ jobs:
 
       - name: Verify Prometheus targets and Grafana provisioning
         run: |
-          docker compose --profile observability up -d prometheus grafana
-          docker compose --profile observability run --rm observability-probe
+          docker compose --profile observability up -d --no-deps prometheus grafana
+          docker compose --profile observability run --rm --no-deps observability-probe
 
       - name: Verify unrelated pair continuity across Gateway B restart
         run: |
@@ -500,7 +500,7 @@ jobs:
 
           docker compose up -d rt-0
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
-          docker compose --profile observability run --rm observability-probe
+          docker compose --profile observability run --rm --no-deps observability-probe
           prometheus_has 'sum(relaygate_gateway_route_dependency{state="READY"}) == 3'
           prometheus_has 'sum(relaygate_gateway_route_registrations_unsynced) == 0'
           prometheus_has 'sum(relaygate_gateway_route_dependency_transitions_total{previous="degraded",current="ready"}) > 0'
