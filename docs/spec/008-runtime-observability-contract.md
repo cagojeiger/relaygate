@@ -12,7 +12,7 @@
 Gateway / SDK ── emit event ──► host subscriber ──► stdout collector
       │
       ├── current state ───────► GatewaySnapshot ──► optional periodic event
-      └── bounded gauges ──────► optional Prometheus exporter
+      └── bounded RED/USE ─────► optional Prometheus exporter
 ```
 
 ## 소유권
@@ -152,13 +152,28 @@ Gateway gauges
   peer_transports_connecting / peer_transports_ready / peer_streams
   route_dependency{state=DISABLED|READY|DEGRADED|TERMINAL}  one-hot
 
+Gateway RED/USE
+  open_requests_total
+  open_results_total{outcome=success|error|cancelled,code}
+  open_duration_seconds{outcome}
+  writer_queue_rejections_total{reason=full|closed}
+
 RouteTable gauges
   registrations / mappings / routes / expiry_records
+
+RouteTable RED
+  requests_total{operation,outcome=success|error}
+  request_duration_seconds{operation,outcome}
 ```
 
 `ClientId`, session/binding/connection/stream identity, credential, payload와 error message는 label이나
-metric 값에 포함하지 않는다. operation counter와 latency histogram은 실제 부하·장애 데이터를
-확인한 뒤 별도 계약으로 추가한다.
+metric 값에 포함하지 않는다. `operation`, `outcome`, protocol `code`, queue `reason`은 구현이
+닫힌 bounded enum만 사용한다.
+
+Gateway OPEN duration은 유효한 새 `ConnectionId`의 `OPEN`을 수락한 시점부터 `OPENED`,
+`OPEN_FAILED` 또는 local cancellation까지다. 중복·과거 `ConnectionId`처럼 protocol상 수락하지
+않은 frame은 요청률에 포함하지 않는다. RouteTable duration은 인증된 요청을 shard actor가 꺼낸
+뒤 domain 결과를 만들 때까지의 service time이며 network와 actor queue 대기시간은 포함하지 않는다.
 
 ## 운영 health 관찰
 
@@ -206,5 +221,5 @@ RT 전체 truth 또는 restart 명령이 아니다.
 | `OBS-011` | `GatewaySnapshot`은 `RouteDependencyHealth`를 제공해야 한다. local-only는 `DISABLED`, distributed mode는 terminal failure, unavailable shard와 `UNSYNCED` registration을 우선순위에 따라 `TERMINAL`, `DEGRADED`, `READY`로 집계해야 한다. 한 shard의 terminal failure는 summary를 `TERMINAL`로 만들지만 unaffected shard operation의 실패를 뜻하지 않아야 한다. |
 | `OBS-012` | `ProcessLiveness`, `SdkAdmissionReadiness`와 `RouteDependencyHealth`는 별도 신호여야 한다. RT 저하는 process 또는 admission 실패를 직접 만들지 않고, admission 저하는 process failure를 뜻하지 않아야 한다. |
 | `OBS-013` | Prometheus exporter는 `RELAYGATE_METRICS_BIND_ADDR`가 있을 때만 `relaygate-server`가 소유하며 library 또는 SDK가 listening port를 만들지 않아야 한다. interval만 단독 지정하거나 잘못된 address·0 interval이면 serve 전에 실패해야 한다. |
-| `OBS-014` | Gateway metric은 `GatewaySnapshot`의 current count와 route dependency one-hot state를 bounded interval로 반영하고, RT metric은 actor가 소유한 `RouteTableStats`를 mutation·expiry 뒤 반영해야 한다. |
-| `OBS-015` | metric label은 process role과 route dependency state처럼 bounded한 값만 사용하고 routing/session/Pipe identity, credential, payload와 application data를 포함하지 않아야 한다. image version과 digest는 metric에 복제하지 않고 배포 metadata에서 관찰해야 한다. |
+| `OBS-014` | Gateway metric은 `GatewaySnapshot`의 current count와 route dependency one-hot state, accepted OPEN의 request/result/duration, bounded writer queue rejection을 반영해야 한다. RT metric은 actor가 소유한 `RouteTableStats`와 operation request/outcome/service duration을 반영해야 한다. |
+| `OBS-015` | metric label은 process role, route dependency state, bounded operation/outcome/code/reason만 사용하고 routing/session/Pipe identity, credential, payload와 application data를 포함하지 않아야 한다. image version과 digest는 metric에 복제하지 않고 배포 metadata에서 관찰해야 한다. |

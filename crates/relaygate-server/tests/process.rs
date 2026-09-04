@@ -20,7 +20,7 @@ use std::{
 #[cfg(unix)]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(unix)]
-use relaygate_protocol::{Frame, FrameCodec, SessionRole};
+use relaygate_protocol::{ClientKey, ErrorCode, Frame, FrameCodec, SessionRole};
 #[cfg(unix)]
 use relaygate_route_table::{
     BindingId, ClientId, GatewayId, GatewayLocator, ListenerSessionId, MappingEntry,
@@ -147,6 +147,25 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
             "expected {metric} to report the one current registration/mapping/route/expiry record"
         );
     }
+    assert!(metric_has_labels(
+        &metrics,
+        "relaygate_route_table_requests_total",
+        &[
+            "role=\"route_table\"",
+            "operation=\"resolve\"",
+            "outcome=\"error\""
+        ]
+    ));
+    assert!(metric_has_labels(
+        &metrics,
+        "relaygate_route_table_requests_total",
+        &[
+            "role=\"route_table\"",
+            "operation=\"register\"",
+            "outcome=\"success\""
+        ]
+    ));
+    assert!(metrics.contains("relaygate_route_table_request_duration_seconds_count"));
     assert!(!metrics.contains(secret));
 
     let signal_status = Command::new("kill")
@@ -619,8 +638,9 @@ fn default_json_logs_do_not_emit_gateway_snapshots() -> Result<(), Box<dyn Error
 }
 
 #[cfg(unix)]
-#[test]
-fn gateway_metrics_expose_current_state_without_secrets() -> Result<(), Box<dyn Error>> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
+-> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
     let secret = "must-not-appear-in-metrics-output";
@@ -633,10 +653,86 @@ fn gateway_metrics_expose_current_state_without_secrets() -> Result<(), Box<dyn 
     )?;
 
     wait_until_healthy(&address, &mut server)?;
-    let body = wait_for_metrics(&metrics_address, &mut server, "relaygate_gateway_sessions")?;
+    let mut listener = connect_sdk_session(&address, SessionRole::Listener).await?;
+    listener
+        .send(Frame::Register {
+            request_id: 1,
+            client_id: "echo.alpha".to_owned(),
+            client_key: ClientKey::new(secret),
+        })
+        .await?;
+    let registered = tokio::time::timeout(Duration::from_secs(1), listener.next()).await?;
+    assert!(
+        matches!(
+            registered,
+            Some(Ok(Frame::Registered { request_id: 1, .. }))
+        ),
+        "Listener should register before the successful OPEN metric case: {registered:?}"
+    );
+
+    let mut sdk = connect_sdk_session(&address, SessionRole::Connector).await?;
+    sdk.send(Frame::Open {
+        connection_id: 1,
+        client_id: "echo.alpha".to_owned(),
+    })
+    .await?;
+    let offer = tokio::time::timeout(Duration::from_secs(1), listener.next()).await?;
+    let pipe_id = match offer {
+        Some(Ok(Frame::Offer { pipe_id, .. })) => pipe_id,
+        other => return Err(io::Error::other(format!("expected OFFER: {other:?}")).into()),
+    };
+    listener.send(Frame::OfferAccepted { pipe_id }).await?;
+    let opened = tokio::time::timeout(Duration::from_secs(1), sdk.next()).await?;
+    assert!(
+        matches!(opened, Some(Ok(Frame::Opened { pipe_id: opened })) if opened == pipe_id),
+        "accepted Listener offer should complete OPEN: {opened:?}"
+    );
+
+    sdk.send(Frame::Open {
+        connection_id: 2,
+        client_id: "missing".to_owned(),
+    })
+    .await?;
+    let result = tokio::time::timeout(Duration::from_secs(1), sdk.next()).await?;
+    assert!(
+        matches!(
+            result,
+            Some(Ok(Frame::OpenFailed {
+                connection_id: 2,
+                code: ErrorCode::NotFound,
+                ..
+            }))
+        ),
+        "missing local binding should produce terminal OPEN_FAILED: {result:?}"
+    );
+    let body = wait_for_metrics(
+        &metrics_address,
+        &mut server,
+        "relaygate_gateway_open_results_total",
+    )?;
     assert!(body.contains("role=\"gateway\""));
     assert!(body.contains("relaygate_gateway_sessions"));
     assert!(body.contains("relaygate_gateway_route_dependency"));
+    assert!(metric_has_labels(
+        &body,
+        "relaygate_gateway_open_requests_total",
+        &["role=\"gateway\""]
+    ));
+    assert!(metric_has_labels(
+        &body,
+        "relaygate_gateway_open_results_total",
+        &["role=\"gateway\"", "outcome=\"success\"", "code=\"ok\""]
+    ));
+    assert!(metric_has_labels(
+        &body,
+        "relaygate_gateway_open_results_total",
+        &[
+            "role=\"gateway\"",
+            "outcome=\"error\"",
+            "code=\"not_found\""
+        ]
+    ));
+    assert!(body.contains("relaygate_gateway_open_duration_seconds_count"));
     assert!(!body.contains(secret));
     assert!(!body.contains("client_key"));
     assert!(!body.contains("payload"));
@@ -907,6 +1003,12 @@ fn wait_for_metrics(
         }
         thread::sleep(POLL_INTERVAL);
     }
+}
+
+#[cfg(unix)]
+fn metric_has_labels(body: &str, metric: &str, labels: &[&str]) -> bool {
+    body.lines()
+        .any(|line| line.starts_with(metric) && labels.iter().all(|label| line.contains(label)))
 }
 
 #[cfg(unix)]

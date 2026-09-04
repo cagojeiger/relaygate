@@ -180,8 +180,8 @@ reason = "SDK-Gateway heartbeat timeout과 실제 socket 기반 PeerTransport he
 [[case]]
 id = "T-OBS-06"
 status = "executable"
-rust = ["gateway_metrics_expose_current_state_without_secrets", "route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm", "occupied_metrics_address_fails_before_gateway_serve", "invalid_environment_configuration_fails_before_serving"]
-reason = "opt-in Prometheus endpoint의 Gateway/RT current-state gauge, bounded role/state label과 secret 비노출을 실제 process HTTP scrape로 검증한다. malformed·점유 address, interval 단독 설정과 0 interval은 serve 전에 실패한다."
+rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", "route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm", "occupied_metrics_address_fails_before_gateway_serve", "invalid_environment_configuration_fails_before_serving"]
+reason = "opt-in Prometheus endpoint의 Gateway/RT current-state gauge와 OPEN/RT operation RED signal, bounded label과 secret 비노출을 실제 process HTTP scrape로 검증한다. malformed·점유 address, interval 단독 설정과 0 interval은 serve 전에 실패한다."
 
 [[case]]
 id = "T-HEALTH-01"
