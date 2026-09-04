@@ -5,8 +5,9 @@ use std::{io, time::Duration};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{Frame, FrameCodec, PipeId, SessionId, SessionRole};
-use relaygate_sdk::{Config, Connector, ErrorCode};
+use relaygate_sdk::{Config, Connector, ErrorCode, PeerObservation};
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     time::{Instant, timeout},
 };
@@ -37,6 +38,11 @@ async fn lifecycle_case() -> TestResult {
                 payload: Bytes::from_static(b"first"),
             })
             .await?;
+        match next_application_frame(&mut initial).await? {
+            Frame::Data { pipe_id, payload }
+                if pipe_id == initial_pipe_id && payload.as_ref() == b"written once" => {}
+            other => return Err(unexpected(other).into()),
+        }
         drop(initial);
 
         let rejected_at = reject_next_connector_handshake(&gateway).await?;
@@ -67,6 +73,7 @@ async fn lifecycle_case() -> TestResult {
     .await?;
 
     let mut first = connector.open("echo.initial").await?;
+    first.write_all_bytes(b"written once").await?;
     let mut first_payload = [0_u8; 5];
     assert_eq!(
         first.read_into(&mut first_payload).await?,
@@ -78,6 +85,9 @@ async fn lifecycle_case() -> TestResult {
         .err()
         .ok_or_else(|| io::Error::other("lost ConnectorSession did not fail old Pipe"))?;
     assert_eq!(first_error.code(), ErrorCode::Unavailable);
+    assert_eq!(first_error.observation(), PeerObservation::NotObserved);
+    // The hint is not a receipt: both sides already exchanged payload.
+    assert!(first_error.is_retryable());
 
     let mut replacement = connector.open("echo.recovered").await?;
     let mut replacement_payload = [0_u8; 6];
@@ -86,6 +96,26 @@ async fn lifecycle_case() -> TestResult {
         replacement_payload.len()
     );
     assert_eq!(&replacement_payload, b"second");
+
+    let (mut old_reader, mut old_writer) = first.into_split();
+    let read_error = old_reader
+        .read(&mut first_payload)
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("old Pipe resumed reading after reconnect"))?;
+    let write_error = old_writer
+        .write_all(b"must not replay")
+        .await
+        .err()
+        .ok_or_else(|| io::Error::other("old Pipe resumed writing after reconnect"))?;
+    for error in [read_error, write_error] {
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<relaygate_sdk::Error>()),
+            Some(&first_error)
+        );
+    }
 
     connector.close();
     let replacement_error = timeout(

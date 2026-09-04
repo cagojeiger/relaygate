@@ -111,6 +111,11 @@ RESET = 실패에 의한 전체 Pipe 종료
 
 `close`는 `CLOSE` 의미로 양방향을 정상 종료하지만, application payload 처리나 아직 drain하지 않은 bytes의 전달을 보장하지 않는다. graceful write drain이 필요하면 먼저 `shutdown(write)`를 사용한다. transport 상실, protocol 위반 또는 terminal 내부 실패는 `RESET` 의미로 양방향 pending I/O를 실패시킨다. 세 종료 신호의 중복 처리는 안전해야 하고 닫힌 Pipe를 다시 열어서는 안 된다.
 
+Pipe와 owned half의 I/O 오류에는 payload 전달 여부가 없다. `observation()`이나
+`is_retryable()`을 읽어 이미 보낸 bytes의 재전송을 결정해서는 안 된다. Tokio I/O 오류에서
+SDK `Error`를 꺼낸 경우도 같다. 이 힌트는 실패한 연결·등록 제어 호출에만 적용한다.
+적용 범위는 [SPEC 007](007-error-and-state-model.md#peerobservation)을 따른다.
+
 ## Backpressure
 
 SDK의 incoming queue와 Pipe buffer는 모두 bounded여야 한다.
