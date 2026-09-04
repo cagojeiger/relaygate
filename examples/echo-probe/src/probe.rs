@@ -19,6 +19,8 @@ use crate::config::{
     environment, gateway_addresses, soak_concurrency, soak_duration, storm_pause, storm_sessions,
 };
 
+const STORM_PIPE_BATCH_SIZE: usize = 64;
+
 pub(crate) async fn run_single() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_ADDR", "gateway:27420");
     let client_id = environment("RELAYGATE_CLIENT_ID", "echo.alpha");
@@ -249,18 +251,7 @@ pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
     await_marker_pipes_closed(marker_pipes, pause).await?;
     println!("relaygate reconnect storm observed all original Connector sessions close");
 
-    let mut operations = JoinSet::new();
-    for (index, connector) in connectors.iter().enumerate() {
-        let payload = format!("relaygate reconnect storm session={index}").into_bytes();
-        spawn_echo(
-            &mut operations,
-            connector.clone(),
-            client_id.clone(),
-            payload,
-            format!("phase=reconnect-storm session={index} client_id={client_id}"),
-        );
-    }
-    let result = join_all(&mut operations).await;
+    let result = verify_connectors_in_batches(&connectors, &client_id).await;
     for connector in connectors {
         connector.close();
     }
@@ -443,29 +434,31 @@ async fn connect_many(address: &str, count: usize) -> anyhow::Result<Vec<Connect
 }
 
 async fn open_marker_pipes(connectors: &[Connector], client_id: &str) -> anyhow::Result<Vec<Pipe>> {
-    let mut operations = JoinSet::new();
-    for (index, connector) in connectors.iter().enumerate() {
-        let connector = connector.clone();
-        let client_id = client_id.to_owned();
-        operations.spawn(async move {
-            let mut pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT).await?;
-            let marker = format!("relaygate reconnect marker session={index}").into_bytes();
-            timeout(ECHO_DEADLINE, async {
-                pipe.write_all(&marker).await?;
-                let mut echoed = vec![0_u8; marker.len()];
-                pipe.read_exact(&mut echoed).await?;
-                ensure!(echoed == marker, "marker echo mismatch for session {index}");
-                Ok::<_, anyhow::Error>(())
-            })
-            .await
-            .with_context(|| format!("marker echo timed out for session {index}"))??;
-            Ok::<_, anyhow::Error>(pipe)
-        });
-    }
-
     let mut pipes = Vec::with_capacity(connectors.len());
-    while let Some(result) = operations.join_next().await {
-        pipes.push(result.context("marker Pipe task failed to join")??);
+    for (batch, connectors) in connectors.chunks(STORM_PIPE_BATCH_SIZE).enumerate() {
+        let mut operations = JoinSet::new();
+        for (offset, connector) in connectors.iter().enumerate() {
+            let index = batch * STORM_PIPE_BATCH_SIZE + offset;
+            let connector = connector.clone();
+            let client_id = client_id.to_owned();
+            operations.spawn(async move {
+                let mut pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT).await?;
+                let marker = format!("relaygate reconnect marker session={index}").into_bytes();
+                timeout(ECHO_DEADLINE, async {
+                    pipe.write_all(&marker).await?;
+                    let mut echoed = vec![0_u8; marker.len()];
+                    pipe.read_exact(&mut echoed).await?;
+                    ensure!(echoed == marker, "marker echo mismatch for session {index}");
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await
+                .with_context(|| format!("marker echo timed out for session {index}"))??;
+                Ok::<_, anyhow::Error>(pipe)
+            });
+        }
+        while let Some(result) = operations.join_next().await {
+            pipes.push(result.context("marker Pipe task failed to join")??);
+        }
     }
     Ok(pipes)
 }
@@ -490,6 +483,28 @@ async fn await_marker_pipes_closed(pipes: Vec<Pipe>, deadline: Duration) -> anyh
         });
     }
     join_all(&mut operations).await
+}
+
+async fn verify_connectors_in_batches(
+    connectors: &[Connector],
+    client_id: &str,
+) -> anyhow::Result<()> {
+    for (batch, connectors) in connectors.chunks(STORM_PIPE_BATCH_SIZE).enumerate() {
+        let mut operations = JoinSet::new();
+        for (offset, connector) in connectors.iter().enumerate() {
+            let index = batch * STORM_PIPE_BATCH_SIZE + offset;
+            let payload = format!("relaygate reconnect storm session={index}").into_bytes();
+            spawn_echo(
+                &mut operations,
+                connector.clone(),
+                client_id.to_owned(),
+                payload,
+                format!("phase=reconnect-storm session={index} client_id={client_id}"),
+            );
+        }
+        join_all(&mut operations).await?;
+    }
+    Ok(())
 }
 
 fn spawn_echo(
