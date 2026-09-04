@@ -9,6 +9,18 @@ pub(crate) enum PeerError {
     ResourceExhausted(&'static str),
 }
 
+impl PeerError {
+    pub(crate) const fn metric_code(&self) -> &'static str {
+        match self {
+            Self::InvalidArgument(_) => "invalid_argument",
+            Self::AlreadyExists(_) => "already_exists",
+            Self::FailedPrecondition(_) => "failed_precondition",
+            Self::Protocol(_) => "protocol_error",
+            Self::ResourceExhausted(_) => "resource_exhausted",
+        }
+    }
+}
+
 impl fmt::Display for PeerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (code, message) = match self {

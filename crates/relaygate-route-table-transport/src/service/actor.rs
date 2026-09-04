@@ -47,11 +47,15 @@ pub(super) async fn run_shard_actor(
                     .validate_preconditions(request.context, shard.generation())
                     .and_then(|()| request.request.into_domain())
                     .and_then(|operation| execute(&mut shard, request.context, operation, now));
-                let outcome = if response.is_ok() { "success" } else { "error" };
+                let (outcome, code) = match &response {
+                    Ok(_) => ("success", "ok"),
+                    Err(error) => ("error", error.code().metric_name()),
+                };
                 metrics::counter!(
                     "relaygate_route_table_requests_total",
                     "operation" => operation,
-                    "outcome" => outcome
+                    "outcome" => outcome,
+                    "code" => code
                 )
                 .increment(1);
                 metrics::histogram!(
@@ -64,7 +68,11 @@ pub(super) async fn run_shard_actor(
                 let _ = request.reply.send(response);
             }
             () = wait_until(next_expiry) => {
-                shard.expire_due(tokio::time::Instant::now().into_std());
+                let expired = shard.expire_due(tokio::time::Instant::now().into_std());
+                if expired > 0 {
+                    metrics::counter!("relaygate_route_table_expired_registrations_total")
+                        .increment(expired as u64);
+                }
                 observe_shard(&shard);
             }
         }

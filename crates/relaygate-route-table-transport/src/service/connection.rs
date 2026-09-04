@@ -32,8 +32,21 @@ pub(super) async fn handle_connection(
     let mut framed = Framed::new(stream, FrameCodec::new(config.max_frame_len));
     let context = match authenticate(&mut framed, &keys, config.handshake_timeout, &shutdown).await
     {
-        Ok(Some(context)) => context,
-        Ok(None) | Err(_) => return,
+        Ok(Some(context)) => {
+            observe_handshake("success", "ok");
+            context
+        }
+        Ok(None) => return,
+        Err(error) => {
+            observe_handshake("error", error.code().metric_name());
+            tracing::debug!(
+                event = "route_table.handshake.failed",
+                error_code = error.code().metric_name(),
+                error = %error,
+                "RouteTable rejected or lost a Gateway handshake"
+            );
+            return;
+        }
     };
     let (sink, stream) = framed.split();
     let (writer, writer_receiver) = mpsc::channel(config.writer_queue_capacity);
@@ -82,10 +95,12 @@ async fn authenticate(
             internal_gateway_key,
         } = frame
         else {
+            observe_handshake("error", "protocol_error");
             send_protocol_fault(framed, "expected Gateway HELLO").await;
             return Ok(None);
         };
         if role != GATEWAY_ROLE {
+            observe_handshake("error", "protocol_error");
             send_protocol_fault(framed, "Gateway HELLO has an invalid role").await;
             return Ok(None);
         }
@@ -98,6 +113,12 @@ async fn authenticate(
             .is_some_and(|name| keys.authenticate(name, &key));
         if !authenticated || gateway_id.is_none() {
             let error = TransportError::unauthenticated();
+            observe_handshake("error", error.code().metric_name());
+            tracing::debug!(
+                event = "route_table.handshake.rejected",
+                error_code = error.code().metric_name(),
+                "RouteTable rejected Gateway authentication"
+            );
             let _ = framed
                 .send(WireFrame::HandshakeRejected {
                     role: ROUTE_TABLE_ROLE.to_owned(),
@@ -128,6 +149,15 @@ async fn authenticate(
                 .map_err(|_| TransportError::deadline_exceeded("Gateway handshake timed out"))?
         }
     }
+}
+
+fn observe_handshake(outcome: &'static str, code: &'static str) {
+    metrics::counter!(
+        "relaygate_route_table_handshakes_total",
+        "outcome" => outcome,
+        "code" => code
+    )
+    .increment(1);
 }
 
 async fn run_reader(

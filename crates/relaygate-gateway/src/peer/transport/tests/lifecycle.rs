@@ -94,6 +94,7 @@ async fn competing_local_cancel_and_peer_eof_emit_exactly_one_transport_loss() -
     let TransportNotice::TransportLost {
         peer_gateway_id: actual_peer_gateway_id,
         peer_transport_id: actual_transport_id,
+        reason: _,
         streams,
     } = &notices[0]
     else {

@@ -9,7 +9,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ActiveOpenSet, TransportCommand, TransportNotice,
+    ActiveOpenSet, TransportCloseReason, TransportCommand, TransportNotice,
     liveness::{LivenessAction, TransportLiveness, staggered_interval},
     state::TransportActor,
     writer::run_writer,
@@ -39,6 +39,7 @@ pub(super) async fn run_transport_actor(
     let idle_retirement_timeout = config.idle_retirement_timeout;
     let (aggregate_writer, aggregate_receiver) = mpsc::channel(config.writer_queue_capacity);
     let (writer_wake, mut writer_wakes) = mpsc::channel(1);
+    let (writer_failure, mut writer_failures) = mpsc::channel(1);
     let actor_config = config.clone();
     let mut actor = TransportActor::new(
         &established,
@@ -55,6 +56,7 @@ pub(super) async fn run_transport_actor(
         sink,
         aggregate_receiver,
         writer_wake,
+        writer_failure,
         close.clone(),
     ));
     let mut liveness = TransportLiveness::new(
@@ -63,6 +65,7 @@ pub(super) async fn run_transport_actor(
         idle_retirement_timeout,
     );
     liveness.sync_stream_state(actor.streams.is_empty());
+    let mut close_reason = TransportCloseReason::LocalClose;
 
     loop {
         let deadline = earliest_deadline(actor.next_open_deadline(), liveness.next_deadline());
@@ -75,7 +78,10 @@ pub(super) async fn run_transport_actor(
                 liveness.sync_stream_state(actor.streams.is_empty());
             }
             frame = source.next() => {
-                let Some(frame) = frame else { break };
+                let Some(frame) = frame else {
+                    close_reason = TransportCloseReason::RemoteClosed;
+                    break;
+                };
                 match frame {
                     Ok(frame) => {
                         #[cfg(test)]
@@ -100,15 +106,24 @@ pub(super) async fn run_transport_actor(
                                 streams = actor.streams.len(),
                                 "PeerTransport heartbeat response timed out"
                             );
+                            close_reason = TransportCloseReason::HeartbeatTimeout;
                             break;
                         }
                         if !actor.handle_frame(frame).await {
+                            close_reason = TransportCloseReason::ProtocolError;
                             break;
                         }
                         actor.flush_stream_queues().await;
                         liveness.sync_stream_state(actor.streams.is_empty());
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        close_reason = if error.is_io() {
+                            TransportCloseReason::RemoteClosed
+                        } else {
+                            TransportCloseReason::ProtocolError
+                        };
+                        break;
+                    }
                 }
             }
             () = wait_for_deadline(deadline), if deadline.is_some() => {
@@ -123,6 +138,7 @@ pub(super) async fn run_transport_actor(
                     match action {
                         LivenessAction::Ping(frame) => {
                             if actor.aggregate_writer.try_send(frame).is_err() {
+                                close_reason = TransportCloseReason::WriterFailed;
                                 break;
                             }
                             liveness.mark_probe_committed();
@@ -136,6 +152,7 @@ pub(super) async fn run_transport_actor(
                                 streams = actor.streams.len(),
                                 "PeerTransport heartbeat response timed out"
                             );
+                            close_reason = TransportCloseReason::HeartbeatTimeout;
                             break;
                         }
                         LivenessAction::IdleRetired => {
@@ -147,6 +164,7 @@ pub(super) async fn run_transport_actor(
                                 streams = actor.streams.len(),
                                 "PeerTransport idle retirement timeout expired"
                             );
+                            close_reason = TransportCloseReason::IdleRetired;
                             break;
                         }
                     }
@@ -155,10 +173,19 @@ pub(super) async fn run_transport_actor(
             }
             wake = writer_wakes.recv() => {
                 if wake.is_none() {
+                    if !close.is_cancelled() {
+                        close_reason = TransportCloseReason::WriterFailed;
+                    }
                     break;
                 }
                 actor.flush_stream_queues().await;
                 liveness.sync_stream_state(actor.streams.is_empty());
+            }
+            failure = writer_failures.recv() => {
+                if failure.is_some() || !close.is_cancelled() {
+                    close_reason = TransportCloseReason::WriterFailed;
+                }
+                break;
             }
         }
     }
@@ -175,6 +202,7 @@ pub(super) async fn run_transport_actor(
         .send(TransportNotice::TransportLost {
             peer_gateway_id,
             peer_transport_id,
+            reason: close_reason,
             streams: losses,
         })
         .await;

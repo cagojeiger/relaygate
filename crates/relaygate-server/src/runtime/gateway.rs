@@ -59,31 +59,39 @@ pub(crate) async fn serve(
         "RelayGate Gateway started"
     );
 
+    let observation_shutdown = CancellationToken::new();
+    let mut observation_tasks = Vec::new();
     if let Some(interval) = config.stats_interval {
         log_gateway_snapshot(&gateway);
         let stats_gateway = gateway.clone();
-        let stats_shutdown = shutdown.clone();
-        tokio::spawn(async move {
+        let stats_shutdown = observation_shutdown.clone();
+        observation_tasks.push(tokio::spawn(async move {
             log_gateway_stats(stats_gateway, stats_shutdown, interval).await;
-        });
+        }));
     }
     if let Some(metrics) = metrics {
         metrics::observe_gateway(gateway.snapshot());
         let metrics_gateway = gateway.clone();
-        let metrics_shutdown = shutdown.clone();
-        tokio::spawn(async move {
+        let metrics_shutdown = observation_shutdown.clone();
+        observation_tasks.push(tokio::spawn(async move {
             publish_gateway_metrics(metrics_gateway, metrics_shutdown, metrics.interval()).await;
-        });
+        }));
     }
 
-    match peer_listener {
+    let serve_result = match peer_listener {
         Some(peer_listener) => {
             gateway
                 .serve_distributed(listener, peer_listener, shutdown)
-                .await?
+                .await
         }
-        None => gateway.serve(listener, shutdown).await?,
+        None => gateway.serve(listener, shutdown).await,
+    };
+    metrics::observe_gateway(gateway.snapshot());
+    observation_shutdown.cancel();
+    for task in observation_tasks {
+        let _ = task.await;
     }
+    serve_result?;
     tracing::info!(
         component = "server",
         event = "server.stopped",

@@ -11,6 +11,7 @@ pub(super) async fn run_writer(
     mut sink: SplitSink<Framed<TcpStream, PeerFrameCodec>, PeerFrame>,
     mut frames: mpsc::Receiver<PeerFrame>,
     wake: mpsc::Sender<()>,
+    failure: mpsc::Sender<()>,
     close: CancellationToken,
 ) {
     loop {
@@ -23,7 +24,7 @@ pub(super) async fn run_writer(
                     () = close.cancelled() => break,
                     result = send => {
                         if result.is_err() {
-                            close.cancel();
+                            let _ = failure.try_send(());
                             break;
                         }
                         match wake.try_send(()) {

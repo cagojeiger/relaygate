@@ -122,6 +122,23 @@ impl Error {
 }
 
 impl ErrorCode {
+    pub(crate) const fn metric_name(self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::Unauthenticated => "unauthenticated",
+            Self::PermissionDenied => "permission_denied",
+            Self::NotFound => "not_found",
+            Self::FailedPrecondition => "failed_precondition",
+            Self::Unavailable => "unavailable",
+            Self::DeadlineExceeded => "deadline_exceeded",
+            Self::ResourceExhausted => "resource_exhausted",
+            Self::Cancelled => "cancelled",
+            Self::ProtocolError => "protocol_error",
+            Self::Internal => "internal",
+            Self::AlreadyExists => "already_exists",
+        }
+    }
+
     pub(crate) fn from_wire(value: WireErrorCode) -> Self {
         match value {
             WireErrorCode::InvalidArgument => Self::InvalidArgument,

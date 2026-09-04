@@ -19,6 +19,24 @@ pub enum ErrorCode {
     Internal,
 }
 
+impl ErrorCode {
+    #[must_use]
+    pub const fn metric_name(self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::Unauthenticated => "unauthenticated",
+            Self::PermissionDenied => "permission_denied",
+            Self::NotFound => "not_found",
+            Self::FailedPrecondition => "failed_precondition",
+            Self::Unavailable => "unavailable",
+            Self::DeadlineExceeded => "deadline_exceeded",
+            Self::ResourceExhausted => "resource_exhausted",
+            Self::ProtocolError => "protocol_error",
+            Self::Internal => "internal",
+        }
+    }
+}
+
 impl fmt::Display for ErrorCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {

@@ -544,7 +544,7 @@ fn observe_open_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
     .record(started_at.elapsed().as_secs_f64());
 }
 
-const fn error_code_name(code: ErrorCode) -> &'static str {
+pub(super) const fn error_code_name(code: ErrorCode) -> &'static str {
     match code {
         ErrorCode::InvalidArgument => "invalid_argument",
         ErrorCode::Unauthenticated => "unauthenticated",

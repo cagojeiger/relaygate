@@ -261,6 +261,18 @@ services:
           attempts=$$((attempts + 1)); test "$$attempts" -lt 60; sleep 1
         done
         for expression in \
+          'sum(relaygate_gateway_listener_registration_results_total{outcome="success"}) > 0' \
+          'sum(relaygate_gateway_route_dependency_transitions_total{current="ready"}) > 0' \
+          'sum(relaygate_gateway_route_connection_attempts_total{outcome="success"}) > 0' \
+          'sum(relaygate_gateway_peer_handshakes_total{outcome="success"}) > 0' \
+          'sum(relaygate_route_table_handshakes_total{outcome="success"}) > 0'; do
+          attempts=0
+          until curl -fsSG --data-urlencode "query=$$expression" \
+            http://prometheus:9090/api/v1/query | grep -Fq '"result":[{'; do
+            attempts=$$((attempts + 1)); test "$$attempts" -lt 60; sleep 1
+          done
+        done
+        for expression in \
           'histogram_quantile(0.95, sum by (le) (relaygate_gateway_open_duration_seconds_bucket)) > 0' \
           'histogram_quantile(0.95, sum by (le) (relaygate_route_table_request_duration_seconds_bucket)) > 0'; do
           attempts=0

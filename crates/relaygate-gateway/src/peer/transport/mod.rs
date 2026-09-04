@@ -90,8 +90,32 @@ pub(super) enum TransportNotice {
     TransportLost {
         peer_gateway_id: GatewayId,
         peer_transport_id: PeerTransportId,
+        reason: TransportCloseReason,
         streams: Vec<LostPeerStream>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TransportCloseReason {
+    LocalClose,
+    RemoteClosed,
+    ProtocolError,
+    WriterFailed,
+    HeartbeatTimeout,
+    IdleRetired,
+}
+
+impl TransportCloseReason {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalClose => "local_close",
+            Self::RemoteClosed => "remote_closed",
+            Self::ProtocolError => "protocol_error",
+            Self::WriterFailed => "writer_failed",
+            Self::HeartbeatTimeout => "heartbeat_timeout",
+            Self::IdleRetired => "idle_retired",
+        }
+    }
 }
 
 #[derive(Clone)]

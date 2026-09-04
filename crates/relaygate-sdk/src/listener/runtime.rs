@@ -13,6 +13,7 @@ use tokio::time::Instant;
 
 use super::{ListenerRuntimeInner, ListenerState};
 use crate::{
+    observability::ReconnectEpisode,
     pipe::PipeState,
     session::{EstablishedSession, ReconnectBackoff, establish},
 };
@@ -28,6 +29,7 @@ pub(super) async fn listener_supervisor(
         inner.config.reconnect_initial,
         inner.config.reconnect_maximum,
     );
+    let mut reconnect_episode: Option<ReconnectEpisode> = None;
     loop {
         if inner.cancel.is_cancelled() {
             inner.close_all();
@@ -36,13 +38,21 @@ pub(super) async fn listener_supervisor(
         let next = match established.take() {
             Some(session) => session,
             None => match establish(&inner.config, SessionRole::Listener).await {
-                Ok(session) => session,
+                Ok(session) => {
+                    if let Some(episode) = reconnect_episode.as_mut() {
+                        episode.record_attempt("success");
+                    }
+                    session
+                }
                 Err(error) => {
+                    if let Some(episode) = reconnect_episode.as_mut() {
+                        episode.record_attempt("error");
+                    }
                     tracing::debug!(
                         component = "sdk",
                         event = "sdk.session.reconnect_failed",
                         role = "listener",
-                        error_code = ?error.code(),
+                        error_code = error.code().metric_name(),
                         observation = ?error.observation(),
                         "Listener session reconnect failed"
                     );
@@ -55,13 +65,17 @@ pub(super) async fn listener_supervisor(
             },
         };
         let session_cancel = inner.cancel.child_token();
-        let registration_succeeded = run_listener_session(next, &inner, session_cancel).await;
+        let registration_succeeded =
+            run_listener_session(next, &inner, session_cancel, &mut reconnect_episode).await;
         if inner.cancel.is_cancelled() {
             inner.close_all();
             return;
         }
         if registration_succeeded {
             backoff.reset();
+        }
+        if reconnect_episode.is_none() {
+            reconnect_episode = Some(ReconnectEpisode::start(SessionRole::Listener));
         }
         tokio::select! {
             _ = inner.cancel.cancelled() => {

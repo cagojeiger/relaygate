@@ -2,7 +2,7 @@ use relaygate_protocol::{BindingId, ClientKey, ErrorCode, Frame, SessionId};
 
 use crate::registry::Registration;
 
-use super::{GatewayAction, GatewayState};
+use super::{GatewayAction, GatewayState, error_code_name};
 
 impl GatewayState {
     pub(super) fn register(
@@ -104,6 +104,14 @@ impl GatewayState {
                 created,
             )
         };
+        if let Some((outcome, code)) = registration_result(&response) {
+            metrics::counter!(
+                "relaygate_gateway_listener_registration_results_total",
+                "outcome" => outcome,
+                "code" => code
+            )
+            .increment(1);
+        }
         let mut actions = self
             .to(session_id, response)
             .map(GatewayAction::SendSdkFrame)
@@ -144,5 +152,13 @@ impl GatewayState {
             actions.push(self.registration_publication(session_id));
         }
         actions
+    }
+}
+
+fn registration_result(response: &Frame) -> Option<(&'static str, &'static str)> {
+    match response {
+        Frame::Registered { .. } => Some(("success", "ok")),
+        Frame::RegisterFailed { code, .. } => Some(("error", error_code_name(*code))),
+        _ => None,
     }
 }
