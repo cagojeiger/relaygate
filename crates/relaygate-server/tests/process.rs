@@ -165,7 +165,8 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
             "outcome=\"success\""
         ]
     ));
-    assert!(metrics.contains("relaygate_route_table_request_duration_seconds_count"));
+    assert!(metrics.contains("relaygate_route_table_request_duration_seconds_bucket"));
+    assert!(!metrics.contains("quantile="));
     assert!(!metrics.contains(secret));
 
     let signal_status = Command::new("kill")
@@ -732,7 +733,8 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
             "code=\"not_found\""
         ]
     ));
-    assert!(body.contains("relaygate_gateway_open_duration_seconds_count"));
+    assert!(body.contains("relaygate_gateway_open_duration_seconds_bucket"));
+    assert!(!body.contains("quantile="));
     assert!(!body.contains(secret));
     assert!(!body.contains("client_key"));
     assert!(!body.contains("payload"));

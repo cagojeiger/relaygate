@@ -43,6 +43,12 @@ jobs:
       - name: Whitespace check
         run: git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
 
+      - name: Validate local observability assets
+        run: |
+          docker compose --profile observability config --quiet
+          python3 -m json.tool \
+            monitoring/grafana/dashboards/relaygate-overview.json >/dev/null
+
       - name: Validate GitHub Actions workflows
         run: >-
           docker run --rm
@@ -439,9 +445,41 @@ jobs:
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
+      - name: Verify Prometheus targets and Grafana provisioning
+        run: |
+          docker compose --profile observability up -d prometheus grafana
+          docker compose --profile observability run --rm observability-probe
+
+      - name: Verify dashboard fault signals and recovery
+        run: |
+          prometheus_has() {
+            expression="$1"
+            for _ in {1..30}; do
+              if curl -fsSG --data-urlencode "query=${expression}" \
+                http://127.0.0.1:29090/api/v1/query |
+                jq -e '.data.result | length > 0' >/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "Prometheus expression did not converge: ${expression}" >&2
+            return 1
+          }
+
+          docker compose stop rt-0
+          prometheus_has 'sum(up{job="relaygate-route-table"} == 1) == 1'
+          prometheus_has 'sum(relaygate_gateway_route_dependency{state="READY"}) < 3'
+          prometheus_has 'sum(relaygate_gateway_route_registrations_unsynced) > 0'
+
+          docker compose up -d rt-0
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+          docker compose --profile observability run --rm observability-probe
+          prometheus_has 'sum(relaygate_gateway_route_dependency{state="READY"}) == 3'
+          prometheus_has 'sum(relaygate_gateway_route_registrations_unsynced) == 0'
+
       - name: Capture logs
         if: failure()
-        run: docker compose logs --no-color > compose.log
+        run: docker compose --profile observability logs --no-color > compose.log
 
       - name: Upload failure logs
         if: failure()
@@ -452,4 +490,4 @@ jobs:
 
       - name: Tear down
         if: always()
-        run: docker compose down --volumes --remove-orphans
+        run: docker compose --profile observability down --volumes --remove-orphans

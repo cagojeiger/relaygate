@@ -79,6 +79,30 @@ exact-byte ShardDirectory artifact를 사용합니다. Compose의 ClientKey와 I
 운영 credential이 아닙니다. host에는 Gateway A의 SDK port `127.0.0.1:27420`만 노출하고 RT와
 peer port는 Compose network 안에만 둡니다.
 
+### 로컬 RED/USE 대시보드
+
+`observability` profile은 같은 RT2/GW3 topology에 Prometheus와 Grafana를 추가합니다.
+Prometheus data는 container-local tmpfs에 최대 2시간·256MB만 보관하며 영속 volume을 만들지
+않습니다.
+
+```bash
+docker compose --profile observability up --build -d --wait \
+  prometheus grafana listener-a listener-b listener-c
+docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+docker compose --profile observability run --rm observability-probe
+```
+
+- Grafana: <http://127.0.0.1:23000/d/relaygate-overview/relaygate-red-use>
+- Prometheus targets: <http://127.0.0.1:29090/targets>
+
+host port가 사용 중이면 `RELAYGATE_GRAFANA_PORT`와 `RELAYGATE_PROMETHEUS_PORT`로 바꿉니다.
+Grafana는 loopback에서 anonymous Viewer로만 열리고 datasource와 dashboard는 시작 시 자동
+provisioning됩니다.
+
+```bash
+docker compose --profile observability down --volumes --remove-orphans
+```
+
 ## Kubernetes / Helm
 
 [`deploy/helm/relaygate`](deploy/helm/relaygate/) 차트는 Gateway와 RouteTable만 배포합니다.
