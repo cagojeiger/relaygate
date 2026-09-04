@@ -77,10 +77,10 @@ impl DistributedRuntime {
 impl Gateway {
     /// Serves SDK and Gateway peer listeners for one distributed runtime.
     ///
-    /// The RouteTable workers, peer manager, event dispatcher, and SDK accept
-    /// loop share one cancellation boundary. A fatal component failure stops
-    /// the whole runtime; current SDK Pipes receive their ordinary cleanup
-    /// events rather than being replayed or rerouted.
+    /// A normal external shutdown drains SDK work before stopping distributed
+    /// components. A fatal component failure bypasses drain and stops the whole
+    /// runtime; current SDK Pipes receive their ordinary cleanup events rather
+    /// than being replayed or rerouted.
     pub async fn serve_distributed(
         &self,
         sdk_listener: TcpListener,
@@ -101,14 +101,19 @@ impl Gateway {
             ..
         } = runtime;
         let mut tasks = JoinSet::new();
+        let sdk_stop = CancellationToken::new();
+        let sdk_force_stop = CancellationToken::new();
 
         let sdk_gateway = self.clone();
-        let sdk_shutdown = lifecycle.clone();
+        let sdk_shutdown = sdk_stop.clone();
+        let sdk_force_shutdown = sdk_force_stop.clone();
+        let sdk_lifecycle = lifecycle.clone();
         tasks.spawn(async move {
-            (
-                "sdk",
-                sdk_gateway.serve_sdk(sdk_listener, sdk_shutdown).await,
-            )
+            let result = sdk_gateway
+                .serve_sdk_with_force(sdk_listener, sdk_shutdown, sdk_force_shutdown)
+                .await;
+            sdk_lifecycle.cancel();
+            ("sdk", result)
         });
 
         tasks.spawn(async move {
@@ -151,12 +156,23 @@ impl Gateway {
         });
 
         let bridge_lifecycle = lifecycle.clone();
+        let bridge_sdk_stop = sdk_stop;
         tasks.spawn(async move {
             tokio::select! {
-                _ = shutdown.cancelled() => bridge_lifecycle.cancel(),
-                _ = bridge_lifecycle.cancelled() => {}
+                _ = shutdown.cancelled() => {
+                    bridge_sdk_stop.cancel();
+                    bridge_lifecycle.cancelled().await;
+                },
+                _ = bridge_lifecycle.cancelled() => {},
             }
-            ("shutdown_bridge", Ok(()))
+            ("external_shutdown", Ok(()))
+        });
+
+        let force_lifecycle = lifecycle.clone();
+        tasks.spawn(async move {
+            force_lifecycle.cancelled().await;
+            sdk_force_stop.cancel();
+            ("lifecycle_shutdown", Ok(()))
         });
 
         let mut first_error = None;

@@ -14,7 +14,7 @@ use tokio::time::Instant;
 use super::{ListenerRuntimeInner, ListenerState};
 use crate::{
     pipe::PipeState,
-    session::{EstablishedSession, establish, next_backoff},
+    session::{EstablishedSession, ReconnectBackoff, establish},
 };
 
 use self::session::run_listener_session;
@@ -24,7 +24,10 @@ pub(super) async fn listener_supervisor(
     initial: EstablishedSession,
 ) {
     let mut established = Some(initial);
-    let mut backoff = inner.config.reconnect_initial;
+    let mut backoff = ReconnectBackoff::new(
+        inner.config.reconnect_initial,
+        inner.config.reconnect_maximum,
+    );
     loop {
         if inner.cancel.is_cancelled() {
             inner.close_all();
@@ -45,9 +48,8 @@ pub(super) async fn listener_supervisor(
                     );
                     tokio::select! {
                         _ = inner.cancel.cancelled() => return,
-                        _ = tokio::time::sleep(backoff) => {}
+                        _ = tokio::time::sleep(backoff.next_delay()) => {}
                     }
-                    backoff = next_backoff(backoff, inner.config.reconnect_maximum);
                     continue;
                 }
             },
@@ -59,16 +61,15 @@ pub(super) async fn listener_supervisor(
             return;
         }
         if registration_succeeded {
-            backoff = inner.config.reconnect_initial;
+            backoff.reset();
         }
         tokio::select! {
             _ = inner.cancel.cancelled() => {
                 inner.close_all();
                 return;
             }
-            _ = tokio::time::sleep(backoff) => {}
+            _ = tokio::time::sleep(backoff.next_delay()) => {}
         }
-        backoff = next_backoff(backoff, inner.config.reconnect_maximum);
     }
 }
 

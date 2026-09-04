@@ -564,6 +564,7 @@ fn json_logs_expose_stable_startup_and_snapshot_fields_without_secrets()
         .find(|record| record["event"] == "gateway.snapshot")
         .ok_or("missing gateway.snapshot JSON event")?;
     assert_eq!(snapshot["component"], "gateway");
+    assert_eq!(snapshot["draining"], false);
     assert_eq!(snapshot["route_dependency_health"], "DISABLED");
     for field in [
         "sessions",
@@ -738,6 +739,13 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     assert!(!body.contains(secret));
     assert!(!body.contains("client_key"));
     assert!(!body.contains("payload"));
+
+    sdk.send(Frame::Close { pipe_id }).await?;
+    let closed = tokio::time::timeout(Duration::from_secs(1), listener.next()).await?;
+    assert!(
+        matches!(closed, Some(Ok(Frame::Close { pipe_id: closed })) if closed == pipe_id),
+        "Listener should observe the test Pipe closing before process shutdown: {closed:?}"
+    );
 
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])

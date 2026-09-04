@@ -65,7 +65,7 @@ async fn stale_epoch_case() -> TestResult {
             )?,
         )
         .with_command_queue_capacity(4)
-        .with_reconnect_backoff(Duration::from_millis(5), Duration::from_millis(20))
+        .with_reconnect_backoff(Duration::from_millis(50), Duration::from_millis(100))
         .with_desired_scan_interval(Duration::from_millis(5))
         .with_shutdown_timeout(Duration::from_millis(200)),
         gateway_id,

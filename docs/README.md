@@ -73,6 +73,7 @@ TEST는 새 규칙을 만들지 않는다.
 | [ADR 006](adr/006-one-hop-peer-multiplexing.md) | Gateway data plane은 initiator-bit StreamId를 쓰는 one-hop multiplexed relay다. |
 | [ADR 007](adr/007-transport-liveness-and-idle-retirement.md) | transport liveness와 zero-stream idle retirement를 분리한다. |
 | [ADR 008](adr/008-operational-health-boundaries.md) | process liveness, SDK admission readiness와 RT dependency health를 분리한다. |
+| [ADR 009](adr/009-bounded-gateway-drain-and-reconnect-jitter.md) | Gateway 정상 종료는 bounded drain하고 SDK·RT 재연결은 jitter로 분산한다. |
 
 ## SPEC
 

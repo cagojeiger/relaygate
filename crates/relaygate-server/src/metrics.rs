@@ -54,6 +54,7 @@ impl MetricsRuntime {
 }
 
 pub(crate) fn observe_gateway(snapshot: GatewaySnapshot) {
+    gauge!("relaygate_gateway_draining").set(if snapshot.draining { 1.0 } else { 0.0 });
     gauge!("relaygate_gateway_sessions").set(snapshot.sessions as f64);
     gauge!("relaygate_gateway_listener_sessions").set(snapshot.listener_sessions as f64);
     gauge!("relaygate_gateway_connector_sessions").set(snapshot.connector_sessions as f64);
@@ -104,6 +105,10 @@ fn describe_metrics() {
     describe_counter!(
         "relaygate_gateway_writer_queue_rejections_total",
         "Frames rejected by a full or closed bounded SDK writer queue."
+    );
+    describe_gauge!(
+        "relaygate_gateway_draining",
+        "Whether this Gateway has stopped admitting new work and is draining existing work."
     );
     describe_gauge!(
         "relaygate_gateway_sessions",

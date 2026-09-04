@@ -14,7 +14,7 @@ impl GatewayState {
         sender: mpsc::Sender<Frame>,
         cancellation: CancellationToken,
     ) -> Option<SessionId> {
-        if self.sessions.len() >= self.limits.max_sessions {
+        if self.draining || self.sessions.len() >= self.limits.max_sessions {
             return None;
         }
         loop {

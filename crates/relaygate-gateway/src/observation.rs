@@ -35,6 +35,8 @@ impl RouteDependencyHealth {
 /// and application-level delivery state are never included.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GatewaySnapshot {
+    /// Whether this Gateway has stopped admitting new work and is draining existing work.
+    pub draining: bool,
     /// Total number of live SDK sessions.
     pub sessions: usize,
     /// Number of live Listener SDK sessions.
@@ -69,8 +71,10 @@ impl GatewaySnapshot {
         listener_bindings: usize,
         pending_offers: usize,
         live_pipes: usize,
+        draining: bool,
     ) -> Self {
         let mut snapshot = Self {
+            draining,
             listener_bindings,
             pending_offers,
             live_pipes,

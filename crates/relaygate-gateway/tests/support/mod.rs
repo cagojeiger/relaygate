@@ -49,7 +49,7 @@ impl TestGateway {
     }
 
     fn start_with_listener(config: GatewayConfig, listener: TcpListener) -> TestResult<Self> {
-        let gateway = Gateway::new(config)?;
+        let gateway = Gateway::new(config.with_drain_timeout(Duration::from_millis(100)))?;
         let address = listener.local_addr()?;
         let shutdown = CancellationToken::new();
         let serve_shutdown = shutdown.clone();

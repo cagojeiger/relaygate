@@ -13,14 +13,18 @@ use crate::{
     Error, ErrorCode, PeerObservation, Pipe, Result,
     pipe::{PipeState, to_wire_code},
     session::{
-        EstablishedSession, SessionHeartbeat, SessionOutbound, SessionOutboundReceiver, establish,
-        next_backoff, send_bounded, session_outbound_channel, wait_for_heartbeat,
+        EstablishedSession, ReconnectBackoff, SessionHeartbeat, SessionOutbound,
+        SessionOutboundReceiver, establish, send_bounded, session_outbound_channel,
+        wait_for_heartbeat,
     },
 };
 
 pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: EstablishedSession) {
     let mut established = Some(initial);
-    let mut backoff = inner.config.reconnect_initial;
+    let mut backoff = ReconnectBackoff::new(
+        inner.config.reconnect_initial,
+        inner.config.reconnect_maximum,
+    );
     loop {
         if inner.cancel.is_cancelled() {
             inner.current.send_replace(None);
@@ -41,9 +45,8 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
                     );
                     tokio::select! {
                         _ = inner.cancel.cancelled() => return,
-                        _ = tokio::time::sleep(backoff) => {}
+                        _ = tokio::time::sleep(backoff.next_delay()) => {}
                     }
-                    backoff = next_backoff(backoff, inner.config.reconnect_maximum);
                     continue;
                 }
             },
@@ -87,13 +90,12 @@ pub(super) async fn connector_supervisor(inner: Arc<ConnectorInner>, initial: Es
             return;
         }
         if started_at.elapsed() >= inner.config.reconnect_maximum {
-            backoff = inner.config.reconnect_initial;
+            backoff.reset();
         }
         tokio::select! {
             _ = inner.cancel.cancelled() => return,
-            _ = tokio::time::sleep(backoff) => {}
+            _ = tokio::time::sleep(backoff.next_delay()) => {}
         }
-        backoff = next_backoff(backoff, inner.config.reconnect_maximum);
     }
 }
 

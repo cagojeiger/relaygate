@@ -210,6 +210,7 @@ registration에 더 이상 binding이 없으면 Gateway는 빈 snapshot을 유�
 | `RT-042` | 재시작한 shard는 같은 generation의 live Gateway가 새 lease를 `Register`하고 current local binding snapshot을 `Update`하여 구성한다. 과거 mutation이나 종료된 session을 replay하지 않는다. |
 | `RT-043` | shard가 `READY`지만 current snapshot이 아직 도착하지 않은 수렴 구간에는 `Resolve`가 `NOT_FOUND`가 될 수 있다. |
 | `RT-044` | established Pipe는 RT mapping과 독립적이다. RT 중단, restart, replace, deregister 또는 expiry만으로 기존 Pipe를 종료하지 않는다. |
+| `RT-045` | Gateway는 RT shard connection 실패 뒤 bounded exponential backoff를 사용하고, Gateway와 shard별 entropy로 각 delay를 현재 단계의 `2/3..1` 범위에서 jitter해야 한다. connection 성공은 해당 shard의 backoff 단계를 초기화해야 한다. |
 
 ## Gateway와 구현 경계
 

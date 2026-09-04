@@ -18,6 +18,7 @@ use support::{
 };
 
 const RECONNECT_BACKOFF: Duration = Duration::from_millis(300);
+const RECONNECT_FLOOR: Duration = Duration::from_millis(200);
 const NO_RECONNECT_WINDOW: Duration = Duration::from_millis(900);
 
 #[tokio::test]
@@ -48,9 +49,9 @@ async fn lifecycle_case() -> TestResult {
         let rejected_at = reject_next_connector_handshake(&gateway).await?;
         let (mut replacement, replacement_session_id) =
             accept_session(&gateway, SessionRole::Connector).await?;
-        if rejected_at.elapsed() < RECONNECT_BACKOFF {
+        if rejected_at.elapsed() < RECONNECT_FLOOR {
             return Err(io::Error::other(format!(
-                "Connector retried before configured {RECONNECT_BACKOFF:?} backoff"
+                "Connector retried before jitter floor {RECONNECT_FLOOR:?}"
             ))
             .into());
         }

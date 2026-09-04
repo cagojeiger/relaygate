@@ -205,8 +205,56 @@ fn jittered_duration(duration: Duration, session_id: SessionId, salt: u8) -> Dur
     Duration::from_nanos(nanos.try_into().unwrap_or(u64::MAX)).max(Duration::from_millis(1))
 }
 
-pub(crate) fn next_backoff(current: Duration, maximum: Duration) -> Duration {
-    current.saturating_mul(2).min(maximum)
+pub(crate) struct ReconnectBackoff {
+    initial: Duration,
+    current: Duration,
+    maximum: Duration,
+    entropy: u64,
+}
+
+impl ReconnectBackoff {
+    pub(crate) fn new(initial: Duration, maximum: Duration) -> Self {
+        let seed = SessionId::new();
+        let mut entropy = 14_695_981_039_346_656_037_u64;
+        for byte in seed.as_uuid().as_bytes() {
+            entropy = entropy.wrapping_mul(1_099_511_628_211) ^ u64::from(*byte);
+        }
+        Self {
+            initial,
+            current: initial,
+            maximum,
+            entropy,
+        }
+    }
+
+    pub(crate) fn next_delay(&mut self) -> Duration {
+        self.entropy ^= self.entropy << 13;
+        self.entropy ^= self.entropy >> 7;
+        self.entropy ^= self.entropy << 17;
+
+        let base_nanos = self.current.as_nanos();
+        let floor_nanos = base_nanos.saturating_mul(2) / 3;
+        let jitter_nanos = (base_nanos - floor_nanos).saturating_mul(u128::from(self.entropy))
+            / u128::from(u64::MAX);
+        let delay = duration_from_nanos(floor_nanos.saturating_add(jitter_nanos));
+        self.current = self.current.saturating_mul(2).min(self.maximum);
+        delay
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.current = self.initial;
+    }
+}
+
+fn duration_from_nanos(nanos: u128) -> Duration {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    let seconds = (nanos / NANOS_PER_SECOND).min(u128::from(u64::MAX));
+    let subsecond_nanos = if seconds == u128::from(u64::MAX) {
+        999_999_999
+    } else {
+        nanos % NANOS_PER_SECOND
+    };
+    Duration::new(seconds as u64, subsecond_nanos as u32).max(Duration::from_millis(1))
 }
 
 pub(crate) fn valid_identity(value: &str) -> bool {
@@ -221,7 +269,7 @@ mod tests {
     use relaygate_protocol::{Frame, PipeId, SessionId};
     use tokio::time::Instant;
 
-    use super::SessionHeartbeat;
+    use super::{ReconnectBackoff, SessionHeartbeat};
     use crate::Config;
 
     fn heartbeat() -> SessionHeartbeat {
@@ -301,5 +349,25 @@ mod tests {
 
         assert!(heartbeat.pending.is_some());
         assert!(heartbeat.response_timed_out());
+    }
+
+    #[test]
+    fn reconnect_backoff_uses_bounded_jitter_and_resets() {
+        let initial = Duration::from_millis(100);
+        let maximum = Duration::from_millis(400);
+        let mut backoff = ReconnectBackoff::new(initial, maximum);
+
+        let first = backoff.next_delay();
+        let second = backoff.next_delay();
+        let third = backoff.next_delay();
+        let capped = backoff.next_delay();
+        assert!((Duration::from_millis(66)..=initial).contains(&first));
+        assert!((Duration::from_millis(133)..=Duration::from_millis(200)).contains(&second));
+        assert!((Duration::from_millis(266)..=maximum).contains(&third));
+        assert!((Duration::from_millis(266)..=maximum).contains(&capped));
+
+        backoff.reset();
+        let reset = backoff.next_delay();
+        assert!((Duration::from_millis(66)..=initial).contains(&reset));
     }
 }

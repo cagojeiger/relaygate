@@ -139,6 +139,51 @@ async fn recovery_case() -> TestResult {
 }
 
 #[tokio::test]
+async fn graceful_drain_withdraws_route_before_closing_existing_pipe() -> TestResult {
+    tokio::time::timeout(Duration::from_secs(5), graceful_drain_case()).await??;
+    Ok(())
+}
+
+async fn graceful_drain_case() -> TestResult {
+    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let route_endpoint = route_listener.local_addr()?;
+    let directory = ShardDirectory::from_json_bytes(one_shard_directory(route_endpoint))?;
+    let generation = directory.generation();
+    let route_table = RunningRouteTable::serve(
+        route_listener,
+        directory.clone(),
+        Duration::from_millis(250),
+    )?;
+    let gateway =
+        RunningGateway::start_with_drain_timeout(directory, Duration::from_secs(2)).await?;
+    let listener_runtime = ListenerRuntime::connect(sdk_config(gateway.endpoint)).await?;
+    let listener = listener_runtime.listen(CLIENT_ID, CLIENT_KEY).await?;
+    let connector = Connector::connect(sdk_config(gateway.endpoint)).await?;
+    let probe = connect_probe(route_endpoint, generation).await?;
+    wait_for_mapping(&probe, generation, CLIENT_ID, &gateway.peer_locator, 1).await?;
+
+    let (mut connector_pipe, mut listener_pipe) =
+        tokio::try_join!(connector.open(CLIENT_ID), listener.accept())?;
+    gateway.shutdown.cancel();
+    wait_for_not_found(&probe, generation, CLIENT_ID).await?;
+    assert!(gateway.gateway.snapshot().draining);
+    assert!(!gateway.task.is_finished());
+
+    connector_pipe.write_all(b"existing").await?;
+    let mut received = [0_u8; 8];
+    listener_pipe.read_exact(&mut received).await?;
+    assert_eq!(&received, b"existing");
+
+    connector_pipe.close().await?;
+    listener_pipe.close().await?;
+    connector.close();
+    listener_runtime.close();
+    gateway.stop().await?;
+    route_table.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn generation_mismatch_recovers_only_after_coordinated_restart() -> TestResult {
     tokio::time::timeout(Duration::from_secs(10), generation_mismatch_recovery_case()).await??;
     Ok(())
@@ -935,6 +980,22 @@ impl RunningGateway {
         Self::serve(directory, offer_timeout, listener, peer_listener).await
     }
 
+    async fn start_with_drain_timeout(
+        directory: ShardDirectory,
+        drain_timeout: Duration,
+    ) -> TestResult<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let peer_listener = TcpListener::bind("127.0.0.1:0").await?;
+        Self::serve_with_timeouts(
+            directory,
+            Duration::from_millis(100),
+            drain_timeout,
+            listener,
+            peer_listener,
+        )
+        .await
+    }
+
     async fn start_on(
         directory: ShardDirectory,
         offer_timeout: Duration,
@@ -952,6 +1013,23 @@ impl RunningGateway {
         listener: TcpListener,
         peer_listener: TcpListener,
     ) -> TestResult<Self> {
+        Self::serve_with_timeouts(
+            directory,
+            offer_timeout,
+            Duration::from_millis(100),
+            listener,
+            peer_listener,
+        )
+        .await
+    }
+
+    async fn serve_with_timeouts(
+        directory: ShardDirectory,
+        offer_timeout: Duration,
+        drain_timeout: Duration,
+        listener: TcpListener,
+        peer_listener: TcpListener,
+    ) -> TestResult<Self> {
         let endpoint = listener.local_addr()?;
         let peer_endpoint = peer_listener.local_addr()?;
         let config = GatewayConfig::new(
@@ -959,7 +1037,8 @@ impl RunningGateway {
                 .into_iter()
                 .map(|client_id| (client_id.to_owned(), CLIENT_KEY.to_owned())),
         )
-        .with_offer_timeout(offer_timeout);
+        .with_offer_timeout(offer_timeout)
+        .with_drain_timeout(drain_timeout);
         let routing_config = GatewayRoutingConfig::new(
             directory,
             GatewayName::new(GATEWAY_NAME)?,
@@ -973,8 +1052,7 @@ impl RunningGateway {
         .with_shutdown_timeout(Duration::from_millis(200));
         let shutdown = CancellationToken::new();
         let peer_config = GatewayPeerConfig::new(GATEWAY_NAME, GATEWAY_KEY, [])?;
-        let gateway =
-            Gateway::new_distributed(config, routing_config, peer_config, shutdown.clone())?;
+        let gateway = Gateway::new_distributed(config, routing_config, peer_config)?;
         let snapshot_gateway = gateway.clone();
         let serve_shutdown = shutdown.clone();
         let task = tokio::spawn(async move {

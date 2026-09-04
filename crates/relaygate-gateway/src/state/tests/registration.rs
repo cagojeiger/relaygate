@@ -189,6 +189,29 @@ fn only_listener_session_cleanup_publishes_an_empty_snapshot()
 }
 
 #[test]
+fn drain_withdraws_listener_publications_without_removing_local_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut state = state();
+    let first = add_session(&mut state, SessionRole::Listener);
+    let second = add_session(&mut state, SessionRole::Listener);
+    let _connector = add_session(&mut state, SessionRole::Connector);
+    register_listener(&mut state, first)?;
+    register_listener(&mut state, second)?;
+
+    let binding_count = state.registry.binding_count();
+    let withdrawals = state.begin_draining();
+    let publications = publications(&withdrawals).collect::<Vec<_>>();
+
+    assert_eq!(publications.len(), 2);
+    assert!(publications.iter().all(|(_, bindings)| bindings.is_empty()));
+    assert_eq!(state.registry.binding_count(), binding_count);
+    assert_eq!(state.snapshot().sessions, 3);
+    assert!(state.snapshot().draining);
+    assert!(state.begin_draining().is_empty());
+    Ok(())
+}
+
+#[test]
 fn stale_binding_cleanup_emits_failure_before_the_current_empty_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut state = state();
