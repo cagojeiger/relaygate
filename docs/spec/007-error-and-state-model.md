@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `INVALID_ARGUMENT` | UUID/config/frame 값 오류 | 입력 변경 전 금지 |
 | `UNAUTHENTICATED` | TLS/ClusterToken/component credential 실패 | credential/config 변경 뒤 |
-| `PERMISSION_DENIED` | permanent publication 정책 실패 | 정책 변경 뒤 |
+| `PERMISSION_DENIED` | 인증된 내부 component의 owner/operation 권한 불일치 | identity/config 변경 뒤 |
 | `NOT_FOUND` | current Binding 없음 | 상태 변경 뒤 새 dial |
 | `FAILED_PRECONDITION` | self Binding만 존재, 닫힌 object | 전제 변경 뒤 |
 | `UNAVAILABLE` | drain, dependency/transport 단절 | backoff 뒤 새 operation |

@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, time::Duration};
 
 use anyhow::{Context, ensure};
-use relaygate_sdk::{ClientTlsConfig, Config};
+use relaygate_sdk::{ClientTlsConfig, Config, GatewayTransportConfig};
 
 pub(crate) const DESTINATION_IDS: [&str; 3] = [
     "11111111-1111-4111-8111-111111111111",
@@ -54,7 +54,10 @@ pub(crate) fn sdk_config(address: impl Into<String>) -> anyhow::Result<Config> {
     let ca = std::fs::read(&ca_path)
         .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?;
     let tls = ClientTlsConfig::server_authenticated(server_name, &ca)?;
-    Ok(Config::new(address, cluster_token(), tls))
+    Ok(Config::new(
+        cluster_token(),
+        GatewayTransportConfig::tls_tcp(address, tls),
+    ))
 }
 
 pub(crate) fn continuity_state_path() -> PathBuf {

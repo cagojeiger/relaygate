@@ -12,7 +12,7 @@ Relay SDK × N ──► Gateway × N ──► RouteTable shard × M       N >>
 
 | 용어 | 정의 |
 | --- | --- |
-| `Relay` | 하나의 Gateway 세션으로 `listen`, `dial`, `accept`를 수행하는 SDK runtime |
+| `Relay` | 하나의 Gateway 세션으로 `listen`과 `dial`을 수행하고 Listener 수명주기를 소유하는 SDK runtime |
 | `RelaySession` | Relay와 Gateway 사이의 현재 transport incarnation |
 | `SessionId` | Gateway가 성공한 session admission마다 새로 만드는 UUIDv4 |
 | `DestinationId` | application이 생성·보관하는 UUIDv4 논리 라우팅 주소 |

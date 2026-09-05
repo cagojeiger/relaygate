@@ -71,9 +71,12 @@ impl ClientTlsConfig {
         &self,
         stream: TcpStream,
     ) -> Result<client::TlsStream<TcpStream>, io::Error> {
-        self.connector
+        let stream = self
+            .connector
             .connect(self.server_name.clone(), stream)
-            .await
+            .await?;
+        require_relaygate_alpn(stream.get_ref().1.alpn_protocol())?;
+        Ok(stream)
     }
 
     pub async fn connect_boxed(&self, stream: TcpStream) -> Result<BoxedIo, io::Error> {
@@ -141,7 +144,9 @@ impl ServerTlsConfig {
         &self,
         stream: TcpStream,
     ) -> Result<server::TlsStream<TcpStream>, io::Error> {
-        self.acceptor.accept(stream).await
+        let stream = self.acceptor.accept(stream).await?;
+        require_relaygate_alpn(stream.get_ref().1.alpn_protocol())?;
+        Ok(stream)
     }
 
     pub async fn accept_boxed(&self, stream: TcpStream) -> Result<BoxedIo, io::Error> {
@@ -149,6 +154,16 @@ impl ServerTlsConfig {
             .await
             .map(|stream| Box::new(stream) as BoxedIo)
     }
+}
+
+fn require_relaygate_alpn(negotiated: Option<&[u8]>) -> Result<(), io::Error> {
+    if negotiated == Some(ALPN_PROTOCOL) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "TLS peer did not negotiate the relaygate/2 ALPN protocol",
+    ))
 }
 
 impl fmt::Debug for ServerTlsConfig {

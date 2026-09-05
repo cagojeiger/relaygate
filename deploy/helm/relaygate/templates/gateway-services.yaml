@@ -9,7 +9,13 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.gateway.service.type }}
+  {{- if and (eq .Values.gateway.service.type "LoadBalancer") .Values.gateway.service.loadBalancerClass }}
+  loadBalancerClass: {{ .Values.gateway.service.loadBalancerClass | quote }}
+  {{- end }}
+  {{- if eq .Values.gateway.service.type "LoadBalancer" }}
+  externalTrafficPolicy: {{ .Values.gateway.service.externalTrafficPolicy }}
+  {{- end }}
   selector:
     {{- include "relaygate.selectorLabels" (dict "root" . "component" "gateway") | nindent 4 }}
   ports:

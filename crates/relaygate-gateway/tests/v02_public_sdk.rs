@@ -2,7 +2,9 @@ use std::{error::Error, time::Duration};
 
 use rcgen::{CertifiedKey, generate_simple_self_signed};
 use relaygate_gateway::{Gateway, GatewayConfig};
-use relaygate_sdk::{ClientTlsConfig, Config, DestinationId, ListenerStatus, Relay};
+use relaygate_sdk::{
+    ClientTlsConfig, Config, DestinationId, GatewayTransportConfig, ListenerStatus, Relay,
+};
 use relaygate_transport::ServerTlsConfig;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -29,15 +31,17 @@ async fn sdk_gateway_path_uses_tls_before_cluster_admission() -> TestResult {
     let (address, shutdown, server) = start_gateway_with_config(config).await?;
 
     let relay = Relay::connect(Config::new(
-        address.to_string(),
         CLUSTER_TOKEN,
-        client_tls.clone(),
+        GatewayTransportConfig::tls_tcp(address.to_string(), client_tls.clone()),
     ))
     .await?;
     let rejected = Relay::connect(
-        Config::new(address.to_string(), "wrong-token", client_tls)
-            .with_connect_timeout(Duration::from_secs(1))
-            .with_operation_timeout(Duration::from_secs(1)),
+        Config::new(
+            "wrong-token",
+            GatewayTransportConfig::tls_tcp(address.to_string(), client_tls),
+        )
+        .with_connect_timeout(Duration::from_secs(1))
+        .with_operation_timeout(Duration::from_secs(1)),
     )
     .await
     .err()

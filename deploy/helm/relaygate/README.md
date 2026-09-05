@@ -3,7 +3,7 @@
 차트는 RelayGate의 Gateway와 RouteTable만 배포합니다.
 
 ```text
-host/외부 SDK ── TLS ──► Gateway ClusterIP
+host/외부 SDK ── TLS/TCP ──► platform L4 ── passthrough ──► Gateway ClusterIP
                            └── Gateway StatefulSet × N
                                   │ mTLS peer
                                   │
@@ -11,12 +11,12 @@ host/외부 SDK ── TLS ──► Gateway ClusterIP
                                          └── RouteTable StatefulSet × M shards
 ```
 
-SDK application, certificate 발급, Secret, Ingress, PVC와 application 저장소는 포함하지 않습니다.
+SDK application, certificate 발급, Secret, platform Gateway, PVC와 application 저장소는 포함하지 않습니다.
 RouteTable은 memory-only이며 `emptyDir`와 `volumeClaimTemplates`를 사용하지 않습니다.
 
 ## 사전 준비
 
-Kubernetes 1.32 이상이 필요합니다. release namespace에 두 Secret을 먼저 만듭니다.
+Kubernetes 1.32 이상이 필요합니다. release namespace에 세 Secret을 먼저 만듭니다.
 
 credential Secret:
 
@@ -26,12 +26,19 @@ credential Secret:
 | `cluster-token` | SDK trust-domain admission token |
 | `next-cluster-token` | 선택적 rotation overlap token |
 
-TLS Secret:
+edge TLS Secret:
 
 | key | 용도 |
 | --- | --- |
-| `ca.crt` | SDK와 내부 transport가 신뢰할 CA |
-| `gateway.crt`, `gateway.key` | SDK TLS server + peer/RT mTLS Gateway identity |
+| `ca.crt` | SDK가 신뢰할 CA |
+| `tls.crt`, `tls.key` | SDK-facing Gateway TLS server identity |
+
+internal mTLS Secret:
+
+| key | 용도 |
+| --- | --- |
+| `ca.crt` | Gateway와 RouteTable이 신뢰할 내부 CA |
+| `gateway.crt`, `gateway.key` | peer/RT mTLS Gateway identity |
 | `route-table.crt`, `route-table.key` | GW–RT mTLS RouteTable identity |
 
 기본 release 이름 `relaygate`, Gateway 3개이면 GatewayName은
@@ -45,7 +52,12 @@ kubectl -n relaygate create secret generic relaygate-credentials \
   --from-literal=internal-gateway-keys='relaygate-gateway-0=replace-a,relaygate-gateway-1=replace-b,relaygate-gateway-2=replace-c' \
   --from-literal=cluster-token='replace-cluster-token'
 
-kubectl -n relaygate create secret generic relaygate-tls \
+kubectl -n relaygate create secret generic relaygate-edge-tls \
+  --from-file=ca.crt=edge-ca.crt \
+  --from-file=tls.crt=edge-gateway.crt \
+  --from-file=tls.key=edge-gateway.key
+
+kubectl -n relaygate create secret generic relaygate-internal-tls \
   --from-file=ca.crt \
   --from-file=gateway.crt \
   --from-file=gateway.key \
@@ -63,7 +75,22 @@ helm upgrade --install relaygate deploy/helm/relaygate \
 
 기본 SDK endpoint는
 `relaygate.relaygate.svc.cluster.local:27420`입니다. SDK는 CA와
-`tls.sdkServerName`, ClusterToken을 사용합니다. peer와 RT Service는 cluster 내부 전용입니다.
+`tls.edge.serverName`, ClusterToken을 사용합니다. peer와 RT Service는 cluster 내부 전용입니다.
+
+외부 노출은 두 방식 중 하나를 사용합니다.
+
+```text
+전용 주소 : gateway.service.type=LoadBalancer
+공유 L4   : ClusterIP 유지 + platform의 TCPRoute/TLSRoute passthrough
+```
+
+공유 Envoy Gateway를 사용하는 경우 chart가 `GatewayClass`나 route를 만들지 않습니다. GitOps에서
+전용 listener와 `TLSRoute` passthrough를 Gateway SDK Service로 연결하며 TLS는 RelayGate Gateway가
+종단합니다.
+
+`gateway.service.loadBalancerClass`는 Kubernetes qualified name 형식이어야 합니다. 기존
+LoadBalancer Service에 설정한 값은 변경할 수 없으므로 다른 class로 전환할 때는 Service 재생성과
+그에 따른 연결 영향을 배포 절차에 포함해야 합니다.
 
 ## 배포 계약
 
@@ -85,7 +112,8 @@ helm upgrade --install relaygate deploy/helm/relaygate \
 | --- | --- |
 | Gateway/RT image | 각각 독립 tag로 rolling replacement |
 | ClusterToken rotation | current + next 배포 → SDK 이동 → new current만 배포 |
-| Secret/certificate 내용 | Secret 갱신 뒤 해당 `reloadToken` 변경으로 rollout |
+| edge certificate | Secret 갱신 뒤 `tls.edge.reloadToken` 변경으로 Gateway rollout |
+| internal certificate | Secret 갱신 뒤 `tls.internal.reloadToken` 변경으로 Gateway/RT rollout |
 | Gateway 증가 | 새 GatewayName/key를 먼저 허용하고 rollout한 뒤 replica 증가 |
 | RT shard 수/domain/port | maintenance window에서 기존 release/pod 완전 종료 후 새 directory로 설치 |
 
@@ -100,14 +128,20 @@ credentials:
   reloadToken: ""
 
 tls:
-  existingSecret: relaygate-tls
-  sdkServerName: relaygate-gateway.internal
-  peerServerName: relaygate-gateway.internal
-  routeTableServerName: relaygate-route-table.internal
-  reloadToken: ""
+  edge:
+    existingSecret: relaygate-edge-tls
+    serverName: relaygate-gateway.internal
+    reloadToken: ""
+  internal:
+    existingSecret: relaygate-internal-tls
+    gatewayServerName: relaygate-gateway.internal
+    routeTableServerName: relaygate-route-table.internal
+    reloadToken: ""
 
 gateway:
   replicaCount: 3
+  service:
+    type: ClusterIP
   drainTimeoutMs: 120000
   terminationGracePeriodSeconds: 135
 

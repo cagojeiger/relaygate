@@ -11,9 +11,10 @@
 | `T-DIAL-01` | `DIAL-001`, `DIAL-002`, `DIAL-003`, `DIAL-004`, `DIAL-005`, `DIAL-006`, `DIAL-007`, `DIAL-008`, `DIAL-009`, `DIAL-010` | local/remote dial, self exclusion, 단일 선택, timeout/cancel/observation |
 | `T-PEER-01` | `PEER-001`, `PEER-002`, `PEER-003`, `PEER-004`, `PEER-005`, `PEER-006`, `PEER-007`, `PEER-008`, `PEER-009`, `PEER-010`, `PEER-011`, `PEER-012` | one-hop multiplexing, direction arbitration, heartbeat/idle/terminal cleanup |
 | `T-STATE-01` | `STATE-001`, `STATE-002`, `STATE-003`, `STATE-004`, `STATE-005`, `STATE-006` | terminal no-resurrection, owner-scoped cleanup, RT 독립과 idempotent convergence |
-| `T-SEC-01` | `SEC-001`, `SEC-002`, `SEC-003`, `SEC-004`, `SEC-005`, `SEC-006`, `SEC-007`, `SEC-008` | TLS server name, mTLS client cert, current/next token과 no fallback |
+| `T-SEC-01` | `SEC-001`, `SEC-002`, `SEC-003`, `SEC-004`, `SEC-005`, `SEC-006`, `SEC-007`, `SEC-008`, `SEC-009`, `SEC-010`, `SEC-011` | 명시적 TLS/TCP, server name/ALPN, mTLS, token, Secret 분리와 L4 passthrough |
 | `T-OBS-01` | `OBS-001`, `OBS-002`, `OBS-003`, `OBS-004` | RED/USE metric, cleanup baseline과 secret 비노출 |
 
 모든 in-scope requirement는 위 표와 [실행 증거 인덱스](001-executable-coverage.toml)에 정확히 한
-그룹으로 연결됩니다. Helm/kind acceptance는 Rust test 이름이 아닌 외부 runtime 증거이므로
-[TEST 004](004-rt2-gw3-closed-loop-test-plan.md)에서 별도로 닫습니다.
+그룹으로 연결됩니다. 실행 증거 인덱스는 Rust test의 존재를 검증하지만 Helm/kind runtime 성공을
+대신하지 않습니다. 특히 `SEC-011`의 L4 passthrough와 rolling/fault acceptance는
+[TEST 004](004-rt2-gw3-closed-loop-test-plan.md)의 외부 실행 증거로 별도로 닫습니다.

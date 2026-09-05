@@ -12,9 +12,9 @@ Relay B.dial(DestinationId)          dial 1회 -> Binding 1개 -> Pipe 1개
 Listener.accept()                    Pipe = opaque bidirectional byte stream
 ```
 
-고정 Connector/Listener 세션 역할은 없습니다. 하나의 `Relay`가 `listen`, `dial`, `accept`를
-동시에 수행합니다. `DestinationId`는 애플리케이션이 생성하고 보관하는 UUIDv4이며, 같은 주소를
-여러 Relay가 listen할 수 있습니다.
+고정 Connector/Listener 세션 역할은 없습니다. 하나의 `Relay`가 `listen`과 `dial`을 수행하고,
+반환된 `Listener`가 `accept`를 수행합니다. `DestinationId`는 애플리케이션이 생성하고 보관하는
+UUIDv4이며, 같은 주소를 여러 Relay가 listen할 수 있습니다.
 
 ## 책임 경계
 
@@ -40,15 +40,15 @@ protocol이 담당합니다.
 ## Rust SDK
 
 ```rust,no_run
-use relaygate_sdk::{ClientTlsConfig, Config, DestinationId, Relay};
+use relaygate_sdk::{ClientTlsConfig, Config, DestinationId, GatewayTransportConfig, Relay};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let ca = std::fs::read("ca.crt")?;
 let tls = ClientTlsConfig::server_authenticated("relaygate-gateway.internal", &ca)?;
+let transport = GatewayTransportConfig::tls_tcp("127.0.0.1:27420", tls);
 let relay = Relay::connect(Config::new(
-    "127.0.0.1:27420",
     std::env::var("RELAYGATE_CLUSTER_TOKEN")?,
-    tls,
+    transport,
 )).await?;
 
 let destination = DestinationId::new();
@@ -90,7 +90,8 @@ docker compose --profile observability down --volumes --remove-orphans
 배포 전에 release namespace에 다음 Secret을 준비해야 합니다.
 
 - credential Secret: `internal-gateway-keys`, `cluster-token`, 선택적 `next-cluster-token`
-- TLS Secret: `ca.crt`, `gateway.crt`, `gateway.key`, `route-table.crt`, `route-table.key`
+- edge TLS Secret: `ca.crt`, `tls.crt`, `tls.key`
+- internal mTLS Secret: `ca.crt`, `gateway.crt`, `gateway.key`, `route-table.crt`, `route-table.key`
 
 ```bash
 helm lint deploy/helm/relaygate

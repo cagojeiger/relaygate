@@ -11,7 +11,7 @@ Relay A.dial(dst-b)         Relay B.dial(dst-a)
         Pipe A->B           Pipe B->A
 ```
 
-- 한 Relay가 같은 세션에서 listen/dial/accept를 함께 수행
+- 한 Relay가 같은 세션에서 listen/dial하고 반환된 Listener가 accept를 수행
 - 같은 Destination의 여러 Relay 중 하나만 선택
 - self Binding만 있으면 실패
 - current/next ClusterToken과 invalid token 거절

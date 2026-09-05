@@ -79,10 +79,11 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "clusterDomain" "value" .Values.clusterDomain) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "credentials.existingSecret" "value" .Values.credentials.existingSecret) }}
-{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.existingSecret" "value" .Values.tls.existingSecret) }}
-{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.sdkServerName" "value" .Values.tls.sdkServerName) }}
-{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.peerServerName" "value" .Values.tls.peerServerName) }}
-{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.routeTableServerName" "value" .Values.tls.routeTableServerName) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.edge.existingSecret" "value" .Values.tls.edge.existingSecret) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.edge.serverName" "value" .Values.tls.edge.serverName) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.existingSecret" "value" .Values.tls.internal.existingSecret) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.gatewayServerName" "value" .Values.tls.internal.gatewayServerName) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.routeTableServerName" "value" .Values.tls.internal.routeTableServerName) }}
 {{- $gatewayLastIndex := sub (int .Values.gateway.replicaCount) 1 -}}
 {{- $gatewayPodName := printf "%s-%d" (include "relaygate.gatewayName" .) $gatewayLastIndex -}}
 {{- $gatewayHostname := printf "%s.%s.%s.svc.%s" $gatewayPodName (include "relaygate.gatewayPeerServiceName" .) .Release.Namespace .Values.clusterDomain -}}
@@ -151,7 +152,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail (printf "gateway.podLabels cannot override chart-managed label %s" $key) }}
 {{- end }}
 {{- end }}
-{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
+{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/edge-tls-reload" "relaygate.io/internal-tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
 {{- range $key, $_ := .Values.gateway.podAnnotations }}
 {{- if has $key $reservedAnnotations }}
 {{- fail (printf "gateway.podAnnotations cannot override chart-managed annotation %s" $key) }}
@@ -175,7 +176,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail (printf "routeTable.podLabels cannot override chart-managed label %s" $key) }}
 {{- end }}
 {{- end }}
-{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
+{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/internal-tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
 {{- range $key, $_ := .Values.routeTable.podAnnotations }}
 {{- if has $key $reservedAnnotations }}
 {{- fail (printf "routeTable.podAnnotations cannot override chart-managed annotation %s" $key) }}
