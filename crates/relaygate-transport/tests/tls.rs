@@ -134,10 +134,10 @@ async fn tls_client_rejects_a_server_without_alpn() -> Result<(), Box<dyn std::e
         Ok::<_, io::Error>(())
     });
 
-    let error = client
-        .connect(TcpStream::connect(address).await?)
-        .await
-        .expect_err("a TLS server without ALPN was accepted");
+    let error = match client.connect(TcpStream::connect(address).await?).await {
+        Ok(_) => return Err("a TLS server without ALPN was accepted".into()),
+        Err(error) => error,
+    };
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     accepted.await??;
     Ok(())
@@ -187,10 +187,10 @@ async fn tls_server_rejects_a_client_without_alpn() -> Result<(), Box<dyn std::e
     let address = listener.local_addr()?;
     let accepted = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
-        let error = server
-            .accept(stream)
-            .await
-            .expect_err("a TLS client without ALPN was accepted");
+        let error = match server.accept(stream).await {
+            Ok(_) => return Err(io::Error::other("a TLS client without ALPN was accepted")),
+            Err(error) => error,
+        };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         Ok::<_, io::Error>(())
     });
