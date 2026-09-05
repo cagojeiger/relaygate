@@ -6,12 +6,13 @@ use std::{
     time::Duration,
 };
 
+use relaygate_transport::ServerTlsConfig;
 use tokio::{net::TcpListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     GatewayConfig, GatewayError, GatewayPeerConfig, GatewayRoutingConfig,
-    auth::ClientKeyStore,
+    auth::ClusterTokenSet,
     peer::PeerHandle,
     routing::RoutingHandle,
     state::GatewayState,
@@ -30,7 +31,7 @@ mod tests;
 
 use distributed::DistributedRuntime;
 use effects::ControlEffects;
-pub use sdk_server::check;
+pub use sdk_server::{check, check_insecure_for_tests};
 
 #[derive(Clone)]
 pub struct Gateway {
@@ -39,6 +40,8 @@ pub struct Gateway {
 
 struct Inner {
     state: Mutex<GatewayState>,
+    cluster_tokens: ClusterTokenSet,
+    sdk_tls: Option<ServerTlsConfig>,
     writer_queue_capacity: usize,
     max_frame_len: usize,
     offer_timeout: Duration,
@@ -123,13 +126,14 @@ impl Gateway {
         Ok(Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(match gateway_id {
-                    Some(gateway_id) => GatewayState::new_distributed(
-                        ClientKeyStore::new(config.client_keys),
-                        limits,
-                        gateway_id,
-                    ),
-                    None => GatewayState::new(ClientKeyStore::new(config.client_keys), limits),
+                    Some(gateway_id) => GatewayState::new_distributed(limits, gateway_id),
+                    None => GatewayState::new(limits),
                 }),
+                cluster_tokens: ClusterTokenSet::new(
+                    config.cluster_token,
+                    config.next_cluster_token,
+                ),
+                sdk_tls: config.sdk_tls,
                 writer_queue_capacity: config.writer_queue_capacity,
                 max_frame_len: config.max_frame_len,
                 offer_timeout: config.offer_timeout,
@@ -192,7 +196,7 @@ impl Inner {
                 tracing::warn!(
                     component = "gateway",
                     event = "gateway.registration.publish_failed",
-                    listener_session_id = %session_id.as_uuid(),
+                    relay_session_id = %session_id.as_uuid(),
                     %error,
                     "local registration remains active while RouteTable publication is unavailable"
                 );

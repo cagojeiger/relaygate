@@ -3,7 +3,7 @@ use std::{
     sync::RwLock,
 };
 
-use relaygate_route_table::{ListenerSessionId, MappingSnapshot, ShardId};
+use relaygate_route_table::{MappingSnapshot, RelaySessionId, ShardId};
 
 use super::super::{RoutingError, projection::ProjectedShardSnapshot};
 
@@ -16,7 +16,7 @@ struct DesiredShardEntry {
 #[derive(Debug, Default)]
 struct DesiredState {
     version: u64,
-    by_shard: BTreeMap<ShardId, HashMap<ListenerSessionId, DesiredShardEntry>>,
+    by_shard: BTreeMap<ShardId, HashMap<RelaySessionId, DesiredShardEntry>>,
 }
 
 #[derive(Debug, Default)]
@@ -25,7 +25,7 @@ pub(super) struct DesiredStore(RwLock<DesiredState>);
 impl DesiredStore {
     pub(super) fn commit(
         &self,
-        session_id: ListenerSessionId,
+        session_id: RelaySessionId,
         projected: Vec<ProjectedShardSnapshot>,
     ) -> Result<u64, RoutingError> {
         let mut state = self.0.write().map_err(|_| {
@@ -78,5 +78,5 @@ impl DesiredStore {
 
 pub(super) struct ShardDesiredView {
     pub(super) store_version: u64,
-    pub(super) sessions: HashMap<ListenerSessionId, (u64, Option<MappingSnapshot>)>,
+    pub(super) sessions: HashMap<RelaySessionId, (u64, Option<MappingSnapshot>)>,
 }

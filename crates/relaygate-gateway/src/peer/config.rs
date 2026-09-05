@@ -10,6 +10,7 @@ use tokio::sync::Notify;
 use tokio::{sync::Semaphore, time::Instant};
 
 use crate::GatewayError;
+use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
 
 use super::{
     error::PeerError,
@@ -100,74 +101,6 @@ impl OpenCommitGate {
     }
 }
 
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub(crate) struct ResetCommitGate {
-    armed: Arc<AtomicBool>,
-    trips: Arc<AtomicUsize>,
-    tripped: Arc<Notify>,
-}
-
-#[cfg(test)]
-impl ResetCommitGate {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn arm(&self) {
-        self.armed.store(true, Ordering::SeqCst);
-    }
-
-    pub(crate) fn trip(&self) -> bool {
-        if !self.armed.swap(false, Ordering::SeqCst) {
-            return false;
-        }
-        self.trips.fetch_add(1, Ordering::SeqCst);
-        self.tripped.notify_one();
-        true
-    }
-
-    pub(crate) async fn wait_until_tripped(&self) {
-        while self.trips.load(Ordering::SeqCst) == 0 {
-            self.tripped.notified().await;
-        }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub(crate) struct DropHeartbeatPongGate {
-    armed: Arc<AtomicBool>,
-    trips: Arc<AtomicUsize>,
-    tripped: Arc<Notify>,
-}
-
-#[cfg(test)]
-impl DropHeartbeatPongGate {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn arm(&self) {
-        self.armed.store(true, Ordering::SeqCst);
-    }
-
-    pub(crate) fn trip(&self) -> bool {
-        if !self.armed.swap(false, Ordering::SeqCst) {
-            return false;
-        }
-        self.trips.fetch_add(1, Ordering::SeqCst);
-        self.tripped.notify_one();
-        true
-    }
-
-    pub(crate) async fn wait_until_tripped(&self) {
-        while self.trips.load(Ordering::SeqCst) == 0 {
-            self.tripped.notified().await;
-        }
-    }
-}
-
 /// One trusted stable peer entry for the local/CI plain-TCP adapter.
 #[derive(Clone)]
 pub struct TrustedPeerConfig {
@@ -220,16 +153,12 @@ pub struct GatewayPeerConfig {
     pub(super) heartbeat_idle_interval: Duration,
     pub(super) heartbeat_response_timeout: Duration,
     pub(super) idle_retirement_timeout: Duration,
+    pub(super) client_tls: Option<ClientTlsConfig>,
+    pub(super) server_tls: Option<ServerTlsConfig>,
     #[cfg(test)]
     pub(super) connect_gate: Option<ConnectGate>,
     #[cfg(test)]
-    pub(super) inbound_admission_gate: Option<ConnectGate>,
-    #[cfg(test)]
     pub(super) open_commit_gate: Option<OpenCommitGate>,
-    #[cfg(test)]
-    pub(super) reset_commit_gate: Option<ResetCommitGate>,
-    #[cfg(test)]
-    pub(super) drop_dialer_heartbeat_pong_gate: Option<DropHeartbeatPongGate>,
 }
 
 impl GatewayPeerConfig {
@@ -257,19 +186,22 @@ impl GatewayPeerConfig {
             heartbeat_idle_interval: DEFAULT_HEARTBEAT_IDLE_INTERVAL,
             heartbeat_response_timeout: DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT,
             idle_retirement_timeout: DEFAULT_IDLE_RETIREMENT_TIMEOUT,
+            client_tls: None,
+            server_tls: None,
             #[cfg(test)]
             connect_gate: None,
             #[cfg(test)]
-            inbound_admission_gate: None,
-            #[cfg(test)]
             open_commit_gate: None,
-            #[cfg(test)]
-            reset_commit_gate: None,
-            #[cfg(test)]
-            drop_dialer_heartbeat_pong_gate: None,
         };
         config.validate().map_err(config_error)?;
         Ok(config)
+    }
+
+    #[must_use]
+    pub fn with_tls(mut self, client: ClientTlsConfig, server: ServerTlsConfig) -> Self {
+        self.client_tls = Some(client);
+        self.server_tls = Some(server);
+        self
     }
 
     #[must_use]
@@ -337,29 +269,8 @@ impl GatewayPeerConfig {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_inbound_admission_gate(mut self, gate: ConnectGate) -> Self {
-        self.inbound_admission_gate = Some(gate);
-        self
-    }
-
-    #[cfg(test)]
     pub(crate) fn with_open_commit_gate(mut self, gate: OpenCommitGate) -> Self {
         self.open_commit_gate = Some(gate);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_reset_commit_gate(mut self, gate: ResetCommitGate) -> Self {
-        self.reset_commit_gate = Some(gate);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_drop_dialer_heartbeat_pong_gate(
-        mut self,
-        gate: DropHeartbeatPongGate,
-    ) -> Self {
-        self.drop_dialer_heartbeat_pong_gate = Some(gate);
         self
     }
 

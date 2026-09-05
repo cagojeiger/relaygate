@@ -22,15 +22,15 @@ impl TransportActor {
             PeerFrame::Open {
                 stream_id,
                 open_identity,
-                client_id,
-                listener_session_id,
+                destination_id,
+                relay_session_id,
                 binding_id,
             } => {
                 self.receive_open(
                     stream_id,
                     open_identity,
-                    client_id,
-                    listener_session_id,
+                    destination_id,
+                    relay_session_id,
                     binding_id,
                 )
                 .await;
@@ -92,8 +92,8 @@ impl TransportActor {
         &mut self,
         stream_id: StreamId,
         open_identity: OpenIdentity,
-        client_id: String,
-        listener_session_id: SessionId,
+        destination_id: String,
+        relay_session_id: SessionId,
         binding_id: BindingId,
     ) {
         if self.remote_guard.accept_open(stream_id).is_err() {
@@ -152,8 +152,8 @@ impl TransportActor {
         self.emit(PeerEvent::IncomingOpen {
             key: self.key(stream_id),
             open_identity,
-            client_id,
-            listener_session_id,
+            destination_id,
+            relay_session_id,
             binding_id,
         })
         .await;

@@ -2,9 +2,11 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Partially superseded by ADR 010 |
 
 ## 맥락
+
+고정 Connector/Listener 역할은 ADR 010이 대체하며 opaque Pipe 책임 경계는 유지한다.
 
 NAT 뒤의 endpoint는 외부의 inbound 연결을 직접 받을 수 없다. RelayGate는 endpoint가 먼저 만든 outbound session을 통해 logical destination으로 연결할 최소 중간 계층이 필요하다.
 

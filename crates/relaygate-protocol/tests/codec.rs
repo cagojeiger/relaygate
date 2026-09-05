@@ -1,47 +1,51 @@
 use bytes::{Bytes, BytesMut};
 use relaygate_protocol::{
-    BindingId, ClientKey, ErrorCode, Frame, FrameCodec, PeerObservation, PipeId, ProtocolError,
-    SessionId, SessionRole,
+    BindingId, ClusterToken, DestinationId, ErrorCode, Frame, FrameCodec, PeerObservation, PipeId,
+    ProtocolError, SessionId,
 };
 use tokio_util::codec::{Decoder, Encoder};
 
 #[test]
 fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let session_id = SessionId::new();
+    let destination_id = DestinationId::new();
     let binding_id = BindingId::new();
     let pipe_id = PipeId::new(session_id, 42);
     let frames = vec![
         Frame::Hello {
-            role: SessionRole::Listener,
+            cluster_token: ClusterToken::new("secret"),
         },
         Frame::Welcome { session_id },
-        Frame::Register {
-            request_id: 1,
-            client_id: "echo.alpha".to_owned(),
-            client_key: ClientKey::new("secret"),
+        Frame::SessionRejected {
+            code: ErrorCode::Unauthenticated,
+            message: "bad token".to_owned(),
         },
-        Frame::Registered {
+        Frame::Publish {
+            request_id: 1,
+            destination_id,
+        },
+        Frame::Published {
             request_id: 1,
             binding_id,
         },
-        Frame::RegisterFailed {
+        Frame::PublishFailed {
             request_id: 2,
-            code: ErrorCode::Unauthenticated,
-            message: "bad key".to_owned(),
+            code: ErrorCode::Unavailable,
+            message: "draining".to_owned(),
         },
-        Frame::Unregister {
+        Frame::Unpublish {
             request_id: 3,
             binding_id,
         },
-        Frame::Unregistered { request_id: 3 },
-        Frame::Open {
+        Frame::Unpublished { request_id: 3 },
+        Frame::Dial {
             connection_id: 42,
-            client_id: "echo.alpha".to_owned(),
+            destination_id,
         },
         Frame::Offer {
             pipe_id,
             binding_id,
-            client_id: "echo.alpha".to_owned(),
+            destination_id,
         },
         Frame::OfferAccepted { pipe_id },
         Frame::OfferRejected {
@@ -50,7 +54,7 @@ fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
             message: "full".to_owned(),
         },
         Frame::Opened { pipe_id },
-        Frame::OpenFailed {
+        Frame::DialFailed {
             connection_id: 42,
             code: ErrorCode::Unavailable,
             observation: PeerObservation::MaybeObserved,
@@ -84,9 +88,9 @@ fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn fragmented_frame_waits_for_complete_payload() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = Frame::Open {
+    let expected = Frame::Dial {
         connection_id: 7,
-        client_id: "echo.alpha".to_owned(),
+        destination_id: DestinationId::new(),
     };
     let mut encoded = BytesMut::new();
     FrameCodec::default().encode(expected.clone(), &mut encoded)?;
@@ -100,25 +104,25 @@ fn fragmented_frame_waits_for_complete_payload() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn unsupported_wire_version_is_rejected_before_payload_decode() {
-    let mut input = BytesMut::from(&b"RG\x02\x01\x00\x00\x00\x00"[..]);
+fn version_one_is_rejected_before_payload_decode() {
+    let mut input = BytesMut::from(&b"RG\x01\x01\x00\x00\x00\x00"[..]);
 
     let error = FrameCodec::default().decode(&mut input);
 
-    assert!(matches!(error, Err(ProtocolError::UnsupportedVersion(2))));
+    assert!(matches!(error, Err(ProtocolError::UnsupportedVersion(1))));
 }
 
 #[test]
 fn oversized_frame_is_rejected_before_allocation() {
-    let mut input = BytesMut::from(&b"RG\x01\x0e\x00\x10\x00\x00"[..]);
+    let mut input = BytesMut::from(&b"RG\x02\x0f\x00\x10\x00\x00"[..]);
     let error = FrameCodec::new(1024).decode(&mut input);
     assert!(error.is_err());
 }
 
 #[test]
-fn client_key_debug_is_redacted() {
-    let key = ClientKey::new("must-not-appear");
-    let rendered = format!("{key:?}");
+fn cluster_token_debug_is_redacted() {
+    let token = ClusterToken::new("must-not-appear");
+    let rendered = format!("{token:?}");
     assert!(!rendered.contains("must-not-appear"));
     assert!(rendered.contains("REDACTED"));
 }

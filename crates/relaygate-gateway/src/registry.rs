@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use relaygate_protocol::{BindingId, SessionId};
+use relaygate_protocol::{BindingId, DestinationId, SessionId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Binding {
     pub(crate) id: BindingId,
-    pub(crate) client_id: String,
+    pub(crate) destination_id: DestinationId,
     pub(crate) session_id: SessionId,
 }
 
@@ -18,25 +18,29 @@ pub(crate) enum Registration {
 #[derive(Debug, Default)]
 pub(crate) struct LocalRegistry {
     by_id: HashMap<BindingId, Binding>,
-    by_client: HashMap<String, Vec<BindingId>>,
+    by_destination: HashMap<DestinationId, Vec<BindingId>>,
     by_session: HashMap<SessionId, HashSet<BindingId>>,
-    next_selection: HashMap<String, usize>,
+    next_selection: HashMap<DestinationId, usize>,
 }
 
 impl LocalRegistry {
-    pub(crate) fn register(&mut self, session_id: SessionId, client_id: &str) -> Registration {
-        if let Some(existing) = self.binding_for_session_client(session_id, client_id) {
+    pub(crate) fn register(
+        &mut self,
+        session_id: SessionId,
+        destination_id: DestinationId,
+    ) -> Registration {
+        if let Some(existing) = self.binding_for_session_client(session_id, destination_id) {
             return Registration::Existing(existing);
         }
 
         let binding = Binding {
             id: self.unique_binding_id(),
-            client_id: client_id.to_owned(),
+            destination_id,
             session_id,
         };
         self.by_id.insert(binding.id, binding.clone());
-        self.by_client
-            .entry(binding.client_id.clone())
+        self.by_destination
+            .entry(binding.destination_id)
             .or_default()
             .push(binding.id);
         self.by_session
@@ -86,37 +90,53 @@ impl LocalRegistry {
         &self,
         session_id: SessionId,
         binding_id: BindingId,
-        client_id: &str,
+        destination_id: DestinationId,
     ) -> Option<Binding> {
         self.by_id
             .get(&binding_id)
-            .filter(|binding| binding.session_id == session_id && binding.client_id == client_id)
+            .filter(|binding| {
+                binding.session_id == session_id && binding.destination_id == destination_id
+            })
             .cloned()
     }
 
-    pub(crate) fn select(&mut self, client_id: &str) -> Option<Binding> {
-        let ids = self.by_client.get(client_id)?;
-        if ids.is_empty() {
+    pub(crate) fn select_excluding(
+        &mut self,
+        destination_id: DestinationId,
+        excluded_session: SessionId,
+    ) -> Option<Binding> {
+        let ids = self.by_destination.get(&destination_id)?;
+        let eligible = ids
+            .iter()
+            .filter_map(|id| self.by_id.get(id))
+            .filter(|binding| binding.session_id != excluded_session)
+            .cloned()
+            .collect::<Vec<_>>();
+        if eligible.is_empty() {
             return None;
         }
-        let cursor = self.next_selection.entry(client_id.to_owned()).or_default();
-        let index = *cursor % ids.len();
+        let cursor = self.next_selection.entry(destination_id).or_default();
+        let index = *cursor % eligible.len();
         *cursor = cursor.wrapping_add(1);
-        self.by_id.get(&ids[index]).cloned()
+        eligible.get(index).cloned()
     }
 
     pub(crate) fn binding_count(&self) -> usize {
         self.by_id.len()
     }
 
-    pub(crate) fn contains_session_client(&self, session_id: SessionId, client_id: &str) -> bool {
-        self.binding_for_session_client(session_id, client_id)
+    pub(crate) fn contains_session_destination(
+        &self,
+        session_id: SessionId,
+        destination_id: DestinationId,
+    ) -> bool {
+        self.binding_for_session_client(session_id, destination_id)
             .is_some()
     }
 
     #[cfg(test)]
-    pub(crate) fn client_binding_count(&self, client_id: &str) -> usize {
-        self.by_client.get(client_id).map_or(0, Vec::len)
+    pub(crate) fn destination_binding_count(&self, destination_id: DestinationId) -> usize {
+        self.by_destination.get(&destination_id).map_or(0, Vec::len)
     }
 
     #[cfg(test)]
@@ -127,13 +147,13 @@ impl LocalRegistry {
     fn binding_for_session_client(
         &self,
         session_id: SessionId,
-        client_id: &str,
+        destination_id: DestinationId,
     ) -> Option<Binding> {
         self.by_session.get(&session_id).and_then(|ids| {
             ids.iter().find_map(|id| {
                 self.by_id
                     .get(id)
-                    .filter(|binding| binding.client_id == client_id)
+                    .filter(|binding| binding.destination_id == destination_id)
                     .cloned()
             })
         })
@@ -142,15 +162,16 @@ impl LocalRegistry {
     fn remove(&mut self, binding_id: BindingId) -> Option<Binding> {
         let binding = self.by_id.remove(&binding_id)?;
 
-        let remove_client_index = if let Some(ids) = self.by_client.get_mut(&binding.client_id) {
-            ids.retain(|id| *id != binding_id);
-            ids.is_empty()
-        } else {
-            false
-        };
+        let remove_client_index =
+            if let Some(ids) = self.by_destination.get_mut(&binding.destination_id) {
+                ids.retain(|id| *id != binding_id);
+                ids.is_empty()
+            } else {
+                false
+            };
         if remove_client_index {
-            self.by_client.remove(&binding.client_id);
-            self.next_selection.remove(&binding.client_id);
+            self.by_destination.remove(&binding.destination_id);
+            self.next_selection.remove(&binding.destination_id);
         }
 
         let remove_session_index = if let Some(ids) = self.by_session.get_mut(&binding.session_id) {
@@ -179,7 +200,7 @@ impl LocalRegistry {
 #[cfg(test)]
 mod tests {
     use super::{LocalRegistry, Registration};
-    use relaygate_protocol::SessionId;
+    use relaygate_protocol::{DestinationId, SessionId};
 
     fn binding_id(registration: Registration) -> relaygate_protocol::BindingId {
         match registration {
@@ -192,17 +213,19 @@ mod tests {
         let first_session = SessionId::new();
         let second_session = SessionId::new();
         let mut registry = LocalRegistry::default();
+        let shared = DestinationId::new();
+        let other = DestinationId::new();
 
-        let first = binding_id(registry.register(first_session, "echo.shared"));
-        let second = binding_id(registry.register(second_session, "echo.shared"));
-        let third = binding_id(registry.register(first_session, "echo.other"));
+        let first = binding_id(registry.register(first_session, shared));
+        let second = binding_id(registry.register(second_session, shared));
+        let third = binding_id(registry.register(first_session, other));
 
         assert_eq!(registry.binding_count(), 3);
-        assert_eq!(registry.client_binding_count("echo.shared"), 2);
+        assert_eq!(registry.destination_binding_count(shared), 2);
         assert_eq!(registry.session_binding_count(first_session), 2);
         assert!(registry.remove_owned(first_session, first).is_some());
         assert_eq!(registry.binding_count(), 2);
-        assert_eq!(registry.client_binding_count("echo.shared"), 1);
+        assert_eq!(registry.destination_binding_count(shared), 1);
         assert_eq!(registry.session_binding_count(first_session), 1);
         assert!(registry.remove_owned(first_session, second).is_none());
         assert!(registry.remove_owned(first_session, third).is_some());
@@ -212,12 +235,13 @@ mod tests {
     fn unregister_then_register_renews_binding_id() {
         let session = SessionId::new();
         let mut registry = LocalRegistry::default();
-        let first = binding_id(registry.register(session, "echo.alpha"));
-        let repeated = binding_id(registry.register(session, "echo.alpha"));
+        let destination = DestinationId::new();
+        let first = binding_id(registry.register(session, destination));
+        let repeated = binding_id(registry.register(session, destination));
 
         assert_eq!(first, repeated);
         assert!(registry.remove_owned(session, first).is_some());
-        let renewed = binding_id(registry.register(session, "echo.alpha"));
+        let renewed = binding_id(registry.register(session, destination));
         assert_ne!(first, renewed);
     }
 
@@ -226,14 +250,20 @@ mod tests {
         let first_session = SessionId::new();
         let second_session = SessionId::new();
         let mut registry = LocalRegistry::default();
-        registry.register(first_session, "echo.shared");
-        registry.register(second_session, "echo.shared");
+        let shared = DestinationId::new();
+        registry.register(first_session, shared);
+        registry.register(second_session, shared);
 
-        let first = registry.select("echo.shared").ok_or("missing first")?;
-        let second = registry.select("echo.shared").ok_or("missing second")?;
+        let caller = SessionId::new();
+        let first = registry
+            .select_excluding(shared, caller)
+            .ok_or("missing first")?;
+        let second = registry
+            .select_excluding(shared, caller)
+            .ok_or("missing second")?;
 
         assert_ne!(first.id, second.id);
-        assert_eq!(registry.client_binding_count("echo.shared"), 2);
+        assert_eq!(registry.destination_binding_count(shared), 2);
         Ok(())
     }
 
@@ -242,15 +272,16 @@ mod tests {
         let first_session = SessionId::new();
         let second_session = SessionId::new();
         let mut registry = LocalRegistry::default();
-        registry.register(first_session, "echo.shared");
-        registry.register(first_session, "echo.first");
-        registry.register(second_session, "echo.shared");
+        let shared = DestinationId::new();
+        registry.register(first_session, shared);
+        registry.register(first_session, DestinationId::new());
+        registry.register(second_session, shared);
 
         let removed = registry.remove_session(first_session);
 
         assert_eq!(removed.len(), 2);
         assert_eq!(registry.binding_count(), 1);
-        assert_eq!(registry.client_binding_count("echo.shared"), 1);
+        assert_eq!(registry.destination_binding_count(shared), 1);
         assert_eq!(registry.session_binding_count(second_session), 1);
     }
 
@@ -259,9 +290,10 @@ mod tests {
         let first_session = SessionId::new();
         let second_session = SessionId::new();
         let mut registry = LocalRegistry::default();
-        let first = binding_id(registry.register(first_session, "echo.shared"));
-        let second = binding_id(registry.register(first_session, "echo.other"));
-        registry.register(second_session, "echo.shared");
+        let shared = DestinationId::new();
+        let first = binding_id(registry.register(first_session, shared));
+        let second = binding_id(registry.register(first_session, DestinationId::new()));
+        registry.register(second_session, shared);
 
         let snapshot = registry.bindings_for_session(first_session);
 
@@ -284,24 +316,29 @@ mod tests {
     fn exact_lookup_rejects_every_stale_identity_component() {
         let session = SessionId::new();
         let mut registry = LocalRegistry::default();
-        let binding = match registry.register(session, "echo.alpha") {
+        let destination = DestinationId::new();
+        let binding = match registry.register(session, destination) {
             Registration::Created(binding) | Registration::Existing(binding) => binding,
         };
 
         assert_eq!(
-            registry.exact(session, binding.id, "echo.alpha"),
+            registry.exact(session, binding.id, destination),
             Some(binding.clone())
         );
         assert!(
             registry
-                .exact(SessionId::new(), binding.id, "echo.alpha")
+                .exact(SessionId::new(), binding.id, destination)
                 .is_none()
         );
         assert!(
             registry
-                .exact(session, relaygate_protocol::BindingId::new(), "echo.alpha")
+                .exact(session, relaygate_protocol::BindingId::new(), destination)
                 .is_none()
         );
-        assert!(registry.exact(session, binding.id, "echo.beta").is_none());
+        assert!(
+            registry
+                .exact(session, binding.id, DestinationId::new())
+                .is_none()
+        );
     }
 }

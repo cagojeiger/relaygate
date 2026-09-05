@@ -2,9 +2,10 @@ use std::{fmt, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_route_table::{
-    BindingSet, ClientId, GatewayId, LeaseId, MappingSnapshot, RegistrationAck, RegistrationKey,
-    RegistrationRevision, ShardDirectoryGeneration,
+    BindingSet, DestinationId, GatewayId, LeaseId, MappingSnapshot, RegistrationAck,
+    RegistrationKey, RegistrationRevision, ShardDirectoryGeneration,
 };
+use relaygate_transport::{BoxedIo, ClientTlsConfig, insecure_boxed};
 use tokio::{
     net::{TcpStream, ToSocketAddrs},
     sync::{Semaphore, mpsc, oneshot},
@@ -82,12 +83,61 @@ impl RouteTableClient {
         internal_gateway_key: InternalGatewayKey,
         config: RouteTableClientConfig,
     ) -> Result<Self, TransportError> {
+        Self::connect_with_transport(
+            endpoint,
+            gateway_name,
+            gateway_id,
+            internal_gateway_key,
+            config,
+            None,
+        )
+        .await
+    }
+
+    pub async fn connect_secure(
+        endpoint: impl ToSocketAddrs,
+        gateway_name: GatewayName,
+        gateway_id: GatewayId,
+        internal_gateway_key: InternalGatewayKey,
+        config: RouteTableClientConfig,
+        tls: ClientTlsConfig,
+    ) -> Result<Self, TransportError> {
+        Self::connect_with_transport(
+            endpoint,
+            gateway_name,
+            gateway_id,
+            internal_gateway_key,
+            config,
+            Some(tls),
+        )
+        .await
+    }
+
+    async fn connect_with_transport(
+        endpoint: impl ToSocketAddrs,
+        gateway_name: GatewayName,
+        gateway_id: GatewayId,
+        internal_gateway_key: InternalGatewayKey,
+        config: RouteTableClientConfig,
+        tls: Option<ClientTlsConfig>,
+    ) -> Result<Self, TransportError> {
         let stream = tokio::time::timeout(config.connect_timeout, TcpStream::connect(endpoint))
             .await
             .map_err(|_| TransportError::deadline_exceeded("RouteTable connect timed out"))?
             .map_err(|error| {
                 TransportError::unavailable(format!("RouteTable connect failed: {error}"))
             })?;
+        let stream = match tls {
+            Some(tls) => tokio::time::timeout(config.handshake_timeout, tls.connect_boxed(stream))
+                .await
+                .map_err(|_| {
+                    TransportError::deadline_exceeded("RouteTable TLS handshake timed out")
+                })?
+                .map_err(|error| {
+                    TransportError::unavailable(format!("RouteTable TLS handshake failed: {error}"))
+                })?,
+            None => insecure_boxed(stream),
+        };
         let mut framed = Framed::new(stream, FrameCodec::new(config.max_frame_len));
         let handshake = async {
             framed
@@ -188,12 +238,12 @@ impl RouteTableClient {
     pub async fn resolve(
         &self,
         generation: ShardDirectoryGeneration,
-        client_id: &ClientId,
+        destination_id: &DestinationId,
     ) -> Result<BindingSet, TransportError> {
         let response = self
-            .request(WireRequest::resolve(generation, client_id))
+            .request(WireRequest::resolve(generation, destination_id))
             .await?;
-        response_bindings(response, client_id)
+        response_bindings(response, destination_id)
     }
 
     async fn request(&self, request: WireRequest) -> Result<WireResponse, TransportError> {
@@ -232,7 +282,7 @@ struct ClientCommand {
 }
 
 async fn run_client_actor(
-    mut framed: Framed<TcpStream, FrameCodec>,
+    mut framed: Framed<BoxedIo, FrameCodec>,
     mut commands: mpsc::Receiver<ClientCommand>,
 ) {
     let mut next_request_id = 1_u64;

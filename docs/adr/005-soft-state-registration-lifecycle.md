@@ -2,8 +2,11 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Partially superseded by ADR 010 and ADR 013 |
 | 전제 | [ADR 003](003-client-id-listener-binding.md), [ADR 004](004-current-state-routing-topology.md) |
+
+ADR 010과 ADR 013이 `ClientId`, `ListenerSession`, `ListenerBinding`을 각각
+`DestinationId`, `RelaySession`, `Binding`으로 대체한다. memory-only soft-state lifecycle 결정은 유지한다.
 
 ## 맥락
 

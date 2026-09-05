@@ -1,5 +1,3 @@
-use relaygate_protocol::SessionRole;
-
 /// Gateway-local summary of the RouteTable dependency's last observed state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RouteDependencyHealth {
@@ -39,12 +37,8 @@ pub struct GatewaySnapshot {
     pub draining: bool,
     /// Total number of live SDK sessions.
     pub sessions: usize,
-    /// Number of live Listener SDK sessions.
-    pub listener_sessions: usize,
-    /// Number of live Connector SDK sessions.
-    pub connector_sessions: usize,
-    /// Number of live Listener bindings registered on this Gateway.
-    pub listener_bindings: usize,
+    /// Number of live Destination bindings published on this Gateway.
+    pub bindings: usize,
     /// Number of Pipe offers awaiting Listener admission.
     pub pending_offers: usize,
     /// Number of admitted Pipes currently relaying bytes.
@@ -67,26 +61,19 @@ pub struct GatewaySnapshot {
 
 impl GatewaySnapshot {
     pub(crate) fn from_parts(
-        session_roles: impl IntoIterator<Item = SessionRole>,
-        listener_bindings: usize,
+        sessions: usize,
+        bindings: usize,
         pending_offers: usize,
         live_pipes: usize,
         draining: bool,
     ) -> Self {
-        let mut snapshot = Self {
+        Self {
             draining,
-            listener_bindings,
+            sessions,
+            bindings,
             pending_offers,
             live_pipes,
             ..Self::default()
-        };
-        for role in session_roles {
-            snapshot.sessions += 1;
-            match role {
-                SessionRole::Connector => snapshot.connector_sessions += 1,
-                SessionRole::Listener => snapshot.listener_sessions += 1,
-            }
         }
-        snapshot
     }
 }

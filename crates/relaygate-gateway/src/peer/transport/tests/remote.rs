@@ -87,15 +87,15 @@ async fn receive_remote_open(
     stream_id: StreamId,
     open_identity: OpenIdentity,
 ) -> Result<PeerStreamKey, Box<dyn Error>> {
-    let listener_session_id = SessionId::new();
+    let relay_session_id = SessionId::new();
     let binding_id = BindingId::new();
     assert!(
         actor
             .handle_frame(PeerFrame::Open {
                 stream_id,
                 open_identity,
-                client_id: "echo.remote".to_owned(),
-                listener_session_id,
+                destination_id: "echo.remote".to_owned(),
+                relay_session_id,
                 binding_id,
             })
             .await
@@ -106,13 +106,13 @@ async fn receive_remote_open(
         Some(TransportNotice::Event(PeerEvent::IncomingOpen {
             key: incoming_key,
             open_identity: identity,
-            client_id,
-            listener_session_id: session_id,
+            destination_id,
+            relay_session_id: session_id,
             binding_id: incoming_binding_id,
         })) if incoming_key == key
             && identity == open_identity
-            && client_id == "echo.remote"
-            && session_id == listener_session_id
+            && destination_id == "echo.remote"
+            && session_id == relay_session_id
             && incoming_binding_id == binding_id
     ));
     Ok(key)
@@ -217,13 +217,13 @@ async fn endpoint_bits_isolate_remote_open_replay() -> Result<(), Box<dyn Error>
 
     let remote_stream_id = StreamId::from_raw(0);
     let remote_identity = OpenIdentity::new(peer_gateway_id, SessionId::new(), 2);
-    let remote_listener_session_id = SessionId::new();
+    let remote_relay_session_id = SessionId::new();
     let remote_binding_id = BindingId::new();
     let remote_open = PeerFrame::Open {
         stream_id: remote_stream_id,
         open_identity: remote_identity,
-        client_id: "echo.remote".to_owned(),
-        listener_session_id: remote_listener_session_id,
+        destination_id: "echo.remote".to_owned(),
+        relay_session_id: remote_relay_session_id,
         binding_id: remote_binding_id,
     };
     assert!(actor.handle_frame(remote_open.clone()).await);
@@ -233,13 +233,13 @@ async fn endpoint_bits_isolate_remote_open_replay() -> Result<(), Box<dyn Error>
         Some(TransportNotice::Event(PeerEvent::IncomingOpen {
             key,
             open_identity,
-            client_id,
-            listener_session_id,
+            destination_id,
+            relay_session_id,
             binding_id,
         })) if key == remote_key
             && open_identity == remote_identity
-            && client_id == "echo.remote"
-            && listener_session_id == remote_listener_session_id
+            && destination_id == "echo.remote"
+            && relay_session_id == remote_relay_session_id
             && binding_id == remote_binding_id
     ));
     assert_streams(

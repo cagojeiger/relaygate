@@ -1,5 +1,8 @@
 name: relaygate-local
 
+volumes:
+  relaygate-tls:
+
 x-runtime: &runtime
   image: relaygate:dev
   init: true
@@ -18,13 +21,27 @@ x-directory-volume: &directory-volume
   target: /etc/relaygate/shard-directory.json
   read_only: true
 
+x-tls-volume: &tls-volume
+  type: volume
+  source: relaygate-tls
+  target: /etc/relaygate/tls
+  read_only: true
+
 x-gateway-environment: &gateway-environment
   RELAYGATE_BIND_ADDR: 0.0.0.0:27420
   RELAYGATE_PEER_BIND_ADDR: 0.0.0.0:27421
-  RELAYGATE_CLIENT_KEYS: echo.a=dev-echo-a-v1,echo.b=dev-echo-b-v1,echo.c=dev-echo-c-v1,echo.shared=dev-echo-shared-v1,echo.zero=dev-echo-zero-v1
-  RELAYGATE_RT_TRUSTED_LOCAL: "true"
+  RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
   RELAYGATE_RT_SHARD_DIRECTORY_PATH: /etc/relaygate/shard-directory.json
   RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
+  RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+  RELAYGATE_SDK_TLS_CERT_PATH: /etc/relaygate/tls/gateway.crt
+  RELAYGATE_SDK_TLS_KEY_PATH: /etc/relaygate/tls/gateway.key
+  RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
+  RELAYGATE_INTERNAL_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+  RELAYGATE_INTERNAL_TLS_CERT_PATH: /etc/relaygate/tls/gateway.crt
+  RELAYGATE_INTERNAL_TLS_KEY_PATH: /etc/relaygate/tls/gateway.key
+  RELAYGATE_PEER_TLS_SERVER_NAME: relaygate-gateway.internal
+  RELAYGATE_RT_TLS_SERVER_NAME: relaygate-route-table.internal
   RELAYGATE_LOG: info
   RELAYGATE_STATS_INTERVAL_MS: "1000"
   RELAYGATE_METRICS_BIND_ADDR: 0.0.0.0:27422
@@ -40,7 +57,10 @@ x-gateway: &gateway
   command: ["relaygate-server", "gateway"]
   volumes:
     - *directory-volume
+    - *tls-volume
   depends_on:
+    tls-init:
+      condition: service_healthy
     rt-0:
       condition: service_started
     rt-1:
@@ -54,11 +74,13 @@ x-gateway: &gateway
   stop_grace_period: 5s
 
 x-route-table-environment: &route-table-environment
-  RELAYGATE_RT_TRUSTED_LOCAL: "true"
   RELAYGATE_RT_BIND_ADDR: 0.0.0.0:27430
   RELAYGATE_RT_SHARD_DIRECTORY_PATH: /etc/relaygate/shard-directory.json
   RELAYGATE_RT_LEASE_TTL_MS: "3000"
   RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
+  RELAYGATE_INTERNAL_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+  RELAYGATE_INTERNAL_TLS_CERT_PATH: /etc/relaygate/tls/route-table.crt
+  RELAYGATE_INTERNAL_TLS_KEY_PATH: /etc/relaygate/tls/route-table.key
   RELAYGATE_LOG: info
   RELAYGATE_METRICS_BIND_ADDR: 0.0.0.0:27431
 
@@ -71,14 +93,67 @@ x-route-table: &route-table
   command: ["relaygate-server", "route-table"]
   volumes:
     - *directory-volume
+    - *tls-volume
+  depends_on:
+    tls-init:
+      condition: service_healthy
   stop_grace_period: 5s
 
 x-listener: &listener
   <<: *runtime
   command: ["relaygate-echo-listener"]
+  volumes:
+    - *tls-volume
   stop_grace_period: 5s
 
 services:
+  tls-init:
+    image: alpine:3.22
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        apk add --no-cache openssl >/dev/null
+        if ! test -f /tls/.ready; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+            -subj '/CN=relaygate-local-ca' \
+            -keyout /tls/ca.key -out /tls/ca.crt >/dev/null 2>&1
+          openssl req -newkey rsa:2048 -nodes \
+            -subj '/CN=relaygate-gateway.internal' \
+            -keyout /tls/gateway.key -out /tmp/gateway.csr >/dev/null 2>&1
+          printf '%s\n' \
+            'subjectAltName=DNS:relaygate-gateway.internal,DNS:gateway,DNS:gateway-a,DNS:gateway-b,DNS:gateway-c' \
+            'extendedKeyUsage=serverAuth,clientAuth' >/tmp/gateway.ext
+          openssl x509 -req -days 2 -sha256 \
+            -in /tmp/gateway.csr -CA /tls/ca.crt -CAkey /tls/ca.key -CAcreateserial \
+            -extfile /tmp/gateway.ext -out /tls/gateway.crt >/dev/null 2>&1
+          openssl req -newkey rsa:2048 -nodes \
+            -subj '/CN=relaygate-route-table.internal' \
+            -keyout /tls/route-table.key -out /tmp/route-table.csr >/dev/null 2>&1
+          printf '%s\n' \
+            'subjectAltName=DNS:relaygate-route-table.internal,DNS:rt-0,DNS:rt-1' \
+            'extendedKeyUsage=serverAuth,clientAuth' >/tmp/route-table.ext
+          openssl x509 -req -days 2 -sha256 \
+            -in /tmp/route-table.csr -CA /tls/ca.crt -CAkey /tls/ca.key -CAserial /tls/ca.srl \
+            -extfile /tmp/route-table.ext -out /tls/route-table.crt >/dev/null 2>&1
+          chown 10001:10001 /tls/*.crt /tls/*.key
+          chmod 0444 /tls/*.crt
+          chmod 0440 /tls/*.key
+          touch /tls/.ready
+        fi
+        exec tail -f /dev/null
+    volumes:
+      - relaygate-tls:/tls
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -s /tls/ca.crt && test -s /tls/gateway.crt && test -s /tls/gateway.key && test -s /tls/route-table.crt && test -s /tls/route-table.key",
+        ]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
   rt-0:
     <<: *route-table
     environment:
@@ -118,7 +193,10 @@ services:
     <<: *listener
     environment:
       RELAYGATE_ADDR: gateway-a:27420
-      RELAYGATE_LISTENERS: echo.a=dev-echo-a-v1
+      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
+      RELAYGATE_DESTINATIONS: 11111111-1111-4111-8111-111111111111
+      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
       RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-a:
@@ -128,7 +206,10 @@ services:
     <<: *listener
     environment:
       RELAYGATE_ADDR: gateway-b:27420
-      RELAYGATE_LISTENERS: echo.b=dev-echo-b-v1,echo.shared=dev-echo-shared-v1
+      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
+      RELAYGATE_DESTINATIONS: 22222222-2222-4222-8222-222222222222,44444444-4444-4444-8444-444444444444
+      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
       RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-b:
@@ -138,7 +219,10 @@ services:
     <<: *listener
     environment:
       RELAYGATE_ADDR: gateway-c:27420
-      RELAYGATE_LISTENERS: echo.c=dev-echo-c-v1,echo.shared=dev-echo-shared-v1,echo.zero=dev-echo-zero-v1
+      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
+      RELAYGATE_DESTINATIONS: 33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555
+      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
       RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-c:
@@ -147,10 +231,15 @@ services:
   continuity-ac:
     <<: *runtime
     command: ["relaygate-echo-probe", "continuity"]
+    volumes:
+      - *tls-volume
     environment:
       RELAYGATE_CONTINUITY_ADDR: gateway-a:27420
-      RELAYGATE_CONTINUITY_CLIENT_ID: echo.c
+      RELAYGATE_CONTINUITY_DESTINATION_ID: 33333333-3333-4333-8333-333333333333
       RELAYGATE_CONTINUITY_STATE: /tmp/relaygate-continuity.state
+      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
+      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
       RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-a:
@@ -164,10 +253,15 @@ services:
   continuity-a-zero:
     <<: *runtime
     command: ["relaygate-echo-probe", "continuity"]
+    volumes:
+      - *tls-volume
     environment:
       RELAYGATE_CONTINUITY_ADDR: gateway-a:27420
-      RELAYGATE_CONTINUITY_CLIENT_ID: echo.zero
+      RELAYGATE_CONTINUITY_DESTINATION_ID: 55555555-5555-4555-8555-555555555555
       RELAYGATE_CONTINUITY_STATE: /tmp/relaygate-continuity.state
+      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
+      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
       RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-a:
@@ -181,8 +275,13 @@ services:
   topology-probe:
     <<: *runtime
     command: ["relaygate-echo-probe", "matrix"]
+    volumes:
+      - *tls-volume
     environment:
       RELAYGATE_GATEWAYS: gateway-a:27420,gateway-b:27420,gateway-c:27420
+      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
+      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
       RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-a:
@@ -266,7 +365,7 @@ services:
           sleep 1
         done
         for expression in \
-          'sum(relaygate_gateway_listener_registration_results_total{outcome="success"}) > 0' \
+          'sum(relaygate_gateway_publish_results_total{outcome="success"}) > 0' \
           'sum(relaygate_gateway_route_dependency_transitions_total{current="ready"}) > 0' \
           'sum(relaygate_gateway_route_connection_attempts_total{outcome="success"}) > 0' \
           'sum(relaygate_gateway_peer_handshakes_total{outcome="success"}) > 0' \
@@ -283,7 +382,7 @@ services:
           done
         done
         for expression in \
-          'histogram_quantile(0.95, sum by (le) (relaygate_gateway_open_duration_seconds_bucket)) > 0' \
+          'histogram_quantile(0.95, sum by (le) (relaygate_gateway_dial_duration_seconds_bucket)) > 0' \
           'histogram_quantile(0.95, sum by (le) (relaygate_route_table_request_duration_seconds_bucket)) > 0'; do
           attempts=0
           until curl -fsSG --data-urlencode "query=$$expression" \
@@ -307,4 +406,8 @@ services:
       prometheus:
         condition: service_started
       grafana:
+        condition: service_started
+      continuity-ac:
+        condition: service_started
+      continuity-a-zero:
         condition: service_started

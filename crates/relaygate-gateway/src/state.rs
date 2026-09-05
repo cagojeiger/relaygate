@@ -4,16 +4,13 @@ use std::{
 };
 
 use bytes::Bytes;
-use relaygate_protocol::{
-    BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId, SessionRole,
-};
-use relaygate_route_table::{ClientId as RouteClientId, GatewayId, GatewayLocator};
+use relaygate_protocol::{BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId};
+use relaygate_route_table::{DestinationId as RouteDestinationId, GatewayId, GatewayLocator};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     GatewaySnapshot,
-    auth::ClientKeyStore,
     peer::{OpenIdentity, PeerStreamKey},
     registry::{Binding, LocalRegistry},
 };
@@ -70,14 +67,14 @@ pub(crate) enum GatewayAction {
     },
     ResolveRoute {
         open_identity: OpenIdentity,
-        client_id: RouteClientId,
+        destination_id: RouteDestinationId,
     },
     OpenPeer {
         open_identity: OpenIdentity,
         gateway_id: GatewayId,
         gateway_locator: GatewayLocator,
-        client_id: String,
-        listener_session_id: SessionId,
+        destination_id: String,
+        relay_session_id: SessionId,
         binding_id: BindingId,
     },
     CancelPeerOpen {
@@ -128,11 +125,6 @@ impl From<PeerDelivery> for GatewayAction {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ProtocolViolation {
-    #[error("frame {frame_name} is not valid for a {role:?} session")]
-    InvalidFrameForRole {
-        role: SessionRole,
-        frame_name: &'static str,
-    },
     #[error("session {sender:?} does not own existing Pipe {pipe_id:?} for frame {frame_name}")]
     PipeOwnership {
         sender: SessionId,
@@ -143,7 +135,6 @@ pub(crate) enum ProtocolViolation {
 
 #[derive(Debug, Clone)]
 struct SessionEntry {
-    role: SessionRole,
     sender: mpsc::Sender<Frame>,
     cancellation: CancellationToken,
     highest_connection_id: Option<u64>,
@@ -219,7 +210,7 @@ impl PipeEndpoint {
 #[derive(Debug, Clone)]
 struct RemoteOpenAttempt {
     pipe_id: PipeId,
-    client_id: String,
+    destination_id: String,
     started_at: Instant,
     phase: RemoteOpenPhase,
 }
@@ -259,7 +250,6 @@ impl Default for GatewayLimits {
 
 #[derive(Debug)]
 pub(crate) struct GatewayState {
-    auth: ClientKeyStore,
     sessions: HashMap<SessionId, SessionEntry>,
     registry: LocalRegistry,
     pipes: HashMap<PipeId, PipeEntry>,
@@ -274,21 +264,16 @@ pub(crate) struct GatewayState {
 }
 
 impl GatewayState {
-    pub(crate) fn new(auth: ClientKeyStore, limits: GatewayLimits) -> Self {
-        Self::build(auth, limits, None)
+    pub(crate) fn new(limits: GatewayLimits) -> Self {
+        Self::build(limits, None)
     }
 
-    pub(crate) fn new_distributed(
-        auth: ClientKeyStore,
-        limits: GatewayLimits,
-        gateway_id: GatewayId,
-    ) -> Self {
-        Self::build(auth, limits, Some(gateway_id))
+    pub(crate) fn new_distributed(limits: GatewayLimits, gateway_id: GatewayId) -> Self {
+        Self::build(limits, Some(gateway_id))
     }
 
-    fn build(auth: ClientKeyStore, limits: GatewayLimits, gateway_id: Option<GatewayId>) -> Self {
+    fn build(limits: GatewayLimits, gateway_id: Option<GatewayId>) -> Self {
         Self {
-            auth,
             sessions: HashMap::new(),
             registry: LocalRegistry::default(),
             pipes: HashMap::new(),
@@ -317,30 +302,23 @@ impl GatewayState {
         frame: Frame,
         now: Instant,
     ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
-        let Some(role) = self.sessions.get(&session_id).map(|session| session.role) else {
+        if !self.sessions.contains_key(&session_id) {
             return Ok(Vec::new());
-        };
-        if !frame_allowed(role, &frame) {
-            return Err(ProtocolViolation::InvalidFrameForRole {
-                role,
-                frame_name: frame_name(&frame),
-            });
         }
 
         let actions = match frame {
-            Frame::Register {
+            Frame::Publish {
                 request_id,
-                client_id,
-                client_key,
-            } => self.register(session_id, request_id, client_id, client_key),
-            Frame::Unregister {
+                destination_id,
+            } => self.publish(session_id, request_id, destination_id),
+            Frame::Unpublish {
                 request_id,
                 binding_id,
-            } => self.unregister(session_id, request_id, binding_id),
-            Frame::Open {
+            } => self.unpublish(session_id, request_id, binding_id),
+            Frame::Dial {
                 connection_id,
-                client_id,
-            } => self.open(session_id, connection_id, client_id, now),
+                destination_id,
+            } => self.dial(session_id, connection_id, destination_id, now),
             Frame::OfferAccepted { pipe_id } => {
                 Self::send_actions(self.offer_accepted(session_id, pipe_id)?)
             }
@@ -368,19 +346,20 @@ impl GatewayState {
             Frame::Pong { .. } => Vec::new(),
             Frame::Hello { .. }
             | Frame::Welcome { .. }
-            | Frame::Registered { .. }
-            | Frame::RegisterFailed { .. }
-            | Frame::Unregistered { .. }
+            | Frame::SessionRejected { .. }
+            | Frame::Published { .. }
+            | Frame::PublishFailed { .. }
+            | Frame::Unpublished { .. }
             | Frame::Offer { .. }
             | Frame::Opened { .. }
-            | Frame::OpenFailed { .. } => Vec::new(),
+            | Frame::DialFailed { .. } => Vec::new(),
         };
         Ok(actions)
     }
 
     pub(crate) fn snapshot(&self) -> GatewaySnapshot {
         let mut snapshot = GatewaySnapshot::from_parts(
-            self.sessions.values().map(|session| session.role),
+            self.sessions.len(),
             self.registry.binding_count(),
             self.pending_offer_count,
             self.live_pipe_count,
@@ -393,11 +372,6 @@ impl GatewayState {
     #[cfg(test)]
     fn pipe_count(&self) -> usize {
         self.pipes.len()
-    }
-
-    #[cfg(test)]
-    fn peer_pipe_count(&self) -> usize {
-        self.peer_pipes.len()
     }
 
     fn pending_offer_count(&self) -> usize {
@@ -414,14 +388,10 @@ impl GatewayState {
         }
         self.draining = true;
         self.sessions
-            .iter()
-            .filter_map(|(session_id, session)| {
-                (session.role == SessionRole::Listener).then_some(
-                    GatewayAction::PublishRegistration {
-                        session_id: *session_id,
-                        bindings: Vec::new(),
-                    },
-                )
+            .keys()
+            .map(|session_id| GatewayAction::PublishRegistration {
+                session_id: *session_id,
+                bindings: Vec::new(),
             })
             .collect()
     }
@@ -430,16 +400,6 @@ impl GatewayState {
         self.pending_offer_count == 0
             && self.live_pipe_count == 0
             && self.remote_open_attempts.is_empty()
-    }
-
-    #[cfg(test)]
-    fn remote_open_attempt_count(&self) -> usize {
-        self.remote_open_attempts.len()
-    }
-
-    #[cfg(test)]
-    fn active_peer_open_count(&self) -> usize {
-        self.active_peer_opens.len()
     }
 
     fn insert_offer(&mut self, pipe_id: PipeId, pipe: PipeEntry) {
@@ -496,13 +456,6 @@ impl GatewayState {
         }
     }
 
-    #[cfg(test)]
-    fn connection_high_watermark(&self, session_id: SessionId) -> Option<u64> {
-        self.sessions
-            .get(&session_id)
-            .and_then(|session| session.highest_connection_id)
-    }
-
     fn send_actions<T>(deliveries: Vec<T>) -> Vec<GatewayAction>
     where
         T: Into<GatewayAction>,
@@ -518,11 +471,11 @@ impl GatewayState {
     }
 }
 
-fn observe_open_request() {
-    metrics::counter!("relaygate_gateway_open_requests_total").increment(1);
+fn observe_dial_request() {
+    metrics::counter!("relaygate_gateway_dial_requests_total").increment(1);
 }
 
-fn observe_open_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
+fn observe_dial_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
     let Some(started_at) = started_at else {
         return;
     };
@@ -532,13 +485,13 @@ fn observe_open_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
         Some(code) => ("error", error_code_name(code)),
     };
     metrics::counter!(
-        "relaygate_gateway_open_results_total",
+        "relaygate_gateway_dial_results_total",
         "outcome" => outcome,
         "code" => code
     )
     .increment(1);
     metrics::histogram!(
-        "relaygate_gateway_open_duration_seconds",
+        "relaygate_gateway_dial_duration_seconds",
         "outcome" => outcome
     )
     .record(started_at.elapsed().as_secs_f64());
@@ -558,56 +511,5 @@ pub(super) const fn error_code_name(code: ErrorCode) -> &'static str {
         ErrorCode::ProtocolError => "protocol_error",
         ErrorCode::Internal => "internal",
         ErrorCode::AlreadyExists => "already_exists",
-    }
-}
-
-fn frame_allowed(role: SessionRole, frame: &Frame) -> bool {
-    matches!(frame, Frame::Ping { .. } | Frame::Pong { .. })
-        || matches!(
-            (role, frame),
-            (
-                SessionRole::Connector,
-                Frame::Open { .. }
-                    | Frame::Data { .. }
-                    | Frame::Fin { .. }
-                    | Frame::Close { .. }
-                    | Frame::Reset { .. }
-                    | Frame::Cancel { .. }
-            ) | (
-                SessionRole::Listener,
-                Frame::Register { .. }
-                    | Frame::Unregister { .. }
-                    | Frame::OfferAccepted { .. }
-                    | Frame::OfferRejected { .. }
-                    | Frame::Data { .. }
-                    | Frame::Fin { .. }
-                    | Frame::Close { .. }
-                    | Frame::Reset { .. }
-            )
-        )
-}
-
-fn frame_name(frame: &Frame) -> &'static str {
-    match frame {
-        Frame::Hello { .. } => "HELLO",
-        Frame::Welcome { .. } => "WELCOME",
-        Frame::Register { .. } => "REGISTER",
-        Frame::Registered { .. } => "REGISTERED",
-        Frame::RegisterFailed { .. } => "REGISTER_FAILED",
-        Frame::Unregister { .. } => "UNREGISTER",
-        Frame::Unregistered { .. } => "UNREGISTERED",
-        Frame::Open { .. } => "OPEN",
-        Frame::Offer { .. } => "OFFER",
-        Frame::OfferAccepted { .. } => "OFFER_ACCEPTED",
-        Frame::OfferRejected { .. } => "OFFER_REJECTED",
-        Frame::Opened { .. } => "OPENED",
-        Frame::OpenFailed { .. } => "OPEN_FAILED",
-        Frame::Data { .. } => "DATA",
-        Frame::Fin { .. } => "FIN",
-        Frame::Close { .. } => "CLOSE",
-        Frame::Reset { .. } => "RESET",
-        Frame::Ping { .. } => "PING",
-        Frame::Pong { .. } => "PONG",
-        Frame::Cancel { .. } => "CANCEL",
     }
 }

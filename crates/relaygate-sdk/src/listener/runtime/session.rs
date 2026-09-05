@@ -1,16 +1,17 @@
 use futures_util::StreamExt;
-use relaygate_protocol::Frame;
+use relaygate_protocol::{Frame, PipeId};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ListenerFrameAction, ListenerSessionState,
-    cleanup::cleanup_listener_session,
-    frame::handle_listener_frame,
+    RelayFrameAction, RelaySessionState,
+    cleanup::cleanup_relay_session,
+    frame::handle_relay_frame,
     registration::{reconcile_registrations, wait_for_registration_deadline},
 };
 use crate::{
-    listener::ListenerRuntimeInner,
+    Error, ErrorCode, PeerObservation,
+    listener::{RelayCommand, RelayInner},
     observability::ReconnectEpisode,
     session::{
         EstablishedSession, SessionHeartbeat, send_bounded, session_outbound_channel,
@@ -18,9 +19,11 @@ use crate::{
     },
 };
 
-pub(super) async fn run_listener_session(
+pub(super) async fn run_relay_session(
     mut established: EstablishedSession,
-    inner: &ListenerRuntimeInner,
+    inner: &RelayInner,
+    mut commands: mpsc::Receiver<RelayCommand>,
+    mut cancellations: mpsc::UnboundedReceiver<PipeId>,
     session_cancel: CancellationToken,
     reconnect_episode: &mut Option<ReconnectEpisode>,
 ) -> bool {
@@ -28,7 +31,7 @@ pub(super) async fn run_listener_session(
     // One unique Pipe value can abandon one current PipeId, so this lane is
     // logically bounded by the session's live Pipe map rather than history.
     let (abandoned_tx, mut abandoned_rx) = mpsc::unbounded_channel();
-    let mut state = ListenerSessionState::new();
+    let mut state = RelaySessionState::new();
     let mut needs_reconcile = true;
     let mut timed_out_request = None;
     let mut registration_succeeded = false;
@@ -63,13 +66,12 @@ pub(super) async fn run_listener_session(
                     tracing::debug!(
                         component = "sdk",
                         event = "sdk.session.heartbeat_timeout",
-                        role = "listener",
                         session_id = %established.id.as_uuid(),
-                        "Listener session heartbeat response timed out"
+                        "Relay session heartbeat response timed out"
                     );
                     break;
                 }
-                match handle_listener_frame(
+                match handle_relay_frame(
                     frame,
                     established.id,
                     &mut state,
@@ -79,12 +81,12 @@ pub(super) async fn run_listener_session(
                     &mut established.transport,
                     &session_cancel,
                 ).await {
-                    ListenerFrameAction::Continue => {}
-                    ListenerFrameAction::RegistrationSucceeded => {
+                    RelayFrameAction::Continue => {}
+                    RelayFrameAction::RegistrationSucceeded => {
                         registration_succeeded = true;
                     }
-                    ListenerFrameAction::Reconcile => needs_reconcile = true,
-                    ListenerFrameAction::Stop => break,
+                    RelayFrameAction::Reconcile => needs_reconcile = true,
+                    RelayFrameAction::Stop => break,
                 }
             }
             () = wait_for_heartbeat(heartbeat.next_deadline()) => {
@@ -92,9 +94,8 @@ pub(super) async fn run_listener_session(
                     tracing::debug!(
                         component = "sdk",
                         event = "sdk.session.heartbeat_timeout",
-                        role = "listener",
                         session_id = %established.id.as_uuid(),
-                        "Listener session heartbeat response timed out"
+                        "Relay session heartbeat response timed out"
                     );
                     break;
                 };
@@ -118,6 +119,65 @@ pub(super) async fn run_listener_session(
             }
             _ = inner.reconcile.notified() => {
                 needs_reconcile = true;
+            }
+            command = commands.recv() => {
+                let Some(command) = command else { break; };
+                match command {
+                    RelayCommand::Dial { connection_id, destination_id, response } => {
+                        if state.pending_dials.insert(connection_id, response).is_some() {
+                            if let Some(response) = state.pending_dials.remove(&connection_id) {
+                                let _ = response.send(Err(Error::new(
+                                    ErrorCode::AlreadyExists,
+                                    PeerObservation::NotObserved,
+                                    "ConnectionId is already in flight",
+                                )));
+                            }
+                            continue;
+                        }
+                        if send_bounded(
+                            &mut established.transport,
+                            Frame::Dial {
+                                connection_id,
+                                destination_id: destination_id.to_wire(),
+                            },
+                            inner.config.operation_timeout,
+                            &session_cancel,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            cancelled = cancellations.recv() => {
+                let Some(pipe_id) = cancelled else { continue; };
+                let mut removed = false;
+                if let Some(response) = state.pending_dials.remove(&pipe_id.connection_id()) {
+                    removed = true;
+                    let _ = response.send(Err(Error::new(
+                        ErrorCode::Cancelled,
+                        PeerObservation::MaybeObserved,
+                        "committed DIAL was cancelled",
+                    )));
+                }
+                if let Some(pipe) = state.pipes.remove(&pipe_id) {
+                    removed = true;
+                    pipe.state.close_normal();
+                }
+                if removed
+                    && send_bounded(
+                        &mut established.transport,
+                        Frame::Cancel { pipe_id },
+                        inner.config.operation_timeout,
+                        &session_cancel,
+                    )
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
             frame = outbound_rx.recv() => {
                 let Some(frame) = frame else { break; };
@@ -159,7 +219,7 @@ pub(super) async fn run_listener_session(
         }
     }
 
-    cleanup_listener_session(
+    cleanup_relay_session(
         established.id,
         inner,
         state,

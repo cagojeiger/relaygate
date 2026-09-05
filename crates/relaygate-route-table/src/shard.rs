@@ -4,9 +4,9 @@ use std::{
 };
 
 use crate::{
-    BindingSet, ClientId, LeaseId, MappingEntry, MappingIdentity, MappingSnapshot, RegistrationAck,
-    RegistrationKey, RegistrationRevision, RequestContext, RouteTableError, RouteTableStats,
-    ShardDirectory, ShardDirectoryGeneration, ShardId,
+    BindingSet, DestinationId, LeaseId, MappingEntry, MappingIdentity, MappingSnapshot,
+    RegistrationAck, RegistrationKey, RegistrationRevision, RequestContext, RouteTableError,
+    RouteTableStats, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,7 @@ pub struct RouteTableShard {
     directory: ShardDirectory,
     shard_id: ShardId,
     config: RouteTableConfig,
-    route_index: HashMap<ClientId, BTreeMap<MappingIdentity, MappingEntry>>,
+    route_index: HashMap<DestinationId, BTreeMap<MappingIdentity, MappingEntry>>,
     registration_index: HashMap<RegistrationKey, RegistrationState>,
     active_lease_ids: HashSet<LeaseId>,
     expiry_index: BTreeMap<Instant, BTreeSet<ExpiryKey>>,
@@ -263,16 +263,16 @@ impl RouteTableShard {
         &mut self,
         _context: RequestContext,
         generation: ShardDirectoryGeneration,
-        client_id: &ClientId,
+        destination_id: &DestinationId,
         now: Instant,
     ) -> Result<BindingSet, RouteTableError> {
         self.validate_generation(generation)?;
-        self.validate_client_authority(client_id)?;
+        self.validate_client_authority(destination_id)?;
         self.expire_due(now);
 
         let mappings = self
             .route_index
-            .get(client_id)
+            .get(destination_id)
             .ok_or(RouteTableError::NotFound)?;
         if mappings.is_empty() {
             return Err(RouteTableError::NotFound);
@@ -359,13 +359,13 @@ impl RouteTableShard {
         for mapping in snapshot.entries() {
             let identity = mapping.identity();
             if identity.gateway_id() != key.gateway_id()
-                || identity.listener_session_id() != key.listener_session_id()
+                || identity.relay_session_id() != key.relay_session_id()
             {
                 return Err(RouteTableError::InvalidArgument(
                     "snapshot mapping is outside the RegistrationKey scope".to_owned(),
                 ));
             }
-            self.validate_client_authority(mapping.client_id())?;
+            self.validate_client_authority(mapping.destination_id())?;
         }
         Ok(())
     }
@@ -381,17 +381,21 @@ impl RouteTableShard {
                 .is_some_and(|current| current != next)
             {
                 return Err(RouteTableError::FailedPrecondition(
-                    "an active MappingIdentity cannot change ClientId or GatewayLocator".to_owned(),
+                    "an active MappingIdentity cannot change DestinationId or GatewayLocator"
+                        .to_owned(),
                 ));
             }
         }
         Ok(())
     }
 
-    fn validate_client_authority(&self, client_id: &ClientId) -> Result<(), RouteTableError> {
-        if self.directory.authority(client_id).id() != &self.shard_id {
+    fn validate_client_authority(
+        &self,
+        destination_id: &DestinationId,
+    ) -> Result<(), RouteTableError> {
+        if self.directory.authority(destination_id).id() != &self.shard_id {
             return Err(RouteTableError::InvalidArgument(
-                "ClientId belongs to a different authority shard".to_owned(),
+                "DestinationId belongs to a different authority shard".to_owned(),
             ));
         }
         Ok(())
@@ -473,7 +477,7 @@ impl RouteTableShard {
     fn insert_route_mappings(&mut self, mappings: &BTreeMap<MappingIdentity, MappingEntry>) {
         for (identity, mapping) in mappings {
             self.route_index
-                .entry(mapping.client_id().clone())
+                .entry(mapping.destination_id().clone())
                 .or_default()
                 .insert(*identity, mapping.clone());
         }
@@ -481,14 +485,15 @@ impl RouteTableShard {
 
     fn remove_route_mappings(&mut self, mappings: &BTreeMap<MappingIdentity, MappingEntry>) {
         for (identity, mapping) in mappings {
-            let remove_route = if let Some(route) = self.route_index.get_mut(mapping.client_id()) {
-                route.remove(identity);
-                route.is_empty()
-            } else {
-                false
-            };
+            let remove_route =
+                if let Some(route) = self.route_index.get_mut(mapping.destination_id()) {
+                    route.remove(identity);
+                    route.is_empty()
+                } else {
+                    false
+                };
             if remove_route {
-                self.route_index.remove(mapping.client_id());
+                self.route_index.remove(mapping.destination_id());
             }
         }
     }

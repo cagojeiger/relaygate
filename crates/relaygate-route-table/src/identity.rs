@@ -97,11 +97,62 @@ macro_rules! opaque_uuid {
     };
 }
 
-non_empty_string_id!(
-    /// Exact UTF-8 logical destination identity.
-    ClientId,
-    "ClientId"
-);
+/// Canonical UUIDv4 logical destination identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DestinationId(String);
+
+impl DestinationId {
+    pub fn new(value: impl Into<String>) -> Result<Self, RouteTableError> {
+        let value = value.into();
+        let parsed = Uuid::parse_str(&value).map_err(|_| {
+            RouteTableError::InvalidArgument("DestinationId must be a UUID".to_owned())
+        })?;
+        if parsed.get_version_num() != 4 {
+            return Err(RouteTableError::InvalidArgument(
+                "DestinationId must be UUIDv4".to_owned(),
+            ));
+        }
+        Ok(Self(parsed.to_string()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl fmt::Display for DestinationId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for DestinationId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl TryFrom<String> for DestinationId {
+    type Error = RouteTableError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<&str> for DestinationId {
+    type Error = RouteTableError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
 non_empty_string_id!(
     /// Logical RouteTable shard identity within one directory generation.
     ShardId,
@@ -124,7 +175,7 @@ opaque_uuid!(
 );
 opaque_uuid!(
     /// Identifies one Listener session within its Gateway incarnation.
-    ListenerSessionId
+    RelaySessionId
 );
 opaque_uuid!(
     /// Identifies one Listener binding incarnation.

@@ -8,9 +8,9 @@ use std::{
 };
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use relaygate_protocol::{Frame, FrameCodec};
+use relaygate_protocol::{ErrorCode, Frame, FrameCodec};
+use relaygate_transport::BoxedIo;
 use tokio::{
-    net::TcpStream,
     sync::mpsc,
     time::{sleep_until, timeout},
 };
@@ -25,7 +25,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 impl Inner {
     pub(super) async fn run_session(
         self: Arc<Self>,
-        stream: TcpStream,
+        stream: BoxedIo,
         cancellation: CancellationToken,
     ) -> Result<(), SessionError> {
         let mut framed = Framed::new(stream, FrameCodec::new(self.max_frame_len));
@@ -37,16 +37,28 @@ impl Inner {
                     .ok_or(SessionError::HandshakeClosed)??
             }
         };
-        let Frame::Hello { role } = first else {
+        let Frame::Hello { cluster_token } = first else {
             return Err(SessionError::ExpectedHello);
         };
+        if !self.cluster_tokens.authorizes(&cluster_token) {
+            framed
+                .send(Frame::SessionRejected {
+                    code: ErrorCode::Unauthenticated,
+                    message: "ClusterToken was not accepted".to_owned(),
+                })
+                .await?;
+            tracing::warn!(
+                component = "gateway",
+                event = "gateway.session.rejected",
+                error_code = ?ErrorCode::Unauthenticated,
+                "rejecting SDK session with an invalid ClusterToken"
+            );
+            return Err(SessionError::Unauthenticated);
+        }
 
         let (sender, receiver) = mpsc::channel(self.writer_queue_capacity);
         let heartbeat_sender = sender.clone();
-        let Some(session_id) = self
-            .lock_state()
-            .add_session(role, sender, cancellation.clone())
-        else {
+        let Some(session_id) = self.lock_state().add_session(sender, cancellation.clone()) else {
             return Err(SessionError::ResourceExhausted);
         };
         let run_inner = Arc::clone(&self);
@@ -79,7 +91,7 @@ impl Inner {
         self: Arc<Self>,
         session_id: relaygate_protocol::SessionId,
         sender: mpsc::Sender<Frame>,
-        mut source: futures_util::stream::SplitStream<Framed<TcpStream, FrameCodec>>,
+        mut source: futures_util::stream::SplitStream<Framed<BoxedIo, FrameCodec>>,
         cancellation: CancellationToken,
     ) -> Result<(), SessionError> {
         let mut heartbeat = SessionHeartbeat::new(
@@ -173,7 +185,7 @@ where
 
 async fn write_frames(
     mut receiver: mpsc::Receiver<Frame>,
-    mut sink: futures_util::stream::SplitSink<Framed<TcpStream, FrameCodec>, Frame>,
+    mut sink: futures_util::stream::SplitSink<Framed<BoxedIo, FrameCodec>, Frame>,
 ) -> Result<(), SessionError> {
     while let Some(frame) = receiver.recv().await {
         sink.send(frame).await?;
@@ -191,6 +203,8 @@ pub(super) enum SessionError {
     ExpectedHello,
     #[error("Gateway SDK session limit reached")]
     ResourceExhausted,
+    #[error("SDK session ClusterToken was not accepted")]
+    Unauthenticated,
     #[error(transparent)]
     Protocol(#[from] relaygate_protocol::ProtocolError),
     #[error(transparent)]

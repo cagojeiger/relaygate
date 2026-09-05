@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
-use relaygate_sdk::{Config, Connector, ErrorCode, PeerObservation, Pipe};
+use relaygate_sdk::{DestinationId, ErrorCode, PeerObservation, Pipe, Relay};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     task::JoinSet,
@@ -15,31 +15,32 @@ use tokio::{
 };
 
 use crate::config::{
-    CLIENT_IDS, CONCURRENT_PIPES_PER_PATH, ECHO_DEADLINE, ROUTE_WAIT, SHARED_CLIENT_ID,
-    environment, gateway_addresses, soak_concurrency, soak_duration, storm_pause, storm_sessions,
+    CONCURRENT_PIPES_PER_PATH, DESTINATION_IDS, ECHO_DEADLINE, ROUTE_WAIT, SHARED_DESTINATION_ID,
+    environment, gateway_addresses, sdk_config, soak_concurrency, soak_duration, storm_pause,
+    storm_sessions,
 };
 
 const STORM_PIPE_BATCH_SIZE: usize = 64;
 
 pub(crate) async fn run_single() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_ADDR", "gateway:27420");
-    let client_id = environment("RELAYGATE_CLIENT_ID", "echo.alpha");
+    let destination_id = environment("RELAYGATE_DESTINATION_ID", DESTINATION_IDS[0]);
     let connector = connect(&address).await?;
 
     assert_echo(
-        open_when_registered(&connector, &client_id, ROUTE_WAIT).await?,
+        dial_when_available(&connector, &destination_id, ROUTE_WAIT).await?,
         b"hello relaygate",
     )
     .await?;
 
     let binary = deterministic_payload(65_537, 0);
     assert_echo(
-        open_when_registered(&connector, &client_id, Duration::from_secs(3)).await?,
+        dial_when_available(&connector, &destination_id, Duration::from_secs(3)).await?,
         &binary,
     )
     .await?;
 
-    assert_concurrent_path(&connector, &client_id, 0, 0).await?;
+    assert_concurrent_path(&connector, &destination_id, 0, 0).await?;
     connector.close();
     println!("relaygate single-Gateway echo verified");
     Ok(())
@@ -51,19 +52,19 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
 
     let mut cross_dial = JoinSet::new();
     for (entry, connector) in connectors.iter().enumerate() {
-        for (owner, client_id) in CLIENT_IDS.iter().enumerate() {
+        for (owner, destination_id) in DESTINATION_IDS.iter().enumerate() {
             if entry == owner {
                 continue;
             }
             let payload = matrix_payload(entry, owner, 0);
             let context = format!(
-                "phase=cross-dial entry={entry} owner={owner} client_id={client_id} sequence=0 payload_len={}",
+                "phase=cross-dial entry={entry} owner={owner} destination_id={destination_id} sequence=0 payload_len={}",
                 payload.len()
             );
             spawn_echo(
                 &mut cross_dial,
                 connector.clone(),
-                (*client_id).to_owned(),
+                (*destination_id).to_owned(),
                 payload,
                 context,
             );
@@ -74,49 +75,49 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
     for index in 0..connectors.len() {
         let payload = matrix_payload(index, index, 0);
         assert_echo(
-            open_when_registered(&connectors[index], CLIENT_IDS[index], ROUTE_WAIT).await?,
+            dial_when_available(&connectors[index], DESTINATION_IDS[index], ROUTE_WAIT).await?,
             &payload,
         )
         .await
         .with_context(|| {
             format!(
-                "phase=local entry={index} owner={index} client_id={} sequence=0 payload_len={}",
-                CLIENT_IDS[index],
+                "phase=local entry={index} owner={index} destination_id={} sequence=0 payload_len={}",
+                DESTINATION_IDS[index],
                 payload.len()
             )
         })?;
     }
 
     for (entry, connector) in connectors.iter().enumerate() {
-        let payload = matrix_payload(entry, CLIENT_IDS.len(), 0);
+        let payload = matrix_payload(entry, DESTINATION_IDS.len(), 0);
         assert_echo(
-            open_when_registered(connector, SHARED_CLIENT_ID, ROUTE_WAIT).await?,
+            dial_when_available(connector, SHARED_DESTINATION_ID, ROUTE_WAIT).await?,
             &payload,
         )
         .await
         .with_context(|| {
             format!(
-                "phase=shared entry={entry} client_id={SHARED_CLIENT_ID} sequence=0 payload_len={}",
+                "phase=shared entry={entry} destination_id={SHARED_DESTINATION_ID} sequence=0 payload_len={}",
                 payload.len()
             )
         })?;
     }
 
     for (entry, connector) in connectors.iter().enumerate() {
-        for (owner, client_id) in CLIENT_IDS.iter().enumerate() {
+        for (owner, destination_id) in DESTINATION_IDS.iter().enumerate() {
             let boundary = deterministic_payload(65_537, entry * 100 + owner);
             assert_echo(
-                open_when_registered(connector, client_id, ROUTE_WAIT).await?,
+                dial_when_available(connector, destination_id, ROUTE_WAIT).await?,
                 &boundary,
             )
             .await
             .with_context(|| {
                 format!(
-                    "phase=boundary entry={entry} owner={owner} client_id={client_id} sequence=0 payload_len={}",
+                    "phase=boundary entry={entry} owner={owner} destination_id={destination_id} sequence=0 payload_len={}",
                     boundary.len()
                 )
             })?;
-            assert_concurrent_path(connector, client_id, entry, owner).await?;
+            assert_concurrent_path(connector, destination_id, entry, owner).await?;
         }
     }
 
@@ -145,22 +146,22 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
         workers.spawn(async move {
             let mut sequence = 0_u64;
             while Instant::now() < deadline {
-                let target = (worker + sequence as usize) % (CLIENT_IDS.len() + 1);
-                let client_id = if target == CLIENT_IDS.len() {
-                    SHARED_CLIENT_ID
+                let target = (worker + sequence as usize) % (DESTINATION_IDS.len() + 1);
+                let destination_id = if target == DESTINATION_IDS.len() {
+                    SHARED_DESTINATION_ID
                 } else {
-                    CLIENT_IDS[target]
+                    DESTINATION_IDS[target]
                 };
                 let payload = format!(
-                    "relaygate soak worker={worker} sequence={sequence} client={client_id}"
+                    "relaygate soak worker={worker} sequence={sequence} client={destination_id}"
                 )
                 .into_bytes();
                 assert_echo(
-                    open_when_registered(&connector, client_id, ROUTE_WAIT)
+                    dial_when_available(&connector, destination_id, ROUTE_WAIT)
                         .await
                         .with_context(|| {
                             format!(
-                                "phase=soak worker={worker} sequence={sequence} client_id={client_id}: OPEN failed"
+                                "phase=soak worker={worker} sequence={sequence} destination_id={destination_id}: dial failed"
                             )
                         })?,
                     &payload,
@@ -168,7 +169,7 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
                 .await
                 .with_context(|| {
                     format!(
-                        "phase=soak worker={worker} sequence={sequence} client_id={client_id}: echo failed"
+                        "phase=soak worker={worker} sequence={sequence} destination_id={destination_id}: echo failed"
                     )
                 })?;
                 completed.fetch_add(1, Ordering::Relaxed);
@@ -225,7 +226,7 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
         "soak completion accounting mismatch"
     );
     println!(
-        "relaygate soak verified: {worker_total} Pipes completed in {}s with {concurrency} workers over {} long-lived Connector sessions",
+        "relaygate soak verified: {worker_total} Pipes completed in {}s with {concurrency} workers over {} long-lived Relay sessions",
         duration.as_secs(),
         addresses.len()
     );
@@ -238,56 +239,56 @@ pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
         .next()
         .context("at least one Gateway address is required")?;
     let address = environment("RELAYGATE_ADDR", &default_address);
-    let client_id = environment("RELAYGATE_CLIENT_ID", CLIENT_IDS[0]);
+    let destination_id = environment("RELAYGATE_DESTINATION_ID", DESTINATION_IDS[0]);
     let session_count = storm_sessions()?;
     let pause = storm_pause()?;
     let connectors = connect_many(&address, session_count).await?;
-    let marker_pipes = open_marker_pipes(&connectors, &client_id).await?;
+    let marker_pipes = open_marker_pipes(&connectors, &destination_id).await?;
 
     println!(
-        "relaygate reconnect storm ready: {session_count} Connector sessions and marker Pipes; interrupt and restore the Gateway path within {}s",
+        "relaygate reconnect storm ready: {session_count} Relay sessions and marker Pipes; interrupt and restore the Gateway path within {}s",
         pause.as_secs()
     );
     await_marker_pipes_closed(marker_pipes, pause).await?;
-    println!("relaygate reconnect storm observed all original Connector sessions close");
+    println!("relaygate reconnect storm observed all original Relay sessions close");
 
-    let result = verify_connectors_in_batches(&connectors, &client_id).await;
+    let result = verify_connectors_in_batches(&connectors, &destination_id).await;
     for connector in connectors {
         connector.close();
     }
     result?;
 
     println!(
-        "relaygate reconnect storm verified: {session_count} Connector sessions opened a new Pipe after the recovery window"
+        "relaygate reconnect storm verified: {session_count} Relay sessions opened a new Pipe after the recovery window"
     );
     Ok(())
 }
 
-pub(crate) async fn wait_client_registered(client_id: &str) -> anyhow::Result<()> {
+pub(crate) async fn wait_client_registered(destination_id: &str) -> anyhow::Result<()> {
     let connectors = connect_all(&gateway_addresses()?).await?;
     for (entry, connector) in connectors.iter().enumerate() {
         let payload =
-            format!("relaygate wait-client entry={entry} client={client_id}").into_bytes();
+            format!("relaygate wait-client entry={entry} client={destination_id}").into_bytes();
         assert_echo(
-            open_when_registered(connector, client_id, ROUTE_WAIT).await?,
+            dial_when_available(connector, destination_id, ROUTE_WAIT).await?,
             &payload,
         )
         .await
         .with_context(|| {
-            format!("client {client_id:?} did not converge from gateway entry {entry}")
+            format!("client {destination_id:?} did not converge from gateway entry {entry}")
         })?;
     }
     for connector in connectors {
         connector.close();
     }
-    println!("relaygate client {client_id:?} converged from all Gateway entries");
+    println!("relaygate client {destination_id:?} converged from all Gateway entries");
     Ok(())
 }
 
 pub(crate) async fn expect_shard_isolation(
-    unavailable_client_id: &str,
+    unavailable_destination_id: &str,
     local_owner_index: usize,
-    available_client_id: &str,
+    available_destination_id: &str,
 ) -> anyhow::Result<()> {
     let addresses = gateway_addresses()?;
     let connectors = connect_all(&addresses).await?;
@@ -298,13 +299,13 @@ pub(crate) async fn expect_shard_isolation(
     );
 
     let local_payload = format!(
-        "relaygate shard-isolation local owner={local_owner_index} client={unavailable_client_id}"
+        "relaygate shard-isolation local owner={local_owner_index} client={unavailable_destination_id}"
     )
     .into_bytes();
     assert_echo(
-        open_when_registered(
+        dial_when_available(
             &connectors[local_owner_index],
-            unavailable_client_id,
+            unavailable_destination_id,
             ROUTE_WAIT,
         )
         .await?,
@@ -313,34 +314,35 @@ pub(crate) async fn expect_shard_isolation(
     .await
     .with_context(|| {
         format!(
-            "local owner path for {unavailable_client_id:?} failed at Gateway index {local_owner_index}"
+            "local owner path for {unavailable_destination_id:?} failed at Gateway index {local_owner_index}"
         )
     })?;
 
     for (entry, connector) in connectors.iter().enumerate() {
         if entry != local_owner_index {
-            assert_new_remote_open_unavailable(connector, unavailable_client_id)
+            assert_new_remote_open_unavailable(connector, unavailable_destination_id)
                 .await
                 .with_context(|| {
                     format!(
-                        "remote path entry={entry} client={unavailable_client_id:?} did not fail at the unavailable shard boundary"
+                        "remote path entry={entry} client={unavailable_destination_id:?} did not fail at the unavailable shard boundary"
                     )
                 })?;
         }
     }
 
     for (entry, connector) in connectors.iter().enumerate() {
-        let payload =
-            format!("relaygate shard-isolation healthy entry={entry} client={available_client_id}")
-                .into_bytes();
+        let payload = format!(
+            "relaygate shard-isolation healthy entry={entry} client={available_destination_id}"
+        )
+        .into_bytes();
         assert_echo(
-            open_when_registered(connector, available_client_id, ROUTE_WAIT).await?,
+            dial_when_available(connector, available_destination_id, ROUTE_WAIT).await?,
             &payload,
         )
         .await
         .with_context(|| {
             format!(
-                "healthy shard path failed from Gateway index {entry} to {available_client_id:?}"
+                "healthy shard path failed from Gateway index {entry} to {available_destination_id:?}"
             )
         })?;
     }
@@ -349,29 +351,32 @@ pub(crate) async fn expect_shard_isolation(
         connector.close();
     }
     println!(
-        "RouteTable shard isolation verified: client {unavailable_client_id:?} stayed local-only at Gateway index {local_owner_index}; client {available_client_id:?} remained reachable from all Gateways"
+        "RouteTable shard isolation verified: client {unavailable_destination_id:?} stayed local-only at Gateway index {local_owner_index}; client {available_destination_id:?} remained reachable from all Gateways"
     );
     Ok(())
 }
 
-pub(crate) async fn connect(address: &str) -> anyhow::Result<Connector> {
-    Connector::connect(
-        Config::new(address)
+pub(crate) async fn connect(address: &str) -> anyhow::Result<Relay> {
+    Relay::connect(
+        sdk_config(address)?
             .with_connect_timeout(Duration::from_secs(2))
             .with_operation_timeout(Duration::from_secs(3)),
     )
     .await
-    .with_context(|| format!("failed to connect Connector SDK to {address}"))
+    .with_context(|| format!("failed to connect Relay SDK to {address}"))
 }
 
-pub(crate) async fn open_when_registered(
-    connector: &Connector,
-    client_id: &str,
+pub(crate) async fn dial_when_available(
+    connector: &Relay,
+    destination_id: &str,
     wait: Duration,
-) -> relaygate_sdk::Result<Pipe> {
+) -> anyhow::Result<Pipe> {
+    let destination_id: DestinationId = destination_id
+        .parse()
+        .with_context(|| format!("invalid UUIDv4 DestinationId {destination_id:?}"))?;
     let deadline = Instant::now() + wait;
     loop {
-        match connector.open(client_id).await {
+        match connector.dial(destination_id).await {
             Ok(pipe) => return Ok(pipe),
             Err(error)
                 if Instant::now() < deadline
@@ -380,12 +385,12 @@ pub(crate) async fn open_when_registered(
             {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
     }
 }
 
-async fn connect_all(addresses: &[String]) -> anyhow::Result<Vec<Connector>> {
+async fn connect_all(addresses: &[String]) -> anyhow::Result<Vec<Relay>> {
     let mut connectors = Vec::with_capacity(addresses.len());
     for address in addresses {
         connectors.push(connect(address).await?);
@@ -393,18 +398,18 @@ async fn connect_all(addresses: &[String]) -> anyhow::Result<Vec<Connector>> {
     Ok(connectors)
 }
 
-async fn connect_many(address: &str, count: usize) -> anyhow::Result<Vec<Connector>> {
+async fn connect_many(address: &str, count: usize) -> anyhow::Result<Vec<Relay>> {
     let mut operations = JoinSet::new();
     for _ in 0..count {
         let address = address.to_owned();
         operations.spawn(async move {
-            Connector::connect(
-                Config::new(&address)
+            Relay::connect(
+                sdk_config(&address)?
                     .with_connect_timeout(Duration::from_secs(30))
                     .with_operation_timeout(Duration::from_secs(30)),
             )
             .await
-            .with_context(|| format!("failed to connect Connector SDK to {address}"))
+            .with_context(|| format!("failed to connect Relay SDK to {address}"))
         });
     }
 
@@ -426,23 +431,26 @@ async fn connect_many(address: &str, count: usize) -> anyhow::Result<Vec<Connect
                 for connector in connectors {
                     connector.close();
                 }
-                return Err(anyhow::anyhow!("Connector task failed to join: {error}"));
+                return Err(anyhow::anyhow!("Relay task failed to join: {error}"));
             }
         }
     }
     Ok(connectors)
 }
 
-async fn open_marker_pipes(connectors: &[Connector], client_id: &str) -> anyhow::Result<Vec<Pipe>> {
+async fn open_marker_pipes(
+    connectors: &[Relay],
+    destination_id: &str,
+) -> anyhow::Result<Vec<Pipe>> {
     let mut pipes = Vec::with_capacity(connectors.len());
     for (batch, connectors) in connectors.chunks(STORM_PIPE_BATCH_SIZE).enumerate() {
         let mut operations = JoinSet::new();
         for (offset, connector) in connectors.iter().enumerate() {
             let index = batch * STORM_PIPE_BATCH_SIZE + offset;
             let connector = connector.clone();
-            let client_id = client_id.to_owned();
+            let destination_id = destination_id.to_owned();
             operations.spawn(async move {
-                let mut pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT).await?;
+                let mut pipe = dial_when_available(&connector, &destination_id, ROUTE_WAIT).await?;
                 let marker = format!("relaygate reconnect marker session={index}").into_bytes();
                 timeout(ECHO_DEADLINE, async {
                     pipe.write_all(&marker).await?;
@@ -486,8 +494,8 @@ async fn await_marker_pipes_closed(pipes: Vec<Pipe>, deadline: Duration) -> anyh
 }
 
 async fn verify_connectors_in_batches(
-    connectors: &[Connector],
-    client_id: &str,
+    connectors: &[Relay],
+    destination_id: &str,
 ) -> anyhow::Result<()> {
     for (batch, connectors) in connectors.chunks(STORM_PIPE_BATCH_SIZE).enumerate() {
         let mut operations = JoinSet::new();
@@ -497,9 +505,9 @@ async fn verify_connectors_in_batches(
             spawn_echo(
                 &mut operations,
                 connector.clone(),
-                client_id.to_owned(),
+                destination_id.to_owned(),
                 payload,
-                format!("phase=reconnect-storm session={index} client_id={client_id}"),
+                format!("phase=reconnect-storm session={index} destination_id={destination_id}"),
             );
         }
         join_all(&mut operations).await?;
@@ -509,15 +517,15 @@ async fn verify_connectors_in_batches(
 
 fn spawn_echo(
     operations: &mut JoinSet<anyhow::Result<()>>,
-    connector: Connector,
-    client_id: String,
+    connector: Relay,
+    destination_id: String,
     payload: Vec<u8>,
     context: String,
 ) {
     operations.spawn(async move {
-        let pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT)
+        let pipe = dial_when_available(&connector, &destination_id, ROUTE_WAIT)
             .await
-            .with_context(|| format!("{context}: OPEN failed"))?;
+            .with_context(|| format!("{context}: dial failed"))?;
         assert_echo(pipe, &payload)
             .await
             .with_context(|| format!("{context}: echo failed"))
@@ -532,8 +540,8 @@ async fn join_all(operations: &mut JoinSet<anyhow::Result<()>>) -> anyhow::Resul
 }
 
 async fn assert_concurrent_path(
-    connector: &Connector,
-    client_id: &str,
+    connector: &Relay,
+    destination_id: &str,
     entry: usize,
     owner: usize,
 ) -> anyhow::Result<()> {
@@ -544,13 +552,13 @@ async fn assert_concurrent_path(
             entry * 10_000 + owner * 100 + sequence,
         );
         let context = format!(
-            "phase=concurrent entry={entry} owner={owner} client_id={client_id} sequence={sequence} payload_len={}",
+            "phase=concurrent entry={entry} owner={owner} destination_id={destination_id} sequence={sequence} payload_len={}",
             payload.len()
         );
         spawn_echo(
             &mut operations,
             connector.clone(),
-            client_id.to_owned(),
+            destination_id.to_owned(),
             payload,
             context,
         );
@@ -559,10 +567,13 @@ async fn assert_concurrent_path(
 }
 
 async fn assert_new_remote_open_unavailable(
-    connector: &Connector,
-    client_id: &str,
+    connector: &Relay,
+    destination_id: &str,
 ) -> anyhow::Result<()> {
-    match connector.open(client_id).await {
+    let destination_id: DestinationId = destination_id
+        .parse()
+        .with_context(|| format!("invalid UUIDv4 DestinationId {destination_id:?}"))?;
+    match connector.dial(destination_id).await {
         Ok(mut pipe) => {
             let _ = pipe.close().await;
             bail!("new remote open unexpectedly succeeded")

@@ -1,23 +1,30 @@
-# RelayGate의 현재 내부 Gateway/RouteTable 통신은 bounded plain-TCP key adapter를
-# 사용한다. 신뢰된 network 또는 channel identity와 integrity를 제공하는 transport
-# 계층 안에서만 배포한다.
 clusterDomain: cluster.local
 
 imagePullSecrets: []
-
-internalTransport:
-  # 현재 runtime의 local/CI plain-TCP key adapter를 사용한다는 명시적 opt-in이다.
-  # namespace network가 신뢰되거나 별도 mTLS/service identity 계층이 있을 때만 true로 둔다.
-  trustedLocalAdapter: false
 
 credentials:
   # 차트는 credential을 만들거나 영속화하지 않는다. workload 시작 전에 release
   # namespace에 이 Secret이 있어야 한다.
   existingSecret: relaygate-credentials
   internalGatewayKeysKey: internal-gateway-keys
-  clientKeysKey: client-keys
+  clusterTokenKey: cluster-token
+  nextClusterTokenKey: next-cluster-token
   # Secret data는 pod template에 포함되지 않는다. 값을 바꾼 뒤 이 token도 새 값으로
   # 바꾸면 Gateway와 RT가 startup credential을 다시 읽도록 restart된다.
+  reloadToken: ""
+
+tls:
+  # 차트는 인증서를 발급하지 않는다. CA와 Gateway/RouteTable certificate를 가진
+  # 기존 Secret을 read-only로 mount한다.
+  existingSecret: relaygate-tls
+  caKey: ca.crt
+  gatewayCertificateKey: gateway.crt
+  gatewayPrivateKeyKey: gateway.key
+  routeTableCertificateKey: route-table.crt
+  routeTablePrivateKeyKey: route-table.key
+  sdkServerName: relaygate-gateway.internal
+  peerServerName: relaygate-gateway.internal
+  routeTableServerName: relaygate-route-table.internal
   reloadToken: ""
 
 serviceAccount:
@@ -29,6 +36,8 @@ podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001
   runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
   seccompProfile:
     type: RuntimeDefault
 

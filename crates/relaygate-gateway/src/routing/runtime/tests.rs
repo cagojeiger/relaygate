@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, error::Error, sync::atomic::Ordering, time::Duration};
 
 use relaygate_route_table::{
-    BindingId, ClientId, GatewayId, GatewayLocator, LeaseId, ListenerSessionId, MappingEntry,
-    MappingSnapshot, RegistrationAck, RegistrationKey, RegistrationRevision, RouteTableError,
+    BindingId, DestinationId, GatewayId, GatewayLocator, LeaseId, MappingEntry, MappingSnapshot,
+    RegistrationAck, RegistrationKey, RegistrationRevision, RelaySessionId, RouteTableError,
     ShardId,
 };
 use relaygate_route_table_transport::{ErrorCode, TransportError};
@@ -22,7 +22,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 #[test]
 fn worker_counts_distinguish_terminal_desired_registration() -> TestResult {
     let now = Instant::now();
-    let session_id = ListenerSessionId::from_uuid(Uuid::from_u128(2));
+    let session_id = RelaySessionId::from_uuid(Uuid::from_u128(2));
     let mut state = RegistrationState::new(
         RegistrationKey::new(
             GatewayId::from_uuid(Uuid::from_u128(1)),
@@ -50,7 +50,7 @@ fn worker_counts_distinguish_terminal_desired_registration() -> TestResult {
 fn old_epoch_terminal_completion_retries_current_registration() -> TestResult {
     let now = Instant::now();
     let retry = Duration::from_millis(10);
-    let session_id = ListenerSessionId::from_uuid(Uuid::from_u128(2));
+    let session_id = RelaySessionId::from_uuid(Uuid::from_u128(2));
     let mut state = RegistrationState::new(
         RegistrationKey::new(
             GatewayId::from_uuid(Uuid::from_u128(1)),
@@ -141,7 +141,7 @@ fn old_epoch_terminal_completion_retries_current_registration() -> TestResult {
 #[test]
 fn current_epoch_terminal_completion_keeps_existing_error_policy() -> TestResult {
     let now = Instant::now();
-    let session_id = ListenerSessionId::from_uuid(Uuid::from_u128(2));
+    let session_id = RelaySessionId::from_uuid(Uuid::from_u128(2));
     let mut state = RegistrationState::new(
         RegistrationKey::new(
             GatewayId::from_uuid(Uuid::from_u128(1)),
@@ -177,9 +177,9 @@ fn current_epoch_terminal_completion_keeps_existing_error_policy() -> TestResult
 
 fn snapshot() -> TestResult<MappingSnapshot> {
     Ok(MappingSnapshot::new([MappingEntry::new(
-        ClientId::new("client-a")?,
+        DestinationId::new("11111111-1111-4111-8111-111111111111")?,
         GatewayId::from_uuid(Uuid::from_u128(1)),
-        ListenerSessionId::from_uuid(Uuid::from_u128(2)),
+        RelaySessionId::from_uuid(Uuid::from_u128(2)),
         BindingId::from_uuid(Uuid::from_u128(3)),
         GatewayLocator::new("gw-a.internal:27431")?,
     )])?)

@@ -7,6 +7,7 @@ members = [
     "crates/relaygate-route-table-transport",
     "crates/relaygate-sdk",
     "crates/relaygate-server",
+    "crates/relaygate-transport",
     "examples/echo-listener",
     "examples/echo-probe",
     "tools/test-contract",
@@ -31,6 +32,9 @@ relaygate-protocol = { path = "crates/relaygate-protocol" }
 relaygate-route-table = { path = "crates/relaygate-route-table" }
 relaygate-route-table-transport = { path = "crates/relaygate-route-table-transport" }
 relaygate-sdk = { path = "crates/relaygate-sdk" }
+relaygate-transport = { path = "crates/relaygate-transport" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -38,6 +42,7 @@ subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }

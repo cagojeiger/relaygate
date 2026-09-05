@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    BindingId, BindingSet, ClientId, GatewayId, GatewayLocator, LeaseId, ListenerSessionId,
-    MappingEntry, MappingSnapshot, RegistrationAck, RegistrationKey, RegistrationRevision,
+    BindingId, BindingSet, DestinationId, GatewayId, GatewayLocator, LeaseId, MappingEntry,
+    MappingSnapshot, RegistrationAck, RegistrationKey, RegistrationRevision, RelaySessionId,
     RequestContext, RouteTableError, ShardDirectoryGeneration, ShardId,
 };
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,7 @@ pub(crate) enum WireRequest {
     },
     Resolve {
         generation: String,
-        client_id: String,
+        destination_id: String,
     },
 }
 
@@ -132,10 +132,13 @@ impl WireRequest {
         }
     }
 
-    pub(crate) fn resolve(generation: ShardDirectoryGeneration, client_id: &ClientId) -> Self {
+    pub(crate) fn resolve(
+        generation: ShardDirectoryGeneration,
+        destination_id: &DestinationId,
+    ) -> Self {
         Self::Resolve {
             generation: generation.to_string(),
-            client_id: client_id.as_str().to_owned(),
+            destination_id: destination_id.as_str().to_owned(),
         }
     }
 
@@ -184,10 +187,10 @@ impl WireRequest {
             }),
             Self::Resolve {
                 generation,
-                client_id,
+                destination_id,
             } => Ok(DomainRequest::Resolve {
                 generation: parse_generation(&generation)?,
-                client_id: ClientId::new(client_id)?,
+                destination_id: DestinationId::new(destination_id)?,
             }),
         }
     }
@@ -237,7 +240,7 @@ pub(crate) enum DomainRequest {
     },
     Resolve {
         generation: ShardDirectoryGeneration,
-        client_id: ClientId,
+        destination_id: DestinationId,
     },
 }
 
@@ -289,7 +292,7 @@ impl WireResponse {
 #[serde(deny_unknown_fields)]
 pub(crate) struct WireRegistrationKey {
     gateway_id: String,
-    listener_session_id: String,
+    relay_session_id: String,
     shard_id: String,
 }
 
@@ -297,7 +300,7 @@ impl WireRegistrationKey {
     fn from_domain(key: &RegistrationKey) -> Self {
         Self {
             gateway_id: key.gateway_id().to_string(),
-            listener_session_id: key.listener_session_id().to_string(),
+            relay_session_id: key.relay_session_id().to_string(),
             shard_id: key.shard_id().as_str().to_owned(),
         }
     }
@@ -305,8 +308,7 @@ impl WireRegistrationKey {
     fn into_domain(self) -> Result<RegistrationKey, TransportError> {
         Ok(RegistrationKey::new(
             parse_uuid(&self.gateway_id, "GatewayId").map(GatewayId::from_uuid)?,
-            parse_uuid(&self.listener_session_id, "ListenerSessionId")
-                .map(ListenerSessionId::from_uuid)?,
+            parse_uuid(&self.relay_session_id, "RelaySessionId").map(RelaySessionId::from_uuid)?,
             ShardId::new(self.shard_id)?,
         ))
     }
@@ -315,9 +317,9 @@ impl WireRegistrationKey {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WireMappingEntry {
-    client_id: String,
+    destination_id: String,
     gateway_id: String,
-    listener_session_id: String,
+    relay_session_id: String,
     binding_id: String,
     gateway_locator: String,
 }
@@ -326,9 +328,9 @@ impl WireMappingEntry {
     fn from_domain(entry: &MappingEntry) -> Self {
         let identity = entry.identity();
         Self {
-            client_id: entry.client_id().as_str().to_owned(),
+            destination_id: entry.destination_id().as_str().to_owned(),
             gateway_id: identity.gateway_id().to_string(),
-            listener_session_id: identity.listener_session_id().to_string(),
+            relay_session_id: identity.relay_session_id().to_string(),
             binding_id: identity.binding_id().to_string(),
             gateway_locator: entry.gateway_locator().as_str().to_owned(),
         }
@@ -336,10 +338,9 @@ impl WireMappingEntry {
 
     fn into_domain(self) -> Result<MappingEntry, TransportError> {
         Ok(MappingEntry::new(
-            ClientId::new(self.client_id)?,
+            DestinationId::new(self.destination_id)?,
             parse_uuid(&self.gateway_id, "GatewayId").map(GatewayId::from_uuid)?,
-            parse_uuid(&self.listener_session_id, "ListenerSessionId")
-                .map(ListenerSessionId::from_uuid)?,
+            parse_uuid(&self.relay_session_id, "RelaySessionId").map(RelaySessionId::from_uuid)?,
             parse_uuid(&self.binding_id, "BindingId").map(BindingId::from_uuid)?,
             GatewayLocator::new(self.gateway_locator)?,
         ))
@@ -451,7 +452,7 @@ pub(crate) fn response_deregistered(response: WireResponse) -> Result<(), Transp
 
 pub(crate) fn response_bindings(
     response: WireResponse,
-    expected_client_id: &ClientId,
+    expected_destination_id: &DestinationId,
 ) -> Result<BindingSet, TransportError> {
     let WireResponse::Resolved { entries } = response else {
         return Err(TransportError::protocol(
@@ -473,9 +474,9 @@ pub(crate) fn response_bindings(
             "invalid BindingSet in RouteTable response: {error}"
         ))
     })?;
-    if bindings.entries()[0].client_id() != expected_client_id {
+    if bindings.entries()[0].destination_id() != expected_destination_id {
         return Err(TransportError::protocol(
-            "RouteTable Resolve response has a mismatched ClientId",
+            "RouteTable Resolve response has a mismatched DestinationId",
         ));
     }
     Ok(bindings)
@@ -540,7 +541,7 @@ mod tests {
             generation: "not-hex".to_owned(),
             key: WireRegistrationKey {
                 gateway_id: Uuid::from_u128(2).to_string(),
-                listener_session_id: "not-a-uuid".to_owned(),
+                relay_session_id: "not-a-uuid".to_owned(),
                 shard_id: String::new(),
             },
             lease_id: "not-a-uuid".to_owned(),
@@ -569,7 +570,7 @@ mod tests {
             generation: ShardDirectoryGeneration::from_bytes([2; 32]).to_string(),
             key: WireRegistrationKey {
                 gateway_id: authenticated.to_string(),
-                listener_session_id: "not-a-uuid".to_owned(),
+                relay_session_id: "not-a-uuid".to_owned(),
                 shard_id: String::new(),
             },
             lease_id: "not-a-uuid".to_owned(),
@@ -590,11 +591,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_generation_precedes_client_id_validation() {
+    fn resolve_generation_precedes_destination_id_validation() {
         let authenticated = GatewayId::from_uuid(Uuid::from_u128(1));
         let request = WireRequest::Resolve {
             generation: ShardDirectoryGeneration::from_bytes([2; 32]).to_string(),
-            client_id: String::new(),
+            destination_id: String::new(),
         };
 
         let error = request

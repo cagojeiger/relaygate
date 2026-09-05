@@ -2,7 +2,7 @@ use std::{error::Error, time::Duration};
 
 use relaygate_protocol::{BindingId as ProtocolBindingId, SessionId};
 use relaygate_route_table::{
-    BindingId, ClientId, GatewayId, GatewayLocator, RouteTableConfig, RouteTableError,
+    BindingId, DestinationId, GatewayId, GatewayLocator, RouteTableConfig, RouteTableError,
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
@@ -83,10 +83,10 @@ async fn stale_epoch_case() -> TestResult {
     let first_epoch = ready_epoch(&availability).ok_or("first worker epoch is not ready")?;
     assert_eq!(first_epoch, 1);
 
-    let client_id = ClientId::new("client-a")?;
+    let destination_id = DestinationId::new("11111111-1111-4111-8111-111111111111")?;
     let first_keep_alive_count = proxy.keep_alive_count();
     proxy.disconnect_next_resolve();
-    let failed_resolve = handle.resolve(client_id.clone()).await;
+    let failed_resolve = handle.resolve(destination_id.clone()).await;
     assert!(matches!(
         failed_resolve,
         Err(RoutingError::Transport(ref error)) if error.code() == ErrorCode::Unavailable
@@ -117,7 +117,7 @@ async fn stale_epoch_case() -> TestResult {
         .wait_for_keep_alive_after(second_keep_alive_count)
         .await?;
     wait_for_counts(&handle, 1, 0).await?;
-    let resolved = handle.resolve(client_id).await?;
+    let resolved = handle.resolve(destination_id).await?;
     assert_eq!(resolved.len(), 1);
     assert_eq!(
         resolved.entries()[0].identity().binding_id(),
@@ -135,7 +135,9 @@ async fn stale_epoch_case() -> TestResult {
 fn binding(session_id: SessionId, binding_id: u128) -> Binding {
     Binding {
         id: ProtocolBindingId::from_uuid(Uuid::from_u128(binding_id)),
-        client_id: "client-a".to_owned(),
+        destination_id: "11111111-1111-4111-8111-111111111111"
+            .parse()
+            .unwrap_or_default(),
         session_id,
     }
 }

@@ -66,17 +66,14 @@ jobs:
         run: |
           mkdir -p target/helm
           helm lint --strict deploy/helm/relaygate \
-            --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true
+            --kube-version 1.32.0
           helm template relaygate deploy/helm/relaygate \
             --namespace relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             > target/helm/default.yaml
           helm template minimal deploy/helm/relaygate \
             --namespace relaygate-test \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set gateway.replicaCount=1 \
             --set routeTable.shardCount=1 \
             --set metrics.enabled=false \
@@ -85,7 +82,6 @@ jobs:
           helm template true deploy/helm/relaygate \
             --namespace relaygate-test \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set-string serviceAccount.name=true \
             > target/helm/ambiguous-name.yaml
           long_release_prefix=$(printf 'a%.0s' {1..44})
@@ -93,7 +89,6 @@ jobs:
             helm template "${long_release_prefix}-${suffix}" deploy/helm/relaygate \
               --namespace relaygate-test \
               --kube-version 1.32.0 \
-              --set internalTransport.trustedLocalAdapter=true \
               --show-only templates/shard-directory-configmap.yaml \
               > "target/helm/long-name-${suffix}.yaml"
           done
@@ -101,7 +96,6 @@ jobs:
             helm template "$release_name" deploy/helm/relaygate \
               --namespace relaygate-test \
               --kube-version 1.32.0 \
-              --set internalTransport.trustedLocalAdapter=true \
               --show-only templates/shard-directory-configmap.yaml \
               > "target/helm/release-name-${release_name}.yaml"
           done
@@ -135,11 +129,24 @@ jobs:
           rendered_checksum=$(grep 'checksum/shard-directory:' target/helm/default.yaml | head -n1 | tr -d '"' | awk '{print $2}')
           test "$directory_checksum" = "$rendered_checksum"
           test "$(grep -c 'key: "internal-gateway-keys"' target/helm/default.yaml)" -eq 2
-          test "$(grep -c 'key: "client-keys"' target/helm/default.yaml)" -eq 1
+          test "$(grep -c 'key: "cluster-token"' target/helm/default.yaml)" -eq 1
+          test "$(grep -c 'key: "next-cluster-token"' target/helm/default.yaml)" -eq 1
           test "$(grep -c '^        relaygate.io/credentials-reload: ""$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^        relaygate.io/tls-reload: ""$' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^              mountPath: /etc/relaygate$' target/helm/default.yaml)" -eq 2
-          test "$(grep -c '^[[:space:]]*runAsNonRoot: true$' target/helm/default.yaml)" -eq 3
-          test "$(grep -c '^[[:space:]]*readOnlyRootFilesystem: true$' target/helm/default.yaml)" -eq 3
+          test "$(grep -c '^              mountPath: /etc/relaygate/tls$' target/helm/default.yaml)" -eq 2
+          grep -Fq 'name: RELAYGATE_SDK_TLS_CERT_PATH' target/helm/default.yaml
+          grep -Fq 'name: RELAYGATE_INTERNAL_TLS_CA_PATH' target/helm/default.yaml
+          grep -Fq 'name: RELAYGATE_PEER_TLS_SERVER_NAME' target/helm/default.yaml
+          grep -Fq 'name: RELAYGATE_RT_TLS_SERVER_NAME' target/helm/default.yaml
+          grep -Fq 'key: "gateway.crt"' target/helm/default.yaml
+          grep -Fq 'key: "route-table.crt"' target/helm/default.yaml
+          if grep -Eq 'RELAYGATE_(INSECURE_TEST_TRANSPORT|RT_TRUSTED_LOCAL|CLIENT_KEYS)' target/helm/default.yaml; then
+            echo "Helm chart rendered a test-only or removed security switch"
+            exit 1
+          fi
+          test "$(grep -c '^[[:space:]]*runAsNonRoot: true$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^[[:space:]]*readOnlyRootFilesystem: true$' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^[[:space:]]*- name: metrics$' target/helm/default.yaml)" -eq 4
           test "$(grep -c '^[[:space:]]*prometheus.io/scrape: \"true\"$' target/helm/default.yaml)" -eq 2
           grep -Fq 'value: "0.0.0.0:27422"' target/helm/default.yaml
@@ -147,7 +154,6 @@ jobs:
           grep -A1 -Fq 'name: RELAYGATE_DRAIN_TIMEOUT_MS' target/helm/default.yaml
           grep -Fq 'value: "120000"' target/helm/default.yaml
           grep -Fq 'terminationGracePeriodSeconds: 135' target/helm/default.yaml
-          grep -Fq 'helm.sh/hook-delete-policy: before-hook-creation' target/helm/default.yaml
           if grep -Fq 'RELAYGATE_METRICS_BIND_ADDR' target/helm/minimal.yaml; then
             echo "Helm chart rendered metrics while metrics.enabled=false"
             exit 1
@@ -172,22 +178,14 @@ jobs:
           fi
 
           if helm template invalid deploy/helm/relaygate \
-            --kube-version 1.32.0 >/dev/null 2>&1; then
-            echo "Helm chart accepted the plain-TCP adapter without explicit opt-in"
-            exit 1
-          fi
-
-          if helm template invalid deploy/helm/relaygate \
-            --kube-version 1.31.0 \
-            --set internalTransport.trustedLocalAdapter=true >/dev/null 2>&1; then
+            --kube-version 1.31.0 >/dev/null 2>&1; then
             echo "Helm chart accepted Kubernetes older than 1.32"
             exit 1
           fi
 
           for invalid_release_name in 1relay foo.bar; do
             if helm template "$invalid_release_name" deploy/helm/relaygate \
-              --kube-version 1.32.0 \
-              --set internalTransport.trustedLocalAdapter=true >/dev/null 2>&1; then
+              --kube-version 1.32.0 >/dev/null 2>&1; then
               echo "Helm chart accepted a release name that is not an RFC 1035 label"
               exit 1
             fi
@@ -195,21 +193,18 @@ jobs:
 
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set routeTable.shardCount=0 >/dev/null 2>&1; then
             echo "Helm schema accepted an empty RouteTable directory"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set routeTable.shardCount=2049 >/dev/null 2>&1; then
             echo "Helm schema accepted a RouteTable directory larger than the ConfigMap-safe bound"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set 'gateway.extraEnv[0].name=RELAYGATE_BIND_ADDR' \
             --set 'gateway.extraEnv[0].value=invalid' >/dev/null 2>&1; then
             echo "Helm chart accepted an override of a managed environment variable"
@@ -217,47 +212,40 @@ jobs:
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set-string 'gateway.image.repository=registry/repo"' >/dev/null 2>&1; then
             echo "Helm schema accepted an unsafe image repository"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set-string 'gateway.image.repository=registry.example/relaygate:' >/dev/null 2>&1; then
             echo "Helm chart accepted an image repository ending in a tag separator"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set-string 'gateway.image.repository=registry.example/team/' >/dev/null 2>&1; then
             echo "Helm schema accepted an image repository ending in a path separator"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set-string 'gateway.image.repository=registry.example//relaygate' >/dev/null 2>&1; then
             echo "Helm schema accepted an image repository with an empty path segment"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set-string 'gateway.image.repository=ghcr.io/Team/relaygate-gateway' >/dev/null 2>&1; then
             echo "Helm schema accepted an uppercase image repository path"
             exit 1
           fi
           helm template image-registry-port deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set-string 'gateway.image.repository=registry.example:5000/team/relaygate' \
             >/dev/null
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set 'routeTable.extraEnv[0].name=POD_INDEX' \
             --set 'routeTable.extraEnv[0].value=0' >/dev/null 2>&1; then
             echo "Helm chart accepted an override of the RouteTable pod ordinal"
@@ -265,7 +253,6 @@ jobs:
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set gateway.sdkPort=27420 \
             --set gateway.peerPort=27420 >/dev/null 2>&1; then
             echo "Helm chart accepted colliding Gateway container ports"
@@ -273,21 +260,18 @@ jobs:
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set metrics.gatewayPort=27420 >/dev/null 2>&1; then
             echo "Helm chart accepted a Gateway metrics port colliding with the SDK port"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set metrics.routeTablePort=27430 >/dev/null 2>&1; then
             echo "Helm chart accepted a RouteTable metrics port colliding with its service port"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set gateway.drainTimeoutMs=120000 \
             --set gateway.terminationGracePeriodSeconds=120 >/dev/null 2>&1; then
             echo "Helm chart accepted a termination grace period that cannot cover Gateway drain"
@@ -295,7 +279,6 @@ jobs:
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set credentials.existingSecret=invalid..name >/dev/null 2>&1; then
             echo "Helm schema accepted an invalid Secret reference"
             exit 1
@@ -303,14 +286,12 @@ jobs:
           long_dns_label=$(printf 'a%.0s' {1..64})
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set "credentials.existingSecret=${long_dns_label}" >/dev/null 2>&1; then
             echo "Helm chart accepted a Secret reference with an oversized DNS label"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set "clusterDomain=${long_dns_label}.local" >/dev/null 2>&1; then
             echo "Helm chart accepted a cluster domain with an oversized DNS label"
             exit 1
@@ -326,12 +307,10 @@ jobs:
           helm template relaygate deploy/helm/relaygate \
             --namespace relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set "clusterDomain=${cluster_domain_at_limit}" >/dev/null
           if helm template relaygate deploy/helm/relaygate \
             --namespace relaygate \
             --kube-version 1.32.0 \
-            --set internalTransport.trustedLocalAdapter=true \
             --set "clusterDomain=${cluster_domain_over_limit}" >/dev/null 2>&1; then
             echo "Helm chart accepted a generated Gateway hostname longer than 253 characters"
             exit 1
@@ -381,7 +360,7 @@ jobs:
         run: |
           mkdir -p target/contract
           cargo test --workspace --locked -- --list > target/contract/tests.txt
-          cargo run -p relaygate-test-contract --locked -- check \
+          cargo run -p relaygate-test-contract --locked -- gate \
             --matrix docs/test/001-requirement-test-matrix.md \
             --spec-dir docs/spec \
             --coverage docs/test/001-executable-coverage.toml \
@@ -438,23 +417,22 @@ jobs:
           prometheus_has 'sum(relaygate_gateway_peer_transport_closed_total) > 0'
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 22222222-2222-4222-8222-222222222222
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 
       - name: Verify rt-0 failure isolation and established Pipe continuity
         run: |
           docker compose stop rt-0
           docker compose run --rm --no-deps topology-probe \
-            relaygate-echo-probe expect-shard-isolation echo.b 1 echo.c
+            relaygate-echo-probe expect-shard-isolation 11111111-1111-4111-8111-111111111111 0 22222222-2222-4222-8222-222222222222
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
       - name: Verify rt-0 current-state recovery
         run: |
           docker compose up -d rt-0
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.b
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.shared
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.zero
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 11111111-1111-4111-8111-111111111111
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 44444444-4444-4444-8444-444444444444
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
@@ -463,15 +441,16 @@ jobs:
         run: |
           docker compose stop rt-1
           docker compose run --rm --no-deps topology-probe \
-            relaygate-echo-probe expect-shard-isolation echo.c 2 echo.b
+            relaygate-echo-probe expect-shard-isolation 22222222-2222-4222-8222-222222222222 1 11111111-1111-4111-8111-111111111111
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
       - name: Verify rt-1 current-state recovery
         run: |
           docker compose up -d rt-1
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.a
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client echo.c
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 22222222-2222-4222-8222-222222222222
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 33333333-3333-4333-8333-333333333333
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 55555555-5555-4555-8555-555555555555
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check

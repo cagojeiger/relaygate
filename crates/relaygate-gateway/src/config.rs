@@ -1,6 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use relaygate_protocol::DEFAULT_MAX_FRAME_LEN;
+use relaygate_transport::ServerTlsConfig;
 use tokio::time::Instant;
 
 use crate::GatewayError;
@@ -18,7 +19,9 @@ pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
 /// Immutable runtime configuration for one Gateway process.
 #[derive(Clone)]
 pub struct GatewayConfig {
-    pub(crate) client_keys: HashMap<String, String>,
+    pub(crate) cluster_token: String,
+    pub(crate) next_cluster_token: Option<String>,
+    pub(crate) sdk_tls: Option<ServerTlsConfig>,
     pub(crate) writer_queue_capacity: usize,
     pub(crate) max_frame_len: usize,
     pub(crate) max_sessions: usize,
@@ -35,7 +38,11 @@ impl std::fmt::Debug for GatewayConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("GatewayConfig")
-            .field("client_count", &self.client_keys.len())
+            .field("cluster_token", &"[REDACTED]")
+            .field(
+                "next_cluster_token",
+                &self.next_cluster_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("writer_queue_capacity", &self.writer_queue_capacity)
             .field("max_frame_len", &self.max_frame_len)
             .field("max_sessions", &self.max_sessions)
@@ -55,9 +62,11 @@ impl std::fmt::Debug for GatewayConfig {
 
 impl GatewayConfig {
     #[must_use]
-    pub fn new(client_keys: impl IntoIterator<Item = (String, String)>) -> Self {
+    pub fn new(cluster_token: impl Into<String>) -> Self {
         Self {
-            client_keys: client_keys.into_iter().collect(),
+            cluster_token: cluster_token.into(),
+            next_cluster_token: None,
+            sdk_tls: None,
             writer_queue_capacity: DEFAULT_WRITER_QUEUE_CAPACITY,
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
             max_sessions: DEFAULT_MAX_SESSIONS,
@@ -69,6 +78,18 @@ impl GatewayConfig {
             heartbeat_response_timeout: DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT,
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
         }
+    }
+
+    #[must_use]
+    pub fn with_sdk_tls(mut self, tls: ServerTlsConfig) -> Self {
+        self.sdk_tls = Some(tls);
+        self
+    }
+
+    #[must_use]
+    pub fn with_next_cluster_token(mut self, token: impl Into<String>) -> Self {
+        self.next_cluster_token = Some(token.into());
+        self
     }
 
     #[must_use]
@@ -183,15 +204,22 @@ impl GatewayConfig {
             self.heartbeat_response_timeout,
         )?;
         validate_deadline_timeout("drain_timeout", self.drain_timeout)?;
-        if self.client_keys.keys().any(String::is_empty) {
+        if self.cluster_token.is_empty() {
             return Err(GatewayError::InvalidConfig(
-                "ClientId must not be empty".to_owned(),
+                "current ClusterToken must not be empty".to_owned(),
             ));
         }
-        if self.client_keys.values().any(String::is_empty) {
-            return Err(GatewayError::InvalidConfig(
-                "ClientKey must not be empty".to_owned(),
-            ));
+        if let Some(next) = &self.next_cluster_token {
+            if next.is_empty() {
+                return Err(GatewayError::InvalidConfig(
+                    "next ClusterToken must not be empty".to_owned(),
+                ));
+            }
+            if next == &self.cluster_token {
+                return Err(GatewayError::InvalidConfig(
+                    "current and next ClusterToken must be different".to_owned(),
+                ));
+            }
         }
         Ok(())
     }
@@ -218,12 +246,6 @@ fn duration_from_nanos(nanos: u128) -> Option<Duration> {
     ))
 }
 
-impl Default for GatewayConfig {
-    fn default() -> Self {
-        Self::new([])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -234,10 +256,10 @@ mod tests {
     fn unrepresentable_deadline_configuration_is_rejected() {
         let valid = Duration::from_secs(1);
         for config in [
-            GatewayConfig::new([]).with_offer_timeout(Duration::MAX),
-            GatewayConfig::new([]).with_heartbeat(Duration::MAX, valid),
-            GatewayConfig::new([]).with_heartbeat(valid, Duration::MAX),
-            GatewayConfig::new([]).with_drain_timeout(Duration::MAX),
+            GatewayConfig::new("test-token").with_offer_timeout(Duration::MAX),
+            GatewayConfig::new("test-token").with_heartbeat(Duration::MAX, valid),
+            GatewayConfig::new("test-token").with_heartbeat(valid, Duration::MAX),
+            GatewayConfig::new("test-token").with_drain_timeout(Duration::MAX),
         ] {
             assert!(config.validate().is_err());
         }

@@ -1,4 +1,4 @@
-use relaygate_route_table::{ClientId, ErrorCode, RouteTableError, ShardDirectory, ShardId};
+use relaygate_route_table::{DestinationId, ErrorCode, RouteTableError, ShardDirectory, ShardId};
 
 const THREE_SHARD_DIRECTORY: &[u8] = br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"http://rt-0:8080"},{"id":"rt-1","endpoint":"http://rt-1:8080"},{"id":"rt-2","endpoint":"http://rt-2:8080"}]}"#;
 
@@ -13,15 +13,24 @@ fn exact_artifact_bytes_define_generation_and_ordered_authority() -> Result<(), 
     assert_eq!(directory.artifact_bytes(), THREE_SHARD_DIRECTORY);
     assert_eq!(directory.shards().len(), 3);
     assert_eq!(
-        directory.authority(&ClientId::new("alpha")?).id().as_str(),
+        directory
+            .authority(&DestinationId::new("00000002-0000-4000-8000-000000000002")?)
+            .id()
+            .as_str(),
         "rt-2"
     );
     assert_eq!(
-        directory.authority(&ClientId::new("beta")?).id().as_str(),
+        directory
+            .authority(&DestinationId::new("00000005-0000-4000-8000-000000000005")?)
+            .id()
+            .as_str(),
         "rt-0"
     );
     assert_eq!(
-        directory.authority(&ClientId::new("gamma")?).id().as_str(),
+        directory
+            .authority(&DestinationId::new("00000006-0000-4000-8000-000000000006")?)
+            .id()
+            .as_str(),
         "rt-0"
     );
     Ok(())
@@ -42,8 +51,12 @@ fn byte_or_record_order_change_creates_a_different_generation() -> Result<(), Ro
     assert_ne!(original.generation(), whitespace_changed.generation());
     assert_ne!(original.generation(), reordered.generation());
     assert_ne!(
-        original.authority(&ClientId::new("alpha")?).id(),
-        reordered.authority(&ClientId::new("alpha")?).id()
+        original
+            .authority(&DestinationId::new("00000002-0000-4000-8000-000000000002")?)
+            .id(),
+        reordered
+            .authority(&DestinationId::new("00000002-0000-4000-8000-000000000002")?)
+            .id()
     );
     Ok(())
 }
@@ -71,12 +84,22 @@ fn invalid_directory_artifacts_are_rejected() {
 }
 
 #[test]
-fn typed_non_empty_identifiers_reject_empty_values() {
-    let client_error = ClientId::new("");
+fn typed_identifiers_reject_invalid_values() {
+    let client_error = DestinationId::new("");
+    let non_uuid_error = DestinationId::new("alpha");
+    let non_v4_error = DestinationId::new("00000000-0000-1000-8000-000000000000");
     let shard_error = ShardId::new("");
 
     assert!(matches!(
         client_error,
+        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+    ));
+    assert!(matches!(
+        non_uuid_error,
+        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+    ));
+    assert!(matches!(
+        non_v4_error,
         Err(ref error) if error.code() == ErrorCode::InvalidArgument
     ));
     assert!(matches!(

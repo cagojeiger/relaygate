@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, fs, time::Duration};
+use std::{env, fs, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use relaygate_gateway::{
@@ -6,8 +6,12 @@ use relaygate_gateway::{
 };
 use relaygate_route_table::{GatewayLocator, ShardDirectory};
 use relaygate_route_table_transport::{GatewayName, InternalGatewayKey, RouteTableClientConfig};
+use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
 
-use super::{optional_duration_millis, optional_usize, parse_gateway_credentials};
+use super::{
+    insecure_test_transport, load_internal_tls, optional_duration_millis, optional_usize,
+    parse_gateway_credentials,
+};
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:27420";
 const DEFAULT_PEER_BIND_ADDRESS: &str = "0.0.0.0:27421";
@@ -30,13 +34,13 @@ pub(crate) struct DistributedGatewayConfig {
     pub(crate) peer_bind_address: String,
     pub(crate) routing: GatewayRoutingConfig,
     pub(crate) peer: GatewayPeerConfig,
+    pub(crate) insecure_transport: bool,
 }
 
 pub(crate) struct GatewayRuntimeConfig {
     pub(crate) bind_address: String,
     pub(crate) gateway: GatewayConfig,
     pub(crate) distributed: Option<DistributedGatewayConfig>,
-    pub(crate) configured_clients: usize,
     pub(crate) stats_interval: Option<Duration>,
 }
 
@@ -44,9 +48,27 @@ impl GatewayRuntimeConfig {
     pub(crate) fn from_env() -> Result<Self> {
         let bind_address =
             env::var("RELAYGATE_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned());
-        let client_keys = parse_client_keys(env::var("RELAYGATE_CLIENT_KEYS").unwrap_or_default())?;
-        let configured_clients = client_keys.len();
-        let mut gateway = GatewayConfig::new(client_keys);
+        let cluster_token = env::var("RELAYGATE_CLUSTER_TOKEN")
+            .context("RELAYGATE_CLUSTER_TOKEN is required for Gateway mode")?;
+        let mut gateway = GatewayConfig::new(cluster_token);
+        if !insecure_test_transport() {
+            let certificate_path = env::var("RELAYGATE_SDK_TLS_CERT_PATH")
+                .context("RELAYGATE_SDK_TLS_CERT_PATH is required for Gateway mode")?;
+            let private_key_path = env::var("RELAYGATE_SDK_TLS_KEY_PATH")
+                .context("RELAYGATE_SDK_TLS_KEY_PATH is required for Gateway mode")?;
+            let tls = ServerTlsConfig::server_authenticated(
+                &fs::read(&certificate_path).with_context(|| {
+                    format!("failed to read SDK TLS certificate at {certificate_path:?}")
+                })?,
+                &fs::read(&private_key_path).with_context(|| {
+                    format!("failed to read SDK TLS private key at {private_key_path:?}")
+                })?,
+            )?;
+            gateway = gateway.with_sdk_tls(tls);
+        }
+        if let Ok(next) = env::var("RELAYGATE_NEXT_CLUSTER_TOKEN") {
+            gateway = gateway.with_next_cluster_token(next);
+        }
 
         if let Some(capacity) = optional_usize("RELAYGATE_WRITER_QUEUE_CAPACITY")? {
             gateway = gateway.with_writer_queue_capacity(capacity);
@@ -87,7 +109,6 @@ impl GatewayRuntimeConfig {
             bind_address,
             gateway,
             distributed: distributed_from_env()?,
-            configured_clients,
             stats_interval: optional_duration_millis("RELAYGATE_STATS_INTERVAL_MS")?,
         })
     }
@@ -100,9 +121,15 @@ fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
     {
         return Ok(None);
     }
-    if env::var("RELAYGATE_RT_TRUSTED_LOCAL").ok().as_deref() != Some("true") {
+    let insecure = insecure_test_transport();
+    if insecure && env::var("RELAYGATE_RT_TRUSTED_LOCAL").ok().as_deref() != Some("true") {
         bail!(
             "RELAYGATE_RT_TRUSTED_LOCAL must be `true` to enable distributed Gateway routing over the local/CI plain-TCP key adapter"
+        );
+    }
+    if !insecure && env::var_os("RELAYGATE_RT_TRUSTED_LOCAL").is_some() {
+        bail!(
+            "RELAYGATE_RT_TRUSTED_LOCAL is only valid with RELAYGATE_INSECURE_TEST_TRANSPORT=true"
         );
     }
 
@@ -157,58 +184,44 @@ fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
         DEFAULT_RT_HANDSHAKE_TIMEOUT,
         DEFAULT_RT_REQUEST_TIMEOUT,
     )?;
+    let mut routing = GatewayRoutingConfig::new(
+        directory,
+        gateway_name,
+        internal_gateway_key,
+        gateway_locator,
+        client,
+    );
+    if !insecure {
+        let material = load_internal_tls()?;
+        let peer_server_name = env::var("RELAYGATE_PEER_TLS_SERVER_NAME")
+            .context("RELAYGATE_PEER_TLS_SERVER_NAME is required")?;
+        let route_table_server_name = env::var("RELAYGATE_RT_TLS_SERVER_NAME")
+            .context("RELAYGATE_RT_TLS_SERVER_NAME is required")?;
+        peer = peer.with_tls(
+            ClientTlsConfig::mutually_authenticated(
+                peer_server_name,
+                &material.ca,
+                &material.certificate,
+                &material.private_key,
+            )?,
+            ServerTlsConfig::mutually_authenticated(
+                &material.ca,
+                &material.certificate,
+                &material.private_key,
+            )?,
+        );
+        routing = routing.with_tls(ClientTlsConfig::mutually_authenticated(
+            route_table_server_name,
+            &material.ca,
+            &material.certificate,
+            &material.private_key,
+        )?);
+    }
     Ok(Some(DistributedGatewayConfig {
         peer_bind_address: env::var("RELAYGATE_PEER_BIND_ADDR")
             .unwrap_or_else(|_| DEFAULT_PEER_BIND_ADDRESS.to_owned()),
-        routing: GatewayRoutingConfig::new(
-            directory,
-            gateway_name,
-            internal_gateway_key,
-            gateway_locator,
-            client,
-        ),
+        routing,
         peer,
+        insecure_transport: insecure,
     }))
-}
-
-fn parse_client_keys(value: String) -> Result<HashMap<String, String>> {
-    let mut keys = HashMap::new();
-    if value.is_empty() {
-        return Ok(keys);
-    }
-    for entry in value.split(',') {
-        let Some((client_id, client_key)) = entry.split_once('=') else {
-            bail!("RELAYGATE_CLIENT_KEYS entries must use ClientId=ClientKey");
-        };
-        if client_id.is_empty() || client_key.is_empty() {
-            bail!("RELAYGATE_CLIENT_KEYS entries require non-empty ClientId and ClientKey");
-        }
-        if keys
-            .insert(client_id.to_owned(), client_key.to_owned())
-            .is_some()
-        {
-            bail!("RELAYGATE_CLIENT_KEYS contains duplicate ClientId {client_id:?}");
-        }
-    }
-    Ok(keys)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_client_keys;
-
-    #[test]
-    fn client_key_config_rejects_duplicate_client_ids() {
-        assert!(parse_client_keys("echo.alpha=one,echo.alpha=two".to_owned()).is_err());
-    }
-
-    #[test]
-    fn client_key_config_preserves_exact_values() -> Result<(), Box<dyn std::error::Error>> {
-        let keys = parse_client_keys("echo.alpha=Key=With=Equals".to_owned())?;
-        assert_eq!(
-            keys.get("echo.alpha").map(String::as_str),
-            Some("Key=With=Equals")
-        );
-        Ok(())
-    }
 }

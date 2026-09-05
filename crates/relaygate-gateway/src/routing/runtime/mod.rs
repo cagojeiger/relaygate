@@ -11,7 +11,7 @@ use std::{
 };
 
 use relaygate_protocol::SessionId;
-use relaygate_route_table::{BindingSet, ClientId, GatewayId, ShardDirectory, ShardId};
+use relaygate_route_table::{BindingSet, DestinationId, GatewayId, ShardDirectory, ShardId};
 use relaygate_route_table_transport::ErrorCode;
 use tokio::{
     sync::{mpsc, watch},
@@ -91,8 +91,11 @@ impl RoutingHandle {
         }
     }
 
-    pub(crate) async fn resolve(&self, client_id: ClientId) -> Result<BindingSet, RoutingError> {
-        let record = self.directory.authority(&client_id);
+    pub(crate) async fn resolve(
+        &self,
+        destination_id: DestinationId,
+    ) -> Result<BindingSet, RoutingError> {
+        let record = self.directory.authority(&destination_id);
         let worker = self.shards.get(record.id()).ok_or_else(|| {
             RoutingError::InvalidConfig("authority shard worker is missing".to_owned())
         })?;
@@ -109,7 +112,7 @@ impl RoutingHandle {
 
         let result = connected
             .client
-            .resolve(self.directory.generation(), &client_id)
+            .resolve(self.directory.generation(), &destination_id)
             .await;
         if let Err(error) = &result
             && should_report_resolve_failure(error.code())
@@ -203,6 +206,7 @@ impl RoutingRuntime {
                 gateway_name: config.gateway_name.clone(),
                 internal_gateway_key: config.internal_gateway_key.clone(),
                 client_config: config.client,
+                tls: config.tls.clone(),
                 reconnect_initial: config.reconnect_initial_backoff,
                 reconnect_max: config.reconnect_max_backoff,
                 scan_interval: config.desired_scan_interval,

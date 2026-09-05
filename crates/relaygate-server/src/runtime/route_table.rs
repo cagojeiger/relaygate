@@ -11,20 +11,27 @@ pub(crate) async fn serve(
 ) -> Result<()> {
     let shard_id = config.shard.shard_id().to_string();
     let generation = config.shard.generation().to_string();
-    let service = RouteTableService::new(config.shard, config.trusted_gateways, config.service);
+    let insecure = config.tls.is_none();
+    let mut service = RouteTableService::new(config.shard, config.trusted_gateways, config.service);
+    if let Some(tls) = config.tls {
+        service = service.with_tls(tls);
+    }
     let listener = TcpListener::bind(&config.bind_address)
         .await
         .with_context(|| format!("failed to bind RouteTable at {}", config.bind_address))?;
     let local_address = listener.local_addr()?;
 
-    tracing::warn!(
-        component = "route_table",
-        event = "route_table.trusted_local_enabled",
-        role = "route_table",
-        transport = "plain_tcp",
-        authentication = "reusable_key",
-        "trusted-local RouteTable adapter is enabled; plain TCP and reusable keys are for local/CI use only"
-    );
+    if insecure {
+        tracing::warn!(
+            component = "route_table",
+            event = "route_table.trusted_local_enabled",
+            role = "route_table",
+            transport = "plain_tcp",
+            authentication = "reusable_key",
+            "trusted-local RouteTable adapter is enabled; plain TCP is for tests only"
+        );
+    }
+
     tracing::info!(
         component = "server",
         event = "server.started",

@@ -6,7 +6,14 @@ import tarfile
 import tempfile
 import unittest
 
-from helm_release import CHART, check_version, package_contents, require_bump, stage_package, version
+from helm_release import (
+    CHART,
+    check_version,
+    package_contents,
+    require_non_decreasing,
+    stage_package,
+    version,
+)
 
 
 class VersionTests(unittest.TestCase):
@@ -20,13 +27,11 @@ class VersionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             version("version: 1.0.0\nversion: 2.0.0\n")
 
-    def test_version_bump_policy(self):
-        require_bump("0.1.0", "0.1.0", False)
-        require_bump("0.9.0", "0.10.0", True)
-        for old, new, changed in (("0.1.0", "0.1.0", True), ("0.2.0", "0.1.0", True),
-                                  ("0.2.0", "0.1.0", False)):
-            with self.subTest(old=old, new=new, changed=changed), self.assertRaises(ValueError):
-                require_bump(old, new, changed)
+    def test_version_order_policy(self):
+        require_non_decreasing("0.1.0", "0.1.0")
+        require_non_decreasing("0.9.0", "0.10.0")
+        with self.assertRaises(ValueError):
+            require_non_decreasing("0.2.0", "0.1.0")
 
 
 class PackageTests(unittest.TestCase):
@@ -123,14 +128,19 @@ class GitVersionTests(unittest.TestCase):
         self.commit()
         self.assertEqual(check_version(self.base), "0.1.0")
 
-    def test_chart_change_requires_bump(self):
+    def test_chart_change_can_precede_a_separate_version_bump(self):
         Path(CHART, "values.yaml").write_text("changed: true\n")
         self.commit()
-        with self.assertRaises(ValueError):
-            check_version(self.base)
+        self.assertEqual(check_version(self.base), "0.1.0")
         self.chart.write_text("version: 0.1.1\n")
         self.commit()
         self.assertEqual(check_version(self.base), "0.1.1")
+
+    def test_chart_version_cannot_decrease(self):
+        self.chart.write_text("version: 0.0.9\n")
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "must not decrease"):
+            check_version(self.base)
 
     def test_invalid_base_is_not_initial_release(self):
         with self.assertRaises(subprocess.CalledProcessError):

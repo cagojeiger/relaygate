@@ -2,8 +2,11 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Partially superseded by ADR 010 and ADR 013 |
 | 전제 | [ADR 003](003-client-id-listener-binding.md) |
+
+ADR 010과 ADR 013이 `ClientId`를 `DestinationId`로, `ListenerSession`을 대칭
+`RelaySession`으로 대체한다. hash-sharded mapping authority 결정은 유지한다.
 
 ## 맥락
 

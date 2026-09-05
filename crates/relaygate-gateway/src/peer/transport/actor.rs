@@ -82,18 +82,6 @@ pub(super) async fn run_transport_actor(
                 };
                 match frame {
                     Ok(frame) => {
-                        #[cfg(test)]
-                        if matches!(
-                            established.local_endpoint,
-                            crate::peer::identity::StreamEndpoint::Dialer
-                        ) && matches!(&frame, crate::peer::frame::PeerFrame::Pong { .. })
-                            && config
-                                .drop_dialer_heartbeat_pong_gate
-                                .as_ref()
-                                .is_some_and(crate::peer::config::DropHeartbeatPongGate::trip)
-                        {
-                            continue;
-                        }
                         liveness.observe_inbound(&frame);
                         if liveness.response_timed_out() {
                             tracing::debug!(

@@ -1,35 +1,40 @@
 use relaygate_protocol::SessionId;
 
-use super::ListenerSessionState;
+use super::RelaySessionState;
 use crate::{
     Error, ErrorCode, PeerObservation,
     listener::{ListenerStatus, is_current_desired},
 };
 
-pub(super) async fn cleanup_listener_session(
+pub(super) async fn cleanup_relay_session(
     session_id: SessionId,
-    inner: &crate::listener::ListenerRuntimeInner,
-    state: ListenerSessionState,
+    inner: &crate::listener::RelayInner,
+    state: RelaySessionState,
     timed_out_request: Option<u64>,
     registration_succeeded: bool,
 ) -> bool {
     tracing::debug!(
         component = "sdk",
         event = "sdk.session.ended",
-        role = "listener",
         session_id = %session_id.as_uuid(),
         pending_registrations = state.pending.len(),
         active_registrations = state.registrations.len(),
+        pending_dials = state.pending_dials.len(),
         live_pipes = state.pipes.len(),
         registration_timed_out = timed_out_request.is_some(),
-        "Listener session ended"
+        "Relay session ended"
     );
+    for response in state.pending_dials.into_values() {
+        let _ = response.send(Err(Error::maybe_observed(
+            "RelaySession transport ended after DIAL commit",
+        )));
+    }
     // Fail every Pipe first. Once the Listener status leaves ACTIVE, pending
     // accept calls release the receiver lane and the old session queue can be
     // drained before this function permits a replacement session to start.
     for pipe in state.pipes.values() {
         pipe.state
-            .fail(Error::unavailable("ListenerSession transport ended"));
+            .fail(Error::unavailable("RelaySession transport ended"));
     }
     let mut queues_to_drain = Vec::new();
     for (request_id, pending) in state.pending {
@@ -41,12 +46,12 @@ pub(super) async fn cleanup_listener_session(
             let recovery_error = if timed_out_request == Some(request_id) {
                 Error::deadline(PeerObservation::MaybeObserved)
             } else {
-                Error::maybe_observed("ListenerSession ended during managed REGISTER")
+                Error::maybe_observed("RelaySession ended during managed PUBLISH")
             };
             let initial_error = if timed_out_request == Some(request_id) {
                 Error::deadline(PeerObservation::MaybeObserved)
             } else {
-                Error::maybe_observed("ListenerSession ended after REGISTER commit")
+                Error::maybe_observed("RelaySession ended after PUBLISH commit")
             };
             if pending
                 .state
@@ -58,7 +63,7 @@ pub(super) async fn cleanup_listener_session(
             pending
                 .state
                 .handle_precommit_session_end(Error::unavailable(
-                    "ListenerSession ended before managed REGISTER commit",
+                    "RelaySession ended before managed PUBLISH commit",
                 ));
         }
         let close_queue = matches!(
@@ -73,11 +78,11 @@ pub(super) async fn cleanup_listener_session(
             continue;
         }
         if registration.state.suspend_or_fail_initial(
-            Error::unavailable("ListenerSession transport ended"),
+            Error::unavailable("RelaySession transport ended"),
             Error::new(
                 ErrorCode::Unavailable,
                 PeerObservation::Observed,
-                "ListenerSession ended after REGISTERED before listen returned",
+                "RelaySession ended after PUBLISHED before listen returned",
             ),
         ) {
             inner.remove_terminal_listener(&registration.state);

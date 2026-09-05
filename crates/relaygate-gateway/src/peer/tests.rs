@@ -187,8 +187,8 @@ fn peer_frame_codec_round_trips_every_frame_kind() -> Result<(), Box<dyn std::er
         PeerFrame::Open {
             stream_id,
             open_identity: OpenIdentity::new(GatewayId::new(), SessionId::new(), 7),
-            client_id: "echo.a".to_owned(),
-            listener_session_id: SessionId::new(),
+            destination_id: "echo.a".to_owned(),
+            relay_session_id: SessionId::new(),
             binding_id: BindingId::new(),
         },
         PeerFrame::Opened { stream_id },
@@ -385,13 +385,13 @@ fn peer_frame_codec_bounds_strings_and_rejects_empty_open_destination() {
     let empty_client = PeerFrame::Open {
         stream_id: StreamId::from_raw(0),
         open_identity: OpenIdentity::new(GatewayId::new(), SessionId::new(), 1),
-        client_id: String::new(),
-        listener_session_id: SessionId::new(),
+        destination_id: String::new(),
+        relay_session_id: SessionId::new(),
         binding_id: BindingId::new(),
     };
     assert!(matches!(
         codec.validate(&empty_client),
-        Err(PeerCodecError::InvalidField("client_id"))
+        Err(PeerCodecError::InvalidField("destination_id"))
     ));
 }
 

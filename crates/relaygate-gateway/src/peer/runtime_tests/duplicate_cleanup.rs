@@ -81,8 +81,8 @@ async fn same_direction_duplicate_preserves_ready_transport_for_open_and_data() 
         .send(PeerFrame::Open {
             stream_id,
             open_identity,
-            client_id: "echo.b".to_owned(),
-            listener_session_id: SessionId::new(),
+            destination_id: "echo.b".to_owned(),
+            relay_session_id: SessionId::new(),
             binding_id: BindingId::new(),
         })
         .await?;

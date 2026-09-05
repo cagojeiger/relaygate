@@ -2,18 +2,19 @@ use std::{error::Error, io, net::SocketAddr, time::Duration};
 
 use relaygate_gateway::{
     Gateway, GatewayConfig, GatewayError, GatewayPeerConfig, GatewayRoutingConfig,
-    TrustedPeerConfig, check,
+    TrustedPeerConfig, check_insecure_for_tests,
 };
 use relaygate_route_table::{
-    ClientId, GatewayId, GatewayLocator, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
+    DestinationId as RouteDestinationId, GatewayId, GatewayLocator, RouteTableConfig,
+    RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
     GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig, RouteTableService,
     RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
 };
 use relaygate_sdk::{
-    Config as SdkConfig, Connector, ErrorCode as SdkErrorCode, Listener, ListenerRuntime,
-    PeerObservation as SdkPeerObservation, Pipe,
+    Config as SdkConfig, DestinationId, ErrorCode as SdkErrorCode, Listener,
+    PeerObservation as SdkPeerObservation, Pipe, Relay,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -25,12 +26,12 @@ use tokio_util::sync::CancellationToken;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
-const CLIENT_KEY: &str = "listener-key";
-const CLIENT_A: &str = "echo.a";
-const CLIENT_B: &str = "echo.b";
-const CLIENT_C: &str = "echo.c";
-const CLIENT_MISSING: &str = "echo.missing";
-const CLIENT_SHARED: &str = "echo.shared";
+const CLUSTER_TOKEN: &str = "v02-three-gateway-cluster-token";
+const CLIENT_A: &str = "11111111-1111-4111-8111-111111111111";
+const CLIENT_B: &str = "22222222-2222-4222-8222-222222222222";
+const CLIENT_C: &str = "33333333-3333-4333-8333-333333333333";
+const CLIENT_MISSING: &str = "99999999-9999-4999-8999-999999999999";
+const CLIENT_SHARED: &str = "44444444-4444-4444-8444-444444444444";
 const GATEWAY_A: &str = "gateway-a";
 const GATEWAY_A_KEY: &str = "gateway-a-key";
 const GATEWAY_B: &str = "gateway-b";
@@ -44,9 +45,6 @@ const ALL_GATEWAYS: [(&str, &str); 3] = [
     (GATEWAY_B, GATEWAY_B_KEY),
     (GATEWAY_C, GATEWAY_C_KEY),
 ];
-
-#[path = "three_gateway/open_identity.rs"]
-mod open_identity;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn rt_one_gateway_three_forms_a_closed_current_state_relay() -> TestResult {
@@ -63,16 +61,26 @@ async fn three_gateway_case() -> TestResult {
 
     let mut gateway_a = RunningGateway::start(GATEWAY_A, GATEWAY_A_KEY, directory.clone()).await?;
     let mut gateway_b = RunningGateway::start(GATEWAY_B, GATEWAY_B_KEY, directory.clone()).await?;
-    let mut gateway_c = RunningGateway::start(GATEWAY_C, GATEWAY_C_KEY, directory).await?;
+    let mut gateway_c = RunningGateway::start(GATEWAY_C, GATEWAY_C_KEY, directory.clone()).await?;
 
-    let listener_runtime_a = ListenerRuntime::connect(sdk_config(gateway_a.sdk_address)).await?;
-    let listener_runtime_b = ListenerRuntime::connect(sdk_config(gateway_b.sdk_address)).await?;
-    let listener_runtime_c = ListenerRuntime::connect(sdk_config(gateway_c.sdk_address)).await?;
-    let listener_a = listener_runtime_a.listen(CLIENT_A, CLIENT_KEY).await?;
-    let listener_b = listener_runtime_b.listen(CLIENT_B, CLIENT_KEY).await?;
-    let listener_c = listener_runtime_c.listen(CLIENT_C, CLIENT_KEY).await?;
-    let shared_b = listener_runtime_b.listen(CLIENT_SHARED, CLIENT_KEY).await?;
-    let shared_c = listener_runtime_c.listen(CLIENT_SHARED, CLIENT_KEY).await?;
+    let listener_runtime_a = Relay::connect(sdk_config(gateway_a.sdk_address)).await?;
+    let listener_runtime_b = Relay::connect(sdk_config(gateway_b.sdk_address)).await?;
+    let listener_runtime_c = Relay::connect(sdk_config(gateway_c.sdk_address)).await?;
+    let listener_a = listener_runtime_a
+        .listen(sdk_destination(CLIENT_A)?)
+        .await?;
+    let listener_b = listener_runtime_b
+        .listen(sdk_destination(CLIENT_B)?)
+        .await?;
+    let listener_c = listener_runtime_c
+        .listen(sdk_destination(CLIENT_C)?)
+        .await?;
+    let shared_b = listener_runtime_b
+        .listen(sdk_destination(CLIENT_SHARED)?)
+        .await?;
+    let shared_c = listener_runtime_c
+        .listen(sdk_destination(CLIENT_SHARED)?)
+        .await?;
 
     wait_until("all registrations synced", Duration::from_secs(2), || {
         [&gateway_a, &gateway_b, &gateway_c]
@@ -101,9 +109,9 @@ async fn three_gateway_case() -> TestResult {
     )
     .await?;
 
-    let connector_a = Connector::connect(sdk_config(gateway_a.sdk_address)).await?;
-    let connector_b = Connector::connect(sdk_config(gateway_b.sdk_address)).await?;
-    let connector_c = Connector::connect(sdk_config(gateway_c.sdk_address)).await?;
+    let connector_a = Relay::connect(sdk_config(gateway_a.sdk_address)).await?;
+    let connector_b = Relay::connect(sdk_config(gateway_b.sdk_address)).await?;
+    let connector_c = Relay::connect(sdk_config(gateway_c.sdk_address)).await?;
 
     exercise_pipe(&connector_a, CLIENT_A, &listener_a, "local-a").await?;
     exercise_pipe(&connector_b, CLIENT_B, &listener_b, "local-b").await?;
@@ -245,7 +253,7 @@ async fn three_gateway_case() -> TestResult {
     drop(route_observer);
     route_table.stop().await?;
     let failed_open = connector_a
-        .open(CLIENT_C)
+        .dial(sdk_destination(CLIENT_C)?)
         .await
         .err()
         .ok_or("remote open unexpectedly succeeded while RouteTable was unavailable")?;
@@ -268,6 +276,28 @@ async fn three_gateway_case() -> TestResult {
     )
     .await?;
 
+    let route_listener = TcpListener::bind(route_endpoint).await?;
+    let restarted_route_table = RunningRouteTable::start(route_listener, directory)?;
+    let route_observer = RouteTableClient::connect(
+        route_endpoint,
+        GatewayName::new(GATEWAY_A)?,
+        GatewayId::new(),
+        InternalGatewayKey::new(GATEWAY_A_KEY)?,
+        route_client_config()?,
+    )
+    .await?;
+    wait_for_binding_count(
+        &route_observer,
+        generation,
+        CLIENT_C,
+        1,
+        Duration::from_secs(2),
+    )
+    .await?;
+    exercise_pipe(&connector_a, CLIENT_C, &listener_c, "a-c-after-rt-restart").await?;
+    drop(route_observer);
+    restarted_route_table.stop().await?;
+
     durable_connector.close().await?;
     durable_listener.close().await?;
     wait_until("durable stream cleanup", Duration::from_secs(2), || {
@@ -286,16 +316,16 @@ async fn three_gateway_case() -> TestResult {
 }
 
 async fn exercise_repeated_failure_recovery(
-    connector: &Connector,
+    connector: &Relay,
     listener: &Listener,
     gateways: [&RunningGateway; 3],
 ) -> TestResult {
     for cycle in 0..100 {
         let failure = connector
-            .open(CLIENT_MISSING)
+            .dial(sdk_destination(CLIENT_MISSING)?)
             .await
             .err()
-            .ok_or("missing ClientId unexpectedly opened a Pipe")?;
+            .ok_or("missing Destination unexpectedly opened a Pipe")?;
         assert_eq!(failure.code(), SdkErrorCode::NotFound);
         assert_eq!(failure.observation(), SdkPeerObservation::NotObserved);
 
@@ -327,7 +357,7 @@ async fn exercise_repeated_failure_recovery(
 }
 
 async fn exercise_pipe(
-    connector: &Connector,
+    connector: &Relay,
     client_id: &str,
     listener: &Listener,
     marker: &str,
@@ -340,11 +370,11 @@ async fn exercise_pipe(
 }
 
 async fn open_pipe(
-    connector: &Connector,
+    connector: &Relay,
     client_id: &str,
     listener: &Listener,
 ) -> TestResult<(Pipe, Pipe)> {
-    let connector_pipe = connector.open(client_id).await?;
+    let connector_pipe = connector.dial(sdk_destination(client_id)?).await?;
     let listener_pipe = listener.accept().await?;
     Ok((connector_pipe, listener_pipe))
 }
@@ -356,10 +386,11 @@ enum SharedOwner {
 }
 
 async fn open_shared_pipe(
-    connector: &Connector,
+    connector: &Relay,
     listener_b: &Listener,
     listener_c: &Listener,
 ) -> TestResult<(Pipe, Pipe, SharedOwner)> {
+    let destination = sdk_destination(CLIENT_SHARED)?;
     timeout(Duration::from_secs(2), async {
         let accepted = async {
             tokio::select! {
@@ -367,7 +398,7 @@ async fn open_shared_pipe(
                 result = listener_c.accept() => result.map(|pipe| (pipe, SharedOwner::C)),
             }
         };
-        let (opened, accepted) = tokio::join!(connector.open(CLIENT_SHARED), accepted);
+        let (opened, accepted) = tokio::join!(connector.dial(destination), accepted);
         let connector_pipe = opened?;
         let (listener_pipe, owner) = accepted?;
         Ok::<_, relaygate_sdk::Error>((connector_pipe, listener_pipe, owner))
@@ -433,14 +464,9 @@ impl RunningGateway {
         );
         let shutdown = CancellationToken::new();
         let gateway = Gateway::new_distributed(
-            GatewayConfig::new([
-                (CLIENT_A.to_owned(), CLIENT_KEY.to_owned()),
-                (CLIENT_B.to_owned(), CLIENT_KEY.to_owned()),
-                (CLIENT_C.to_owned(), CLIENT_KEY.to_owned()),
-                (CLIENT_SHARED.to_owned(), CLIENT_KEY.to_owned()),
-            ])
-            .with_max_pending_offers(16)
-            .with_drain_timeout(Duration::from_millis(100)),
+            GatewayConfig::new(CLUSTER_TOKEN)
+                .with_max_pending_offers(16)
+                .with_drain_timeout(Duration::from_millis(100)),
             routing,
             peer,
         )?;
@@ -451,7 +477,7 @@ impl RunningGateway {
                 .serve_distributed(sdk_listener, peer_listener, serve_shutdown)
                 .await
         });
-        check(sdk_address, Duration::from_secs(1)).await?;
+        check_insecure_for_tests(sdk_address, CLUSTER_TOKEN, Duration::from_secs(1)).await?;
         Ok(Self {
             name: name.to_owned(),
             sdk_address,
@@ -545,7 +571,7 @@ fn route_client_config() -> Result<RouteTableClientConfig, TransportError> {
 }
 
 fn sdk_config(endpoint: SocketAddr) -> SdkConfig {
-    SdkConfig::new(endpoint.to_string())
+    SdkConfig::new_insecure_for_tests(endpoint.to_string(), CLUSTER_TOKEN)
         .with_connect_timeout(Duration::from_millis(200))
         .with_operation_timeout(Duration::from_secs(2))
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(40))
@@ -558,7 +584,7 @@ async fn wait_for_binding_count(
     expected: usize,
     deadline: Duration,
 ) -> TestResult {
-    let client_id = ClientId::new(client_id)?;
+    let client_id = RouteDestinationId::new(client_id)?;
     let expires = Instant::now() + deadline;
     loop {
         if client
@@ -576,6 +602,10 @@ async fn wait_for_binding_count(
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+fn sdk_destination(value: &str) -> Result<DestinationId, relaygate_sdk::DestinationIdError> {
+    value.parse()
 }
 
 async fn wait_until(

@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "SDK OPEN에서 Listener Pipe까지의 RED, Gateway/RouteTable current-state USE, route dependency와 one-hop relay 포화 신호를 함께 본다. scrape up은 수집 가능성이지 SDK admission readiness가 아니다.",
+  "description": "SDK DIAL에서 Listener Pipe까지의 RED, Gateway/RouteTable current-state USE, route dependency와 one-hop relay 포화 신호를 함께 본다. scrape up은 수집 가능성이지 SDK admission readiness가 아니다.",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -200,7 +200,7 @@
         "x": 18,
         "y": 0
       },
-      "description": "선택한 Gateway가 protocol상 수락한 새 Connector OPEN의 초당 요청 수다. 거절된 중복·과거 ConnectionId frame은 포함하지 않는다.",
+      "description": "선택한 Gateway가 protocol상 수락한 새 Relay DIAL의 초당 요청 수다. 거절된 중복·과거 ConnectionId frame은 포함하지 않는다.",
       "id": 4,
       "options": {
         "colorMode": "value",
@@ -217,12 +217,12 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(relaygate_gateway_open_requests_total{instance=~\"$gateway\"}[$__rate_interval]))",
-          "legendFormat": "OPEN/s",
+          "expr": "sum(rate(relaygate_gateway_dial_requests_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "legendFormat": "DIAL/s",
           "refId": "A"
         }
       ],
-      "title": "OPEN request rate",
+      "title": "DIAL request rate",
       "type": "stat"
     },
     {
@@ -242,7 +242,7 @@
         "x": 0,
         "y": 4
       },
-      "description": "선택한 Gateway가 수락한 OPEN의 terminal 결과를 bounded outcome/code별로 본다. success, system error와 caller cancellation을 구분한다.",
+      "description": "선택한 Gateway가 처리한 dial의 terminal 결과를 bounded outcome/code별로 본다. success, system error와 caller cancellation을 구분한다.",
       "id": 5,
       "options": {
         "legend": {
@@ -255,12 +255,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (outcome, code) (rate(relaygate_gateway_open_results_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum by (outcome, code) (rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "{{outcome}} / {{code}}",
           "refId": "A"
         }
       ],
-      "title": "Gateway OPEN result rate",
+      "title": "Gateway DIAL result rate",
       "type": "timeseries"
     },
     {
@@ -282,7 +282,7 @@
         "x": 8,
         "y": 4
       },
-      "description": "선택한 Gateway의 OPEN terminal 결과 중 system error와 cancellation의 비율이다. cancellation은 RelayGate 장애율에 합산하지 않는다.",
+      "description": "선택한 Gateway의 DIAL terminal 결과 중 system error와 cancellation의 비율이다. cancellation은 RelayGate 장애율에 합산하지 않는다.",
       "id": 6,
       "options": {
         "legend": {
@@ -295,17 +295,17 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(relaygate_gateway_open_results_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval])) / clamp_min(sum(rate(relaygate_gateway_open_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0.001)",
+          "expr": "sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval])) / clamp_min(sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0.001)",
           "legendFormat": "error",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(relaygate_gateway_open_results_total{instance=~\"$gateway\",outcome=\"cancelled\"}[$__rate_interval])) / clamp_min(sum(rate(relaygate_gateway_open_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0.001)",
+          "expr": "sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\",outcome=\"cancelled\"}[$__rate_interval])) / clamp_min(sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0.001)",
           "legendFormat": "cancelled",
           "refId": "B"
         }
       ],
-      "title": "Gateway OPEN terminal ratios",
+      "title": "Gateway DIAL terminal ratios",
       "type": "timeseries"
     },
     {
@@ -325,7 +325,7 @@
         "x": 16,
         "y": 4
       },
-      "description": "Gateway instance와 outcome별 OPEN service p95다. 선택한 구간의 histogram bucket rate로 계산한다.",
+      "description": "Gateway instance와 outcome별 DIAL service p95다. 선택한 구간의 histogram bucket rate로 계산한다.",
       "id": 7,
       "options": {
         "legend": {
@@ -338,12 +338,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, instance, outcome) (rate(relaygate_gateway_open_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, outcome) (rate(relaygate_gateway_dial_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
           "legendFormat": "p95 {{instance}} / {{outcome}}",
           "refId": "A"
         }
       ],
-      "title": "Gateway OPEN p95 by instance",
+      "title": "Gateway DIAL p95 by instance",
       "type": "timeseries"
     },
     {
@@ -363,7 +363,7 @@
         "x": 0,
         "y": 11
       },
-      "description": "선택한 Gateway가 현재 소유한 session, binding, live Pipe, pending offer와 remote OPEN attempt의 합계를 본다. All은 cluster 합계이며 특정 instance로 drill-down할 수 있다.",
+      "description": "선택한 Gateway가 현재 소유한 session, binding, live Pipe, pending offer와 remote dial attempt의 합계를 본다. All은 cluster 합계이며 특정 instance로 drill-down할 수 있다.",
       "id": 8,
       "options": {
         "legend": {
@@ -381,7 +381,7 @@
           "refId": "A"
         },
         {
-          "expr": "sum(relaygate_gateway_listener_bindings{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_bindings{instance=~\"$gateway\"})",
           "legendFormat": "bindings",
           "refId": "B"
         },
@@ -396,7 +396,7 @@
           "refId": "D"
         },
         {
-          "expr": "sum(relaygate_gateway_remote_open_attempts{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_remote_dial_attempts{instance=~\"$gateway\"})",
           "legendFormat": "remote attempts",
           "refId": "E"
         }
@@ -421,7 +421,7 @@
         "x": 12,
         "y": 11
       },
-      "description": "선택한 Gateway의 one-hop PeerTransport/RelayStream, RT 미동기화, bounded writer queue 거절과 OPEN terminal gap을 본다. All은 cluster 합계이며 terminal gap은 장시간 지속될 때만 누락 또는 지연 신호다.",
+      "description": "선택한 Gateway의 one-hop PeerTransport/RelayStream, RT 미동기화, bounded writer queue 거절과 DIAL terminal gap을 본다. All은 cluster 합계이며 terminal gap은 장시간 지속될 때만 누락 또는 지연 신호다.",
       "id": 9,
       "options": {
         "legend": {
@@ -459,8 +459,8 @@
           "refId": "E"
         },
         {
-          "expr": "clamp_min(sum(rate(relaygate_gateway_open_requests_total{instance=~\"$gateway\"}[$__rate_interval])) - sum(rate(relaygate_gateway_open_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0)",
-          "legendFormat": "OPEN terminal gap",
+          "expr": "clamp_min(sum(rate(relaygate_gateway_dial_requests_total{instance=~\"$gateway\"}[$__rate_interval])) - sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0)",
+          "legendFormat": "DIAL terminal gap",
           "refId": "F"
         }
       ],
@@ -613,7 +613,7 @@
         "x": 0,
         "y": 26
       },
-      "description": "정상 OPEN hot path를 제외한 Gateway 제어 경계의 실패·전이·종료율이다. label은 닫힌 code/reason만 사용한다.",
+      "description": "정상 DIAL hot path를 제외한 Gateway 제어 경계의 실패·전이·종료율이다. label은 닫힌 code/reason만 사용한다.",
       "id": 13,
       "options": {
         "legend": {
@@ -626,8 +626,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (code) (rate(relaygate_gateway_listener_registration_results_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
-          "legendFormat": "registration / {{code}}",
+          "expr": "sum by (code) (rate(relaygate_gateway_publish_results_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+          "legendFormat": "publication / {{code}}",
           "refId": "A"
         },
         {

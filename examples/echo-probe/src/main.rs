@@ -1,3 +1,4 @@
+mod chat;
 mod config;
 mod continuity;
 mod probe;
@@ -6,29 +7,29 @@ use std::env;
 
 use anyhow::{Context, bail, ensure};
 
-use crate::config::CLIENT_IDS;
+use crate::config::DESTINATION_IDS;
 
-const SHARD_ISOLATION_USAGE: &str =
-    "expect-shard-isolation <unavailable-client-id> <local-owner-index> <available-client-id>";
+const SHARD_ISOLATION_USAGE: &str = "expect-shard-isolation <unavailable-destination-id> <local-owner-index> <available-destination-id>";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing()?;
     match command()? {
         Command::Single => probe::run_single().await,
+        Command::Chat => chat::run_chat().await,
         Command::Matrix => probe::run_matrix().await,
         Command::Soak => probe::run_soak().await,
         Command::ReconnectStorm => probe::run_reconnect_storm().await,
-        Command::WaitClient(client_id) => probe::wait_client_registered(&client_id).await,
+        Command::WaitClient(destination_id) => probe::wait_client_registered(&destination_id).await,
         Command::ExpectShardIsolation {
-            unavailable_client_id,
+            unavailable_destination_id,
             local_owner_index,
-            available_client_id,
+            available_destination_id,
         } => {
             probe::expect_shard_isolation(
-                &unavailable_client_id,
+                &unavailable_destination_id,
                 local_owner_index,
-                &available_client_id,
+                &available_destination_id,
             )
             .await
         }
@@ -40,14 +41,15 @@ async fn main() -> anyhow::Result<()> {
 #[derive(Debug)]
 enum Command {
     Single,
+    Chat,
     Matrix,
     Soak,
     ReconnectStorm,
     WaitClient(String),
     ExpectShardIsolation {
-        unavailable_client_id: String,
+        unavailable_destination_id: String,
         local_owner_index: usize,
-        available_client_id: String,
+        available_destination_id: String,
     },
     Continuity,
     ContinuityCheck,
@@ -61,17 +63,18 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
     let mut args = args.into_iter();
     let command = match args.next().as_deref() {
         None | Some("single") => Command::Single,
+        Some("chat") => Command::Chat,
         Some("matrix") => Command::Matrix,
         Some("soak") => Command::Soak,
         Some("reconnect-storm") => Command::ReconnectStorm,
         Some("wait-client") => {
-            let Some(client_id) = args.next() else {
-                bail!("wait-client requires a ClientId argument");
+            let Some(destination_id) = args.next() else {
+                bail!("wait-client requires a DestinationId argument");
             };
-            Command::WaitClient(client_id)
+            Command::WaitClient(destination_id)
         }
         Some("expect-shard-isolation") => {
-            let Some(unavailable_client_id) = args.next() else {
+            let Some(unavailable_destination_id) = args.next() else {
                 bail!("usage: {SHARD_ISOLATION_USAGE}");
             };
             let Some(local_owner_index) = args.next() else {
@@ -81,23 +84,23 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
                 .parse::<usize>()
                 .with_context(|| "local-owner-index must be a non-negative integer")?;
             ensure!(
-                local_owner_index < CLIENT_IDS.len(),
+                local_owner_index < DESTINATION_IDS.len(),
                 "local-owner-index must be in 0..{} (one index per configured Gateway)",
-                CLIENT_IDS.len()
+                DESTINATION_IDS.len()
             );
-            let Some(available_client_id) = args.next() else {
+            let Some(available_destination_id) = args.next() else {
                 bail!("usage: {SHARD_ISOLATION_USAGE}");
             };
             Command::ExpectShardIsolation {
-                unavailable_client_id,
+                unavailable_destination_id,
                 local_owner_index,
-                available_client_id,
+                available_destination_id,
             }
         }
         Some("continuity") => Command::Continuity,
         Some("continuity-check") => Command::ContinuityCheck,
         Some(other) => bail!(
-            "unknown command {other:?}; expected single, matrix, soak, reconnect-storm, wait-client, expect-shard-isolation, continuity, or continuity-check"
+            "unknown command {other:?}; expected single, chat, matrix, soak, reconnect-storm, wait-client, expect-shard-isolation, continuity, or continuity-check"
         ),
     };
     if args.next().is_some() {
@@ -123,10 +126,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_wait_client_command_with_client_id() -> anyhow::Result<()> {
+    fn parses_wait_client_command_with_destination_id() -> anyhow::Result<()> {
         match command_from(["wait-client".to_owned(), "echo.b".to_owned()]) {
-            Ok(Command::WaitClient(client_id)) => {
-                anyhow::ensure!(client_id == "echo.b", "unexpected client id: {client_id}");
+            Ok(Command::WaitClient(destination_id)) => {
+                anyhow::ensure!(
+                    destination_id == "echo.b",
+                    "unexpected client id: {destination_id}"
+                );
             }
             Ok(other) => anyhow::bail!("unexpected command: {other:?}"),
             Err(error) => anyhow::bail!("unexpected error: {error}"),
@@ -144,6 +150,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_chat_command() -> anyhow::Result<()> {
+        anyhow::ensure!(matches!(
+            command_from(["chat".to_owned()]),
+            Ok(Command::Chat)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn parses_reconnect_storm_command() -> anyhow::Result<()> {
         anyhow::ensure!(matches!(
             command_from(["reconnect-storm".to_owned()]),
@@ -153,13 +168,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wait_client_without_client_id() -> anyhow::Result<()> {
+    fn rejects_wait_client_without_destination_id() -> anyhow::Result<()> {
         let error = match command_from(["wait-client".to_owned()]) {
             Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
             Err(error) => error,
         };
         anyhow::ensure!(
-            error.to_string().contains("requires a ClientId"),
+            error.to_string().contains("requires a DestinationId"),
             "unexpected error: {error}"
         );
         Ok(())
@@ -174,13 +189,13 @@ mod tests {
             "echo.c".to_owned(),
         ]) {
             Ok(Command::ExpectShardIsolation {
-                unavailable_client_id,
+                unavailable_destination_id,
                 local_owner_index,
-                available_client_id,
+                available_destination_id,
             }) => {
-                anyhow::ensure!(unavailable_client_id == "echo.b");
+                anyhow::ensure!(unavailable_destination_id == "echo.b");
                 anyhow::ensure!(local_owner_index == 1);
-                anyhow::ensure!(available_client_id == "echo.c");
+                anyhow::ensure!(available_destination_id == "echo.c");
             }
             Ok(other) => anyhow::bail!("unexpected command: {other:?}"),
             Err(error) => anyhow::bail!("unexpected error: {error}"),
@@ -230,7 +245,7 @@ mod tests {
         let error = match command_from([
             "expect-shard-isolation".to_owned(),
             "echo.b".to_owned(),
-            CLIENT_IDS.len().to_string(),
+            DESTINATION_IDS.len().to_string(),
             "echo.c".to_owned(),
         ]) {
             Ok(command) => anyhow::bail!("unexpected command: {command:?}"),

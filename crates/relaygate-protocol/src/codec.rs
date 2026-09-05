@@ -3,12 +3,12 @@ use tokio_util::codec::{Decoder, Encoder};
 use uuid::Uuid;
 
 use crate::{
-    BindingId, ClientKey, ErrorCode, Frame, PeerObservation, PipeId, ProtocolError, SessionId,
-    SessionRole,
+    BindingId, ClusterToken, DestinationId, ErrorCode, Frame, PeerObservation, PipeId,
+    ProtocolError, SessionId,
 };
 
 const MAGIC: [u8; 2] = *b"RG";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const HEADER_LEN: usize = 8;
 const MAX_STRING_LEN: usize = u16::MAX as usize;
 pub const DEFAULT_MAX_FRAME_LEN: usize = 1024 * 1024;
@@ -90,33 +90,36 @@ impl Decoder for FrameCodec {
 
 fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, ProtocolError> {
     let kind = match frame {
-        Frame::Hello { role } => {
-            destination.put_u8(role as u8);
+        Frame::Hello { cluster_token } => {
+            put_string(destination, "cluster_token", cluster_token.expose_secret())?;
             1
         }
         Frame::Welcome { session_id } => {
             put_session_id(destination, session_id);
             2
         }
-        Frame::Register {
-            request_id,
-            client_id,
-            client_key,
-        } => {
-            destination.put_u64(request_id);
-            put_string(destination, "client_id", &client_id)?;
-            put_string(destination, "client_key", client_key.expose_secret())?;
+        Frame::SessionRejected { code, message } => {
+            destination.put_u8(code as u8);
+            put_string(destination, "message", &message)?;
             3
         }
-        Frame::Registered {
+        Frame::Publish {
+            request_id,
+            destination_id,
+        } => {
+            destination.put_u64(request_id);
+            put_destination_id(destination, destination_id);
+            4
+        }
+        Frame::Published {
             request_id,
             binding_id,
         } => {
             destination.put_u64(request_id);
             put_binding_id(destination, binding_id);
-            4
+            5
         }
-        Frame::RegisterFailed {
+        Frame::PublishFailed {
             request_id,
             code,
             message,
@@ -124,41 +127,41 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
             destination.put_u64(request_id);
             destination.put_u8(code as u8);
             put_string(destination, "message", &message)?;
-            5
+            6
         }
-        Frame::Unregister {
+        Frame::Unpublish {
             request_id,
             binding_id,
         } => {
             destination.put_u64(request_id);
             put_binding_id(destination, binding_id);
-            6
-        }
-        Frame::Unregistered { request_id } => {
-            destination.put_u64(request_id);
             7
         }
-        Frame::Open {
+        Frame::Unpublished { request_id } => {
+            destination.put_u64(request_id);
+            8
+        }
+        Frame::Dial {
             connection_id,
-            client_id,
+            destination_id,
         } => {
             destination.put_u64(connection_id);
-            put_string(destination, "client_id", &client_id)?;
-            8
+            put_destination_id(destination, destination_id);
+            9
         }
         Frame::Offer {
             pipe_id,
             binding_id,
-            client_id,
+            destination_id,
         } => {
             put_pipe_id(destination, pipe_id);
             put_binding_id(destination, binding_id);
-            put_string(destination, "client_id", &client_id)?;
-            9
+            put_destination_id(destination, destination_id);
+            10
         }
         Frame::OfferAccepted { pipe_id } => {
             put_pipe_id(destination, pipe_id);
-            10
+            11
         }
         Frame::OfferRejected {
             pipe_id,
@@ -168,13 +171,13 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
             put_pipe_id(destination, pipe_id);
             destination.put_u8(code as u8);
             put_string(destination, "message", &message)?;
-            11
+            12
         }
         Frame::Opened { pipe_id } => {
             put_pipe_id(destination, pipe_id);
-            12
+            13
         }
-        Frame::OpenFailed {
+        Frame::DialFailed {
             connection_id,
             code,
             observation,
@@ -184,20 +187,20 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
             destination.put_u8(code as u8);
             destination.put_u8(observation as u8);
             put_string(destination, "message", &message)?;
-            13
+            14
         }
         Frame::Data { pipe_id, payload } => {
             put_pipe_id(destination, pipe_id);
             destination.extend_from_slice(&payload);
-            14
+            15
         }
         Frame::Fin { pipe_id } => {
             put_pipe_id(destination, pipe_id);
-            15
+            16
         }
         Frame::Close { pipe_id } => {
             put_pipe_id(destination, pipe_id);
-            16
+            17
         }
         Frame::Reset {
             pipe_id,
@@ -207,19 +210,19 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
             put_pipe_id(destination, pipe_id);
             destination.put_u8(code as u8);
             put_string(destination, "message", &message)?;
-            17
+            18
         }
         Frame::Ping { nonce } => {
             destination.put_u64(nonce);
-            18
+            19
         }
         Frame::Pong { nonce } => {
             destination.put_u64(nonce);
-            19
+            20
         }
         Frame::Cancel { pipe_id } => {
             put_pipe_id(destination, pipe_id);
-            20
+            21
         }
     };
     Ok(kind)
@@ -229,81 +232,84 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<Frame, ProtocolError> {
     let mut reader = PayloadReader::new(payload);
     let frame = match kind {
         1 => Frame::Hello {
-            role: reader.role()?,
+            cluster_token: ClusterToken::new(reader.string("cluster_token")?),
         },
         2 => Frame::Welcome {
             session_id: reader.session_id()?,
         },
-        3 => Frame::Register {
-            request_id: reader.u64("request_id")?,
-            client_id: reader.string("client_id")?,
-            client_key: ClientKey::new(reader.string("client_key")?),
+        3 => Frame::SessionRejected {
+            code: reader.error_code()?,
+            message: reader.string("message")?,
         },
-        4 => Frame::Registered {
+        4 => Frame::Publish {
+            request_id: reader.u64("request_id")?,
+            destination_id: reader.destination_id()?,
+        },
+        5 => Frame::Published {
             request_id: reader.u64("request_id")?,
             binding_id: reader.binding_id()?,
         },
-        5 => Frame::RegisterFailed {
+        6 => Frame::PublishFailed {
             request_id: reader.u64("request_id")?,
             code: reader.error_code()?,
             message: reader.string("message")?,
         },
-        6 => Frame::Unregister {
+        7 => Frame::Unpublish {
             request_id: reader.u64("request_id")?,
             binding_id: reader.binding_id()?,
         },
-        7 => Frame::Unregistered {
+        8 => Frame::Unpublished {
             request_id: reader.u64("request_id")?,
         },
-        8 => Frame::Open {
+        9 => Frame::Dial {
             connection_id: reader.u64("connection_id")?,
-            client_id: reader.string("client_id")?,
+            destination_id: reader.destination_id()?,
         },
-        9 => Frame::Offer {
+        10 => Frame::Offer {
             pipe_id: reader.pipe_id()?,
             binding_id: reader.binding_id()?,
-            client_id: reader.string("client_id")?,
+            destination_id: reader.destination_id()?,
         },
-        10 => Frame::OfferAccepted {
+        11 => Frame::OfferAccepted {
             pipe_id: reader.pipe_id()?,
         },
-        11 => Frame::OfferRejected {
+        12 => Frame::OfferRejected {
             pipe_id: reader.pipe_id()?,
             code: reader.error_code()?,
             message: reader.string("message")?,
         },
-        12 => Frame::Opened {
+        13 => Frame::Opened {
             pipe_id: reader.pipe_id()?,
         },
-        13 => Frame::OpenFailed {
+        14 => Frame::DialFailed {
             connection_id: reader.u64("connection_id")?,
             code: reader.error_code()?,
             observation: reader.observation()?,
             message: reader.string("message")?,
         },
-        14 => {
+        15 => {
             let pipe_id = reader.pipe_id()?;
             let payload = reader.remaining();
             Frame::Data { pipe_id, payload }
         }
-        15 => Frame::Fin {
+        16 => Frame::Fin {
             pipe_id: reader.pipe_id()?,
         },
-        16 => Frame::Close {
+        17 => Frame::Close {
             pipe_id: reader.pipe_id()?,
         },
-        17 => Frame::Reset {
+        18 => Frame::Reset {
             pipe_id: reader.pipe_id()?,
             code: reader.error_code()?,
             message: reader.string("message")?,
         },
-        18 => Frame::Ping {
+        19 => Frame::Ping {
             nonce: reader.u64("nonce")?,
         },
-        19 => Frame::Pong {
+        20 => Frame::Pong {
             nonce: reader.u64("nonce")?,
         },
-        20 => Frame::Cancel {
+        21 => Frame::Cancel {
             pipe_id: reader.pipe_id()?,
         },
         other => return Err(ProtocolError::UnknownFrameKind(other)),
@@ -336,8 +342,12 @@ fn put_binding_id(destination: &mut BytesMut, value: BindingId) {
     destination.extend_from_slice(value.as_uuid().as_bytes());
 }
 
+fn put_destination_id(destination: &mut BytesMut, value: DestinationId) {
+    destination.extend_from_slice(value.as_uuid().as_bytes());
+}
+
 fn put_pipe_id(destination: &mut BytesMut, value: PipeId) {
-    put_session_id(destination, value.connector_session_id());
+    put_session_id(destination, value.origin_session_id());
     destination.put_u64(value.connection_id());
 }
 
@@ -402,18 +412,15 @@ impl PayloadReader {
         self.uuid("binding_id").map(BindingId::from_uuid)
     }
 
+    fn destination_id(&mut self) -> Result<DestinationId, ProtocolError> {
+        DestinationId::try_from_uuid(self.uuid("destination_id")?)
+            .ok_or(ProtocolError::InvalidDestinationId)
+    }
+
     fn pipe_id(&mut self) -> Result<PipeId, ProtocolError> {
         let session_id = self.session_id()?;
         let connection_id = self.u64("connection_id")?;
         Ok(PipeId::new(session_id, connection_id))
-    }
-
-    fn role(&mut self) -> Result<SessionRole, ProtocolError> {
-        let value = self.u8("session_role")?;
-        SessionRole::from_wire(value).ok_or(ProtocolError::UnknownEnum {
-            name: "SessionRole",
-            value,
-        })
     }
 
     fn error_code(&mut self) -> Result<ErrorCode, ProtocolError> {

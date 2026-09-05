@@ -1,9 +1,11 @@
 use std::{error::Error, time::Duration};
 
-use relaygate_protocol::{BindingId as ProtocolBindingId, SessionId};
+use relaygate_protocol::{
+    BindingId as ProtocolBindingId, DestinationId as ProtocolDestinationId, SessionId,
+};
 use relaygate_route_table::{
-    BindingId, ClientId, GatewayId, GatewayLocator, LeaseId, ListenerSessionId, MappingEntry,
-    MappingSnapshot, RegistrationAck, RegistrationKey, RouteTableConfig, RouteTableShard,
+    BindingId, DestinationId, GatewayId, GatewayLocator, LeaseId, MappingEntry, MappingSnapshot,
+    RegistrationAck, RegistrationKey, RelaySessionId, RouteTableConfig, RouteTableShard,
     ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
@@ -43,7 +45,7 @@ fn projection_preserves_exact_ids_and_gateway_location() -> TestResult {
         session_id,
         vec![Binding {
             id: binding_id,
-            client_id: "Client.Exact/한글".to_owned(),
+            destination_id: protocol_destination("11111111-1111-4111-8111-111111111111")?,
             session_id,
         }],
     )?;
@@ -53,11 +55,14 @@ fn projection_preserves_exact_ids_and_gateway_location() -> TestResult {
         .as_ref()
         .ok_or("missing projected snapshot")?;
     let entry = snapshot.entries().next().ok_or("missing mapping")?;
-    assert_eq!(entry.client_id().as_str(), "Client.Exact/한글");
+    assert_eq!(
+        entry.destination_id().as_str(),
+        "11111111-1111-4111-8111-111111111111"
+    );
     assert_eq!(entry.identity().gateway_id(), gateway_id);
     assert_eq!(
-        entry.identity().listener_session_id(),
-        ListenerSessionId::from_uuid(session_id.as_uuid())
+        entry.identity().relay_session_id(),
+        RelaySessionId::from_uuid(session_id.as_uuid())
     );
     assert_eq!(
         entry.identity().binding_id(),
@@ -85,7 +90,7 @@ fn projection_rejects_a_binding_from_another_session() -> TestResult {
         protocol_session(2),
         vec![Binding {
             id: protocol_binding(3),
-            client_id: "client-a".to_owned(),
+            destination_id: protocol_destination("11111111-1111-4111-8111-111111111111")?,
             session_id: protocol_session(4),
         }],
     );
@@ -106,12 +111,12 @@ fn projection_splits_one_complete_session_across_directory_shards() -> TestResul
         vec![
             Binding {
                 id: protocol_binding(21),
-                client_id: first_client,
+                destination_id: protocol_destination(&first_client)?,
                 session_id,
             },
             Binding {
                 id: protocol_binding(22),
-                client_id: second_client,
+                destination_id: protocol_destination(&second_client)?,
                 session_id,
             },
         ],
@@ -123,7 +128,7 @@ fn projection_splits_one_complete_session_across_directory_shards() -> TestResul
         shard.snapshot.as_ref().is_some_and(|snapshot| {
             snapshot
                 .entries()
-                .all(|entry| directory.authority(entry.client_id()).id() == &shard.shard_id)
+                .all(|entry| directory.authority(entry.destination_id()).id() == &shard.shard_id)
         })
     }));
     Ok(())
@@ -132,11 +137,15 @@ fn projection_splits_one_complete_session_across_directory_shards() -> TestResul
 #[test]
 fn late_register_result_cannot_replace_newer_desired_state() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
     let old = state.begin_next(now)?.ok_or("missing REGISTER")?;
     assert!(matches!(old.action, RegistrationAction::Register { .. }));
 
-    state.publish(2, Some(snapshot("client-b")?), now);
+    state.publish(
+        2,
+        Some(snapshot("22222222-2222-4222-8222-222222222222")?),
+        now,
+    );
     state.register_succeeded(&old, registration_ack(10, None), now);
 
     assert_eq!(state.desired_version(), 2);
@@ -153,7 +162,7 @@ fn late_register_result_cannot_replace_newer_desired_state() -> TestResult {
 #[test]
 fn one_registration_key_serializes_every_lease_operation() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
 
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
     assert!(matches!(
@@ -204,7 +213,7 @@ fn one_registration_key_serializes_every_lease_operation() -> TestResult {
 #[test]
 fn terminal_failed_register_ignores_late_success() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
 
     state.terminal_failure(&register);
@@ -220,7 +229,8 @@ fn terminal_failed_register_ignores_late_success() -> TestResult {
 fn stale_lease_re_registers_while_transient_failure_retries_same_update() -> TestResult {
     let now = Instant::now();
     let retry = Duration::from_millis(10);
-    let mut state = registration_state_with_retry(now, 1, "client-a", retry)?;
+    let mut state =
+        registration_state_with_retry(now, 1, "11111111-1111-4111-8111-111111111111", retry)?;
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
     state.register_succeeded(&register, registration_ack(10, None), now);
 
@@ -247,7 +257,7 @@ fn stale_lease_re_registers_while_transient_failure_retries_same_update() -> Tes
 #[test]
 fn known_connection_loss_is_immediately_unsynced_and_validates_the_lease() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
     state.register_succeeded(&register, registration_ack(10, None), now);
     let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
@@ -278,7 +288,7 @@ fn known_connection_loss_is_immediately_unsynced_and_validates_the_lease() -> Te
 #[test]
 fn failed_precondition_allows_one_register_probe_then_stops() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
     state.register_succeeded(&register, registration_ack(10, None), now);
 
@@ -297,7 +307,7 @@ fn failed_precondition_allows_one_register_probe_then_stops() -> TestResult {
 #[test]
 fn repeated_precondition_after_successful_probe_is_terminal() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
     state.register_succeeded(&register, registration_ack(10, None), now);
 
@@ -319,7 +329,7 @@ fn repeated_precondition_after_successful_probe_is_terminal() -> TestResult {
 #[test]
 fn successful_lease_operation_resets_precondition_probe_budget() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
     state.register_succeeded(&register, registration_ack(10, None), now);
 
@@ -352,7 +362,7 @@ fn successful_lease_operation_resets_precondition_probe_budget() -> TestResult {
 #[test]
 fn terminal_failure_does_not_hot_retry_and_backoff_is_bounded() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
     state.terminal_failure(&register);
 
@@ -372,7 +382,7 @@ fn terminal_failure_does_not_hot_retry_and_backoff_is_bounded() -> TestResult {
 #[test]
 fn removed_terminal_registration_drops_unusable_lease_state() -> TestResult {
     let now = Instant::now();
-    let mut state = registration_state(now, 1, "client-a")?;
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
     let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
     state.register_succeeded(&register, registration_ack(10, None), now);
     let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
@@ -485,7 +495,7 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
             session_id,
             vec![Binding {
                 id: protocol_binding(1_000 + value),
-                client_id: format!("client-{value}"),
+                destination_id: protocol_destination(&uuid_destination(value))?,
                 session_id,
             }],
         )?;
@@ -498,7 +508,7 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
     let service_shutdown = CancellationToken::new();
     let service_task = tokio::spawn(service.serve(listener, service_shutdown.clone()));
 
-    let final_client = ClientId::new("client-64")?;
+    let final_client = DestinationId::new(uuid_destination(64))?;
     let resolved = wait_for_resolve(&handle, final_client.clone()).await?;
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -508,7 +518,9 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
     assert_eq!(handle.current_counts().synced, 1);
     assert_eq!(handle.current_counts().unsynced, 0);
 
-    let old = handle.resolve(ClientId::new("client-1")?).await;
+    let old = handle
+        .resolve(DestinationId::new(uuid_destination(1))?)
+        .await;
     assert!(matches!(
         old,
         Err(RoutingError::Transport(ref error)) if error.code() == ErrorCode::NotFound
@@ -586,10 +598,10 @@ async fn bind_endpoint(endpoint: std::net::SocketAddr) -> TestResult<TcpListener
 
 async fn wait_for_resolve(
     handle: &super::RoutingHandle,
-    client_id: ClientId,
+    destination_id: DestinationId,
 ) -> TestResult<relaygate_route_table::BindingSet> {
     for _ in 0..200 {
-        if let Ok(bindings) = handle.resolve(client_id.clone()).await {
+        if let Ok(bindings) = handle.resolve(destination_id.clone()).await {
             return Ok(bindings);
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -597,9 +609,12 @@ async fn wait_for_resolve(
     Err("routing did not converge to the current snapshot".into())
 }
 
-async fn wait_for_not_found(handle: &super::RoutingHandle, client_id: ClientId) -> TestResult {
+async fn wait_for_not_found(
+    handle: &super::RoutingHandle,
+    destination_id: DestinationId,
+) -> TestResult {
     for _ in 0..200 {
-        match handle.resolve(client_id.clone()).await {
+        match handle.resolve(destination_id.clone()).await {
             Err(RoutingError::Transport(error)) if error.code() == ErrorCode::NotFound => {
                 return Ok(());
             }
@@ -612,30 +627,30 @@ async fn wait_for_not_found(handle: &super::RoutingHandle, client_id: ClientId) 
 fn registration_state(
     now: Instant,
     version: u64,
-    client_id: &str,
+    destination_id: &str,
 ) -> TestResult<RegistrationState> {
-    registration_state_with_retry(now, version, client_id, Duration::from_millis(10))
+    registration_state_with_retry(now, version, destination_id, Duration::from_millis(10))
 }
 
 fn registration_state_with_retry(
     now: Instant,
     version: u64,
-    client_id: &str,
+    destination_id: &str,
     retry: Duration,
 ) -> TestResult<RegistrationState> {
     Ok(RegistrationState::new(
         RegistrationKey::new(gateway(1), listener_session(2), ShardId::new("rt-0")?),
         version,
-        Some(snapshot(client_id)?),
+        Some(snapshot(destination_id)?),
         now,
         retry,
         Duration::from_secs(1),
     ))
 }
 
-fn snapshot(client_id: &str) -> TestResult<MappingSnapshot> {
+fn snapshot(destination_id: &str) -> TestResult<MappingSnapshot> {
     Ok(MappingSnapshot::new([MappingEntry::new(
-        ClientId::new(client_id)?,
+        DestinationId::new(destination_id)?,
         gateway(1),
         listener_session(2),
         BindingId::from_uuid(Uuid::from_u128(3)),
@@ -670,10 +685,10 @@ fn two_shard_directory() -> TestResult<ShardDirectory> {
 fn clients_on_distinct_shards(directory: &ShardDirectory) -> TestResult<(String, String)> {
     let mut by_shard = std::collections::BTreeMap::new();
     for index in 0..1_000 {
-        let candidate = format!("client-{index}");
-        let client_id = ClientId::new(candidate.clone())?;
+        let candidate = uuid_destination(index);
+        let destination_id = DestinationId::new(candidate.clone())?;
         by_shard
-            .entry(directory.authority(&client_id).id().clone())
+            .entry(directory.authority(&destination_id).id().clone())
             .or_insert(candidate);
         if by_shard.len() == 2 {
             let mut clients = by_shard.into_values();
@@ -686,12 +701,20 @@ fn clients_on_distinct_shards(directory: &ShardDirectory) -> TestResult<(String,
     Err("failed to find clients on distinct shards".into())
 }
 
+fn protocol_destination(value: &str) -> TestResult<ProtocolDestinationId> {
+    value.parse().map_err(|error: &'static str| error.into())
+}
+
+fn uuid_destination(value: u128) -> String {
+    format!("00000000-0000-4000-8000-{value:012x}")
+}
+
 const fn gateway(value: u128) -> GatewayId {
     GatewayId::from_uuid(Uuid::from_u128(value))
 }
 
-const fn listener_session(value: u128) -> ListenerSessionId {
-    ListenerSessionId::from_uuid(Uuid::from_u128(value))
+const fn listener_session(value: u128) -> RelaySessionId {
+    RelaySessionId::from_uuid(Uuid::from_u128(value))
 }
 
 const fn protocol_session(value: u128) -> SessionId {

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use relaygate_route_table::{ClientId, GatewayLocator, ShardDirectoryGeneration};
+use relaygate_route_table::{DestinationId, GatewayLocator, ShardDirectoryGeneration};
 use relaygate_route_table_transport::{
     ErrorCode, GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig,
     RouteTableServiceConfig,
@@ -102,12 +102,12 @@ async fn keep_alive_partition_case() -> TestResult {
         vec![
             Binding {
                 id: protocol_binding(4_002),
-                client_id: client_0.as_str().to_owned(),
+                destination_id: client_0.as_str().parse()?,
                 session_id,
             },
             Binding {
                 id: protocol_binding(4_003),
-                client_id: client_1.as_str().to_owned(),
+                destination_id: client_1.as_str().parse()?,
                 session_id,
             },
         ],
@@ -116,7 +116,7 @@ async fn keep_alive_partition_case() -> TestResult {
         unrelated_session_id,
         vec![Binding {
             id: protocol_binding(4_005),
-            client_id: unrelated_client_0.as_str().to_owned(),
+            destination_id: unrelated_client_0.as_str().parse()?,
             session_id: unrelated_session_id,
         }],
     )?;
@@ -177,10 +177,10 @@ async fn keep_alive_partition_case() -> TestResult {
 async fn wait_for_direct_not_found(
     client: &RouteTableClient,
     generation: ShardDirectoryGeneration,
-    client_id: &ClientId,
+    destination_id: &DestinationId,
 ) -> TestResult {
     for _ in 0..400 {
-        match client.resolve(generation, client_id).await {
+        match client.resolve(generation, destination_id).await {
             Err(error) if error.code() == ErrorCode::NotFound => return Ok(()),
             Ok(_) => tokio::time::sleep(Duration::from_millis(5)).await,
             Err(error) => return Err(error.into()),
@@ -188,7 +188,7 @@ async fn wait_for_direct_not_found(
     }
     Err(format!(
         "{} did not expire during the held partition",
-        client_id.as_str()
+        destination_id.as_str()
     )
     .into())
 }

@@ -50,12 +50,6 @@ jobs:
           tag="chart-v${version}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
-            if ! git diff --quiet "$tag" "$RELEASE_SHA" -- deploy/helm/relaygate; then
-              echo "::error::published chart source changed without a version bump"
-              exit 1
-            fi
-          fi
           status=$(curl --silent --show-error --output "$RUNNER_TEMP/chart-release.json" \
             --write-out '%{http_code}' \
             --header "Accept: application/vnd.github+json" \

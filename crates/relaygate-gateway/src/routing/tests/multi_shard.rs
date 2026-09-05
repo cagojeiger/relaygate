@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use relaygate_route_table::{
-    ClientId, GatewayLocator, RegistrationKey, RegistrationRevision, RouteTableConfig,
+    DestinationId, GatewayLocator, RegistrationKey, RegistrationRevision, RouteTableConfig,
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
@@ -91,12 +91,12 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         vec![
             Binding {
                 id: protocol_binding(3_000),
-                client_id: client_0.as_str().to_owned(),
+                destination_id: client_0.as_str().parse()?,
                 session_id,
             },
             Binding {
                 id: protocol_binding(3_001),
-                client_id: client_1.as_str().to_owned(),
+                destination_id: client_1.as_str().parse()?,
                 session_id,
             },
         ],
@@ -125,9 +125,9 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         client_config,
     )
     .await?;
-    let listener_session_id = project_session_id(session_id);
-    let key_0 = RegistrationKey::new(gateway_id, listener_session_id, ShardId::new("rt-0")?);
-    let key_1 = RegistrationKey::new(gateway_id, listener_session_id, ShardId::new("rt-1")?);
+    let relay_session_id = project_session_id(session_id);
+    let key_0 = RegistrationKey::new(gateway_id, relay_session_id, ShardId::new("rt-0")?);
+    let key_1 = RegistrationKey::new(gateway_id, relay_session_id, ShardId::new("rt-1")?);
     let first_0 = lease_client_0.register(generation, &key_0).await?;
     let first_1 = lease_client_1.register(generation, &key_1).await?;
 
@@ -146,12 +146,12 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         vec![
             Binding {
                 id: protocol_binding(3_002),
-                client_id: replacement_0.as_str().to_owned(),
+                destination_id: replacement_0.as_str().parse()?,
                 session_id,
             },
             Binding {
                 id: protocol_binding(3_001),
-                client_id: client_1.as_str().to_owned(),
+                destination_id: client_1.as_str().parse()?,
                 session_id,
             },
         ],
@@ -259,7 +259,7 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
         session_id,
         vec![Binding {
             id: protocol_binding(6_000),
-            client_id: healthy_client.as_str().to_owned(),
+            destination_id: healthy_client.as_str().parse()?,
             session_id,
         }],
     )?;
@@ -343,30 +343,38 @@ fn two_live_shard_directory(
     Ok(ShardDirectory::from_json_bytes(artifact.as_bytes())?)
 }
 
-fn clients_by_shard(directory: &ShardDirectory) -> TestResult<BTreeMap<String, ClientId>> {
+fn clients_by_shard(directory: &ShardDirectory) -> TestResult<BTreeMap<String, DestinationId>> {
     let mut clients = BTreeMap::new();
     for index in 0..10_000 {
-        let client_id = ClientId::new(format!("client-{index}"))?;
+        let destination_id = DestinationId::new(format!("00000000-0000-4000-8000-{index:012x}"))?;
         clients
-            .entry(directory.authority(&client_id).id().as_str().to_owned())
-            .or_insert(client_id);
+            .entry(
+                directory
+                    .authority(&destination_id)
+                    .id()
+                    .as_str()
+                    .to_owned(),
+            )
+            .or_insert(destination_id);
         if clients.len() == directory.shards().len() {
             return Ok(clients);
         }
     }
-    Err("failed to find one ClientId per shard".into())
+    Err("failed to find one DestinationId per shard".into())
 }
 
 fn client_for_shard(
     directory: &ShardDirectory,
     shard_id: &str,
     prefix: &str,
-) -> TestResult<ClientId> {
+) -> TestResult<DestinationId> {
     for index in 0..10_000 {
-        let client_id = ClientId::new(format!("{prefix}-{index}"))?;
-        if directory.authority(&client_id).id().as_str() == shard_id {
-            return Ok(client_id);
+        let prefix_byte = prefix.as_bytes().first().copied().unwrap_or_default();
+        let suffix = (u128::from(prefix_byte) << 32) | index;
+        let destination_id = DestinationId::new(format!("00000000-0000-4000-8000-{suffix:012x}"))?;
+        if directory.authority(&destination_id).id().as_str() == shard_id {
+            return Ok(destination_id);
         }
     }
-    Err(format!("failed to find ClientId for {shard_id}").into())
+    Err(format!("failed to find DestinationId for {shard_id}").into())
 }

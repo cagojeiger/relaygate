@@ -2,8 +2,8 @@ use std::future::pending;
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_route_table::{
-    AuthenticatedGatewayId, BindingId, ClientId, GatewayId, GatewayLocator, ListenerSessionId,
-    MappingEntry, MappingSnapshot, RegistrationKey, RegistrationRevision, RequestContext,
+    AuthenticatedGatewayId, BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry,
+    MappingSnapshot, RegistrationKey, RegistrationRevision, RelaySessionId, RequestContext,
     RouteTableConfig, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
 use tokio::{net::TcpStream, sync::oneshot};
@@ -146,7 +146,7 @@ async fn bounded_request_and_writer_queues_report_full_without_waiting()
     let context = RequestContext::new(AuthenticatedGatewayId::from_verified_transport(gateway_id));
     let request = WireRequest::resolve(
         ShardDirectoryGeneration::from_bytes([1; 32]),
-        &ClientId::new("echo.a")?,
+        &DestinationId::new("11111111-1111-4111-8111-111111111111")?,
     );
     let (requests, _request_receiver) = mpsc::channel(1);
     let _pending = submit_service_request(&requests, context, request)?;
@@ -155,7 +155,7 @@ async fn bounded_request_and_writer_queues_report_full_without_waiting()
         context,
         WireRequest::resolve(
             ShardDirectoryGeneration::from_bytes([1; 32]),
-            &ClientId::new("echo.b")?,
+            &DestinationId::new("22222222-2222-4222-8222-222222222222")?,
         ),
     )
     .err();
@@ -197,7 +197,7 @@ async fn authenticated_owner_mismatch_leaves_actor_state_empty() -> Result<(), T
     ));
     let key = RegistrationKey::new(
         claimed_gateway,
-        ListenerSessionId::from_uuid(Uuid::from_u128(3)),
+        RelaySessionId::from_uuid(Uuid::from_u128(3)),
         ShardId::new("rt-0")?,
     );
     let shutdown = CancellationToken::new();
@@ -307,13 +307,13 @@ async fn expiry_driver_removes_state_without_an_intervening_request() -> Result<
         RouteTableConfig::new(ttl)?,
     )?;
     let gateway_id = GatewayId::from_uuid(Uuid::from_u128(1));
-    let listener_session_id = ListenerSessionId::from_uuid(Uuid::from_u128(2));
+    let relay_session_id = RelaySessionId::from_uuid(Uuid::from_u128(2));
     let context = RequestContext::new(AuthenticatedGatewayId::from_verified_transport(gateway_id));
-    let key = RegistrationKey::new(gateway_id, listener_session_id, ShardId::new("rt-0")?);
+    let key = RegistrationKey::new(gateway_id, relay_session_id, ShardId::new("rt-0")?);
     let snapshot = MappingSnapshot::new([MappingEntry::new(
-        ClientId::new("echo.a")?,
+        DestinationId::new("11111111-1111-4111-8111-111111111111")?,
         gateway_id,
-        listener_session_id,
+        relay_session_id,
         BindingId::from_uuid(Uuid::from_u128(3)),
         GatewayLocator::new("gw-a:27431")?,
     )])?;

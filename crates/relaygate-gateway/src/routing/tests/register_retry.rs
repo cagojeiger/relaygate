@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    AuthenticatedGatewayId, ClientId, RegistrationKey, RegistrationRevision, RequestContext,
+    AuthenticatedGatewayId, DestinationId, RegistrationKey, RegistrationRevision, RequestContext,
     RouteTableConfig, RouteTableShard, ShardId,
 };
 use tokio::time::Instant;
@@ -29,7 +29,7 @@ fn lost_register_response_retry_uses_only_the_current_attempt() -> TestResult {
     let mut state = RegistrationState::new(
         key.clone(),
         1,
-        Some(snapshot("client-a")?),
+        Some(snapshot("11111111-1111-4111-8111-111111111111")?),
         lifecycle_start,
         retry,
         Duration::from_secs(1),
@@ -100,7 +100,7 @@ fn lost_register_response_retry_uses_only_the_current_attempt() -> TestResult {
             .resolve(
                 context,
                 generation,
-                &ClientId::new("client-a")?,
+                &DestinationId::new("11111111-1111-4111-8111-111111111111")?,
                 route_table_start + Duration::from_secs(6),
             )?
             .len(),

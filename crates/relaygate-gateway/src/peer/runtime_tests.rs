@@ -1023,8 +1023,8 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
         .send(PeerFrame::Open {
             stream_id: StreamId::from_raw(0),
             open_identity: OpenIdentity::new(old_gateway_a, SessionId::new(), 1),
-            client_id: "echo.b".to_owned(),
-            listener_session_id: SessionId::new(),
+            destination_id: "echo.b".to_owned(),
+            relay_session_id: SessionId::new(),
             binding_id: BindingId::new(),
         })
         .await?;
@@ -1053,8 +1053,8 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
         .send(PeerFrame::Open {
             stream_id: StreamId::from_raw(2),
             open_identity: valid_identity,
-            client_id: "echo.b".to_owned(),
-            listener_session_id: SessionId::new(),
+            destination_id: "echo.b".to_owned(),
+            relay_session_id: SessionId::new(),
             binding_id: BindingId::new(),
         })
         .await?;
