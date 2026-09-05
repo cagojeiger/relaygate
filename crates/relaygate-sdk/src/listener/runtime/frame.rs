@@ -4,60 +4,62 @@ use relaygate_protocol::{ErrorCode as WireErrorCode, Frame, PipeId, SessionId};
 use tokio::{sync::mpsc, time::timeout};
 use tokio_util::sync::CancellationToken;
 
-use super::{ListenerFrameAction, ListenerSessionState, LivePipe, Registration};
+use super::{LivePipe, Registration, RelayFrameAction, RelaySessionState};
 use crate::{
-    Error, ErrorCode, PeerObservation,
-    listener::{ListenerRuntimeInner, ListenerStatus, is_current_desired},
+    DestinationId, Error, ErrorCode, PeerObservation,
+    listener::{ListenerStatus, RelayInner, is_current_desired},
     pipe::{PipeState, to_wire_code},
     session::{SessionOutbound, WireTransport, send_bounded},
 };
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn handle_listener_frame(
+pub(super) async fn handle_relay_frame(
     frame: Frame,
     session_id: SessionId,
-    session: &mut ListenerSessionState,
+    session: &mut RelaySessionState,
     outbound: &SessionOutbound,
     abandoned: &mpsc::UnboundedSender<PipeId>,
-    inner: &ListenerRuntimeInner,
+    inner: &RelayInner,
     transport: &mut WireTransport,
     session_cancel: &CancellationToken,
-) -> ListenerFrameAction {
+) -> RelayFrameAction {
     match frame {
-        Frame::Registered {
+        Frame::Published {
             request_id,
             binding_id,
         } => {
             let Some(pending) = session.pending.remove(&request_id) else {
-                return ListenerFrameAction::Continue;
+                return RelayFrameAction::Continue;
             };
-            session.pending_by_client.remove(&pending.state.client_id);
+            session
+                .pending_by_client
+                .remove(&pending.state.destination_id);
             pending.state.finish_registration_attempt();
             if is_current_desired(inner, &pending.state) && pending.state.activate() {
                 tracing::debug!(
                     component = "sdk",
-                    event = "sdk.listener_registration.active",
+                    event = "sdk.listener.active",
                     session_id = %session_id.as_uuid(),
                     request_id,
-                    client_id = %pending.state.client_id,
+                    destination_id = %pending.state.destination_id,
                     binding_id = %binding_id.as_uuid(),
                     "Listener registration is active"
                 );
                 session.registrations.insert(
-                    pending.state.client_id.clone(),
+                    pending.state.destination_id,
                     Registration {
                         state: pending.state,
                         binding_id,
                     },
                 );
-                return ListenerFrameAction::RegistrationSucceeded;
+                return RelayFrameAction::RegistrationSucceeded;
             } else {
                 let Some(request_id) = session.next_request_id() else {
-                    return ListenerFrameAction::Stop;
+                    return RelayFrameAction::Stop;
                 };
                 if send_bounded(
                     transport,
-                    Frame::Unregister {
+                    Frame::Unpublish {
                         request_id,
                         binding_id,
                     },
@@ -67,25 +69,27 @@ pub(super) async fn handle_listener_frame(
                 .await
                 .is_err()
                 {
-                    return ListenerFrameAction::Stop;
+                    return RelayFrameAction::Stop;
                 }
-                return ListenerFrameAction::Reconcile;
+                return RelayFrameAction::Reconcile;
             }
         }
-        Frame::RegisterFailed {
+        Frame::PublishFailed {
             request_id,
             code,
             message,
         } => {
             let Some(pending) = session.pending.remove(&request_id) else {
-                return ListenerFrameAction::Continue;
+                return RelayFrameAction::Continue;
             };
-            session.pending_by_client.remove(&pending.state.client_id);
+            session
+                .pending_by_client
+                .remove(&pending.state.destination_id);
             pending.state.finish_registration_attempt();
             if !is_current_desired(inner, &pending.state)
                 || *pending.state.status.borrow() == ListenerStatus::Closed
             {
-                return ListenerFrameAction::Reconcile;
+                return RelayFrameAction::Reconcile;
             }
             let error = Error::new(
                 ErrorCode::from_wire(code),
@@ -98,7 +102,7 @@ pub(super) async fn handle_listener_frame(
                     pending.state.drain_unaccepted(true).await;
                 } else {
                     inner.fail_initial_listener(&pending.state, error);
-                    return ListenerFrameAction::Reconcile;
+                    return RelayFrameAction::Reconcile;
                 }
             } else if pending.state.was_returned() {
                 pending
@@ -116,14 +120,15 @@ pub(super) async fn handle_listener_frame(
                 });
             } else {
                 inner.fail_initial_listener(&pending.state, error);
-                return ListenerFrameAction::Reconcile;
+                return RelayFrameAction::Reconcile;
             }
         }
         Frame::Offer {
             pipe_id,
             binding_id,
-            client_id,
+            destination_id,
         } => {
+            let destination_id = DestinationId::from_wire(destination_id);
             if let Some(existing) = session.pipes.get(&pipe_id) {
                 if !existing.state.is_finished()
                     && send_bounded(
@@ -135,11 +140,11 @@ pub(super) async fn handle_listener_frame(
                     .await
                     .is_err()
                 {
-                    return ListenerFrameAction::Stop;
+                    return RelayFrameAction::Stop;
                 }
-                return ListenerFrameAction::Continue;
+                return RelayFrameAction::Continue;
             }
-            let Some(registration) = session.registrations.get(&client_id) else {
+            let Some(registration) = session.registrations.get(&destination_id) else {
                 return listener_frame_action(
                     send_bounded(
                         transport,
@@ -190,10 +195,10 @@ pub(super) async fn handle_listener_frame(
                 tracing::error!(
                     component = "sdk",
                     event = "sdk.listener_queue.invariant_failed",
-                    client_id = %client_id,
+                    destination_id = %destination_id,
                     "Listener incoming queue compaction could not preserve live Pipes"
                 );
-                return ListenerFrameAction::Stop;
+                return RelayFrameAction::Stop;
             }
             let permit = timeout(
                 inner.config.offer_timeout,
@@ -225,11 +230,11 @@ pub(super) async fn handle_listener_frame(
                             "Listener desired registry lock is poisoned during Pipe admission"
                         );
                         inner.cancel.cancel();
-                        return ListenerFrameAction::Stop;
+                        return RelayFrameAction::Stop;
                     }
                 };
                 if !desired
-                    .get(&client_id)
+                    .get(&destination_id)
                     .is_some_and(|current| Arc::ptr_eq(current, &registration.state))
                     || *registration.state.status.borrow() != ListenerStatus::Active
                 {
@@ -237,7 +242,7 @@ pub(super) async fn handle_listener_frame(
                 } else {
                     let Some(lifetime) = inner.lifetime.upgrade() else {
                         inner.cancel.cancel();
-                        return ListenerFrameAction::Stop;
+                        return RelayFrameAction::Stop;
                     };
                     let (pipe, state) = PipeState::pair_with_lifetime(
                         pipe_id,
@@ -250,16 +255,16 @@ pub(super) async fn handle_listener_frame(
                         pipe_id,
                         LivePipe {
                             state,
-                            listener: Arc::downgrade(&registration.state),
+                            listener: Some(Arc::downgrade(&registration.state)),
                         },
                     );
                     permit.send(pipe);
                     tracing::debug!(
                         component = "sdk",
                         event = "sdk.pipe.admitted",
-                        client_id = %client_id,
+                        destination_id = %destination_id,
                         binding_id = %binding_id.as_uuid(),
-                        connector_session_id = %pipe_id.connector_session_id().as_uuid(),
+                        connector_session_id = %pipe_id.origin_session_id().as_uuid(),
                         connection_id = pipe_id.connection_id(),
                         "Listener admitted a Pipe"
                     );
@@ -290,7 +295,55 @@ pub(super) async fn handle_listener_frame(
             .await
             .is_err()
             {
-                return ListenerFrameAction::Stop;
+                return RelayFrameAction::Stop;
+            }
+        }
+        Frame::Opened { pipe_id } if pipe_id.origin_session_id() == session_id => {
+            let Some(response) = session.pending_dials.remove(&pipe_id.connection_id()) else {
+                return RelayFrameAction::Continue;
+            };
+            let Some(lifetime) = inner.lifetime.upgrade() else {
+                return RelayFrameAction::Stop;
+            };
+            let (pipe, state) = PipeState::pair_with_lifetime(
+                pipe_id,
+                outbound.clone(),
+                inner.config.pipe_inbound_capacity,
+                abandoned.clone(),
+                lifetime,
+            );
+            if response.send(Ok(pipe)).is_ok() {
+                session.pipes.insert(
+                    pipe_id,
+                    LivePipe {
+                        state,
+                        listener: None,
+                    },
+                );
+            } else if send_bounded(
+                transport,
+                Frame::Cancel { pipe_id },
+                inner.config.operation_timeout,
+                session_cancel,
+            )
+            .await
+            .is_err()
+            {
+                return RelayFrameAction::Stop;
+            }
+        }
+        Frame::DialFailed {
+            connection_id,
+            code,
+            observation,
+            message,
+        } => {
+            if let Some(response) = session.pending_dials.remove(&connection_id) {
+                let _ = response.send(Err(Error::new(
+                    ErrorCode::from_wire(code),
+                    PeerObservation::from_wire(observation),
+                    message,
+                )));
             }
         }
         Frame::Data { pipe_id, payload } => {
@@ -302,7 +355,7 @@ pub(super) async fn handle_listener_frame(
                 if let Some(pipe) = session.pipes.remove(&pipe_id) {
                     pipe.state.fail(error.clone());
                     if !pipe.compact_listener_queue() {
-                        return ListenerFrameAction::Stop;
+                        return RelayFrameAction::Stop;
                     }
                 }
                 let _ = send_bounded(
@@ -330,14 +383,14 @@ pub(super) async fn handle_listener_frame(
                 && let Some(pipe) = session.pipes.remove(&pipe_id)
                 && !pipe.compact_listener_queue()
             {
-                return ListenerFrameAction::Stop;
+                return RelayFrameAction::Stop;
             }
         }
         Frame::Close { pipe_id } => {
             if let Some(pipe) = session.pipes.remove(&pipe_id) {
                 pipe.state.close_normal();
                 if !pipe.compact_listener_queue() {
-                    return ListenerFrameAction::Stop;
+                    return RelayFrameAction::Stop;
                 }
             }
         }
@@ -353,8 +406,16 @@ pub(super) async fn handle_listener_frame(
                     message,
                 ));
                 if !pipe.compact_listener_queue() {
-                    return ListenerFrameAction::Stop;
+                    return RelayFrameAction::Stop;
                 }
+            } else if pipe_id.origin_session_id() == session_id
+                && let Some(response) = session.pending_dials.remove(&pipe_id.connection_id())
+            {
+                let _ = response.send(Err(Error::new(
+                    ErrorCode::from_wire(code),
+                    PeerObservation::Observed,
+                    message,
+                )));
             }
         }
         Frame::Ping { nonce } => {
@@ -367,24 +428,24 @@ pub(super) async fn handle_listener_frame(
             .await
             .is_err()
             {
-                return ListenerFrameAction::Stop;
+                return RelayFrameAction::Stop;
             }
         }
-        Frame::Pong { .. } | Frame::Unregistered { .. } => {}
-        _ => return ListenerFrameAction::Stop,
+        Frame::Pong { .. } | Frame::Unpublished { .. } => {}
+        _ => return RelayFrameAction::Stop,
     }
     if inner.cancel.is_cancelled() {
-        ListenerFrameAction::Stop
+        RelayFrameAction::Stop
     } else {
-        ListenerFrameAction::Continue
+        RelayFrameAction::Continue
     }
 }
 
-fn listener_frame_action<T, E>(result: Result<T, E>) -> ListenerFrameAction {
+fn listener_frame_action<T, E>(result: Result<T, E>) -> RelayFrameAction {
     if result.is_ok() {
-        ListenerFrameAction::Continue
+        RelayFrameAction::Continue
     } else {
-        ListenerFrameAction::Stop
+        RelayFrameAction::Stop
     }
 }
 

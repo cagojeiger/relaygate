@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use relaygate_protocol::{Frame, FrameCodec, SessionId, SessionRole};
+use relaygate_protocol::{ClusterToken, Frame, FrameCodec, SessionId};
+use relaygate_transport::{BoxedIo, insecure_boxed};
 use tokio::{
     net::TcpStream,
     time::{Instant, sleep_until, timeout},
@@ -9,22 +10,20 @@ use tokio::{
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Config, Error, ErrorCode, PeerObservation, Result};
+use crate::{Config, Error, ErrorCode, PeerObservation, Result, config::GatewayTransport};
 
 mod outbound;
 
-pub(crate) use outbound::{
-    FrameCommit, SessionOutbound, SessionOutboundReceiver, session_outbound_channel,
-};
+pub(crate) use outbound::{FrameCommit, SessionOutbound, session_outbound_channel};
 
-pub(crate) type WireTransport = Framed<TcpStream, FrameCodec>;
+pub(crate) type WireTransport = Framed<BoxedIo, FrameCodec>;
 
 pub(crate) struct EstablishedSession {
     pub(crate) id: SessionId,
     pub(crate) transport: WireTransport,
 }
 
-pub(crate) async fn establish(config: &Config, role: SessionRole) -> Result<EstablishedSession> {
+pub(crate) async fn establish(config: &Config) -> Result<EstablishedSession> {
     let stream = timeout(
         config.connect_timeout,
         TcpStream::connect(&config.gateway_addr),
@@ -33,10 +32,21 @@ pub(crate) async fn establish(config: &Config, role: SessionRole) -> Result<Esta
     .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
     .map_err(|error| Error::unavailable(format!("Gateway connection failed: {error}")))?;
     let _ = stream.set_nodelay(true);
+    let stream = timeout(config.connect_timeout, async {
+        match &config.transport {
+            GatewayTransport::Tls(tls) => tls.connect_boxed(stream).await,
+            GatewayTransport::Insecure => Ok(insecure_boxed(stream)),
+        }
+    })
+    .await
+    .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
+    .map_err(|error| Error::unavailable(format!("Gateway TLS handshake failed: {error}")))?;
     let mut transport = Framed::new(stream, FrameCodec::new(config.max_frame_len));
     timeout(
         config.connect_timeout,
-        transport.send(Frame::Hello { role }),
+        transport.send(Frame::Hello {
+            cluster_token: ClusterToken::new(config.cluster_token.clone()),
+        }),
     )
     .await
     .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
@@ -52,21 +62,26 @@ pub(crate) async fn establish(config: &Config, role: SessionRole) -> Result<Esta
                 format!("WELCOME decode failed: {error}"),
             )
         })?;
-    let Frame::Welcome { session_id } = frame else {
-        return Err(Error::new(
-            ErrorCode::ProtocolError,
-            PeerObservation::NotObserved,
-            "first Gateway response was not WELCOME",
-        ));
-    };
-    let role_name = match role {
-        SessionRole::Connector => "connector",
-        SessionRole::Listener => "listener",
+    let session_id = match frame {
+        Frame::Welcome { session_id } => session_id,
+        Frame::SessionRejected { code, message } => {
+            return Err(Error::new(
+                ErrorCode::from_wire(code),
+                PeerObservation::Observed,
+                message,
+            ));
+        }
+        _ => {
+            return Err(Error::new(
+                ErrorCode::ProtocolError,
+                PeerObservation::NotObserved,
+                "first Gateway response was not WELCOME",
+            ));
+        }
     };
     tracing::debug!(
         component = "sdk",
         event = "sdk.session.ready",
-        role = role_name,
         session_id = %session_id.as_uuid(),
         "SDK session is ready"
     );
@@ -127,17 +142,18 @@ impl SessionHeartbeat {
             (Some(_), _) | (None, Frame::Pong { .. }) => return,
             (None, Frame::Hello { .. })
             | (None, Frame::Welcome { .. })
-            | (None, Frame::Register { .. })
-            | (None, Frame::Registered { .. })
-            | (None, Frame::RegisterFailed { .. })
-            | (None, Frame::Unregister { .. })
-            | (None, Frame::Unregistered { .. })
-            | (None, Frame::Open { .. })
+            | (None, Frame::SessionRejected { .. })
+            | (None, Frame::Publish { .. })
+            | (None, Frame::Published { .. })
+            | (None, Frame::PublishFailed { .. })
+            | (None, Frame::Unpublish { .. })
+            | (None, Frame::Unpublished { .. })
+            | (None, Frame::Dial { .. })
             | (None, Frame::Offer { .. })
             | (None, Frame::OfferAccepted { .. })
             | (None, Frame::OfferRejected { .. })
             | (None, Frame::Opened { .. })
-            | (None, Frame::OpenFailed { .. })
+            | (None, Frame::DialFailed { .. })
             | (None, Frame::Data { .. })
             | (None, Frame::Fin { .. })
             | (None, Frame::Close { .. })
@@ -257,10 +273,6 @@ fn duration_from_nanos(nanos: u128) -> Duration {
     Duration::new(seconds as u64, subsecond_nanos as u32).max(Duration::from_millis(1))
 }
 
-pub(crate) fn valid_identity(value: &str) -> bool {
-    !value.is_empty() && value.len() <= u16::MAX as usize
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -273,7 +285,7 @@ mod tests {
     use crate::Config;
 
     fn heartbeat() -> SessionHeartbeat {
-        let config = Config::new("127.0.0.1:0")
+        let config = Config::new_insecure_for_tests("127.0.0.1:0", "test-token")
             .with_heartbeat(Duration::from_secs(60), Duration::from_secs(20));
         SessionHeartbeat::new(&config, SessionId::new(), 0x43)
     }

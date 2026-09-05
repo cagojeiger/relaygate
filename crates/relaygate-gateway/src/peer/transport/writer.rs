@@ -1,5 +1,6 @@
 use futures_util::{SinkExt, stream::SplitSink};
-use tokio::{net::TcpStream, sync::mpsc};
+use relaygate_transport::BoxedIo;
+use tokio::sync::mpsc;
 use tokio_util::codec::Framed;
 
 use super::{TransportCloseReason, TransportClosure};
@@ -9,7 +10,7 @@ use crate::peer::{codec::PeerFrameCodec, frame::PeerFrame};
 /// signal tells the transport actor to retry draining its bounded per-stream
 /// queues after aggregate capacity becomes available.
 pub(super) async fn run_writer(
-    mut sink: SplitSink<Framed<TcpStream, PeerFrameCodec>, PeerFrame>,
+    mut sink: SplitSink<Framed<BoxedIo, PeerFrameCodec>, PeerFrame>,
     mut frames: mpsc::Receiver<PeerFrame>,
     wake: mpsc::Sender<()>,
     closure: TransportClosure,

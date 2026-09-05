@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use relaygate_route_table::{GatewayLocator, ShardDirectory};
 use relaygate_route_table_transport::{GatewayName, InternalGatewayKey, RouteTableClientConfig};
+use relaygate_transport::ClientTlsConfig;
 use tokio::{sync::Semaphore, time::Instant};
 
 use super::RoutingError;
@@ -20,6 +21,7 @@ pub struct GatewayRoutingConfig {
     pub(super) internal_gateway_key: InternalGatewayKey,
     pub(super) gateway_locator: GatewayLocator,
     pub(super) client: RouteTableClientConfig,
+    pub(super) tls: Option<ClientTlsConfig>,
     pub(super) command_queue_capacity: usize,
     pub(super) reconnect_initial_backoff: Duration,
     pub(super) reconnect_max_backoff: Duration,
@@ -41,12 +43,19 @@ impl GatewayRoutingConfig {
             internal_gateway_key,
             gateway_locator,
             client,
+            tls: None,
             command_queue_capacity: DEFAULT_ROUTING_QUEUE_CAPACITY,
             reconnect_initial_backoff: DEFAULT_RECONNECT_INITIAL_BACKOFF,
             reconnect_max_backoff: DEFAULT_RECONNECT_MAX_BACKOFF,
             desired_scan_interval: DEFAULT_DESIRED_SCAN_INTERVAL,
             shutdown_timeout: DEFAULT_ROUTING_SHUTDOWN_TIMEOUT,
         }
+    }
+
+    #[must_use]
+    pub fn with_tls(mut self, tls: ClientTlsConfig) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     #[must_use]

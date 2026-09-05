@@ -9,20 +9,22 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::ListenerStatus;
-use crate::{Config, Error, ErrorCode, PeerObservation, Pipe, lifetime::RuntimeLifetime};
+use super::{ListenerStatus, RelaySession};
+use crate::{
+    Config, DestinationId, Error, ErrorCode, PeerObservation, Pipe, lifetime::RuntimeLifetime,
+};
 
-pub(super) struct ListenerRuntimeInner {
+pub(super) struct RelayInner {
     pub(super) config: Config,
-    pub(super) desired: StdMutex<HashMap<String, Arc<ListenerState>>>,
+    pub(super) desired: StdMutex<HashMap<DestinationId, Arc<ListenerState>>>,
+    pub(super) current: watch::Sender<Option<Arc<RelaySession>>>,
     pub(super) reconcile: Arc<Notify>,
     pub(super) cancel: CancellationToken,
     pub(super) lifetime: Weak<RuntimeLifetime>,
 }
 
 pub(super) struct ListenerState {
-    pub(super) client_id: String,
-    pub(super) client_key: String,
+    pub(super) destination_id: DestinationId,
     pub(super) status: watch::Sender<ListenerStatus>,
     pub(super) last_error: StdMutex<Option<Error>>,
     pub(super) incoming_tx: mpsc::Sender<Pipe>,
@@ -39,7 +41,7 @@ pub(super) enum ListenerLifecycle {
     Terminal,
 }
 
-impl ListenerRuntimeInner {
+impl RelayInner {
     pub(super) fn desired_is_converged(&self) -> bool {
         self.desired.lock().is_ok_and(|desired| {
             desired
@@ -58,10 +60,10 @@ impl ListenerRuntimeInner {
             }
         };
         if desired
-            .get(&state.client_id)
+            .get(&state.destination_id)
             .is_some_and(|current| Arc::ptr_eq(current, state))
         {
-            desired.remove(&state.client_id);
+            desired.remove(&state.destination_id);
             self.reconcile.notify_one();
         }
     }
@@ -112,10 +114,10 @@ impl ListenerRuntimeInner {
             }
         };
         if desired
-            .get(&state.client_id)
+            .get(&state.destination_id)
             .is_some_and(|current| Arc::ptr_eq(current, state))
         {
-            desired.remove(&state.client_id);
+            desired.remove(&state.destination_id);
         }
         self.reconcile.notify_one();
     }
@@ -129,7 +131,7 @@ impl ListenerState {
                 tracing::debug!(
                     component = "sdk",
                     event = "sdk.listener.status_changed",
-                    client_id = %self.client_id,
+                    destination_id = %self.destination_id,
                     previous = ?previous,
                     status = ?status,
                     error_code = ?error.code(),
@@ -140,7 +142,7 @@ impl ListenerState {
                 tracing::debug!(
                     component = "sdk",
                     event = "sdk.listener.status_changed",
-                    client_id = %self.client_id,
+                    destination_id = %self.destination_id,
                     previous = ?previous,
                     status = ?status,
                     "Listener status changed"
@@ -368,10 +370,10 @@ impl ListenerState {
     }
 }
 
-pub(super) fn is_current_desired(inner: &ListenerRuntimeInner, state: &Arc<ListenerState>) -> bool {
+pub(super) fn is_current_desired(inner: &RelayInner, state: &Arc<ListenerState>) -> bool {
     match inner.desired.lock() {
         Ok(desired) => desired
-            .get(&state.client_id)
+            .get(&state.destination_id)
             .is_some_and(|current| Arc::ptr_eq(current, state)),
         Err(_) => {
             tracing::error!(

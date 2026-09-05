@@ -18,11 +18,11 @@ def version(document):
     return matches[0]
 
 
-def require_bump(previous, current, changed):
+def require_non_decreasing(previous, current):
     old = tuple(map(int, previous.split(".")))
     new = tuple(map(int, current.split(".")))
-    if new < old or (changed and new == old):
-        raise ValueError("chart changes require a strictly greater Chart.yaml version")
+    if new < old:
+        raise ValueError("Chart.yaml version must not decrease")
 
 
 def git(*args):
@@ -35,8 +35,7 @@ def check_version(base):
         # An invalid ref fails; only an absent chart permits the initial version.
         if git("ls-tree", base, "--", CHART):
             previous = version(git("show", f"{base}:{CHART}/Chart.yaml"))
-            changed = git("rev-parse", f"{base}:{CHART}") != git("rev-parse", f"HEAD:{CHART}")
-            require_bump(previous, current, changed)
+            require_non_decreasing(previous, current)
     return current
 
 

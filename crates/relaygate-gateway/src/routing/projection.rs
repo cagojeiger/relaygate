@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use relaygate_protocol::{BindingId as ProtocolBindingId, SessionId};
 use relaygate_route_table::{
-    BindingId, ClientId, GatewayId, GatewayLocator, ListenerSessionId, MappingEntry,
-    MappingSnapshot, ShardDirectory, ShardId,
+    BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot,
+    RelaySessionId, ShardDirectory, ShardId,
 };
 
 use crate::registry::Binding;
@@ -16,7 +16,7 @@ pub(super) struct ProjectedShardSnapshot {
     pub(super) snapshot: Option<MappingSnapshot>,
 }
 
-/// Projects one complete local ListenerSession snapshot into every configured
+/// Projects one complete local RelaySession snapshot into every configured
 /// shard. An empty shard subset is explicit because it removes prior state.
 pub(super) fn project_session(
     directory: &ShardDirectory,
@@ -25,7 +25,7 @@ pub(super) fn project_session(
     session_id: SessionId,
     bindings: Vec<Binding>,
 ) -> Result<Vec<ProjectedShardSnapshot>, RoutingError> {
-    let listener_session_id = project_session_id(session_id);
+    let relay_session_id = project_session_id(session_id);
     let mut by_shard = directory
         .shards()
         .iter()
@@ -35,18 +35,18 @@ pub(super) fn project_session(
     for binding in bindings {
         if binding.session_id != session_id {
             return Err(RoutingError::InvalidProjection(
-                "binding belongs to a different ListenerSession".to_owned(),
+                "binding belongs to a different RelaySession".to_owned(),
             ));
         }
-        let client_id = ClientId::new(binding.client_id)?;
-        let shard_id = directory.authority(&client_id).id();
+        let destination_id = DestinationId::new(binding.destination_id.to_string())?;
+        let shard_id = directory.authority(&destination_id).id();
         let entries = by_shard.get_mut(shard_id).ok_or_else(|| {
             RoutingError::InvalidProjection("authority shard is absent from directory".to_owned())
         })?;
         entries.push(MappingEntry::new(
-            client_id,
+            destination_id,
             gateway_id,
-            listener_session_id,
+            relay_session_id,
             project_binding_id(binding.id),
             gateway_locator.clone(),
         ));
@@ -66,8 +66,8 @@ pub(super) fn project_session(
 }
 
 #[must_use]
-pub(super) const fn project_session_id(value: SessionId) -> ListenerSessionId {
-    ListenerSessionId::from_uuid(value.as_uuid())
+pub(super) const fn project_session_id(value: SessionId) -> RelaySessionId {
+    RelaySessionId::from_uuid(value.as_uuid())
 }
 
 #[must_use]

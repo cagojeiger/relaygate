@@ -1,6 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::ErrorCode;
 use relaygate_route_table::GatewayId;
+use relaygate_transport::{BoxedIo, insecure_boxed};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
@@ -13,7 +14,7 @@ use super::{
     identity::{PeerHandshake, PeerTransportId, StreamEndpoint},
 };
 
-pub(super) type PeerFramed = Framed<TcpStream, PeerFrameCodec>;
+pub(super) type PeerFramed = Framed<BoxedIo, PeerFrameCodec>;
 
 pub(super) struct EstablishedPeer {
     pub(super) framed: PeerFramed,
@@ -58,6 +59,23 @@ pub(super) async fn dial_and_handshake(
             "peer transport TCP_NODELAY setup failed",
         )
     })?;
+    let stream = match &config.client_tls {
+        Some(tls) => tokio::time::timeout(config.handshake_timeout, tls.connect_boxed(stream))
+            .await
+            .map_err(|_| {
+                PeerFailure::not_observed(
+                    ErrorCode::DeadlineExceeded,
+                    "peer TLS handshake timed out",
+                )
+            })?
+            .map_err(|_| {
+                PeerFailure::not_observed(
+                    ErrorCode::Unauthenticated,
+                    "peer TLS server authentication failed",
+                )
+            })?,
+        None => insecure_boxed(stream),
+    };
     let mut framed = PeerFramed::new(stream, PeerFrameCodec::new(config.max_frame_len));
     let hello = PeerHandshake {
         gateway_name: config.local_gateway_name.clone(),
@@ -143,6 +161,23 @@ pub(super) async fn receive_inbound_hello(
             "inbound peer TCP_NODELAY setup failed",
         )
     })?;
+    let stream = match &config.server_tls {
+        Some(tls) => tokio::time::timeout(config.handshake_timeout, tls.accept_boxed(stream))
+            .await
+            .map_err(|_| {
+                PeerFailure::not_observed(
+                    ErrorCode::DeadlineExceeded,
+                    "inbound peer TLS handshake timed out",
+                )
+            })?
+            .map_err(|_| {
+                PeerFailure::not_observed(
+                    ErrorCode::Unauthenticated,
+                    "inbound peer mTLS authentication failed",
+                )
+            })?,
+        None => insecure_boxed(stream),
+    };
     let mut framed = PeerFramed::new(stream, PeerFrameCodec::new(config.max_frame_len));
     let frame = tokio::time::timeout(config.handshake_timeout, framed.next())
         .await

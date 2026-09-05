@@ -103,8 +103,8 @@ impl TransportActor {
         let frame = PeerFrame::Open {
             stream_id,
             open_identity: request.open_identity(),
-            client_id: request.client_id().to_owned(),
-            listener_session_id: request.listener_session_id(),
+            destination_id: request.destination_id().to_owned(),
+            relay_session_id: request.relay_session_id(),
             binding_id: request.binding_id(),
         };
         if let Err(failure) = PeerFrameCommit::open(&self.aggregate_writer, frame) {

@@ -33,12 +33,14 @@ pub(crate) async fn serve(
                     )
                 })?;
             let peer_address = peer_listener.local_addr()?;
-            tracing::warn!(
-                component = "gateway",
-                event = "gateway.route_table.trusted_local_enabled",
-                transport = "plain_tcp",
-                "local/CI RouteTable and peer key adapter is enabled; channel security must be supplied by the deployment environment"
-            );
+            if distributed.insecure_transport {
+                tracing::warn!(
+                    component = "gateway",
+                    event = "gateway.route_table.trusted_local_enabled",
+                    transport = "plain_tcp",
+                    "local/CI RouteTable and peer adapter is running without TLS"
+                );
+            }
             (
                 Gateway::new_distributed(config.gateway, distributed.routing, distributed.peer)?,
                 Some(peer_listener),
@@ -53,7 +55,6 @@ pub(crate) async fn serve(
         event = "server.started",
         role = "gateway",
         address = %local_address,
-        configured_clients = config.configured_clients,
         distributed_enabled,
         peer_address = ?peer_address,
         "RelayGate Gateway started"
@@ -140,9 +141,7 @@ fn log_gateway_snapshot(gateway: &Gateway) {
         event = "gateway.snapshot",
         draining = snapshot.draining,
         sessions = snapshot.sessions,
-        listener_sessions = snapshot.listener_sessions,
-        connector_sessions = snapshot.connector_sessions,
-        listener_bindings = snapshot.listener_bindings,
+        bindings = snapshot.bindings,
         pending_offers = snapshot.pending_offers,
         live_pipes = snapshot.live_pipes,
         route_dependency_health = snapshot.route_dependency_health.as_str(),

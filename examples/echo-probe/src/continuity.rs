@@ -15,15 +15,18 @@ use crate::{
         CONTINUITY_FRESHNESS, CONTINUITY_INTERVAL, ECHO_DEADLINE, ROUTE_WAIT,
         continuity_state_path, environment,
     },
-    probe::{connect, open_when_registered},
+    probe::{connect, dial_when_available},
 };
 
 pub(crate) async fn run_continuity() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_CONTINUITY_ADDR", "gateway-a:27420");
-    let client_id = environment("RELAYGATE_CONTINUITY_CLIENT_ID", "echo.c");
+    let destination_id = environment(
+        "RELAYGATE_CONTINUITY_DESTINATION_ID",
+        crate::config::DESTINATION_IDS[2],
+    );
     let state_path = continuity_state_path();
     let connector = connect(&address).await?;
-    let mut pipe = open_when_registered(&connector, &client_id, ROUTE_WAIT).await?;
+    let mut pipe = dial_when_available(&connector, &destination_id, ROUTE_WAIT).await?;
     let mut sequence = 1_u64;
 
     loop {

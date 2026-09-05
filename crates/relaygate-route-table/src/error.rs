@@ -15,7 +15,7 @@ pub enum RouteTableError {
     InvalidArgument(String),
     #[error("authenticated Gateway does not own the requested registration")]
     PermissionDenied,
-    #[error("no live binding exists for the requested ClientId")]
+    #[error("no live binding exists for the requested DestinationId")]
     NotFound,
     #[error("operation is not valid for the current RouteTable state: {0}")]
     FailedPrecondition(String),

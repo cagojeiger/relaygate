@@ -159,13 +159,13 @@ fn frame_metadata(frame: &PeerFrame) -> Result<(u8, usize), PeerCodecError> {
             HANDSHAKE_REJECTED,
             checked_add(1, string_wire_len("message", message)?)?,
         ),
-        PeerFrame::Open { client_id, .. } => {
-            if client_id.is_empty() {
-                return Err(PeerCodecError::InvalidField("client_id"));
+        PeerFrame::Open { destination_id, .. } => {
+            if destination_id.is_empty() {
+                return Err(PeerCodecError::InvalidField("destination_id"));
             }
             (
                 OPEN,
-                checked_add(80, string_wire_len("client_id", client_id)?)?,
+                checked_add(80, string_wire_len("destination_id", destination_id)?)?,
             )
         }
         PeerFrame::Opened { .. } => (OPENED, 8),
@@ -222,16 +222,16 @@ fn encode_payload(frame: PeerFrame, destination: &mut BytesMut) -> Result<(), Pe
         PeerFrame::Open {
             stream_id,
             open_identity,
-            client_id,
-            listener_session_id,
+            destination_id,
+            relay_session_id,
             binding_id,
         } => {
             destination.put_u64(stream_id.raw());
             put_gateway_id(destination, open_identity.entry_gateway());
             put_session_id(destination, open_identity.connector_session());
             destination.put_u64(open_identity.connection_id());
-            put_string(destination, "client_id", &client_id)?;
-            put_session_id(destination, listener_session_id);
+            put_string(destination, "destination_id", &destination_id)?;
+            put_session_id(destination, relay_session_id);
             put_binding_id(destination, binding_id);
         }
         PeerFrame::Opened { stream_id }
@@ -330,8 +330,8 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<PeerFrame, PeerCodecError>
             let entry_gateway_id = reader.gateway_id("entry_gateway_id")?;
             let connector_session_id = reader.session_id("connector_session_id")?;
             let connection_id = reader.u64("connection_id")?;
-            let client_id = reader.non_empty_string("client_id")?;
-            let listener_session_id = reader.session_id("listener_session_id")?;
+            let destination_id = reader.non_empty_string("destination_id")?;
+            let relay_session_id = reader.session_id("relay_session_id")?;
             let binding_id = reader.binding_id()?;
             PeerFrame::Open {
                 stream_id,
@@ -340,8 +340,8 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<PeerFrame, PeerCodecError>
                     connector_session_id,
                     connection_id,
                 ),
-                client_id,
-                listener_session_id,
+                destination_id,
+                relay_session_id,
                 binding_id,
             }
         }

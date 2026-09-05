@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use relaygate_protocol::{
-    BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId, SessionRole,
+    BindingId, DestinationId, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
 };
 use relaygate_route_table::BindingSet;
 
@@ -9,7 +9,7 @@ use crate::peer::{OpenIdentity, PeerStreamKey};
 
 use super::{
     GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipeEntry, PipePhase,
-    RemoteOpenAttempt, RemoteOpenPhase, observe_open_result,
+    RemoteOpenAttempt, RemoteOpenPhase, observe_dial_result,
 };
 
 impl GatewayState {
@@ -24,39 +24,58 @@ impl GatewayState {
         if attempt.phase != RemoteOpenPhase::Resolving {
             return Vec::new();
         }
-        let client_id = attempt.client_id.clone();
+        let destination_id = attempt.destination_id.clone();
         let pipe_id = attempt.pipe_id;
         let started_at = attempt.started_at;
-        let Some(mapping) = bindings.entries().first().cloned() else {
-            return self.fail_remote_attempt(
-                open_identity,
-                ErrorCode::Internal,
-                PeerObservation::NotObserved,
-                "RouteTable returned an empty BindingSet",
-            );
-        };
-        if mapping.client_id().as_str() != client_id {
+        let Some(mapping) = bindings
+            .entries()
+            .iter()
+            .find(|mapping| {
+                let identity = mapping.identity();
+                Some(identity.gateway_id()) != self.gateway_id
+                    || identity.relay_session_id().as_uuid()
+                        != pipe_id.origin_session_id().as_uuid()
+            })
+            .cloned()
+        else {
             return self.fail_remote_attempt(
                 open_identity,
                 ErrorCode::FailedPrecondition,
                 PeerObservation::NotObserved,
-                "RouteTable returned a mapping for a different ClientId",
+                "only the dialing Relay publishes this Destination",
+            );
+        };
+        if mapping.destination_id().as_str() != destination_id {
+            return self.fail_remote_attempt(
+                open_identity,
+                ErrorCode::FailedPrecondition,
+                PeerObservation::NotObserved,
+                "RouteTable returned a mapping for a different DestinationId",
             );
         }
 
         let mapping_identity = mapping.identity();
-        let listener_session_id =
-            SessionId::from_uuid(mapping_identity.listener_session_id().as_uuid());
+        let relay_session_id = SessionId::from_uuid(mapping_identity.relay_session_id().as_uuid());
         let binding_id = BindingId::from_uuid(mapping_identity.binding_id().as_uuid());
         if Some(mapping_identity.gateway_id()) == self.gateway_id {
             let _ = self.take_remote_attempt(open_identity);
+            let Ok(destination_id) = destination_id.parse::<DestinationId>() else {
+                observe_dial_result(Some(started_at), Some(ErrorCode::InvalidArgument));
+                return self.open_failed(
+                    pipe_id.origin_session_id(),
+                    pipe_id.connection_id(),
+                    ErrorCode::InvalidArgument,
+                    PeerObservation::NotObserved,
+                    "stored DestinationId is invalid",
+                );
+            };
             let Some(binding) = self
                 .registry
-                .exact(listener_session_id, binding_id, &client_id)
+                .exact(relay_session_id, binding_id, destination_id)
             else {
-                observe_open_result(Some(started_at), Some(ErrorCode::Unavailable));
+                observe_dial_result(Some(started_at), Some(ErrorCode::Unavailable));
                 return self.open_failed(
-                    pipe_id.connector_session_id(),
+                    pipe_id.origin_session_id(),
                     pipe_id.connection_id(),
                     ErrorCode::Unavailable,
                     PeerObservation::NotObserved,
@@ -64,10 +83,10 @@ impl GatewayState {
                 );
             };
             return self.offer_local_at(
-                pipe_id.connector_session_id(),
+                pipe_id.origin_session_id(),
                 pipe_id,
                 binding,
-                client_id,
+                destination_id,
                 Instant::now(),
                 Some(started_at),
             );
@@ -84,8 +103,8 @@ impl GatewayState {
             open_identity,
             gateway_id: mapping_identity.gateway_id(),
             gateway_locator: mapping.gateway_locator().clone(),
-            client_id,
-            listener_session_id,
+            destination_id,
+            relay_session_id,
             binding_id,
         }]
     }
@@ -180,15 +199,15 @@ impl GatewayState {
         &mut self,
         key: PeerStreamKey,
         open_identity: OpenIdentity,
-        client_id: String,
-        listener_session_id: SessionId,
+        destination_id: String,
+        relay_session_id: SessionId,
         binding_id: BindingId,
     ) -> Vec<GatewayAction> {
         self.receive_peer_open_at(
             key,
             open_identity,
-            client_id,
-            listener_session_id,
+            destination_id,
+            relay_session_id,
             binding_id,
             Instant::now(),
         )
@@ -198,8 +217,8 @@ impl GatewayState {
         &mut self,
         key: PeerStreamKey,
         open_identity: OpenIdentity,
-        client_id: String,
-        listener_session_id: SessionId,
+        destination_id: String,
+        relay_session_id: SessionId,
         binding_id: BindingId,
         now: Instant,
     ) -> Vec<GatewayAction> {
@@ -240,17 +259,17 @@ impl GatewayState {
                 .into(),
             ];
         }
-        if client_id.is_empty() {
+        let Ok(destination_id) = destination_id.parse::<DestinationId>() else {
             return vec![
                 PeerDelivery::Failed {
                     key,
                     code: ErrorCode::InvalidArgument,
                     observation: PeerObservation::NotObserved,
-                    message: "ClientId must not be empty".to_owned(),
+                    message: "DestinationId must be UUIDv4".to_owned(),
                 }
                 .into(),
             ];
-        }
+        };
         if self.live_pipe_count() >= self.limits.max_live_pipes || self.pending_capacity_reached() {
             return vec![
                 PeerDelivery::Failed {
@@ -262,13 +281,10 @@ impl GatewayState {
                 .into(),
             ];
         }
-        let listener_is_live = self
-            .sessions
-            .get(&listener_session_id)
-            .is_some_and(|session| session.role == SessionRole::Listener);
+        let listener_is_live = self.sessions.contains_key(&relay_session_id);
         let Some(binding) = self
             .registry
-            .exact(listener_session_id, binding_id, &client_id)
+            .exact(relay_session_id, binding_id, destination_id)
             .filter(|_| listener_is_live)
         else {
             return vec![
@@ -301,7 +317,7 @@ impl GatewayState {
             pipe_id,
             PipeEntry {
                 connector: PipeEndpoint::Peer(key),
-                listener: PipeEndpoint::Sdk(listener_session_id),
+                listener: PipeEndpoint::Sdk(relay_session_id),
                 binding_id: binding.id,
                 open_identity: Some(open_identity),
                 phase: PipePhase::Offered,
@@ -312,11 +328,11 @@ impl GatewayState {
             },
         );
         self.to(
-            listener_session_id,
+            relay_session_id,
             Frame::Offer {
                 pipe_id,
                 binding_id,
-                client_id,
+                destination_id,
             },
         )
         .map(GatewayAction::SendSdkFrame)
@@ -372,11 +388,8 @@ impl GatewayState {
         let Some(attempt) = self.take_remote_attempt(open_identity) else {
             return Vec::new();
         };
-        let connector = attempt.pipe_id.connector_session_id();
-        let connector_is_live = self
-            .sessions
-            .get(&connector)
-            .is_some_and(|session| session.role == SessionRole::Connector);
+        let connector = attempt.pipe_id.origin_session_id();
+        let connector_is_live = self.sessions.contains_key(&connector);
         if !connector_is_live || self.live_pipe_count() >= self.limits.max_live_pipes {
             let code = if connector_is_live {
                 ErrorCode::ResourceExhausted
@@ -390,7 +403,7 @@ impl GatewayState {
                 "peer OPENED after the local endpoint became unavailable",
             );
             if connector_is_live {
-                observe_open_result(Some(attempt.started_at), Some(code));
+                observe_dial_result(Some(attempt.started_at), Some(code));
                 actions.extend(self.open_failed(
                     connector,
                     attempt.pipe_id.connection_id(),
@@ -399,12 +412,12 @@ impl GatewayState {
                     "Gateway live Pipe limit reached during remote admission",
                 ));
             } else {
-                observe_open_result(Some(attempt.started_at), Some(ErrorCode::Cancelled));
+                observe_dial_result(Some(attempt.started_at), Some(ErrorCode::Cancelled));
             }
             return actions;
         }
 
-        observe_open_result(Some(attempt.started_at), None);
+        observe_dial_result(Some(attempt.started_at), None);
         self.insert_open(
             attempt.pipe_id,
             PipeEntry {
@@ -517,14 +530,14 @@ impl GatewayState {
         let Some(gateway_id) = self.gateway_id else {
             return Vec::new();
         };
-        if pipe_id.connector_session_id() != connector {
+        if pipe_id.origin_session_id() != connector {
             return Vec::new();
         }
         let open_identity = OpenIdentity::new(gateway_id, connector, pipe_id.connection_id());
         let Some(attempt) = self.take_remote_attempt(open_identity) else {
             return Vec::new();
         };
-        observe_open_result(Some(attempt.started_at), Some(ErrorCode::Cancelled));
+        observe_dial_result(Some(attempt.started_at), Some(ErrorCode::Cancelled));
         match attempt.phase {
             RemoteOpenPhase::Resolving => Vec::new(),
             RemoteOpenPhase::StartingPeer { .. } => {
@@ -549,9 +562,9 @@ impl GatewayState {
         let Some(attempt) = self.take_remote_attempt(open_identity) else {
             return Vec::new();
         };
-        observe_open_result(Some(attempt.started_at), Some(code));
+        observe_dial_result(Some(attempt.started_at), Some(code));
         self.open_failed(
-            attempt.pipe_id.connector_session_id(),
+            attempt.pipe_id.origin_session_id(),
             attempt.pipe_id.connection_id(),
             code,
             observation,

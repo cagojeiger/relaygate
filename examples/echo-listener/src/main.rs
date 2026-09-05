@@ -1,32 +1,39 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, bail};
-use relaygate_sdk::{Config, Listener, ListenerRuntime, Pipe};
-use tokio::io::{AsyncWriteExt, copy};
-use tokio::task::JoinSet;
+use relaygate_sdk::{ClientTlsConfig, Config, DestinationId, Listener, Pipe, Relay};
+use tokio::{
+    io::{AsyncWriteExt, copy},
+    task::JoinSet,
+};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ListenerConfig {
-    client_id: String,
-    client_key: String,
-}
+const DEFAULT_DESTINATION: &str = "11111111-1111-4111-8111-111111111111";
+const DEFAULT_CLUSTER_TOKEN: &str = "relaygate-local-cluster-token";
+const DEFAULT_TLS_CA_PATH: &str = "/etc/relaygate/tls/ca.crt";
+const DEFAULT_TLS_SERVER_NAME: &str = "relaygate-gateway.internal";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing()?;
     let address = environment("RELAYGATE_ADDR", "gateway:27420");
-    let listeners = listener_configs_from_env()?;
-
-    let runtime = ListenerRuntime::connect(Config::new(address)).await?;
+    let cluster_token = environment("RELAYGATE_CLUSTER_TOKEN", DEFAULT_CLUSTER_TOKEN);
+    let destinations = destinations_from_env()?;
+    let ca_path = environment("RELAYGATE_SDK_TLS_CA_PATH", DEFAULT_TLS_CA_PATH);
+    let server_name = environment("RELAYGATE_SDK_TLS_SERVER_NAME", DEFAULT_TLS_SERVER_NAME);
+    let tls = ClientTlsConfig::server_authenticated(
+        server_name,
+        &std::fs::read(&ca_path)
+            .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?,
+    )?;
+    let relay = Relay::connect(Config::new(address, cluster_token, tls)).await?;
     let mut tasks = JoinSet::new();
 
-    for listener_config in listeners {
-        let client_id = listener_config.client_id;
-        let listener = runtime
-            .listen(client_id.clone(), listener_config.client_key)
+    for destination in destinations {
+        let listener = relay
+            .listen(destination)
             .await
-            .with_context(|| format!("failed to listen for ClientId {client_id}"))?;
-        tasks.spawn(serve_listener(client_id, listener));
+            .with_context(|| format!("failed to listen on Destination {destination}"))?;
+        tasks.spawn(serve_listener(destination, listener));
     }
 
     let result = tasks
@@ -54,12 +61,12 @@ async fn echo(pipe: Pipe) -> std::io::Result<()> {
     writer.shutdown().await
 }
 
-async fn serve_listener(client_id: String, listener: Listener) -> anyhow::Result<()> {
+async fn serve_listener(destination: DestinationId, listener: Listener) -> anyhow::Result<()> {
     loop {
         let pipe = listener
             .accept()
             .await
-            .with_context(|| format!("Listener {client_id} accept loop stopped"))?;
+            .with_context(|| format!("Destination {destination} accept loop stopped"))?;
         tokio::spawn(async move {
             if let Err(error) = echo(pipe).await {
                 eprintln!("echo Pipe failed: {error}");
@@ -72,114 +79,35 @@ fn environment(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
 }
 
-fn listener_configs_from_env() -> anyhow::Result<Vec<ListenerConfig>> {
-    match std::env::var("RELAYGATE_LISTENERS") {
-        Ok(value) => parse_listener_configs(&value),
-        Err(_) => Ok(vec![ListenerConfig {
-            client_id: environment("RELAYGATE_CLIENT_ID", "echo.alpha"),
-            client_key: environment("RELAYGATE_CLIENT_KEY", "dev-echo-alpha-v1"),
-        }]),
-    }
-}
-
-fn parse_listener_configs(value: &str) -> anyhow::Result<Vec<ListenerConfig>> {
+fn destinations_from_env() -> anyhow::Result<Vec<DestinationId>> {
+    let value = environment("RELAYGATE_DESTINATIONS", DEFAULT_DESTINATION);
     let mut seen = HashSet::new();
-    let mut listeners = Vec::new();
-
+    let mut destinations = Vec::new();
     for entry in value.split(',') {
         let entry = entry.trim();
         if entry.is_empty() {
-            bail!("RELAYGATE_LISTENERS contains an empty entry");
+            bail!("RELAYGATE_DESTINATIONS contains an empty entry");
         }
-        let (client_id, client_key) = entry.split_once('=').with_context(|| {
-            format!("RELAYGATE_LISTENERS entry {entry:?} must be ClientId=ClientKey")
-        })?;
-        let client_id = client_id.trim();
-        let client_key = client_key.trim();
-        if client_id.is_empty() || client_key.is_empty() {
-            bail!(
-                "RELAYGATE_LISTENERS entry {entry:?} must not contain an empty ClientId or ClientKey"
-            );
+        let destination: DestinationId = entry
+            .parse()
+            .with_context(|| format!("invalid UUIDv4 DestinationId {entry:?}"))?;
+        if !seen.insert(destination) {
+            bail!("RELAYGATE_DESTINATIONS contains duplicate DestinationId {entry:?}");
         }
-        if !seen.insert(client_id.to_owned()) {
-            bail!("RELAYGATE_LISTENERS contains duplicate ClientId {client_id:?}");
-        }
-        listeners.push(ListenerConfig {
-            client_id: client_id.to_owned(),
-            client_key: client_key.to_owned(),
-        });
+        destinations.push(destination);
     }
-
-    if listeners.is_empty() {
-        bail!("RELAYGATE_LISTENERS must contain at least one ClientId=ClientKey entry");
-    }
-
-    Ok(listeners)
+    Ok(destinations)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ListenerConfig, parse_listener_configs};
+    use super::destinations_from_env;
 
     #[test]
-    fn parses_multiple_listener_configs() -> Result<(), String> {
-        let listeners = match parse_listener_configs(" echo.alpha = key-a , echo.beta=key-b ") {
-            Ok(listeners) => listeners,
-            Err(error) => return Err(format!("valid listener list failed: {error}")),
-        };
-
-        assert_eq!(
-            listeners,
-            vec![
-                ListenerConfig {
-                    client_id: "echo.alpha".to_owned(),
-                    client_key: "key-a".to_owned(),
-                },
-                ListenerConfig {
-                    client_id: "echo.beta".to_owned(),
-                    client_key: "key-b".to_owned(),
-                },
-            ]
-        );
+    fn default_destination_is_valid() -> anyhow::Result<()> {
+        // SAFETY: this test does not mutate the process environment.
+        let destinations = destinations_from_env()?;
+        anyhow::ensure!(!destinations.is_empty());
         Ok(())
-    }
-
-    #[test]
-    fn rejects_empty_entries() -> Result<(), String> {
-        let error = parse_error("echo.alpha=key-a,")?;
-
-        assert!(error.to_string().contains("empty entry"));
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_missing_separator() -> Result<(), String> {
-        let error = parse_error("echo.alpha")?;
-
-        assert!(error.to_string().contains("ClientId=ClientKey"));
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_empty_fields() -> Result<(), String> {
-        let error = parse_error("echo.alpha=")?;
-
-        assert!(error.to_string().contains("must not contain an empty"));
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_duplicate_client_ids() -> Result<(), String> {
-        let error = parse_error("echo.alpha=key-a,echo.alpha=key-b")?;
-
-        assert!(error.to_string().contains("duplicate ClientId"));
-        Ok(())
-    }
-
-    fn parse_error(value: &str) -> Result<anyhow::Error, String> {
-        match parse_listener_configs(value) {
-            Ok(listeners) => Err(format!("invalid listener list parsed as {listeners:?}")),
-            Err(error) => Ok(error),
-        }
     }
 }

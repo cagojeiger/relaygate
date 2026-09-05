@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_route_table::{AuthenticatedGatewayId, GatewayId, RequestContext};
+use relaygate_transport::BoxedIo;
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
@@ -23,7 +24,7 @@ use super::{
 };
 
 pub(super) async fn handle_connection(
-    stream: TcpStream,
+    stream: BoxedIo,
     keys: Arc<TrustedGatewayKeys>,
     requests: mpsc::Sender<ServiceCommand>,
     config: RouteTableServiceConfig,
@@ -77,7 +78,7 @@ pub(super) async fn handle_connection(
 }
 
 async fn authenticate(
-    framed: &mut Framed<TcpStream, FrameCodec>,
+    framed: &mut Framed<BoxedIo, FrameCodec>,
     keys: &TrustedGatewayKeys,
     timeout: Duration,
     shutdown: &CancellationToken,
@@ -161,7 +162,7 @@ fn observe_handshake(outcome: &'static str, code: &'static str) {
 }
 
 async fn run_reader(
-    mut stream: futures_util::stream::SplitStream<Framed<TcpStream, FrameCodec>>,
+    mut stream: futures_util::stream::SplitStream<Framed<BoxedIo, FrameCodec>>,
     writer: mpsc::Sender<WireFrame>,
     requests: mpsc::Sender<ServiceCommand>,
     context: RequestContext,
@@ -254,7 +255,7 @@ pub(super) fn submit_service_request(
 }
 
 async fn run_writer(
-    mut sink: futures_util::stream::SplitSink<Framed<TcpStream, FrameCodec>, WireFrame>,
+    mut sink: futures_util::stream::SplitSink<Framed<BoxedIo, FrameCodec>, WireFrame>,
     mut frames: mpsc::Receiver<WireFrame>,
     shutdown: CancellationToken,
 ) {

@@ -1,49 +1,59 @@
-use std::collections::HashMap;
-
-use relaygate_protocol::ClientKey;
+use relaygate_protocol::ClusterToken;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-pub(crate) struct ClientKeyStore {
-    keys: HashMap<String, String>,
+pub(crate) struct ClusterTokenSet {
+    current: String,
+    next: Option<String>,
 }
 
-impl ClientKeyStore {
-    pub(crate) fn new(keys: HashMap<String, String>) -> Self {
-        Self { keys }
+impl ClusterTokenSet {
+    pub(crate) fn new(current: String, next: Option<String>) -> Self {
+        Self { current, next }
     }
 
-    pub(crate) fn authorizes(&self, client_id: &str, presented: &ClientKey) -> bool {
-        let Some(expected) = self.keys.get(client_id) else {
-            return false;
-        };
-        let presented = presented.expose_secret();
-        expected.len() == presented.len()
-            && bool::from(expected.as_bytes().ct_eq(presented.as_bytes()))
+    pub(crate) fn authorizes(&self, presented: &ClusterToken) -> bool {
+        let presented = presented.expose_secret().as_bytes();
+        constant_time_eq(self.current.as_bytes(), presented)
+            | self
+                .next
+                .as_deref()
+                .is_some_and(|next| constant_time_eq(next.as_bytes(), presented))
     }
 }
 
-impl std::fmt::Debug for ClientKeyStore {
+impl std::fmt::Debug for ClusterTokenSet {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("ClientKeyStore")
-            .field("client_count", &self.keys.len())
+            .debug_struct("ClusterTokenSet")
+            .field("token_count", &(1 + usize::from(self.next.is_some())))
             .finish()
     }
 }
 
+fn constant_time_eq(expected: &[u8], presented: &[u8]) -> bool {
+    let expected = Sha256::digest(expected);
+    let presented = Sha256::digest(presented);
+    bool::from(expected.ct_eq(&presented))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ClientKeyStore;
-    use relaygate_protocol::ClientKey;
+    use relaygate_protocol::ClusterToken;
+
+    use super::ClusterTokenSet;
 
     #[test]
-    fn exact_client_key_is_required() {
-        let store = ClientKeyStore::new([("echo.alpha".to_owned(), "secret".to_owned())].into());
+    fn current_and_next_tokens_are_admitted_without_being_debugged() {
+        let tokens =
+            ClusterTokenSet::new("current-secret".to_owned(), Some("next-secret".to_owned()));
 
-        assert!(store.authorizes("echo.alpha", &ClientKey::new("secret")));
-        assert!(!store.authorizes("echo.alpha", &ClientKey::new("Secret")));
-        assert!(!store.authorizes("echo.alpha", &ClientKey::new("short")));
-        assert!(!store.authorizes("missing", &ClientKey::new("secret")));
-        assert!(!format!("{store:?}").contains("secret"));
+        assert!(tokens.authorizes(&ClusterToken::new("current-secret")));
+        assert!(tokens.authorizes(&ClusterToken::new("next-secret")));
+        assert!(!tokens.authorizes(&ClusterToken::new("wrong-secret")));
+        assert!(!tokens.authorizes(&ClusterToken::new("x")));
+        let rendered = format!("{tokens:?}");
+        assert!(!rendered.contains("current-secret"));
+        assert!(!rendered.contains("next-secret"));
     }
 }

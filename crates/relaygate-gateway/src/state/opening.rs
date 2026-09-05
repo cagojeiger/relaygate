@@ -1,24 +1,24 @@
 use std::time::Instant;
 
 use relaygate_protocol::{
-    BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId, SessionRole,
+    BindingId, DestinationId, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
 };
-use relaygate_route_table::ClientId as RouteClientId;
+use relaygate_route_table::DestinationId as RouteDestinationId;
 
 use crate::{peer::OpenIdentity, registry::Binding};
 
 use super::{
     GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipeEntry, PipePhase,
-    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase, observe_open_request,
-    observe_open_result,
+    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase, observe_dial_request,
+    observe_dial_result,
 };
 
 impl GatewayState {
-    pub(super) fn open(
+    pub(super) fn dial(
         &mut self,
         connector: SessionId,
         connection_id: u64,
-        client_id: String,
+        destination_id: DestinationId,
         now: Instant,
     ) -> Vec<GatewayAction> {
         let Some(session) = self.sessions.get_mut(&connector) else {
@@ -31,7 +31,7 @@ impl GatewayState {
             return Vec::new();
         }
         session.highest_connection_id = Some(connection_id);
-        observe_open_request();
+        observe_dial_request();
 
         if self.draining {
             return self.new_open_failed(
@@ -44,16 +44,6 @@ impl GatewayState {
             );
         }
 
-        if client_id.is_empty() {
-            return self.new_open_failed(
-                connector,
-                connection_id,
-                ErrorCode::InvalidArgument,
-                PeerObservation::NotObserved,
-                "ClientId must not be empty",
-                now,
-            );
-        }
         if self.live_pipe_count() >= self.limits.max_live_pipes {
             return self.new_open_failed(
                 connector,
@@ -76,27 +66,45 @@ impl GatewayState {
         }
 
         let pipe_id = PipeId::new(connector, connection_id);
-        if let Some(binding) = self.registry.select(&client_id) {
-            return self.offer_local_at(connector, pipe_id, binding, client_id, now, Some(now));
+        let self_publishes_destination = self
+            .registry
+            .contains_session_destination(connector, destination_id);
+        if let Some(binding) = self.registry.select_excluding(destination_id, connector) {
+            return self.offer_local_at(
+                connector,
+                pipe_id,
+                binding,
+                destination_id,
+                now,
+                Some(now),
+            );
         }
 
         let Some(gateway_id) = self.gateway_id else {
             return self.new_open_failed(
                 connector,
                 connection_id,
-                ErrorCode::NotFound,
+                if self_publishes_destination {
+                    ErrorCode::FailedPrecondition
+                } else {
+                    ErrorCode::NotFound
+                },
                 PeerObservation::NotObserved,
-                "no live ListenerBinding exists",
+                if self_publishes_destination {
+                    "only the dialing Relay publishes this Destination"
+                } else {
+                    "no live Binding exists"
+                },
                 now,
             );
         };
-        let Ok(route_client_id) = RouteClientId::new(client_id.clone()) else {
+        let Ok(route_destination_id) = RouteDestinationId::new(destination_id.to_string()) else {
             return self.new_open_failed(
                 connector,
                 connection_id,
                 ErrorCode::InvalidArgument,
                 PeerObservation::NotObserved,
-                "ClientId is invalid",
+                "DestinationId is invalid",
                 now,
             );
         };
@@ -105,7 +113,7 @@ impl GatewayState {
             open_identity,
             RemoteOpenAttempt {
                 pipe_id,
-                client_id,
+                destination_id: destination_id.to_string(),
                 started_at: now,
                 phase: RemoteOpenPhase::Resolving,
             },
@@ -113,7 +121,7 @@ impl GatewayState {
         debug_assert!(previous.is_none());
         vec![GatewayAction::ResolveRoute {
             open_identity,
-            client_id: route_client_id,
+            destination_id: route_destination_id,
         }]
     }
 
@@ -122,23 +130,20 @@ impl GatewayState {
         connector: SessionId,
         pipe_id: PipeId,
         binding: Binding,
-        client_id: String,
+        destination_id: DestinationId,
         now: Instant,
         open_started_at: Option<Instant>,
     ) -> Vec<GatewayAction> {
-        let listener_is_live = self
-            .sessions
-            .get(&binding.session_id)
-            .is_some_and(|session| session.role == SessionRole::Listener);
+        let listener_is_live = self.sessions.contains_key(&binding.session_id);
         if !listener_is_live {
             self.registry.remove_owned(binding.session_id, binding.id);
-            observe_open_result(open_started_at, Some(ErrorCode::Unavailable));
+            observe_dial_result(open_started_at, Some(ErrorCode::Unavailable));
             let mut actions = self.open_failed(
                 connector,
                 pipe_id.connection_id(),
                 ErrorCode::Unavailable,
                 PeerObservation::NotObserved,
-                "selected ListenerSession is no longer live",
+                "selected RelaySession is no longer live",
             );
             actions.push(self.registration_publication(binding.session_id));
             return actions;
@@ -148,10 +153,10 @@ impl GatewayState {
             component = "gateway",
             event = "gateway.offer.created",
             connector_session_id = %connector.as_uuid(),
-            listener_session_id = %binding.session_id.as_uuid(),
+            relay_session_id = %binding.session_id.as_uuid(),
             connection_id = pipe_id.connection_id(),
             binding_id = %binding.id.as_uuid(),
-            client_id = %client_id,
+            destination_id = %destination_id,
             pending_offers = self.pending_offer_count() + 1,
             live_pipes = self.live_pipe_count(),
             "Pipe offer created"
@@ -175,7 +180,7 @@ impl GatewayState {
             Frame::Offer {
                 pipe_id,
                 binding_id: binding.id,
-                client_id,
+                destination_id,
             },
         )
         .map(GatewayAction::SendSdkFrame)
@@ -193,16 +198,16 @@ impl GatewayState {
     ) -> Vec<GatewayAction> {
         tracing::debug!(
             component = "gateway",
-            event = "gateway.open.failed",
-            connector_session_id = %connector.as_uuid(),
+            event = "gateway.dial.failed",
+            relay_session_id = %connector.as_uuid(),
             connection_id,
             error_code = ?code,
             observation = ?observation,
-            "Open attempt failed"
+            "Dial attempt failed"
         );
         self.to(
             connector,
-            Frame::OpenFailed {
+            Frame::DialFailed {
                 connection_id,
                 code,
                 observation,
@@ -223,7 +228,7 @@ impl GatewayState {
         message: &str,
         started_at: Instant,
     ) -> Vec<GatewayAction> {
-        observe_open_result(Some(started_at), Some(code));
+        observe_dial_result(Some(started_at), Some(code));
         self.open_failed(connector, connection_id, code, observation, message)
     }
 
@@ -270,8 +275,8 @@ impl GatewayState {
         tracing::debug!(
             component = "gateway",
             event = "gateway.pipe.opened",
-            connector_session_id = %pipe_id.connector_session_id().as_uuid(),
-            listener_session_id = %listener.as_uuid(),
+            connector_session_id = %pipe_id.origin_session_id().as_uuid(),
+            relay_session_id = %listener.as_uuid(),
             connection_id = pipe_id.connection_id(),
             binding_id = %pipe.binding_id.as_uuid(),
             pending_offers = self.pending_offer_count(),
@@ -326,7 +331,7 @@ impl GatewayState {
             return Ok(Vec::new());
         };
         if pipe.phase == PipePhase::Offered {
-            observe_open_result(pipe.open_started_at, Some(ErrorCode::Cancelled));
+            observe_dial_result(pipe.open_started_at, Some(ErrorCode::Cancelled));
         }
         Ok(self.endpoint_reset(
             pipe.listener,
@@ -402,7 +407,7 @@ impl GatewayState {
     }
 
     pub(super) fn connector_opened(&self, pipe: &PipeEntry, pipe_id: PipeId) -> Vec<GatewayAction> {
-        observe_open_result(pipe.open_started_at, None);
+        observe_dial_result(pipe.open_started_at, None);
         match pipe.connector {
             PipeEndpoint::Sdk(connector) => self
                 .to(connector, Frame::Opened { pipe_id })
@@ -422,7 +427,7 @@ impl GatewayState {
         message: &str,
     ) -> Vec<GatewayAction> {
         if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
-            observe_open_result(pipe.open_started_at, Some(code));
+            observe_dial_result(pipe.open_started_at, Some(code));
         }
         match pipe.connector {
             PipeEndpoint::Sdk(connector) => self.open_failed(

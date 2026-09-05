@@ -2,10 +2,12 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Superseded by ADR 010 and ADR 013 |
 | 전제 | [ADR 001](001-relayed-pipe-responsibility-boundary.md) |
 
 ## 맥락
+
+ADR 010과 ADR 013이 현재 용어와 관계를 정의한다.
 
 `ClientId`를 특정 Listener process나 Gateway 위치와 동일시하면 logical destination마다 단일 runtime owner가 생기고 수평 분산이 제한된다.
 

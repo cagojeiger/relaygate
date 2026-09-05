@@ -1,20 +1,20 @@
 use std::{collections::HashMap, sync::Arc};
 
-use relaygate_protocol::{ClientKey, Frame};
+use relaygate_protocol::Frame;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 
-use super::{ListenerSessionState, PendingRegistration};
+use super::{PendingRegistration, RelaySessionState};
 use crate::{
     Error, ErrorCode, PeerObservation,
-    listener::{ListenerRuntimeInner, ListenerState, ListenerStatus, is_current_desired},
+    listener::{ListenerState, ListenerStatus, RelayInner, is_current_desired},
     session::{EstablishedSession, send_bounded},
 };
 
 pub(super) async fn reconcile_registrations(
-    inner: &ListenerRuntimeInner,
+    inner: &RelayInner,
     established: &mut EstablishedSession,
-    session: &mut ListenerSessionState,
+    session: &mut RelaySessionState,
     session_cancel: &CancellationToken,
 ) -> bool {
     let Some(desired) = snapshot_desired_by_client(inner) else {
@@ -23,28 +23,28 @@ pub(super) async fn reconcile_registrations(
     let abandoned_committed_registration = session.pending.values().any(|pending| {
         pending.committed
             && (!desired
-                .get(&pending.state.client_id)
+                .get(&pending.state.destination_id)
                 .is_some_and(|current| Arc::ptr_eq(current, &pending.state))
                 || *pending.state.status.borrow() == ListenerStatus::Closed)
     });
     if abandoned_committed_registration {
         return false;
     }
-    let registered_clients = session.registrations.keys().cloned().collect::<Vec<_>>();
-    for client_id in registered_clients {
+    let registered_destinations = session.registrations.keys().copied().collect::<Vec<_>>();
+    for destination_id in registered_destinations {
         let stale = session
             .registrations
-            .get(&client_id)
+            .get(&destination_id)
             .is_some_and(|registration| {
                 !desired
-                    .get(&client_id)
+                    .get(&destination_id)
                     .is_some_and(|current| Arc::ptr_eq(current, &registration.state))
                     || *registration.state.status.borrow() == ListenerStatus::Closed
             });
         if !stale {
             continue;
         }
-        let Some(registration) = session.registrations.remove(&client_id) else {
+        let Some(registration) = session.registrations.remove(&destination_id) else {
             continue;
         };
         let Some(request_id) = session.next_request_id() else {
@@ -52,7 +52,7 @@ pub(super) async fn reconcile_registrations(
         };
         if send_bounded(
             &mut established.transport,
-            Frame::Unregister {
+            Frame::Unpublish {
                 request_id,
                 binding_id: registration.binding_id,
             },
@@ -73,8 +73,10 @@ pub(super) async fn reconcile_registrations(
         if matches!(
             *state.status.borrow(),
             ListenerStatus::Blocked | ListenerStatus::Closed
-        ) || session.registrations.contains_key(&state.client_id)
-            || session.pending_by_client.contains_key(&state.client_id)
+        ) || session.registrations.contains_key(&state.destination_id)
+            || session
+                .pending_by_client
+                .contains_key(&state.destination_id)
         {
             continue;
         }
@@ -105,7 +107,7 @@ pub(super) async fn reconcile_registrations(
             let error = Error::new(
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
-                "ListenerSession exhausted request IDs",
+                "RelaySession exhausted request IDs",
             );
             if state.was_returned() {
                 state.block(error);
@@ -125,10 +127,10 @@ pub(super) async fn reconcile_registrations(
         );
         session
             .pending_by_client
-            .insert(state.client_id.clone(), request_id);
+            .insert(state.destination_id, request_id);
         if !state.begin_registration_commit() {
             session.pending.remove(&request_id);
-            session.pending_by_client.remove(&state.client_id);
+            session.pending_by_client.remove(&state.destination_id);
             continue;
         }
         if let Some(pending) = session.pending.get_mut(&request_id) {
@@ -136,10 +138,9 @@ pub(super) async fn reconcile_registrations(
         }
         if send_bounded(
             &mut established.transport,
-            Frame::Register {
+            Frame::Publish {
                 request_id,
-                client_id: state.client_id.clone(),
-                client_key: ClientKey::new(state.client_key.clone()),
+                destination_id: state.destination_id.to_wire(),
             },
             deadline
                 .saturating_duration_since(Instant::now())
@@ -157,13 +158,13 @@ pub(super) async fn reconcile_registrations(
 }
 
 fn snapshot_desired_by_client(
-    inner: &ListenerRuntimeInner,
-) -> Option<HashMap<String, Arc<ListenerState>>> {
+    inner: &RelayInner,
+) -> Option<HashMap<crate::DestinationId, Arc<ListenerState>>> {
     match inner.desired.lock() {
         Ok(desired) => Some(
             desired
                 .iter()
-                .map(|(client_id, state)| (client_id.clone(), Arc::clone(state)))
+                .map(|(destination_id, state)| (*destination_id, Arc::clone(state)))
                 .collect(),
         ),
         Err(_) => {

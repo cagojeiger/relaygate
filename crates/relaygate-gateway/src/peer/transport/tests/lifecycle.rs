@@ -8,6 +8,7 @@ use std::{
 };
 
 use relaygate_route_table::GatewayId;
+use relaygate_transport::insecure_boxed;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
@@ -35,7 +36,7 @@ async fn competing_local_cancel_and_peer_eof_emit_exactly_one_transport_loss() -
     let peer_gateway_id = GatewayId::new();
     let peer_transport_id = PeerTransportId::new();
     let established = EstablishedPeer {
-        framed: Framed::new(actor_stream, PeerFrameCodec::new(64 * 1024)),
+        framed: Framed::new(insecure_boxed(actor_stream), PeerFrameCodec::new(64 * 1024)),
         remote_gateway_id: peer_gateway_id,
         peer_transport_id,
         local_endpoint: StreamEndpoint::Dialer,

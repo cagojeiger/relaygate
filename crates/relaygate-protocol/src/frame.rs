@@ -1,23 +1,6 @@
 use bytes::Bytes;
 
-use crate::{BindingId, ClientKey, PipeId, SessionId};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum SessionRole {
-    Connector = 1,
-    Listener = 2,
-}
-
-impl SessionRole {
-    pub(crate) fn from_wire(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::Connector),
-            2 => Some(Self::Listener),
-            _ => None,
-        }
-    }
-}
+use crate::{BindingId, ClusterToken, DestinationId, PipeId, SessionId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -78,40 +61,43 @@ impl PeerObservation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
     Hello {
-        role: SessionRole,
+        cluster_token: ClusterToken,
     },
     Welcome {
         session_id: SessionId,
     },
-    Register {
-        request_id: u64,
-        client_id: String,
-        client_key: ClientKey,
+    SessionRejected {
+        code: ErrorCode,
+        message: String,
     },
-    Registered {
+    Publish {
+        request_id: u64,
+        destination_id: DestinationId,
+    },
+    Published {
         request_id: u64,
         binding_id: BindingId,
     },
-    RegisterFailed {
+    PublishFailed {
         request_id: u64,
         code: ErrorCode,
         message: String,
     },
-    Unregister {
+    Unpublish {
         request_id: u64,
         binding_id: BindingId,
     },
-    Unregistered {
+    Unpublished {
         request_id: u64,
     },
-    Open {
+    Dial {
         connection_id: u64,
-        client_id: String,
+        destination_id: DestinationId,
     },
     Offer {
         pipe_id: PipeId,
         binding_id: BindingId,
-        client_id: String,
+        destination_id: DestinationId,
     },
     OfferAccepted {
         pipe_id: PipeId,
@@ -124,7 +110,7 @@ pub enum Frame {
     Opened {
         pipe_id: PipeId,
     },
-    OpenFailed {
+    DialFailed {
         connection_id: u64,
         code: ErrorCode,
         observation: PeerObservation,

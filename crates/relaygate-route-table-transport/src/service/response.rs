@@ -1,5 +1,6 @@
 use futures_util::SinkExt;
-use tokio::{net::TcpStream, sync::mpsc};
+use relaygate_transport::BoxedIo;
+use tokio::sync::mpsc;
 use tokio_util::codec::Framed;
 
 use crate::{
@@ -148,7 +149,7 @@ pub(super) fn try_send_frame(
     })
 }
 
-pub(super) async fn send_protocol_fault(framed: &mut Framed<TcpStream, FrameCodec>, message: &str) {
+pub(super) async fn send_protocol_fault(framed: &mut Framed<BoxedIo, FrameCodec>, message: &str) {
     let _ = framed
         .send(WireFrame::ProtocolFault {
             role: ROUTE_TABLE_ROLE.to_owned(),

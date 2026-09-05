@@ -1,7 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
-use relaygate_protocol::{Frame, FrameCodec, SessionRole};
+use relaygate_protocol::{ClusterToken, Frame, FrameCodec};
+use relaygate_transport::{ClientTlsConfig, insecure_boxed};
 use tokio::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
     task::{JoinError, JoinSet},
@@ -16,6 +17,7 @@ use super::{Gateway, Inner};
 const MIN_OFFER_SWEEP_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_OFFER_SWEEP_INTERVAL: Duration = Duration::from_millis(100);
 const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Gateway {
     pub(super) async fn serve_sdk(
@@ -89,6 +91,31 @@ impl Gateway {
                     let session_shutdown = session_lifecycle.child_token();
                     sessions.spawn(async move {
                         let _session_slot = session_slot;
+                        let stream = match &inner.sdk_tls {
+                            Some(tls) => match timeout(TLS_HANDSHAKE_TIMEOUT, tls.accept_boxed(stream)).await {
+                                Ok(Ok(stream)) => stream,
+                                Ok(Err(error)) => {
+                                    tracing::debug!(
+                                        component = "gateway",
+                                        event = "gateway.session.tls_rejected",
+                                        %peer_addr,
+                                        %error,
+                                        "SDK TLS handshake failed"
+                                    );
+                                    return;
+                                }
+                                Err(_) => {
+                                    tracing::debug!(
+                                        component = "gateway",
+                                        event = "gateway.session.tls_timeout",
+                                        %peer_addr,
+                                        "SDK TLS handshake timed out"
+                                    );
+                                    return;
+                                }
+                            },
+                            None => insecure_boxed(stream),
+                        };
                         if let Err(error) = inner.run_session(stream, session_shutdown).await {
                             tracing::debug!(
                                 component = "gateway",
@@ -215,15 +242,39 @@ fn session_shutdown_task_failure(error: JoinError) -> GatewayError {
 ///
 /// This does not check RouteTable availability, Listener bindings, Pipe
 /// establishment, or application payload processing.
-pub async fn check(address: impl ToSocketAddrs, deadline: Duration) -> Result<(), GatewayError> {
+pub async fn check(
+    address: impl ToSocketAddrs,
+    cluster_token: impl Into<String>,
+    tls: &ClientTlsConfig,
+    deadline: Duration,
+) -> Result<(), GatewayError> {
+    let cluster_token = ClusterToken::new(cluster_token);
     timeout(deadline, async {
         let stream = TcpStream::connect(address).await?;
+        let stream = tls.connect_boxed(stream).await?;
         let mut framed = Framed::new(stream, FrameCodec::default());
-        framed
-            .send(Frame::Hello {
-                role: SessionRole::Connector,
-            })
-            .await?;
+        framed.send(Frame::Hello { cluster_token }).await?;
+        match framed.next().await {
+            Some(Ok(Frame::Welcome { .. })) => Ok(()),
+            Some(Ok(_)) | None => Err(GatewayError::UnexpectedAdmissionResponse),
+            Some(Err(error)) => Err(GatewayError::Protocol(error)),
+        }
+    })
+    .await
+    .map_err(|_| GatewayError::AdmissionCheckTimeout)?
+}
+
+#[doc(hidden)]
+pub async fn check_insecure_for_tests(
+    address: impl ToSocketAddrs,
+    cluster_token: impl Into<String>,
+    deadline: Duration,
+) -> Result<(), GatewayError> {
+    let cluster_token = ClusterToken::new(cluster_token);
+    timeout(deadline, async {
+        let stream = TcpStream::connect(address).await?;
+        let mut framed = Framed::new(insecure_boxed(stream), FrameCodec::default());
+        framed.send(Frame::Hello { cluster_token }).await?;
         match framed.next().await {
             Some(Ok(Frame::Welcome { .. })) => Ok(()),
             Some(Ok(_)) | None => Err(GatewayError::UnexpectedAdmissionResponse),
@@ -236,9 +287,9 @@ pub async fn check(address: impl ToSocketAddrs, deadline: Duration) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::check;
+    use super::check_insecure_for_tests;
     use futures_util::{SinkExt, StreamExt};
-    use relaygate_protocol::{ClientKey, Frame, FrameCodec, SessionRole};
+    use relaygate_protocol::{ClusterToken, DestinationId, Frame, FrameCodec};
     use tokio::{
         net::{TcpListener, TcpStream},
         time::{Duration, sleep, timeout},
@@ -247,10 +298,13 @@ mod tests {
 
     use crate::{Gateway, GatewayConfig, GatewayError};
 
+    const CLUSTER_TOKEN: &str = "sdk-server-test-token";
+    const DESTINATION: &str = "11111111-1111-4111-8111-111111111111";
+
     #[tokio::test]
     async fn admitted_session_panic_cleans_siblings_and_stops_gateway()
     -> Result<(), Box<dyn std::error::Error>> {
-        let gateway = Gateway::new(GatewayConfig::default())?;
+        let gateway = Gateway::new(GatewayConfig::new(CLUSTER_TOKEN))?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let shutdown = CancellationToken::new();
@@ -261,7 +315,7 @@ mod tests {
                 async move { serving_gateway.serve_sdk(listener, serving_shutdown).await },
             );
 
-        let mut sibling = open_sdk_session(address, SessionRole::Connector).await?;
+        let mut sibling = open_sdk_session(address).await?;
         assert_eq!(gateway.snapshot().sessions, 1);
         gateway
             .inner
@@ -272,7 +326,7 @@ mod tests {
         let mut panicking = Framed::new(stream, FrameCodec::default());
         panicking
             .send(Frame::Hello {
-                role: SessionRole::Connector,
+                cluster_token: ClusterToken::new(CLUSTER_TOKEN),
             })
             .await?;
 
@@ -289,8 +343,7 @@ mod tests {
     async fn graceful_shutdown_stops_admission_and_waits_for_existing_pipe()
     -> Result<(), Box<dyn std::error::Error>> {
         let gateway = Gateway::new(
-            GatewayConfig::new([("echo.alpha".to_owned(), "secret".to_owned())])
-                .with_drain_timeout(Duration::from_secs(1)),
+            GatewayConfig::new(CLUSTER_TOKEN).with_drain_timeout(Duration::from_secs(1)),
         )?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -309,32 +362,35 @@ mod tests {
 
         assert!(gateway.snapshot().draining);
         assert!(!serving.is_finished());
-        assert!(check(address, Duration::from_millis(50)).await.is_err());
+        assert!(
+            check_insecure_for_tests(address, CLUSTER_TOKEN, Duration::from_millis(50))
+                .await
+                .is_err()
+        );
 
         connector_sdk
-            .send(Frame::Open {
+            .send(Frame::Dial {
                 connection_id: 2,
-                client_id: "echo.alpha".to_owned(),
+                destination_id: DESTINATION.parse()?,
             })
             .await?;
         assert!(matches!(
             timeout(Duration::from_secs(1), connector_sdk.next()).await?,
-            Some(Ok(Frame::OpenFailed {
+            Some(Ok(Frame::DialFailed {
                 connection_id: 2,
                 code: relaygate_protocol::ErrorCode::Unavailable,
                 ..
             }))
         ));
         listener_sdk
-            .send(Frame::Register {
+            .send(Frame::Publish {
                 request_id: 2,
-                client_id: "echo.alpha".to_owned(),
-                client_key: ClientKey::new("secret"),
+                destination_id: DESTINATION.parse()?,
             })
             .await?;
         assert!(matches!(
             timeout(Duration::from_secs(1), listener_sdk.next()).await?,
-            Some(Ok(Frame::RegisterFailed {
+            Some(Ok(Frame::PublishFailed {
                 request_id: 2,
                 code: relaygate_protocol::ErrorCode::Unavailable,
                 ..
@@ -355,8 +411,7 @@ mod tests {
     async fn graceful_shutdown_forces_remaining_pipe_closed_at_deadline()
     -> Result<(), Box<dyn std::error::Error>> {
         let gateway = Gateway::new(
-            GatewayConfig::new([("echo.alpha".to_owned(), "secret".to_owned())])
-                .with_drain_timeout(Duration::from_millis(50)),
+            GatewayConfig::new(CLUSTER_TOKEN).with_drain_timeout(Duration::from_millis(50)),
         )?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -381,8 +436,7 @@ mod tests {
     async fn forced_shutdown_skips_drain_and_closes_existing_pipe()
     -> Result<(), Box<dyn std::error::Error>> {
         let gateway = Gateway::new(
-            GatewayConfig::new([("echo.alpha".to_owned(), "secret".to_owned())])
-                .with_drain_timeout(Duration::from_secs(10)),
+            GatewayConfig::new(CLUSTER_TOKEN).with_drain_timeout(Duration::from_secs(10)),
         )?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -416,24 +470,24 @@ mod tests {
         ),
         Box<dyn std::error::Error>,
     > {
-        let mut listener = open_sdk_session(address, SessionRole::Listener).await?;
+        let destination_id: DestinationId = DESTINATION.parse()?;
+        let mut listener = open_sdk_session(address).await?;
         listener
-            .send(Frame::Register {
+            .send(Frame::Publish {
                 request_id: 1,
-                client_id: "echo.alpha".to_owned(),
-                client_key: ClientKey::new("secret"),
+                destination_id,
             })
             .await?;
         assert!(matches!(
             listener.next().await,
-            Some(Ok(Frame::Registered { .. }))
+            Some(Ok(Frame::Published { .. }))
         ));
 
-        let mut connector = open_sdk_session(address, SessionRole::Connector).await?;
+        let mut connector = open_sdk_session(address).await?;
         connector
-            .send(Frame::Open {
+            .send(Frame::Dial {
                 connection_id: 1,
-                client_id: "echo.alpha".to_owned(),
+                destination_id,
             })
             .await?;
         let Some(Ok(Frame::Offer { pipe_id, .. })) = listener.next().await else {
@@ -449,11 +503,14 @@ mod tests {
 
     async fn open_sdk_session(
         address: std::net::SocketAddr,
-        role: SessionRole,
     ) -> Result<Framed<TcpStream, FrameCodec>, Box<dyn std::error::Error>> {
         let stream = TcpStream::connect(address).await?;
         let mut framed = Framed::new(stream, FrameCodec::default());
-        framed.send(Frame::Hello { role }).await?;
+        framed
+            .send(Frame::Hello {
+                cluster_token: ClusterToken::new(CLUSTER_TOKEN),
+            })
+            .await?;
         assert!(matches!(
             framed.next().await,
             Some(Ok(Frame::Welcome { .. }))

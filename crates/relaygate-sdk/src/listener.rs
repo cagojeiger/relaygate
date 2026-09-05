@@ -1,29 +1,25 @@
 mod runtime;
 mod state;
-#[cfg(test)]
-mod tests;
-
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex as StdMutex, Weak},
 };
 
-use relaygate_protocol::SessionRole;
+use relaygate_protocol::{PipeId, SessionId};
 use tokio::{
-    sync::{Notify, mpsc, watch},
-    time::{sleep_until, timeout},
+    sync::{Mutex, Notify, mpsc, oneshot, watch},
+    time::{sleep_until, timeout, timeout_at},
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Config, Error, ErrorCode, PeerObservation, Pipe, Result,
-    lifetime::RuntimeLifetime,
-    session::{establish, valid_identity},
+    Config, DestinationId, Error, ErrorCode, PeerObservation, Pipe, Result,
+    lifetime::RuntimeLifetime, session::establish,
 };
 
 use self::{
-    runtime::listener_supervisor,
-    state::{ListenerLifecycle, ListenerRuntimeInner, ListenerState, is_current_desired},
+    runtime::relay_supervisor,
+    state::{ListenerLifecycle, ListenerState, RelayInner, is_current_desired},
 };
 
 /// Current state of one desired Listener handle.
@@ -38,19 +34,49 @@ pub enum ListenerStatus {
 }
 
 #[derive(Clone)]
-pub struct ListenerRuntime {
-    inner: Arc<ListenerRuntimeInner>,
+pub struct Relay {
+    inner: Arc<RelayInner>,
     _lifetime: Arc<RuntimeLifetime>,
 }
 
 pub struct Listener {
-    inner: Arc<ListenerRuntimeInner>,
+    inner: Arc<RelayInner>,
     _lifetime: Arc<RuntimeLifetime>,
     state: Arc<ListenerState>,
 }
 
+pub(super) struct RelaySession {
+    pub(super) id: SessionId,
+    pub(super) next_connection_id: Mutex<u64>,
+    pub(super) commands: mpsc::Sender<RelayCommand>,
+    pub(super) cancellations: mpsc::UnboundedSender<PipeId>,
+    pub(super) cancel: CancellationToken,
+}
+
+pub(super) enum RelayCommand {
+    Dial {
+        connection_id: u64,
+        destination_id: DestinationId,
+        response: oneshot::Sender<Result<Pipe>>,
+    },
+}
+
+struct DialGuard {
+    cancellations: mpsc::UnboundedSender<PipeId>,
+    pipe_id: PipeId,
+    armed: bool,
+}
+
+impl Drop for DialGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.cancellations.send(self.pipe_id);
+        }
+    }
+}
+
 struct ListenGuard {
-    inner: Weak<ListenerRuntimeInner>,
+    inner: Weak<RelayInner>,
     state: Arc<ListenerState>,
     armed: bool,
 }
@@ -73,56 +99,44 @@ impl std::fmt::Debug for Listener {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Listener")
-            .field("client_id", &self.state.client_id)
+            .field("destination_id", &self.state.destination_id)
             .field("status", &self.status())
             .finish()
     }
 }
 
-impl ListenerRuntime {
-    /// Connects the initial shared Listener session and starts managed
+impl Relay {
+    /// Connects the initial shared Relay session and starts managed
     /// reconnection for every desired Listener handle.
     pub async fn connect(config: Config) -> Result<Self> {
         config.validate()?;
-        let established = establish(&config, SessionRole::Listener).await?;
+        let established = establish(&config).await?;
+        let (current, _) = watch::channel(None);
         let cancel = CancellationToken::new();
         let lifetime = Arc::new(RuntimeLifetime::new(cancel.clone()));
-        let inner = Arc::new(ListenerRuntimeInner {
+        let inner = Arc::new(RelayInner {
             config,
             desired: StdMutex::new(HashMap::new()),
+            current,
             reconcile: Arc::new(Notify::new()),
             cancel,
             lifetime: Arc::downgrade(&lifetime),
         });
-        tokio::spawn(listener_supervisor(Arc::clone(&inner), established));
+        tokio::spawn(relay_supervisor(Arc::clone(&inner), established));
         Ok(Self {
             inner,
             _lifetime: lifetime,
         })
     }
 
-    /// Creates one desired Listener for `ClientId` and waits until its initial
+    /// Creates one desired Listener for a Destination and waits until its initial
     /// Gateway-local binding is active.
-    pub async fn listen(
-        &self,
-        client_id: impl Into<String>,
-        client_key: impl Into<String>,
-    ) -> Result<Listener> {
-        let client_id = client_id.into();
-        let client_key = client_key.into();
-        if !valid_identity(&client_id) || !valid_identity(&client_key) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                PeerObservation::NotObserved,
-                "ClientId and ClientKey must be non-empty and fit the wire limit",
-            ));
-        }
+    pub async fn listen(&self, destination_id: DestinationId) -> Result<Listener> {
         let deadline = self.inner.config.operation_deadline()?;
         let (incoming_tx, incoming_rx) = mpsc::channel(self.inner.config.listener_queue_capacity);
         let (status, _) = watch::channel(ListenerStatus::Registering);
         let state = Arc::new(ListenerState {
-            client_id: client_id.clone(),
-            client_key,
+            destination_id,
             status,
             last_error: StdMutex::new(None),
             incoming_tx,
@@ -140,14 +154,14 @@ impl ListenerRuntime {
                     "Listener registry lock is poisoned",
                 )
             })?;
-            if desired.contains_key(&client_id) {
+            if desired.contains_key(&destination_id) {
                 return Err(Error::new(
                     ErrorCode::AlreadyExists,
                     PeerObservation::NotObserved,
-                    "a non-closed Listener already owns this ClientId in the runtime",
+                    "a non-closed Listener already owns this Destination in the Relay",
                 ));
             }
-            desired.insert(client_id, Arc::clone(&state));
+            desired.insert(destination_id, Arc::clone(&state));
         }
 
         let mut guard = ListenGuard {
@@ -204,6 +218,98 @@ impl ListenerRuntime {
         }
     }
 
+    /// Opens one Pipe to a Destination. A committed dial is never replayed.
+    pub async fn dial(&self, destination_id: DestinationId) -> Result<Pipe> {
+        let deadline = self.inner.config.operation_deadline()?;
+        let mut current = self.inner.current.subscribe();
+        loop {
+            if self.inner.cancel.is_cancelled() {
+                return Err(Error::closed());
+            }
+            let session = current.borrow().clone();
+            if let Some(session) = session {
+                let mut next_connection_id =
+                    timeout_at(deadline, session.next_connection_id.lock())
+                        .await
+                        .map_err(|_| Error::deadline(PeerObservation::NotObserved))?;
+                let connection_id = *next_connection_id;
+                *next_connection_id = connection_id.checked_add(1).ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::ResourceExhausted,
+                        PeerObservation::NotObserved,
+                        "RelaySession exhausted ConnectionId space",
+                    )
+                })?;
+                let pipe_id = PipeId::new(session.id, connection_id);
+                let (response_tx, response_rx) = oneshot::channel();
+                let committed = timeout_at(
+                    deadline,
+                    session.commands.send(RelayCommand::Dial {
+                        connection_id,
+                        destination_id,
+                        response: response_tx,
+                    }),
+                )
+                .await;
+                drop(next_connection_id);
+                match committed {
+                    Ok(Ok(())) => {
+                        let mut guard = DialGuard {
+                            cancellations: session.cancellations.clone(),
+                            pipe_id,
+                            armed: true,
+                        };
+                        return match timeout_at(deadline, response_rx).await {
+                            Ok(Ok(result)) => {
+                                guard.armed = false;
+                                result
+                            }
+                            Ok(Err(_)) => {
+                                guard.armed = false;
+                                Err(Error::maybe_observed(
+                                    "RelaySession ended after DIAL commit",
+                                ))
+                            }
+                            Err(_) => {
+                                session.cancel.cancel();
+                                Err(Error::deadline(PeerObservation::MaybeObserved))
+                            }
+                        };
+                    }
+                    Ok(Err(_)) => {
+                        if current
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|active| Arc::ptr_eq(active, &session))
+                        {
+                            tokio::select! {
+                                _ = self.inner.cancel.cancelled() => return Err(Error::closed()),
+                                _ = sleep_until(deadline) => {
+                                    return Err(Error::deadline(PeerObservation::NotObserved));
+                                }
+                                changed = current.changed() => {
+                                    if changed.is_err() { return Err(Error::closed()); }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => return Err(Error::deadline(PeerObservation::NotObserved)),
+                }
+                continue;
+            }
+
+            tokio::select! {
+                _ = self.inner.cancel.cancelled() => return Err(Error::closed()),
+                _ = sleep_until(deadline) => {
+                    return Err(Error::deadline(PeerObservation::NotObserved));
+                }
+                changed = current.changed() => {
+                    if changed.is_err() { return Err(Error::closed()); }
+                }
+            }
+        }
+    }
+
     /// Stops managed reconnection and closes all desired Listener handles.
     pub fn close(&self) {
         self.inner.cancel.cancel();
@@ -213,8 +319,8 @@ impl ListenerRuntime {
 
 impl Listener {
     #[must_use]
-    pub fn client_id(&self) -> &str {
-        &self.state.client_id
+    pub fn destination_id(&self) -> DestinationId {
+        self.state.destination_id
     }
 
     #[must_use]
@@ -225,7 +331,7 @@ impl Listener {
     /// Returns one incoming Pipe exactly once.
     ///
     /// While registration is suspended or being recovered, this waits for a
-    /// Pipe from the next active Listener session. Unaccepted Pipes owned by an
+    /// Pipe from the next active Relay session. Unaccepted Pipes owned by an
     /// ended session are discarded. A blocked or closed Listener returns its
     /// terminal error without yielding an older queued Pipe.
     pub async fn accept(&self) -> Result<Pipe> {

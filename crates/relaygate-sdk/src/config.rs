@@ -1,14 +1,17 @@
 use std::time::Duration;
 
 use relaygate_protocol::DEFAULT_MAX_FRAME_LEN;
+use relaygate_transport::ClientTlsConfig;
 use tokio::time::Instant;
 
 use crate::{Error, ErrorCode, PeerObservation, Result};
 
-/// Runtime limits and reconnect policy shared by Connector and Listener roles.
-#[derive(Clone, Debug)]
+/// Runtime limits, TLS identity and reconnect policy for one Relay.
+#[derive(Clone)]
 pub struct Config {
     pub(crate) gateway_addr: String,
+    pub(crate) cluster_token: String,
+    pub(crate) transport: GatewayTransport,
     pub(crate) connect_timeout: Duration,
     pub(crate) operation_timeout: Duration,
     pub(crate) heartbeat_idle_interval: Duration,
@@ -22,13 +25,46 @@ pub struct Config {
     pub(crate) max_frame_len: usize,
 }
 
+#[derive(Clone)]
+pub(crate) enum GatewayTransport {
+    Tls(ClientTlsConfig),
+    Insecure,
+}
+
 impl Config {
     /// Creates a configuration for a Gateway TCP address such as
     /// `127.0.0.1:27420`.
     #[must_use]
-    pub fn new(gateway_addr: impl Into<String>) -> Self {
+    pub fn new(
+        gateway_addr: impl Into<String>,
+        cluster_token: impl Into<String>,
+        tls: ClientTlsConfig,
+    ) -> Self {
+        let mut config = Self::new_without_transport(gateway_addr, cluster_token);
+        config.transport = GatewayTransport::Tls(tls);
+        config
+    }
+
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "insecure-test-transport"))]
+    #[must_use]
+    pub fn new_insecure_for_tests(
+        gateway_addr: impl Into<String>,
+        cluster_token: impl Into<String>,
+    ) -> Self {
+        let mut config = Self::new_without_transport(gateway_addr, cluster_token);
+        config.transport = GatewayTransport::Insecure;
+        config
+    }
+
+    fn new_without_transport(
+        gateway_addr: impl Into<String>,
+        cluster_token: impl Into<String>,
+    ) -> Self {
         Self {
             gateway_addr: gateway_addr.into(),
+            cluster_token: cluster_token.into(),
+            transport: GatewayTransport::Insecure,
             connect_timeout: Duration::from_secs(5),
             operation_timeout: Duration::from_secs(10),
             heartbeat_idle_interval: Duration::from_secs(60),
@@ -103,11 +139,11 @@ impl Config {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.gateway_addr.trim().is_empty() {
+        if self.gateway_addr.trim().is_empty() || self.cluster_token.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
                 PeerObservation::NotObserved,
-                "gateway address must not be empty",
+                "gateway address and ClusterToken must not be empty",
             ));
         }
         if self.connect_timeout.is_zero()
@@ -154,6 +190,30 @@ impl Config {
 
     pub(crate) fn operation_deadline(&self) -> Result<Instant> {
         deadline_from_now("operation_timeout", self.operation_timeout)
+    }
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Config")
+            .field("gateway_addr", &self.gateway_addr)
+            .field("cluster_token", &"[REDACTED]")
+            .field("connect_timeout", &self.connect_timeout)
+            .field("operation_timeout", &self.operation_timeout)
+            .field("heartbeat_idle_interval", &self.heartbeat_idle_interval)
+            .field(
+                "heartbeat_response_timeout",
+                &self.heartbeat_response_timeout,
+            )
+            .field("reconnect_initial", &self.reconnect_initial)
+            .field("reconnect_maximum", &self.reconnect_maximum)
+            .field("offer_timeout", &self.offer_timeout)
+            .field("outbound_capacity", &self.outbound_capacity)
+            .field("listener_queue_capacity", &self.listener_queue_capacity)
+            .field("pipe_inbound_capacity", &self.pipe_inbound_capacity)
+            .field("max_frame_len", &self.max_frame_len)
+            .finish()
     }
 }
 

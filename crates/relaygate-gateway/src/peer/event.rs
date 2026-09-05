@@ -38,8 +38,8 @@ impl PeerTarget {
 pub(crate) struct PeerOpenRequest {
     target: PeerTarget,
     open_identity: OpenIdentity,
-    client_id: String,
-    listener_session_id: SessionId,
+    destination_id: String,
+    relay_session_id: SessionId,
     binding_id: BindingId,
 }
 
@@ -47,22 +47,22 @@ impl PeerOpenRequest {
     pub(crate) fn new(
         target: PeerTarget,
         open_identity: OpenIdentity,
-        client_id: impl Into<String>,
-        listener_session_id: SessionId,
+        destination_id: impl Into<String>,
+        relay_session_id: SessionId,
         binding_id: BindingId,
     ) -> Result<Self, PeerFailure> {
-        let client_id = client_id.into();
-        if client_id.is_empty() {
+        let destination_id = destination_id.into();
+        if destination_id.is_empty() {
             return Err(PeerFailure::not_observed(
                 ErrorCode::InvalidArgument,
-                "peer OPEN ClientId must not be empty",
+                "peer OPEN DestinationId must not be empty",
             ));
         }
         Ok(Self {
             target,
             open_identity,
-            client_id,
-            listener_session_id,
+            destination_id,
+            relay_session_id,
             binding_id,
         })
     }
@@ -78,13 +78,13 @@ impl PeerOpenRequest {
     }
 
     #[must_use]
-    pub(crate) fn client_id(&self) -> &str {
-        &self.client_id
+    pub(crate) fn destination_id(&self) -> &str {
+        &self.destination_id
     }
 
     #[must_use]
-    pub(crate) const fn listener_session_id(&self) -> SessionId {
-        self.listener_session_id
+    pub(crate) const fn relay_session_id(&self) -> SessionId {
+        self.relay_session_id
     }
 
     #[must_use]
@@ -114,20 +114,6 @@ impl PeerStreamKey {
             peer_transport_id,
             stream_id,
         }
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) const fn for_test(
-        peer_gateway_id: GatewayId,
-        peer_transport_id: PeerTransportId,
-        raw_stream_id: u64,
-    ) -> Self {
-        Self::new(
-            peer_gateway_id,
-            peer_transport_id,
-            StreamId::from_raw(raw_stream_id),
-        )
     }
 
     #[must_use]
@@ -237,8 +223,8 @@ pub(crate) enum PeerEvent {
     IncomingOpen {
         key: PeerStreamKey,
         open_identity: OpenIdentity,
-        client_id: String,
-        listener_session_id: SessionId,
+        destination_id: String,
+        relay_session_id: SessionId,
         binding_id: BindingId,
     },
     Opened {

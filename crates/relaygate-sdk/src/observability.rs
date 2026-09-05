@@ -1,24 +1,18 @@
 use std::time::Instant;
 
-use relaygate_protocol::SessionRole;
-
 pub(crate) struct ReconnectEpisode {
-    role: &'static str,
     started_at: Instant,
     attempts: u64,
 }
 
 impl ReconnectEpisode {
-    pub(crate) fn start(role: SessionRole) -> Self {
-        let role = role_name(role);
+    pub(crate) fn start() -> Self {
         tracing::info!(
             component = "sdk",
             event = "sdk.session.reconnect_started",
-            role,
             "SDK session reconnect episode started"
         );
         Self {
-            role,
             started_at: Instant::now(),
             attempts: 0,
         }
@@ -28,7 +22,6 @@ impl ReconnectEpisode {
         self.attempts = self.attempts.saturating_add(1);
         metrics::counter!(
             "relaygate_sdk_reconnect_attempts_total",
-            "role" => self.role,
             "outcome" => outcome
         )
         .increment(1);
@@ -36,15 +29,11 @@ impl ReconnectEpisode {
 
     pub(crate) fn recover(self) {
         let elapsed = self.started_at.elapsed();
-        metrics::histogram!(
-            "relaygate_sdk_reconnect_duration_seconds",
-            "role" => self.role
-        )
-        .record(elapsed.as_secs_f64());
+        metrics::histogram!("relaygate_sdk_reconnect_duration_seconds")
+            .record(elapsed.as_secs_f64());
         tracing::info!(
             component = "sdk",
             event = "sdk.session.reconnect_recovered",
-            role = self.role,
             attempts = self.attempts,
             downtime_ms = elapsed.as_millis(),
             "SDK session reconnect episode recovered"
@@ -56,7 +45,6 @@ impl ReconnectEpisode {
         tracing::info!(
             component = "sdk",
             event = "sdk.session.reconnect_closed",
-            role = self.role,
             attempts = self.attempts,
             downtime_ms = elapsed.as_millis(),
             "SDK session reconnect episode closed with its runtime"
@@ -67,13 +55,6 @@ impl ReconnectEpisode {
 pub(crate) fn close_reconnect_episode(episode: &mut Option<ReconnectEpisode>) {
     if let Some(episode) = episode.take() {
         episode.close();
-    }
-}
-
-const fn role_name(role: SessionRole) -> &'static str {
-    match role {
-        SessionRole::Connector => "connector",
-        SessionRole::Listener => "listener",
     }
 }
 
@@ -102,12 +83,12 @@ mod tests {
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             metrics::with_local_recorder(&recorder, || {
-                let mut episode = ReconnectEpisode::start(SessionRole::Listener);
+                let mut episode = ReconnectEpisode::start();
                 episode.record_attempt("error");
                 episode.record_attempt("success");
                 episode.recover();
 
-                let mut closed = Some(ReconnectEpisode::start(SessionRole::Connector));
+                let mut closed = Some(ReconnectEpisode::start());
                 if let Some(episode) = closed.as_mut() {
                     episode.record_attempt("error");
                 }
@@ -122,11 +103,16 @@ mod tests {
                 (key.key().name() == "relaygate_sdk_reconnect_attempts_total").then_some(value)
             })
             .collect::<Vec<_>>();
-        assert_eq!(attempt_values.len(), 3);
-        assert!(
+        assert_eq!(attempt_values.len(), 2);
+        assert_eq!(
             attempt_values
                 .iter()
-                .all(|value| matches!(value, DebugValue::Counter(1)))
+                .map(|value| match value {
+                    DebugValue::Counter(value) => *value,
+                    _ => 0,
+                })
+                .sum::<u64>(),
+            3
         );
 
         let durations = snapshot

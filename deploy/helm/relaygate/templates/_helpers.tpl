@@ -74,14 +74,15 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateValues" -}}
-{{- if not .Values.internalTransport.trustedLocalAdapter }}
-{{- fail "internalTransport.trustedLocalAdapter must be true to acknowledge the current local/CI plain-TCP key adapter" }}
-{{- end }}
 {{- if not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" .Release.Name) }}
 {{- fail "the Helm release name must be an RFC 1035 label so generated Service names are valid" }}
 {{- end }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "clusterDomain" "value" .Values.clusterDomain) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "credentials.existingSecret" "value" .Values.credentials.existingSecret) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.existingSecret" "value" .Values.tls.existingSecret) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.sdkServerName" "value" .Values.tls.sdkServerName) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.peerServerName" "value" .Values.tls.peerServerName) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.routeTableServerName" "value" .Values.tls.routeTableServerName) }}
 {{- $gatewayLastIndex := sub (int .Values.gateway.replicaCount) 1 -}}
 {{- $gatewayPodName := printf "%s-%d" (include "relaygate.gatewayName" .) $gatewayLastIndex -}}
 {{- $gatewayHostname := printf "%s.%s.%s.svc.%s" $gatewayPodName (include "relaygate.gatewayPeerServiceName" .) .Release.Namespace .Values.clusterDomain -}}
@@ -135,7 +136,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateGatewayExtraEnv" -}}
-{{- $managed := list "POD_NAME" "POD_NAMESPACE" "RELAYGATE_BIND_ADDR" "RELAYGATE_PEER_BIND_ADDR" "RELAYGATE_RT_TRUSTED_LOCAL" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_GATEWAY_NAME" "RELAYGATE_GATEWAY_LOCATOR" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_CLIENT_KEYS" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_DRAIN_TIMEOUT_MS" "RELAYGATE_STATS_INTERVAL_MS" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
+{{- $managed := list "POD_NAME" "POD_NAMESPACE" "RELAYGATE_BIND_ADDR" "RELAYGATE_PEER_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_GATEWAY_NAME" "RELAYGATE_GATEWAY_LOCATOR" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_CLUSTER_TOKEN" "RELAYGATE_NEXT_CLUSTER_TOKEN" "RELAYGATE_SDK_TLS_CA_PATH" "RELAYGATE_SDK_TLS_CERT_PATH" "RELAYGATE_SDK_TLS_KEY_PATH" "RELAYGATE_SDK_TLS_SERVER_NAME" "RELAYGATE_INTERNAL_TLS_CA_PATH" "RELAYGATE_INTERNAL_TLS_CERT_PATH" "RELAYGATE_INTERNAL_TLS_KEY_PATH" "RELAYGATE_PEER_TLS_SERVER_NAME" "RELAYGATE_RT_TLS_SERVER_NAME" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_DRAIN_TIMEOUT_MS" "RELAYGATE_STATS_INTERVAL_MS" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
 {{- range .Values.gateway.extraEnv }}
 {{- if has .name $managed }}
 {{- fail (printf "gateway.extraEnv cannot override chart-managed variable %s" .name) }}
@@ -150,7 +151,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail (printf "gateway.podLabels cannot override chart-managed label %s" $key) }}
 {{- end }}
 {{- end }}
-{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
+{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
 {{- range $key, $_ := .Values.gateway.podAnnotations }}
 {{- if has $key $reservedAnnotations }}
 {{- fail (printf "gateway.podAnnotations cannot override chart-managed annotation %s" $key) }}
@@ -159,7 +160,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateRouteTableExtraEnv" -}}
-{{- $managed := list "POD_INDEX" "RELAYGATE_RT_TRUSTED_LOCAL" "RELAYGATE_RT_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_RT_SHARD_ID" "RELAYGATE_RT_LEASE_TTL_MS" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
+{{- $managed := list "POD_INDEX" "RELAYGATE_RT_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_RT_SHARD_ID" "RELAYGATE_RT_LEASE_TTL_MS" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_INTERNAL_TLS_CA_PATH" "RELAYGATE_INTERNAL_TLS_CERT_PATH" "RELAYGATE_INTERNAL_TLS_KEY_PATH" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
 {{- range .Values.routeTable.extraEnv }}
 {{- if has .name $managed }}
 {{- fail (printf "routeTable.extraEnv cannot override chart-managed variable %s" .name) }}
@@ -174,7 +175,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail (printf "routeTable.podLabels cannot override chart-managed label %s" $key) }}
 {{- end }}
 {{- end }}
-{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
+{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
 {{- range $key, $_ := .Values.routeTable.podAnnotations }}
 {{- if has $key $reservedAnnotations }}
 {{- fail (printf "routeTable.podAnnotations cannot override chart-managed annotation %s" $key) }}

@@ -4,14 +4,14 @@ use std::{
 };
 
 use crate::{
-    BindingId, ClientId, GatewayId, GatewayLocator, LeaseId, ListenerSessionId,
-    RegistrationRevision, RouteTableError, ShardId,
+    BindingId, DestinationId, GatewayId, GatewayLocator, LeaseId, RegistrationRevision,
+    RelaySessionId, RouteTableError, ShardId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RegistrationKey {
     gateway_id: GatewayId,
-    listener_session_id: ListenerSessionId,
+    relay_session_id: RelaySessionId,
     shard_id: ShardId,
 }
 
@@ -19,12 +19,12 @@ impl RegistrationKey {
     #[must_use]
     pub const fn new(
         gateway_id: GatewayId,
-        listener_session_id: ListenerSessionId,
+        relay_session_id: RelaySessionId,
         shard_id: ShardId,
     ) -> Self {
         Self {
             gateway_id,
-            listener_session_id,
+            relay_session_id,
             shard_id,
         }
     }
@@ -35,8 +35,8 @@ impl RegistrationKey {
     }
 
     #[must_use]
-    pub const fn listener_session_id(&self) -> ListenerSessionId {
-        self.listener_session_id
+    pub const fn relay_session_id(&self) -> RelaySessionId {
+        self.relay_session_id
     }
 
     #[must_use]
@@ -48,7 +48,7 @@ impl RegistrationKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MappingIdentity {
     gateway_id: GatewayId,
-    listener_session_id: ListenerSessionId,
+    relay_session_id: RelaySessionId,
     binding_id: BindingId,
 }
 
@@ -56,12 +56,12 @@ impl MappingIdentity {
     #[must_use]
     pub const fn new(
         gateway_id: GatewayId,
-        listener_session_id: ListenerSessionId,
+        relay_session_id: RelaySessionId,
         binding_id: BindingId,
     ) -> Self {
         Self {
             gateway_id,
-            listener_session_id,
+            relay_session_id,
             binding_id,
         }
     }
@@ -72,8 +72,8 @@ impl MappingIdentity {
     }
 
     #[must_use]
-    pub const fn listener_session_id(self) -> ListenerSessionId {
-        self.listener_session_id
+    pub const fn relay_session_id(self) -> RelaySessionId {
+        self.relay_session_id
     }
 
     #[must_use]
@@ -84,7 +84,7 @@ impl MappingIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappingEntry {
-    client_id: ClientId,
+    destination_id: DestinationId,
     identity: MappingIdentity,
     gateway_locator: GatewayLocator,
 }
@@ -92,22 +92,22 @@ pub struct MappingEntry {
 impl MappingEntry {
     #[must_use]
     pub const fn new(
-        client_id: ClientId,
+        destination_id: DestinationId,
         gateway_id: GatewayId,
-        listener_session_id: ListenerSessionId,
+        relay_session_id: RelaySessionId,
         binding_id: BindingId,
         gateway_locator: GatewayLocator,
     ) -> Self {
         Self {
-            client_id,
-            identity: MappingIdentity::new(gateway_id, listener_session_id, binding_id),
+            destination_id,
+            identity: MappingIdentity::new(gateway_id, relay_session_id, binding_id),
             gateway_locator,
         }
     }
 
     #[must_use]
-    pub fn client_id(&self) -> &ClientId {
-        &self.client_id
+    pub fn destination_id(&self) -> &DestinationId {
+        &self.destination_id
     }
 
     #[must_use]
@@ -136,12 +136,13 @@ impl MappingSnapshot {
             let identity = entry.identity();
             let session_client = (
                 identity.gateway_id(),
-                identity.listener_session_id(),
-                entry.client_id().clone(),
+                identity.relay_session_id(),
+                entry.destination_id().clone(),
             );
             if !by_session_client.insert(session_client) {
                 return Err(RouteTableError::InvalidArgument(
-                    "snapshot contains duplicate ClientId scope for one ListenerSession".to_owned(),
+                    "snapshot contains duplicate DestinationId scope for one RelaySession"
+                        .to_owned(),
                 ));
             }
             if by_identity.insert(identity, entry).is_some() {
@@ -201,12 +202,12 @@ impl BindingSet {
                 "BindingSet must contain at least one mapping".to_owned(),
             ));
         };
-        let client_id = first.client_id();
+        let destination_id = first.destination_id();
         let mut identities = HashSet::with_capacity(entries.len());
         for entry in &entries {
-            if entry.client_id() != client_id {
+            if entry.destination_id() != destination_id {
                 return Err(RouteTableError::InvalidArgument(
-                    "BindingSet mappings must share one ClientId".to_owned(),
+                    "BindingSet mappings must share one DestinationId".to_owned(),
                 ));
             }
             if !identities.insert(entry.identity()) {

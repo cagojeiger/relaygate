@@ -7,8 +7,6 @@ use relaygate_protocol::{ErrorCode, PeerObservation};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{ManagerCommand, SharedCounts, TransportRegistry};
-#[cfg(test)]
-use crate::peer::config::ResetCommitGate;
 use crate::peer::{
     event::{PeerCounts, PeerFailure, PeerOpenRequest, PeerStreamKey},
     identity::OpenIdentity,
@@ -20,8 +18,6 @@ pub(crate) struct PeerHandle {
     commands: mpsc::Sender<ManagerCommand>,
     transports: TransportRegistry,
     counts: Arc<SharedCounts>,
-    #[cfg(test)]
-    reset_commit_gate: Option<ResetCommitGate>,
 }
 
 impl std::fmt::Debug for PeerHandle {
@@ -38,14 +34,11 @@ impl PeerHandle {
         commands: mpsc::Sender<ManagerCommand>,
         transports: TransportRegistry,
         counts: Arc<SharedCounts>,
-        #[cfg(test)] reset_commit_gate: Option<ResetCommitGate>,
     ) -> Self {
         Self {
             commands,
             transports,
             counts,
-            #[cfg(test)]
-            reset_commit_gate,
         }
     }
 
@@ -162,18 +155,6 @@ impl PeerHandle {
         code: ErrorCode,
         message: impl Into<String>,
     ) -> Result<(), PeerFailure> {
-        #[cfg(test)]
-        if self
-            .reset_commit_gate
-            .as_ref()
-            .is_some_and(ResetCommitGate::trip)
-        {
-            return Err(PeerFailure::maybe_observed(
-                ErrorCode::ResourceExhausted,
-                "test reset commit gate rejected RESET before manager commit",
-            ));
-        }
-
         let (reply, response) = oneshot::channel();
         if let Err(error) = self.try_manager_send(
             ManagerCommand::Reset {

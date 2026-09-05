@@ -9,11 +9,12 @@ use std::{
 };
 
 use relaygate_route_table::{
-    GatewayId, ListenerSessionId, RegistrationKey, ShardDirectoryGeneration, ShardEndpoint, ShardId,
+    GatewayId, RegistrationKey, RelaySessionId, ShardDirectoryGeneration, ShardEndpoint, ShardId,
 };
 use relaygate_route_table_transport::{
     GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig, TransportError,
 };
+use relaygate_transport::ClientTlsConfig;
 use tokio::{
     sync::{mpsc, watch},
     time::{Instant, MissedTickBehavior},
@@ -42,7 +43,7 @@ pub(super) struct WorkerCounts {
 }
 
 impl WorkerCounts {
-    pub(super) fn update(&self, registrations: &BTreeMap<ListenerSessionId, RegistrationState>) {
+    pub(super) fn update(&self, registrations: &BTreeMap<RelaySessionId, RegistrationState>) {
         let (synced, unsynced, terminal) = registrations
             .values()
             .filter(|state| state.is_desired())
@@ -98,6 +99,7 @@ pub(super) struct ShardWorkerConfig {
     pub(super) gateway_name: GatewayName,
     pub(super) internal_gateway_key: InternalGatewayKey,
     pub(super) client_config: RouteTableClientConfig,
+    pub(super) tls: Option<ClientTlsConfig>,
     pub(super) reconnect_initial: Duration,
     pub(super) reconnect_max: Duration,
     pub(super) scan_interval: Duration,
@@ -366,7 +368,7 @@ fn duration_from_nanos(nanos: u128) -> Duration {
 fn reconcile_desired(
     config: &ShardWorkerConfig,
     desired: &DesiredStore,
-    registrations: &mut BTreeMap<ListenerSessionId, RegistrationState>,
+    registrations: &mut BTreeMap<RelaySessionId, RegistrationState>,
     observed_version: &mut u64,
     now: Instant,
 ) -> Result<(), RoutingError> {
@@ -399,7 +401,7 @@ fn reconcile_desired(
 }
 
 fn begin_registration_operation(
-    registrations: &mut BTreeMap<ListenerSessionId, RegistrationState>,
+    registrations: &mut BTreeMap<RelaySessionId, RegistrationState>,
     now: Instant,
 ) -> Result<Option<OperationTicket>, &'static str> {
     for state in registrations.values_mut() {
@@ -411,7 +413,7 @@ fn begin_registration_operation(
 }
 
 fn mark_connection_lost(
-    registrations: &mut BTreeMap<ListenerSessionId, RegistrationState>,
+    registrations: &mut BTreeMap<RelaySessionId, RegistrationState>,
     now: Instant,
 ) {
     for state in registrations.values_mut() {
@@ -419,7 +421,7 @@ fn mark_connection_lost(
     }
 }
 
-fn mark_all_terminal(registrations: &mut BTreeMap<ListenerSessionId, RegistrationState>) {
+fn mark_all_terminal(registrations: &mut BTreeMap<RelaySessionId, RegistrationState>) {
     for state in registrations.values_mut() {
         state.mark_terminal();
     }
@@ -431,15 +433,31 @@ fn connect_once(config: &ShardWorkerConfig) -> BoxFuture<Result<RouteTableClient
     let gateway_id = config.gateway_id;
     let key = config.internal_gateway_key.clone();
     let client = config.client_config;
+    let tls = config.tls.clone();
     Box::pin(async move {
-        RouteTableClient::connect(endpoint, gateway_name, gateway_id, key, client).await
+        match tls {
+            Some(tls) => {
+                RouteTableClient::connect_secure(
+                    endpoint,
+                    gateway_name,
+                    gateway_id,
+                    key,
+                    client,
+                    tls,
+                )
+                .await
+            }
+            None => {
+                RouteTableClient::connect(endpoint, gateway_name, gateway_id, key, client).await
+            }
+        }
     })
 }
 
 async fn best_effort_deregister(
     client: &RouteTableClient,
     generation: ShardDirectoryGeneration,
-    registrations: &BTreeMap<ListenerSessionId, RegistrationState>,
+    registrations: &BTreeMap<RelaySessionId, RegistrationState>,
     timeout: Duration,
 ) {
     let deregister = async {

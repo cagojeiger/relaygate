@@ -5,8 +5,12 @@ use relaygate_route_table::{RouteTableConfig, RouteTableShard, ShardDirectory, S
 use relaygate_route_table_transport::{
     GatewayName, InternalGatewayKey, RouteTableServiceConfig, TrustedGatewayKeys,
 };
+use relaygate_transport::ServerTlsConfig;
 
-use super::{optional_duration_millis, optional_usize, parse_gateway_credentials};
+use super::{
+    insecure_test_transport, load_internal_tls, optional_duration_millis, optional_usize,
+    parse_gateway_credentials,
+};
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:27430";
 const DEFAULT_SHARD_ID: &str = "rt-0";
@@ -23,11 +27,16 @@ pub(crate) struct RouteTableRuntimeConfig {
     pub(crate) trusted_gateways: TrustedGatewayKeys,
     pub(crate) service: RouteTableServiceConfig,
     pub(crate) configured_gateways: usize,
+    pub(crate) tls: Option<ServerTlsConfig>,
 }
 
 impl RouteTableRuntimeConfig {
     pub(crate) fn from_env() -> Result<Self> {
-        require_trusted_local_opt_in(env::var("RELAYGATE_RT_TRUSTED_LOCAL").ok().as_deref())?;
+        let insecure = insecure_test_transport();
+        require_trusted_local_opt_in(
+            insecure,
+            env::var("RELAYGATE_RT_TRUSTED_LOCAL").ok().as_deref(),
+        )?;
         let bind_address =
             env::var("RELAYGATE_RT_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned());
         let directory_path = env::var("RELAYGATE_RT_SHARD_DIRECTORY_PATH")
@@ -67,6 +76,16 @@ impl RouteTableRuntimeConfig {
             optional_duration_millis("RELAYGATE_RT_HANDSHAKE_TIMEOUT_MS")?
                 .unwrap_or(DEFAULT_HANDSHAKE_TIMEOUT),
         )?;
+        let tls = if insecure {
+            None
+        } else {
+            let material = load_internal_tls()?;
+            Some(ServerTlsConfig::mutually_authenticated(
+                &material.ca,
+                &material.certificate,
+                &material.private_key,
+            )?)
+        };
 
         Ok(Self {
             bind_address,
@@ -74,14 +93,20 @@ impl RouteTableRuntimeConfig {
             trusted_gateways,
             service,
             configured_gateways,
+            tls,
         })
     }
 }
 
-fn require_trusted_local_opt_in(value: Option<&str>) -> Result<()> {
-    if value != Some("true") {
+fn require_trusted_local_opt_in(insecure: bool, value: Option<&str>) -> Result<()> {
+    if insecure && value != Some("true") {
         bail!(
             "RELAYGATE_RT_TRUSTED_LOCAL must be `true` to enable the local/CI plain-TCP key adapter"
+        );
+    }
+    if !insecure && value.is_some() {
+        bail!(
+            "RELAYGATE_RT_TRUSTED_LOCAL is only valid with RELAYGATE_INSECURE_TEST_TRANSPORT=true"
         );
     }
     Ok(())
@@ -93,9 +118,11 @@ mod tests {
 
     #[test]
     fn trusted_local_adapter_requires_exact_opt_in() {
-        assert!(require_trusted_local_opt_in(None).is_err());
-        assert!(require_trusted_local_opt_in(Some("false")).is_err());
-        assert!(require_trusted_local_opt_in(Some("TRUE")).is_err());
-        assert!(require_trusted_local_opt_in(Some("true")).is_ok());
+        assert!(require_trusted_local_opt_in(true, None).is_err());
+        assert!(require_trusted_local_opt_in(true, Some("false")).is_err());
+        assert!(require_trusted_local_opt_in(true, Some("TRUE")).is_err());
+        assert!(require_trusted_local_opt_in(true, Some("true")).is_ok());
+        assert!(require_trusted_local_opt_in(false, None).is_ok());
+        assert!(require_trusted_local_opt_in(false, Some("true")).is_err());
     }
 }

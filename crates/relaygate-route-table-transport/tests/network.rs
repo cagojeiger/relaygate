@@ -2,7 +2,7 @@ mod support;
 
 use std::time::Duration;
 
-use relaygate_route_table::{ClientId, LeaseId, RegistrationRevision};
+use relaygate_route_table::{DestinationId, LeaseId, RegistrationRevision};
 use relaygate_route_table_transport::ErrorCode;
 use tokio::net::TcpStream;
 use uuid::Uuid;
@@ -15,12 +15,15 @@ use support::{
 async fn full_registration_lifecycle_and_ready_empty_not_found() -> TestResult {
     let service = RunningService::start(Duration::from_secs(5), [("gw-a", "key-a")]).await?;
     let gateway_id = gateway(1);
-    let listener_session_id = session(11);
-    let key = registration_key(gateway_id, listener_session_id)?;
+    let relay_session_id = session(11);
+    let key = registration_key(gateway_id, relay_session_id)?;
     let client = service.connect("gw-a", gateway_id, "key-a").await?;
-    let client_id = ClientId::new("echo.a")?;
+    let destination_id = DestinationId::new("11111111-1111-4111-8111-111111111111")?;
 
-    let empty = client.resolve(service.generation, &client_id).await.err();
+    let empty = client
+        .resolve(service.generation, &destination_id)
+        .await
+        .err();
     assert_eq!(empty.map(|error| error.code()), Some(ErrorCode::NotFound));
 
     let registered = client.register(service.generation, &key).await?;
@@ -28,9 +31,9 @@ async fn full_registration_lifecycle_and_ready_empty_not_found() -> TestResult {
     assert!(registered.expires_in() > Duration::ZERO);
 
     let snapshot = mapping_snapshot(
-        client_id.as_str(),
+        destination_id.as_str(),
         gateway_id,
-        listener_session_id,
+        relay_session_id,
         binding(111),
     )?;
     let updated = client
@@ -47,9 +50,9 @@ async fn full_registration_lifecycle_and_ready_empty_not_found() -> TestResult {
         Some(RegistrationRevision::FIRST)
     );
 
-    let bindings = client.resolve(service.generation, &client_id).await?;
+    let bindings = client.resolve(service.generation, &destination_id).await?;
     assert_eq!(bindings.len(), 1);
-    assert_eq!(bindings.entries()[0].client_id(), &client_id);
+    assert_eq!(bindings.entries()[0].destination_id(), &destination_id);
 
     let kept_alive = client
         .keep_alive(service.generation, &key, registered.lease_id())
@@ -62,7 +65,10 @@ async fn full_registration_lifecycle_and_ready_empty_not_found() -> TestResult {
     client
         .deregister(service.generation, &key, registered.lease_id())
         .await?;
-    let removed = client.resolve(service.generation, &client_id).await.err();
+    let removed = client
+        .resolve(service.generation, &destination_id)
+        .await
+        .err();
     assert_eq!(removed.map(|error| error.code()), Some(ErrorCode::NotFound));
 
     service.stop().await
@@ -127,7 +133,10 @@ async fn service_loss_is_reported_as_unavailable_without_reconnect() -> TestResu
     service.stop().await?;
 
     let error = client
-        .resolve(generation, &ClientId::new("echo.a")?)
+        .resolve(
+            generation,
+            &DestinationId::new("11111111-1111-4111-8111-111111111111")?,
+        )
         .await
         .err();
     assert_eq!(
@@ -140,13 +149,13 @@ async fn service_loss_is_reported_as_unavailable_without_reconnect() -> TestResu
 #[tokio::test]
 async fn restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot() -> TestResult {
     let gateway_id = gateway(1);
-    let listener_session_id = session(11);
-    let key = registration_key(gateway_id, listener_session_id)?;
-    let client_id = ClientId::new("echo.restart")?;
+    let relay_session_id = session(11);
+    let key = registration_key(gateway_id, relay_session_id)?;
+    let destination_id = DestinationId::new("22222222-2222-4222-8222-222222222222")?;
     let snapshot = mapping_snapshot(
-        client_id.as_str(),
+        destination_id.as_str(),
         gateway_id,
-        listener_session_id,
+        relay_session_id,
         binding(111),
     )?;
 
@@ -164,13 +173,16 @@ async fn restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot() -> T
             &snapshot,
         )
         .await?;
-    assert_eq!(client_a.resolve(generation, &client_id).await?.len(), 1);
+    assert_eq!(
+        client_a.resolve(generation, &destination_id).await?.len(),
+        1
+    );
     service_a.stop().await?;
 
     let service_b = RunningService::start(Duration::from_secs(5), [("gw-a", "key-a")]).await?;
     assert_eq!(service_b.generation, generation);
     let client_b = service_b.connect("gw-a", gateway_id, "key-a").await?;
-    let empty = client_b.resolve(generation, &client_id).await.err();
+    let empty = client_b.resolve(generation, &destination_id).await.err();
     assert_eq!(empty.map(|error| error.code()), Some(ErrorCode::NotFound));
 
     let stale_keep_alive = client_b.keep_alive(generation, &key, old_lease).await.err();
@@ -204,9 +216,9 @@ async fn restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot() -> T
             &snapshot,
         )
         .await?;
-    let restored = client_b.resolve(generation, &client_id).await?;
+    let restored = client_b.resolve(generation, &destination_id).await?;
     assert_eq!(restored.len(), 1);
-    assert_eq!(restored.entries()[0].client_id(), &client_id);
+    assert_eq!(restored.entries()[0].destination_id(), &destination_id);
     service_b.stop().await
 }
 
@@ -254,16 +266,16 @@ async fn oversized_binding_set_returns_resource_exhausted_and_connection_stays_u
     let gateway_id = gateway(1);
     let client = service.connect("gw-a", gateway_id, "key-a").await?;
     let generation = service.generation;
-    let large_client_id = ClientId::new("echo.large")?;
+    let large_destination_id = DestinationId::new("33333333-3333-4333-8333-333333333333")?;
 
     for index in 0_u128..16 {
-        let listener_session_id = session(1_000 + index);
-        let key = registration_key(gateway_id, listener_session_id)?;
+        let relay_session_id = session(1_000 + index);
+        let key = registration_key(gateway_id, relay_session_id)?;
         let registered = client.register(generation, &key).await?;
         let snapshot = mapping_snapshot(
-            large_client_id.as_str(),
+            large_destination_id.as_str(),
             gateway_id,
-            listener_session_id,
+            relay_session_id,
             binding(2_000 + index),
         )?;
         client
@@ -277,12 +289,12 @@ async fn oversized_binding_set_returns_resource_exhausted_and_connection_stays_u
             .await?;
     }
 
-    let small_client_id = ClientId::new("echo.small")?;
+    let small_destination_id = DestinationId::new("44444444-4444-4444-8444-444444444444")?;
     let small_session = session(9_000);
     let small_key = registration_key(gateway_id, small_session)?;
     let small_registration = client.register(generation, &small_key).await?;
     let small_snapshot = mapping_snapshot(
-        small_client_id.as_str(),
+        small_destination_id.as_str(),
         gateway_id,
         small_session,
         binding(9_001),
@@ -297,14 +309,17 @@ async fn oversized_binding_set_returns_resource_exhausted_and_connection_stays_u
         )
         .await?;
 
-    let oversized = client.resolve(generation, &large_client_id).await.err();
+    let oversized = client
+        .resolve(generation, &large_destination_id)
+        .await
+        .err();
     assert_eq!(
         oversized.map(|error| error.code()),
         Some(ErrorCode::ResourceExhausted)
     );
-    let small = client.resolve(generation, &small_client_id).await?;
+    let small = client.resolve(generation, &small_destination_id).await?;
     assert_eq!(small.len(), 1);
-    assert_eq!(small.entries()[0].client_id(), &small_client_id);
+    assert_eq!(small.entries()[0].destination_id(), &small_destination_id);
 
     service.stop().await
 }

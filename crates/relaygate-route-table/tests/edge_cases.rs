@@ -3,7 +3,7 @@ mod support;
 use std::time::{Duration, Instant};
 
 use relaygate_route_table::{
-    BindingId, BindingSet, ClientId, ErrorCode, GatewayLocator, MappingEntry, MappingSnapshot,
+    BindingId, BindingSet, DestinationId, ErrorCode, GatewayLocator, MappingEntry, MappingSnapshot,
     RegistrationKey, RegistrationRevision, RequestContext, RouteTableConfig, RouteTableError,
     RouteTableShard, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
@@ -57,7 +57,7 @@ fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTable
     let ttl = Duration::from_secs(10);
     let mut shard = shard(ttl)?;
     let generation = shard.generation();
-    let client_id = client("shared")?;
+    let destination_id = client("shared")?;
 
     let gateway_one = gateway(11);
     let gateway_two = gateway(12);
@@ -127,7 +127,12 @@ fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTable
     )?;
 
     assert_eq!(shard.expire_due(start + ttl), 1);
-    let remaining = shard.resolve(context(gateway_two), generation, &client_id, start + ttl)?;
+    let remaining = shard.resolve(
+        context(gateway_two),
+        generation,
+        &destination_id,
+        start + ttl,
+    )?;
     assert_eq!(remaining.len(), 2);
     assert!(
         remaining
@@ -313,7 +318,7 @@ fn invalid_snapshot_is_rejected_before_existing_state_changes() -> Result<(), Ro
 
     let wrong_session = session(411);
     let out_of_scope = MappingSnapshot::new([MappingEntry::new(
-        ClientId::new("beta")?,
+        DestinationId::new("f44e64e7-5f39-48e9-b73f-8dfa94721c4c")?,
         gateway_id,
         wrong_session,
         BindingId::from_uuid(Uuid::from_u128(4102)),
@@ -391,16 +396,16 @@ fn empty_and_duplicate_snapshot_shapes_are_rejected() -> Result<(), RouteTableEr
 
     let gateway_id = gateway(61);
     let session_id = session(610);
-    let client_id = ClientId::new("duplicate")?;
+    let destination_id = DestinationId::new("e9f1e8e5-7d18-4a65-8c1c-b695d74eab6a")?;
     let first = MappingEntry::new(
-        client_id.clone(),
+        destination_id.clone(),
         gateway_id,
         session_id,
         binding(6101),
         GatewayLocator::new("gw")?,
     );
     let second = MappingEntry::new(
-        client_id,
+        destination_id,
         gateway_id,
         session_id,
         binding(6102),
@@ -550,7 +555,7 @@ fn wrong_authority_snapshot_and_resolve_are_invalid_and_atomic() -> Result<(), R
 
     // SHA-256("alpha") modulo 3 selects rt-2, not this rt-0 shard.
     let wrong_authority_mapping = MappingEntry::new(
-        ClientId::new("alpha")?,
+        DestinationId::new("8ed3f6ad-685b-459e-ad70-22518e1af76c")?,
         gateway_id,
         session_id,
         binding(9101),
@@ -565,7 +570,12 @@ fn wrong_authority_snapshot_and_resolve_are_invalid_and_atomic() -> Result<(), R
         snapshot([wrong_authority_mapping])?,
         start,
     );
-    let resolve = shard.resolve(request_context, generation, &ClientId::new("alpha")?, start);
+    let resolve = shard.resolve(
+        request_context,
+        generation,
+        &DestinationId::new("8ed3f6ad-685b-459e-ad70-22518e1af76c")?,
+        start,
+    );
     assert!(matches!(
         update,
         Err(ref error) if error.code() == ErrorCode::InvalidArgument
@@ -605,7 +615,7 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
     )?;
 
     let changed_destination = MappingEntry::new(
-        ClientId::new("beta")?,
+        DestinationId::new("f44e64e7-5f39-48e9-b73f-8dfa94721c4c")?,
         gateway_id,
         session_id,
         binding_id,
@@ -626,7 +636,7 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
     ));
 
     let changed_locator = MappingEntry::new(
-        ClientId::new("alpha")?,
+        DestinationId::new("8ed3f6ad-685b-459e-ad70-22518e1af76c")?,
         gateway_id,
         session_id,
         binding_id,
@@ -651,7 +661,7 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
             .resolve(
                 request_context,
                 generation,
-                &ClientId::new("alpha")?,
+                &DestinationId::new("8ed3f6ad-685b-459e-ad70-22518e1af76c")?,
                 start + Duration::from_secs(2),
             )?
             .entries(),
@@ -661,7 +671,7 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
         shard.resolve(
             request_context,
             generation,
-            &ClientId::new("beta")?,
+            &DestinationId::new("f44e64e7-5f39-48e9-b73f-8dfa94721c4c")?,
             start + Duration::from_secs(2),
         ),
         Err(RouteTableError::NotFound)

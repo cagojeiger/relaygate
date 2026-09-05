@@ -3,8 +3,8 @@
 use std::{error::Error, net::SocketAddr, time::Duration};
 
 use relaygate_route_table::{
-    BindingId, ClientId, GatewayId, GatewayLocator, ListenerSessionId, MappingEntry,
-    MappingSnapshot, RegistrationKey, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
+    BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot,
+    RegistrationKey, RelaySessionId, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
     GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig, RouteTableService,
@@ -115,8 +115,8 @@ pub const fn gateway(value: u128) -> GatewayId {
     GatewayId::from_uuid(Uuid::from_u128(value))
 }
 
-pub const fn session(value: u128) -> ListenerSessionId {
-    ListenerSessionId::from_uuid(Uuid::from_u128(value))
+pub const fn session(value: u128) -> RelaySessionId {
+    RelaySessionId::from_uuid(Uuid::from_u128(value))
 }
 
 pub const fn binding(value: u128) -> BindingId {
@@ -125,25 +125,25 @@ pub const fn binding(value: u128) -> BindingId {
 
 pub fn registration_key(
     gateway_id: GatewayId,
-    listener_session_id: ListenerSessionId,
+    relay_session_id: RelaySessionId,
 ) -> TestResult<RegistrationKey> {
     Ok(RegistrationKey::new(
         gateway_id,
-        listener_session_id,
+        relay_session_id,
         ShardId::new("rt-0")?,
     ))
 }
 
 pub fn mapping_snapshot(
-    client_id: &str,
+    destination_id: &str,
     gateway_id: GatewayId,
-    listener_session_id: ListenerSessionId,
+    relay_session_id: RelaySessionId,
     binding_id: BindingId,
 ) -> TestResult<MappingSnapshot> {
     Ok(MappingSnapshot::new([MappingEntry::new(
-        ClientId::new(client_id)?,
+        DestinationId::new(destination_id)?,
         gateway_id,
-        listener_session_id,
+        relay_session_id,
         binding_id,
         GatewayLocator::new(format!("gw-{gateway_id}:27431"))?,
     )])?)

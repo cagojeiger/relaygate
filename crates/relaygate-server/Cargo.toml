@@ -17,6 +17,7 @@ metrics-exporter-prometheus.workspace = true
 relaygate-gateway.workspace = true
 relaygate-route-table.workspace = true
 relaygate-route-table-transport.workspace = true
+relaygate-transport.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

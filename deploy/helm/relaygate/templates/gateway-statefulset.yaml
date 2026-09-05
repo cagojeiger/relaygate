@@ -20,6 +20,7 @@ spec:
       annotations:
         checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
         relaygate.io/credentials-reload: {{ .Values.credentials.reloadToken | quote }}
+        relaygate.io/tls-reload: {{ .Values.tls.reloadToken | quote }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"
@@ -77,8 +78,6 @@ spec:
               value: "0.0.0.0:{{ .Values.gateway.sdkPort }}"
             - name: RELAYGATE_PEER_BIND_ADDR
               value: "0.0.0.0:{{ .Values.gateway.peerPort }}"
-            - name: RELAYGATE_RT_TRUSTED_LOCAL
-              value: "true"
             - name: RELAYGATE_RT_SHARD_DIRECTORY_PATH
               value: /etc/relaygate/shard-directory.json
             - name: RELAYGATE_GATEWAY_NAME
@@ -90,11 +89,35 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.credentials.existingSecret | quote }}
                   key: {{ .Values.credentials.internalGatewayKeysKey | quote }}
-            - name: RELAYGATE_CLIENT_KEYS
+            - name: RELAYGATE_CLUSTER_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.credentials.existingSecret | quote }}
-                  key: {{ .Values.credentials.clientKeysKey | quote }}
+                  key: {{ .Values.credentials.clusterTokenKey | quote }}
+            - name: RELAYGATE_NEXT_CLUSTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.existingSecret | quote }}
+                  key: {{ .Values.credentials.nextClusterTokenKey | quote }}
+                  optional: true
+            - name: RELAYGATE_SDK_TLS_CA_PATH
+              value: /etc/relaygate/tls/ca.crt
+            - name: RELAYGATE_SDK_TLS_CERT_PATH
+              value: /etc/relaygate/tls/tls.crt
+            - name: RELAYGATE_SDK_TLS_KEY_PATH
+              value: /etc/relaygate/tls/tls.key
+            - name: RELAYGATE_SDK_TLS_SERVER_NAME
+              value: {{ .Values.tls.sdkServerName | quote }}
+            - name: RELAYGATE_INTERNAL_TLS_CA_PATH
+              value: /etc/relaygate/tls/ca.crt
+            - name: RELAYGATE_INTERNAL_TLS_CERT_PATH
+              value: /etc/relaygate/tls/tls.crt
+            - name: RELAYGATE_INTERNAL_TLS_KEY_PATH
+              value: /etc/relaygate/tls/tls.key
+            - name: RELAYGATE_PEER_TLS_SERVER_NAME
+              value: {{ .Values.tls.peerServerName | quote }}
+            - name: RELAYGATE_RT_TLS_SERVER_NAME
+              value: {{ .Values.tls.routeTableServerName | quote }}
             - name: RELAYGATE_LOG
               value: {{ .Values.gateway.log | quote }}
             - name: RELAYGATE_LOG_FORMAT
@@ -144,11 +167,25 @@ spec:
             - name: shard-directory
               mountPath: /etc/relaygate
               readOnly: true
+            - name: tls
+              mountPath: /etc/relaygate/tls
+              readOnly: true
       volumes:
         - name: shard-directory
           configMap:
             name: {{ include "relaygate.shardDirectoryName" . | quote }}
             defaultMode: 0444
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.tls.caKey | quote }}
+                path: ca.crt
+              - key: {{ .Values.tls.gatewayCertificateKey | quote }}
+                path: tls.crt
+              - key: {{ .Values.tls.gatewayPrivateKeyKey | quote }}
+                path: tls.key
       {{- with .Values.gateway.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -4,8 +4,8 @@
   "additionalProperties": false,
   "required": [
     "clusterDomain",
-    "internalTransport",
     "credentials",
+    "tls",
     "serviceAccount",
     "podSecurityContext",
     "containerSecurityContext",
@@ -19,16 +19,6 @@
       "minLength": 1,
       "maxLength": 253,
       "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
-    },
-    "internalTransport": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["trustedLocalAdapter"],
-      "properties": {
-        "trustedLocalAdapter": {
-          "type": "boolean"
-        }
-      }
     },
     "imagePullSecrets": {
       "type": "array",
@@ -52,7 +42,8 @@
       "required": [
         "existingSecret",
         "internalGatewayKeysKey",
-        "clientKeysKey",
+        "clusterTokenKey",
+        "nextClusterTokenKey",
         "reloadToken"
       ],
       "properties": {
@@ -68,7 +59,13 @@
           "maxLength": 253,
           "pattern": "^[-._a-zA-Z0-9]+$"
         },
-        "clientKeysKey": {
+        "clusterTokenKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[-._a-zA-Z0-9]+$"
+        },
+        "nextClusterTokenKey": {
           "type": "string",
           "minLength": 1,
           "maxLength": 253,
@@ -77,6 +74,34 @@
         "reloadToken": {
           "type": "string"
         }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "existingSecret",
+        "caKey",
+        "gatewayCertificateKey",
+        "gatewayPrivateKeyKey",
+        "routeTableCertificateKey",
+        "routeTablePrivateKeyKey",
+        "sdkServerName",
+        "peerServerName",
+        "routeTableServerName",
+        "reloadToken"
+      ],
+      "properties": {
+        "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
+        "caKey": { "$ref": "#/definitions/secretKey" },
+        "gatewayCertificateKey": { "$ref": "#/definitions/secretKey" },
+        "gatewayPrivateKeyKey": { "$ref": "#/definitions/secretKey" },
+        "routeTableCertificateKey": { "$ref": "#/definitions/secretKey" },
+        "routeTablePrivateKeyKey": { "$ref": "#/definitions/secretKey" },
+        "sdkServerName": { "$ref": "#/definitions/dnsSubdomain" },
+        "peerServerName": { "$ref": "#/definitions/dnsSubdomain" },
+        "routeTableServerName": { "$ref": "#/definitions/dnsSubdomain" },
+        "reloadToken": { "type": "string" }
       }
     },
     "serviceAccount": {
@@ -315,6 +340,18 @@
     }
   },
   "definitions": {
+    "dnsSubdomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "secretKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[-._a-zA-Z0-9]+$"
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,

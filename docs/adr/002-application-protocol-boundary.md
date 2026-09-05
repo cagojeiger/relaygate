@@ -2,10 +2,12 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Superseded by ADR 011 |
 | 전제 | [ADR 001](001-relayed-pipe-responsibility-boundary.md) |
 
 ## 맥락
+
+Destination별 ClientKey 결정은 ADR 011이 대체하며 application protocol 경계는 유지한다.
 
 RelayGate가 payload 의미와 end-to-end 정책까지 소유하면 모든 application 요구가 relay core에 결합된다.
 

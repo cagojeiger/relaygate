@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use relaygate_route_table::{ListenerSessionId, ShardDirectoryGeneration};
+use relaygate_route_table::{RelaySessionId, ShardDirectoryGeneration};
 use relaygate_route_table_transport::{ErrorCode, RouteTableClient, TransportError};
 use tokio::time::Instant;
 
@@ -57,7 +57,7 @@ pub(super) fn execute_operation(
 }
 
 pub(super) fn apply_epoch_scoped_operation_completion(
-    registrations: &mut BTreeMap<ListenerSessionId, RegistrationState>,
+    registrations: &mut BTreeMap<RelaySessionId, RegistrationState>,
     completion: &OperationCompletion,
     current_epoch: Option<u64>,
     now: Instant,
@@ -74,7 +74,7 @@ pub(super) fn apply_epoch_scoped_operation_completion(
 /// Applies a completion only to the RegistrationKey captured in its ticket.
 /// Returns the transport error so the worker can update shared connection state.
 fn apply_operation_completion(
-    registrations: &mut BTreeMap<ListenerSessionId, RegistrationState>,
+    registrations: &mut BTreeMap<RelaySessionId, RegistrationState>,
     completion: &OperationCompletion,
     now: Instant,
 ) -> Option<TransportError> {
@@ -121,7 +121,7 @@ fn apply_operation_completion(
 }
 
 fn registration_for_ticket<'a>(
-    registrations: &'a mut BTreeMap<ListenerSessionId, RegistrationState>,
+    registrations: &'a mut BTreeMap<RelaySessionId, RegistrationState>,
     ticket: &OperationTicket,
 ) -> Option<&'a mut RegistrationState> {
     let key = match &ticket.action {
@@ -130,7 +130,7 @@ fn registration_for_ticket<'a>(
         | RegistrationAction::KeepAlive { key, .. }
         | RegistrationAction::Deregister { key, .. } => key,
     };
-    registrations.get_mut(&key.listener_session_id())
+    registrations.get_mut(&key.relay_session_id())
 }
 
 pub(in crate::routing) const fn is_connection_error(code: ErrorCode) -> bool {

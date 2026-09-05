@@ -218,7 +218,7 @@ impl PipeState {
                 tracing::debug!(
                     component = "sdk",
                     event = "sdk.pipe.terminal",
-                    connector_session_id = %self.id.connector_session_id().as_uuid(),
+                    connector_session_id = %self.id.origin_session_id().as_uuid(),
                     connection_id = self.id.connection_id(),
                     outcome = "failed",
                     error_code = ?error_code,
@@ -229,7 +229,7 @@ impl PipeState {
                 tracing::debug!(
                     component = "sdk",
                     event = "sdk.pipe.terminal",
-                    connector_session_id = %self.id.connector_session_id().as_uuid(),
+                    connector_session_id = %self.id.origin_session_id().as_uuid(),
                     connection_id = self.id.connection_id(),
                     outcome = "closed",
                     "Pipe closed"

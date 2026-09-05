@@ -5,6 +5,7 @@ mod response;
 use std::{fmt, sync::Arc, time::Duration};
 
 use relaygate_route_table::RouteTableShard;
+use relaygate_transport::{ServerTlsConfig, insecure_boxed};
 use tokio::{
     net::TcpListener,
     sync::{Semaphore, mpsc},
@@ -56,6 +57,7 @@ pub struct RouteTableService {
     shard: RouteTableShard,
     trusted_gateway_keys: TrustedGatewayKeys,
     config: RouteTableServiceConfig,
+    tls: Option<ServerTlsConfig>,
 }
 
 impl RouteTableService {
@@ -69,7 +71,14 @@ impl RouteTableService {
             shard,
             trusted_gateway_keys,
             config,
+            tls: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_tls(mut self, tls: ServerTlsConfig) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     pub async fn serve(
@@ -99,6 +108,7 @@ impl RouteTableService {
             shard,
             trusted_gateway_keys,
             config,
+            tls,
         } = self;
         let keys = Arc::new(trusted_gateway_keys);
         let permits = Arc::new(Semaphore::new(config.max_connections));
@@ -155,8 +165,29 @@ impl RouteTableService {
                             let keys = Arc::clone(&keys);
                             let requests = requests.clone();
                             let connection_shutdown = runtime_shutdown.child_token();
+                            let tls = tls.clone();
                             connections.spawn(async move {
                                 let _permit = permit;
+                                let stream = match tls {
+                                    Some(tls) => match tokio::time::timeout(
+                                        config.handshake_timeout,
+                                        tls.accept_boxed(stream),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(stream)) => stream,
+                                        Ok(Err(error)) => {
+                                            tracing::debug!(
+                                                event = "route_table.tls.rejected",
+                                                %error,
+                                                "RouteTable TLS handshake failed"
+                                            );
+                                            return;
+                                        }
+                                        Err(_) => return,
+                                    },
+                                    None => insecure_boxed(stream),
+                                };
                                 handle_connection(
                                     stream,
                                     keys,
@@ -167,7 +198,11 @@ impl RouteTableService {
                             });
                         }
                         Err(_) => {
-                            reject_over_capacity(stream, config, &runtime_shutdown).await;
+                            if tls.is_some() {
+                                drop(stream);
+                            } else {
+                                reject_over_capacity(stream, config, &runtime_shutdown).await;
+                            }
                         }
                     }
                 }

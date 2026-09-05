@@ -56,16 +56,14 @@ impl MetricsRuntime {
 pub(crate) fn observe_gateway(snapshot: GatewaySnapshot) {
     gauge!("relaygate_gateway_draining").set(if snapshot.draining { 1.0 } else { 0.0 });
     gauge!("relaygate_gateway_sessions").set(snapshot.sessions as f64);
-    gauge!("relaygate_gateway_listener_sessions").set(snapshot.listener_sessions as f64);
-    gauge!("relaygate_gateway_connector_sessions").set(snapshot.connector_sessions as f64);
-    gauge!("relaygate_gateway_listener_bindings").set(snapshot.listener_bindings as f64);
+    gauge!("relaygate_gateway_bindings").set(snapshot.bindings as f64);
     gauge!("relaygate_gateway_pending_offers").set(snapshot.pending_offers as f64);
     gauge!("relaygate_gateway_live_pipes").set(snapshot.live_pipes as f64);
     gauge!("relaygate_gateway_route_registrations_synced")
         .set(snapshot.route_registrations_synced as f64);
     gauge!("relaygate_gateway_route_registrations_unsynced")
         .set(snapshot.route_registrations_unsynced as f64);
-    gauge!("relaygate_gateway_remote_open_attempts").set(snapshot.remote_open_attempts as f64);
+    gauge!("relaygate_gateway_remote_dial_attempts").set(snapshot.remote_open_attempts as f64);
     gauge!("relaygate_gateway_peer_transports_connecting")
         .set(snapshot.peer_transports_connecting as f64);
     gauge!("relaygate_gateway_peer_transports_ready").set(snapshot.peer_transports_ready as f64);
@@ -91,24 +89,24 @@ pub(crate) fn observe_gateway(snapshot: GatewaySnapshot) {
 
 fn describe_metrics() {
     describe_counter!(
-        "relaygate_gateway_open_requests_total",
-        "Accepted Connector OPEN requests on this Gateway."
+        "relaygate_gateway_dial_requests_total",
+        "Accepted SDK DIAL requests on this Gateway."
     );
     describe_counter!(
-        "relaygate_gateway_open_results_total",
-        "Terminal results for accepted Connector OPEN requests."
+        "relaygate_gateway_dial_results_total",
+        "Terminal results for accepted SDK DIAL requests."
     );
     describe_histogram!(
-        "relaygate_gateway_open_duration_seconds",
-        "Time from accepted Connector OPEN to its terminal result."
+        "relaygate_gateway_dial_duration_seconds",
+        "Time from accepted SDK DIAL to its terminal result."
     );
     describe_counter!(
         "relaygate_gateway_writer_queue_rejections_total",
         "Frames rejected by a full or closed bounded SDK writer queue."
     );
     describe_counter!(
-        "relaygate_gateway_listener_registration_results_total",
-        "Terminal Listener registration results by bounded outcome and code."
+        "relaygate_gateway_publish_results_total",
+        "Terminal Destination publication results by bounded outcome and code."
     );
     describe_gauge!(
         "relaygate_gateway_draining",
@@ -119,16 +117,8 @@ fn describe_metrics() {
         "Current SDK sessions on this Gateway."
     );
     describe_gauge!(
-        "relaygate_gateway_listener_sessions",
-        "Current Listener SDK sessions on this Gateway."
-    );
-    describe_gauge!(
-        "relaygate_gateway_connector_sessions",
-        "Current Connector SDK sessions on this Gateway."
-    );
-    describe_gauge!(
-        "relaygate_gateway_listener_bindings",
-        "Current Listener bindings owned by this Gateway."
+        "relaygate_gateway_bindings",
+        "Current Destination bindings owned by this Gateway."
     );
     describe_gauge!(
         "relaygate_gateway_pending_offers",
@@ -147,8 +137,8 @@ fn describe_metrics() {
         "Current session-shard registrations awaiting RouteTable convergence."
     );
     describe_gauge!(
-        "relaygate_gateway_remote_open_attempts",
-        "Current unresolved remote OPEN attempts."
+        "relaygate_gateway_remote_dial_attempts",
+        "Current unresolved remote dial attempts."
     );
     describe_gauge!(
         "relaygate_gateway_peer_transports_connecting",
@@ -196,7 +186,7 @@ fn describe_metrics() {
     );
     describe_gauge!(
         "relaygate_route_table_routes",
-        "Current ClientIds with at least one mapping on this RouteTable shard."
+        "Current Destinations with at least one mapping on this RouteTable shard."
     );
     describe_gauge!(
         "relaygate_route_table_expiry_records",

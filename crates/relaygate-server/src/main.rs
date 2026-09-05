@@ -5,7 +5,8 @@ mod runtime;
 use std::{env, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
-use relaygate_gateway::check;
+use relaygate_gateway::{check, check_insecure_for_tests};
+use relaygate_transport::ClientTlsConfig;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -27,9 +28,32 @@ async fn main() -> Result<()> {
             let shutdown = process_shutdown();
             runtime::route_table::serve(config, shutdown).await
         }
-        Command::CheckGateway { address } => check(address, DEFAULT_CHECK_DEADLINE)
-            .await
-            .context("Gateway SDK admission readiness check failed"),
+        Command::CheckGateway { address } => {
+            let cluster_token = env::var("RELAYGATE_CLUSTER_TOKEN")
+                .context("RELAYGATE_CLUSTER_TOKEN is required for Gateway readiness checks")?;
+            if env::var("RELAYGATE_INSECURE_TEST_TRANSPORT")
+                .ok()
+                .as_deref()
+                == Some("true")
+            {
+                check_insecure_for_tests(address, cluster_token, DEFAULT_CHECK_DEADLINE)
+                    .await
+                    .context("Gateway SDK admission readiness check failed")
+            } else {
+                let ca_path = env::var("RELAYGATE_SDK_TLS_CA_PATH")
+                    .context("RELAYGATE_SDK_TLS_CA_PATH is required for Gateway checks")?;
+                let server_name = env::var("RELAYGATE_SDK_TLS_SERVER_NAME")
+                    .context("RELAYGATE_SDK_TLS_SERVER_NAME is required for Gateway checks")?;
+                let tls = ClientTlsConfig::server_authenticated(
+                    server_name,
+                    &std::fs::read(&ca_path)
+                        .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?,
+                )?;
+                check(address, cluster_token, &tls, DEFAULT_CHECK_DEADLINE)
+                    .await
+                    .context("Gateway SDK admission readiness check failed")
+            }
+        }
     }
 }
 

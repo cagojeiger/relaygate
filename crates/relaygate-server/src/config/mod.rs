@@ -1,7 +1,7 @@
 mod gateway;
 mod route_table;
 
-use std::{env, time::Duration};
+use std::{env, fs, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use relaygate_route_table_transport::{GatewayName, InternalGatewayKey};
@@ -9,6 +9,38 @@ use tokio::time::Instant;
 
 pub(crate) use gateway::GatewayRuntimeConfig;
 pub(crate) use route_table::RouteTableRuntimeConfig;
+
+pub(super) struct InternalTlsMaterial {
+    pub(super) ca: Vec<u8>,
+    pub(super) certificate: Vec<u8>,
+    pub(super) private_key: Vec<u8>,
+}
+
+pub(super) fn insecure_test_transport() -> bool {
+    env::var("RELAYGATE_INSECURE_TEST_TRANSPORT")
+        .ok()
+        .as_deref()
+        == Some("true")
+}
+
+pub(super) fn load_internal_tls() -> Result<InternalTlsMaterial> {
+    let ca_path = env::var("RELAYGATE_INTERNAL_TLS_CA_PATH")
+        .context("RELAYGATE_INTERNAL_TLS_CA_PATH is required")?;
+    let certificate_path = env::var("RELAYGATE_INTERNAL_TLS_CERT_PATH")
+        .context("RELAYGATE_INTERNAL_TLS_CERT_PATH is required")?;
+    let private_key_path = env::var("RELAYGATE_INTERNAL_TLS_KEY_PATH")
+        .context("RELAYGATE_INTERNAL_TLS_KEY_PATH is required")?;
+    Ok(InternalTlsMaterial {
+        ca: fs::read(&ca_path)
+            .with_context(|| format!("failed to read internal TLS CA at {ca_path:?}"))?,
+        certificate: fs::read(&certificate_path).with_context(|| {
+            format!("failed to read internal TLS certificate at {certificate_path:?}")
+        })?,
+        private_key: fs::read(&private_key_path).with_context(|| {
+            format!("failed to read internal TLS private key at {private_key_path:?}")
+        })?,
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct GatewayCredential {
