@@ -265,6 +265,18 @@ jobs:
             echo "Helm chart accepted an override of the RouteTable pod ordinal"
             exit 1
           fi
+          for override in \
+            'gateway.podAnnotations={"relaygate.io/edge-tls-reload":"override"}' \
+            'gateway.podAnnotations={"relaygate.io/internal-tls-reload":"override"}' \
+            'routeTable.podAnnotations={"relaygate.io/internal-tls-reload":"override"}'
+          do
+            if helm template invalid deploy/helm/relaygate \
+              --kube-version 1.32.0 \
+              --set-json "$override" >/dev/null 2>&1; then
+              echo "Helm chart accepted an override of a managed TLS reload annotation"
+              exit 1
+            fi
+          done
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
             --set gateway.sdkPort=27420 \

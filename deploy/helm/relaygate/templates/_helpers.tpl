@@ -152,7 +152,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail (printf "gateway.podLabels cannot override chart-managed label %s" $key) }}
 {{- end }}
 {{- end }}
-{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
+{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/edge-tls-reload" "relaygate.io/internal-tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
 {{- range $key, $_ := .Values.gateway.podAnnotations }}
 {{- if has $key $reservedAnnotations }}
 {{- fail (printf "gateway.podAnnotations cannot override chart-managed annotation %s" $key) }}
@@ -176,7 +176,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail (printf "routeTable.podLabels cannot override chart-managed label %s" $key) }}
 {{- end }}
 {{- end }}
-{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
+{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/internal-tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
 {{- range $key, $_ := .Values.routeTable.podAnnotations }}
 {{- if has $key $reservedAnnotations }}
 {{- fail (printf "routeTable.podAnnotations cannot override chart-managed annotation %s" $key) }}
