@@ -298,6 +298,13 @@ jobs:
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
+            --set gateway.service.type=LoadBalancer \
+            --set-string gateway.service.loadBalancerClass=Invalid_Domain/class >/dev/null 2>&1; then
+            echo "Helm schema accepted an invalid LoadBalancer class"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
             --set gateway.drainTimeoutMs=120000 \
             --set gateway.terminationGracePeriodSeconds=120 >/dev/null 2>&1; then
             echo "Helm chart accepted a termination grace period that cannot cover Gateway drain"

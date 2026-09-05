@@ -43,7 +43,7 @@ rust = ["rt_one_gateway_three_forms_a_closed_current_state_relay", "peer::tests:
 [[case]]
 id = "T-SEC-01"
 status = "executable"
-rust = ["sdk_gateway_path_uses_tls_before_cluster_admission", "session_admission_accepts_current_and_next_tokens_and_rejects_other_tokens", "tls_requires_the_configured_server_name", "mutual_tls_requires_a_client_certificate", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit"]
+rust = ["sdk_gateway_path_uses_tls_before_cluster_admission", "session_admission_accepts_current_and_next_tokens_and_rejects_other_tokens", "tls_requires_the_configured_server_name", "mutual_tls_requires_a_client_certificate", "tls_client_rejects_a_server_without_alpn", "tls_rejects_a_peer_with_the_wrong_alpn", "tls_server_rejects_a_client_without_alpn", "peer::runtime_tests::unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit"]
 
 [[case]]
 id = "T-STATE-01"

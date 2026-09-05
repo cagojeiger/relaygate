@@ -238,7 +238,8 @@
             },
             "loadBalancerClass": {
               "type": "string",
-              "maxLength": 253
+              "maxLength": 253,
+              "pattern": "^$|^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$"
             },
             "externalTrafficPolicy": {
               "type": "string",

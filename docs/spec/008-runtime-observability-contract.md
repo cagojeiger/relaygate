@@ -8,10 +8,10 @@ GW  <-> GW : mTLS/TCP + logical Gateway handshake
 GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 ```
 
-- **`SEC-001`**: SDK는 CA와 별도 server name을 검증한 뒤에만 ClusterToken을 보낸다.
+- **`SEC-001`**: SDK는 CA, 별도 server name과 `relaygate/2` ALPN을 검증한 뒤에만 ClusterToken을 보낸다.
 - **`SEC-002`**: Gateway는 current token 하나와 optional next token 하나만 허용한다.
 - **`SEC-003`**: token 불일치는 SessionId/Binding/Pipe 없이 `UNAUTHENTICATED`로 끝난다.
-- **`SEC-004`**: 내부 transport는 certificate와 기존 logical identity를 모두 검증한다.
+- **`SEC-004`**: 내부 transport는 certificate, `relaygate/2` ALPN과 기존 logical identity를 모두 검증한다.
 - **`SEC-005`**: TLS 실패는 평문 fallback을 하지 않는다.
 - **`SEC-006`**: production server config는 certificate/key 경로를 요구한다.
 - **`SEC-007`**: insecure transport는 명시적인 test-only config에서만 허용하며 Helm에는 노출하지 않는다.

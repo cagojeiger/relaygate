@@ -88,6 +88,10 @@ helm upgrade --install relaygate deploy/helm/relaygate \
 전용 listener와 `TLSRoute` passthrough를 Gateway SDK Service로 연결하며 TLS는 RelayGate Gateway가
 종단합니다.
 
+`gateway.service.loadBalancerClass`는 Kubernetes qualified name 형식이어야 합니다. 기존
+LoadBalancer Service에 설정한 값은 변경할 수 없으므로 다른 class로 전환할 때는 Service 재생성과
+그에 따른 연결 영향을 배포 절차에 포함해야 합니다.
+
 ## 배포 계약
 
 - Gateway pod ordinal은 stable GatewayName과 peer locator를 만듭니다.
