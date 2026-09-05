@@ -79,29 +79,54 @@
     "tls": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "existingSecret",
-        "caKey",
-        "gatewayCertificateKey",
-        "gatewayPrivateKeyKey",
-        "routeTableCertificateKey",
-        "routeTablePrivateKeyKey",
-        "sdkServerName",
-        "peerServerName",
-        "routeTableServerName",
-        "reloadToken"
-      ],
+      "required": ["edge", "internal"],
       "properties": {
-        "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
-        "caKey": { "$ref": "#/definitions/secretKey" },
-        "gatewayCertificateKey": { "$ref": "#/definitions/secretKey" },
-        "gatewayPrivateKeyKey": { "$ref": "#/definitions/secretKey" },
-        "routeTableCertificateKey": { "$ref": "#/definitions/secretKey" },
-        "routeTablePrivateKeyKey": { "$ref": "#/definitions/secretKey" },
-        "sdkServerName": { "$ref": "#/definitions/dnsSubdomain" },
-        "peerServerName": { "$ref": "#/definitions/dnsSubdomain" },
-        "routeTableServerName": { "$ref": "#/definitions/dnsSubdomain" },
-        "reloadToken": { "type": "string" }
+        "edge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "existingSecret",
+            "caKey",
+            "certificateKey",
+            "privateKeyKey",
+            "serverName",
+            "reloadToken"
+          ],
+          "properties": {
+            "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
+            "caKey": { "$ref": "#/definitions/secretKey" },
+            "certificateKey": { "$ref": "#/definitions/secretKey" },
+            "privateKeyKey": { "$ref": "#/definitions/secretKey" },
+            "serverName": { "$ref": "#/definitions/dnsSubdomain" },
+            "reloadToken": { "type": "string" }
+          }
+        },
+        "internal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "existingSecret",
+            "caKey",
+            "gatewayCertificateKey",
+            "gatewayPrivateKeyKey",
+            "routeTableCertificateKey",
+            "routeTablePrivateKeyKey",
+            "gatewayServerName",
+            "routeTableServerName",
+            "reloadToken"
+          ],
+          "properties": {
+            "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
+            "caKey": { "$ref": "#/definitions/secretKey" },
+            "gatewayCertificateKey": { "$ref": "#/definitions/secretKey" },
+            "gatewayPrivateKeyKey": { "$ref": "#/definitions/secretKey" },
+            "routeTableCertificateKey": { "$ref": "#/definitions/secretKey" },
+            "routeTablePrivateKeyKey": { "$ref": "#/definitions/secretKey" },
+            "gatewayServerName": { "$ref": "#/definitions/dnsSubdomain" },
+            "routeTableServerName": { "$ref": "#/definitions/dnsSubdomain" },
+            "reloadToken": { "type": "string" }
+          }
+        }
       }
     },
     "serviceAccount": {
@@ -191,10 +216,17 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "type",
             "port",
-            "annotations"
+            "annotations",
+            "loadBalancerClass",
+            "externalTrafficPolicy"
           ],
           "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["ClusterIP", "LoadBalancer"]
+            },
             "port": {
               "$ref": "#/definitions/port"
             },
@@ -203,6 +235,14 @@
               "additionalProperties": {
                 "type": "string"
               }
+            },
+            "loadBalancerClass": {
+              "type": "string",
+              "maxLength": 253
+            },
+            "externalTrafficPolicy": {
+              "type": "string",
+              "enum": ["Cluster", "Local"]
             }
           }
         },

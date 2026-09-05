@@ -61,6 +61,7 @@ dial 1회 -> eligible Binding 1개 -> Pipe 1개
 | [011](adr/011-public-destination-access.md) | ClusterToken은 trust-domain admission만 담당한다. |
 | [012](adr/012-deployment-transport-security.md) | SDK 구간은 TLS, 내부 구간은 mTLS를 사용한다. |
 | [013](adr/013-application-owned-destination.md) | DestinationId는 application-owned UUIDv4다. |
+| [014](adr/014-sdk-transport-and-l4-boundary.md) | SDK transport와 platform L4 진입점을 분리한다. |
 
 ADR 001–003은 0.1 역할/권한 모델의 기록이며 ADR 010–013이 그 의미를 대체합니다.
 

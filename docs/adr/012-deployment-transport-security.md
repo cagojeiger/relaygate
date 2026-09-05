@@ -2,7 +2,7 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | 채택, 구현됨 |
+| 상태 | 부분 대체됨 — SDK transport와 배포 경계는 ADR 014 |
 | 관계 | ADR 002의 infrastructure trust와 ADR 011의 SDK admission을 구체화 |
 
 ## 결정

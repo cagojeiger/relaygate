@@ -3,7 +3,7 @@
 ## topology
 
 ```text
-host Rust SDK ── port-forward/TLS ──► Gateway Service
+host Rust SDK ── TLS/TCP ──► Envoy L4 passthrough ──► Gateway Service
                                           │
                  GW-0 ═════ GW-1 ═════ GW-2
                    \          |          /
@@ -25,6 +25,7 @@ kind에는 RT와 Gateway만 배포하고 SDK는 host에서 실행합니다. 격�
 | `KIND-06` | RT restart | established Pipe 유지, restart 중 remote dial 실패 가능, mapping 재수렴 후 성공 |
 | `KIND-07` | cleanup | SDK 종료 뒤 session/binding/attempt/Pipe/peer stream gauge가 baseline 복귀 |
 | `KIND-08` | secret | token/key/payload marker가 로그·metric·error에 없음 |
+| `KIND-09` | L4/TLS passthrough | Envoy가 TLS를 종단하지 않고 SDK의 CA/name 검증과 Pipe byte 왕복이 성공 |
 
 ## stop condition
 

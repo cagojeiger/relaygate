@@ -20,7 +20,7 @@ spec:
       annotations:
         checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
         relaygate.io/credentials-reload: {{ .Values.credentials.reloadToken | quote }}
-        relaygate.io/tls-reload: {{ .Values.tls.reloadToken | quote }}
+        relaygate.io/internal-tls-reload: {{ .Values.tls.internal.reloadToken | quote }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"
@@ -81,11 +81,11 @@ spec:
                   name: {{ .Values.credentials.existingSecret | quote }}
                   key: {{ .Values.credentials.internalGatewayKeysKey | quote }}
             - name: RELAYGATE_INTERNAL_TLS_CA_PATH
-              value: /etc/relaygate/tls/ca.crt
+              value: /etc/relaygate/tls/internal/ca.crt
             - name: RELAYGATE_INTERNAL_TLS_CERT_PATH
-              value: /etc/relaygate/tls/tls.crt
+              value: /etc/relaygate/tls/internal/tls.crt
             - name: RELAYGATE_INTERNAL_TLS_KEY_PATH
-              value: /etc/relaygate/tls/tls.key
+              value: /etc/relaygate/tls/internal/tls.key
             - name: RELAYGATE_LOG
               value: {{ .Values.routeTable.log | quote }}
             - name: RELAYGATE_LOG_FORMAT
@@ -123,24 +123,24 @@ spec:
             - name: shard-directory
               mountPath: /etc/relaygate
               readOnly: true
-            - name: tls
-              mountPath: /etc/relaygate/tls
+            - name: internal-tls
+              mountPath: /etc/relaygate/tls/internal
               readOnly: true
       volumes:
         - name: shard-directory
           configMap:
             name: {{ include "relaygate.shardDirectoryName" . | quote }}
             defaultMode: 0444
-        - name: tls
+        - name: internal-tls
           secret:
-            secretName: {{ .Values.tls.existingSecret | quote }}
+            secretName: {{ .Values.tls.internal.existingSecret | quote }}
             defaultMode: 0440
             items:
-              - key: {{ .Values.tls.caKey | quote }}
+              - key: {{ .Values.tls.internal.caKey | quote }}
                 path: ca.crt
-              - key: {{ .Values.tls.routeTableCertificateKey | quote }}
+              - key: {{ .Values.tls.internal.routeTableCertificateKey | quote }}
                 path: tls.crt
-              - key: {{ .Values.tls.routeTablePrivateKeyKey | quote }}
+              - key: {{ .Values.tls.internal.routeTablePrivateKeyKey | quote }}
                 path: tls.key
       {{- with .Values.routeTable.nodeSelector }}
       nodeSelector:

@@ -16,6 +16,9 @@ GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 - **`SEC-006`**: production server config는 certificate/key 경로를 요구한다.
 - **`SEC-007`**: insecure transport는 명시적인 test-only config에서만 허용하며 Helm에는 노출하지 않는다.
 - **`SEC-008`**: hop TLS는 application E2E 보호나 Pipe peer 인증이 아니다.
+- **`SEC-009`**: public Relay API는 Gateway transport 종류와 독립적이며 0.2 구현은 명시적인 TLS/TCP 하나다.
+- **`SEC-010`**: SDK-facing TLS와 내부 mTLS는 별도 Secret과 trust domain으로 운영할 수 있다.
+- **`SEC-011`**: 외부 L4는 byte stream을 passthrough하며 Gateway가 SDK TLS를 종단한다.
 
 ## 로그
 

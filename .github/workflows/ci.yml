@@ -79,6 +79,13 @@ jobs:
             --set metrics.enabled=false \
             --set credentials.existingSecret=minimal-credentials \
             > target/helm/minimal.yaml
+          helm template load-balancer deploy/helm/relaygate \
+            --namespace relaygate-test \
+            --kube-version 1.32.0 \
+            --set gateway.service.type=LoadBalancer \
+            --set-string gateway.service.loadBalancerClass=example.io/l4 \
+            --set gateway.service.externalTrafficPolicy=Local \
+            > target/helm/load-balancer.yaml
           helm template true deploy/helm/relaygate \
             --namespace relaygate-test \
             --kube-version 1.32.0 \
@@ -132,15 +139,22 @@ jobs:
           test "$(grep -c 'key: "cluster-token"' target/helm/default.yaml)" -eq 1
           test "$(grep -c 'key: "next-cluster-token"' target/helm/default.yaml)" -eq 1
           test "$(grep -c '^        relaygate.io/credentials-reload: ""$' target/helm/default.yaml)" -eq 2
-          test "$(grep -c '^        relaygate.io/tls-reload: ""$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^        relaygate.io/edge-tls-reload: ""$' target/helm/default.yaml)" -eq 1
+          test "$(grep -c '^        relaygate.io/internal-tls-reload: ""$' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^              mountPath: /etc/relaygate$' target/helm/default.yaml)" -eq 2
-          test "$(grep -c '^              mountPath: /etc/relaygate/tls$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^              mountPath: /etc/relaygate/tls/edge$' target/helm/default.yaml)" -eq 1
+          test "$(grep -c '^              mountPath: /etc/relaygate/tls/internal$' target/helm/default.yaml)" -eq 2
           grep -Fq 'name: RELAYGATE_SDK_TLS_CERT_PATH' target/helm/default.yaml
           grep -Fq 'name: RELAYGATE_INTERNAL_TLS_CA_PATH' target/helm/default.yaml
           grep -Fq 'name: RELAYGATE_PEER_TLS_SERVER_NAME' target/helm/default.yaml
           grep -Fq 'name: RELAYGATE_RT_TLS_SERVER_NAME' target/helm/default.yaml
           grep -Fq 'key: "gateway.crt"' target/helm/default.yaml
           grep -Fq 'key: "route-table.crt"' target/helm/default.yaml
+          test "$(grep -c 'secretName: "relaygate-edge-tls"' target/helm/default.yaml)" -eq 1
+          test "$(grep -c 'secretName: "relaygate-internal-tls"' target/helm/default.yaml)" -eq 2
+          grep -Fq 'type: LoadBalancer' target/helm/load-balancer.yaml
+          grep -Fq 'loadBalancerClass: "example.io/l4"' target/helm/load-balancer.yaml
+          grep -Fq 'externalTrafficPolicy: Local' target/helm/load-balancer.yaml
           if grep -Eq 'RELAYGATE_(INSECURE_TEST_TRANSPORT|RT_TRUSTED_LOCAL|CLIENT_KEYS)' target/helm/default.yaml; then
             echo "Helm chart rendered a test-only or removed security switch"
             exit 1

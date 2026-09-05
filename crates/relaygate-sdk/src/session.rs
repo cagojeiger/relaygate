@@ -2,15 +2,12 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{ClusterToken, Frame, FrameCodec, SessionId};
-use relaygate_transport::{BoxedIo, insecure_boxed};
-use tokio::{
-    net::TcpStream,
-    time::{Instant, sleep_until, timeout},
-};
+use relaygate_transport::BoxedIo;
+use tokio::time::{Instant, sleep_until, timeout};
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Config, Error, ErrorCode, PeerObservation, Result, config::GatewayTransport};
+use crate::{Config, Error, ErrorCode, PeerObservation, Result};
 
 mod outbound;
 
@@ -24,23 +21,7 @@ pub(crate) struct EstablishedSession {
 }
 
 pub(crate) async fn establish(config: &Config) -> Result<EstablishedSession> {
-    let stream = timeout(
-        config.connect_timeout,
-        TcpStream::connect(&config.gateway_addr),
-    )
-    .await
-    .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
-    .map_err(|error| Error::unavailable(format!("Gateway connection failed: {error}")))?;
-    let _ = stream.set_nodelay(true);
-    let stream = timeout(config.connect_timeout, async {
-        match &config.transport {
-            GatewayTransport::Tls(tls) => tls.connect_boxed(stream).await,
-            GatewayTransport::Insecure => Ok(insecure_boxed(stream)),
-        }
-    })
-    .await
-    .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
-    .map_err(|error| Error::unavailable(format!("Gateway TLS handshake failed: {error}")))?;
+    let stream = config.transport.connect(config.connect_timeout).await?;
     let mut transport = Framed::new(stream, FrameCodec::new(config.max_frame_len));
     timeout(
         config.connect_timeout,

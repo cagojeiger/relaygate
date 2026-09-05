@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, bail};
-use relaygate_sdk::{ClientTlsConfig, Config, DestinationId, Listener, Pipe, Relay};
+use relaygate_sdk::{
+    ClientTlsConfig, Config, DestinationId, GatewayTransportConfig, Listener, Pipe, Relay,
+};
 use tokio::{
     io::{AsyncWriteExt, copy},
     task::JoinSet,
@@ -25,7 +27,11 @@ async fn main() -> anyhow::Result<()> {
         &std::fs::read(&ca_path)
             .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?,
     )?;
-    let relay = Relay::connect(Config::new(address, cluster_token, tls)).await?;
+    let relay = Relay::connect(Config::new(
+        cluster_token,
+        GatewayTransportConfig::tls_tcp(address, tls),
+    ))
+    .await?;
     let mut tasks = JoinSet::new();
 
     for destination in destinations {

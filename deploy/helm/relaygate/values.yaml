@@ -14,18 +14,25 @@ credentials:
   reloadToken: ""
 
 tls:
-  # 차트는 인증서를 발급하지 않는다. CA와 Gateway/RouteTable certificate를 가진
-  # 기존 Secret을 read-only로 mount한다.
-  existingSecret: relaygate-tls
-  caKey: ca.crt
-  gatewayCertificateKey: gateway.crt
-  gatewayPrivateKeyKey: gateway.key
-  routeTableCertificateKey: route-table.crt
-  routeTablePrivateKeyKey: route-table.key
-  sdkServerName: relaygate-gateway.internal
-  peerServerName: relaygate-gateway.internal
-  routeTableServerName: relaygate-route-table.internal
-  reloadToken: ""
+  # 차트는 인증서를 발급하지 않는다. SDK-facing TLS와 cluster-internal mTLS는
+  # 별도 trust domain으로 운영할 수 있도록 서로 다른 Secret을 mount한다.
+  edge:
+    existingSecret: relaygate-edge-tls
+    caKey: ca.crt
+    certificateKey: tls.crt
+    privateKeyKey: tls.key
+    serverName: relaygate-gateway.internal
+    reloadToken: ""
+  internal:
+    existingSecret: relaygate-internal-tls
+    caKey: ca.crt
+    gatewayCertificateKey: gateway.crt
+    gatewayPrivateKeyKey: gateway.key
+    routeTableCertificateKey: route-table.crt
+    routeTablePrivateKeyKey: route-table.key
+    gatewayServerName: relaygate-gateway.internal
+    routeTableServerName: relaygate-route-table.internal
+    reloadToken: ""
 
 serviceAccount:
   create: true
@@ -68,8 +75,11 @@ gateway:
   peerPort: 27421
 
   service:
+    type: ClusterIP
     port: 27420
     annotations: {}
+    loadBalancerClass: ""
+    externalTrafficPolicy: Cluster
 
   log: info
   logFormat: json

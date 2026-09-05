@@ -1,17 +1,15 @@
 use std::time::Duration;
 
 use relaygate_protocol::DEFAULT_MAX_FRAME_LEN;
-use relaygate_transport::ClientTlsConfig;
 use tokio::time::Instant;
 
-use crate::{Error, ErrorCode, PeerObservation, Result};
+use crate::{Error, ErrorCode, GatewayTransportConfig, PeerObservation, Result};
 
 /// Runtime limits, TLS identity and reconnect policy for one Relay.
 #[derive(Clone)]
 pub struct Config {
-    pub(crate) gateway_addr: String,
     pub(crate) cluster_token: String,
-    pub(crate) transport: GatewayTransport,
+    pub(crate) transport: GatewayTransportConfig,
     pub(crate) connect_timeout: Duration,
     pub(crate) operation_timeout: Duration,
     pub(crate) heartbeat_idle_interval: Duration,
@@ -25,24 +23,11 @@ pub struct Config {
     pub(crate) max_frame_len: usize,
 }
 
-#[derive(Clone)]
-pub(crate) enum GatewayTransport {
-    Tls(ClientTlsConfig),
-    Insecure,
-}
-
 impl Config {
-    /// Creates a configuration for a Gateway TCP address such as
-    /// `127.0.0.1:27420`.
+    /// Creates a Relay configuration with an explicit Gateway transport.
     #[must_use]
-    pub fn new(
-        gateway_addr: impl Into<String>,
-        cluster_token: impl Into<String>,
-        tls: ClientTlsConfig,
-    ) -> Self {
-        let mut config = Self::new_without_transport(gateway_addr, cluster_token);
-        config.transport = GatewayTransport::Tls(tls);
-        config
+    pub fn new(cluster_token: impl Into<String>, transport: GatewayTransportConfig) -> Self {
+        Self::new_with_transport(cluster_token, transport)
     }
 
     #[doc(hidden)]
@@ -52,19 +37,19 @@ impl Config {
         gateway_addr: impl Into<String>,
         cluster_token: impl Into<String>,
     ) -> Self {
-        let mut config = Self::new_without_transport(gateway_addr, cluster_token);
-        config.transport = GatewayTransport::Insecure;
-        config
+        Self::new_with_transport(
+            cluster_token,
+            GatewayTransportConfig::insecure_tcp(gateway_addr),
+        )
     }
 
-    fn new_without_transport(
-        gateway_addr: impl Into<String>,
+    fn new_with_transport(
         cluster_token: impl Into<String>,
+        transport: GatewayTransportConfig,
     ) -> Self {
         Self {
-            gateway_addr: gateway_addr.into(),
             cluster_token: cluster_token.into(),
-            transport: GatewayTransport::Insecure,
+            transport,
             connect_timeout: Duration::from_secs(5),
             operation_timeout: Duration::from_secs(10),
             heartbeat_idle_interval: Duration::from_secs(60),
@@ -139,11 +124,12 @@ impl Config {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.gateway_addr.trim().is_empty() || self.cluster_token.is_empty() {
+        self.transport.validate()?;
+        if self.cluster_token.is_empty() {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
                 PeerObservation::NotObserved,
-                "gateway address and ClusterToken must not be empty",
+                "ClusterToken must not be empty",
             ));
         }
         if self.connect_timeout.is_zero()
@@ -197,7 +183,7 @@ impl std::fmt::Debug for Config {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Config")
-            .field("gateway_addr", &self.gateway_addr)
+            .field("transport", &self.transport)
             .field("cluster_token", &"[REDACTED]")
             .field("connect_timeout", &self.connect_timeout)
             .field("operation_timeout", &self.operation_timeout)
