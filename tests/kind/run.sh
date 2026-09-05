@@ -419,8 +419,18 @@ run_probe() {
 
 wait_for_destination() {
   local destination=$1
-  "$PROBE" wait-client "$destination" \
-    >"$ARTIFACTS/wait-$destination.log" 2>&1
+  local log="$ARTIFACTS/wait-$destination.log"
+  local attempt
+  : >"$log"
+  for ((attempt = 1; attempt <= 6; attempt++)); do
+    if "$PROBE" wait-client "$destination" >>"$log" 2>&1; then
+      return 0
+    fi
+    printf 'retrying destination convergence attempt=%s\n' "$attempt" >>"$log"
+    sleep 1
+  done
+  echo "destination did not converge: $destination" >&2
+  return 1
 }
 
 assert_check_fails() {
