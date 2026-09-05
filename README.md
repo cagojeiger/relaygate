@@ -84,6 +84,14 @@ docker compose --profile observability up --build \
 docker compose --profile observability down --volumes --remove-orphans
 ```
 
+격리된 Kubernetes에서 RT2/GW3, Envoy passthrough, rolling restart, reconnect storm과 bounded soak를
+검증하려면 `kind`, `kubectl`, `helm`, Docker가 준비된 환경에서 실행합니다. 임시 cluster와 인증서는
+종료 시 제거되고 증거는 `target/kind-acceptance`에 남습니다.
+
+```bash
+tests/kind/run.sh
+```
+
 ## Helm
 
 차트는 RT와 Gateway만 배포합니다. SDK workload, credential과 certificate를 생성하지 않습니다.
@@ -130,4 +138,6 @@ examples/
 deploy/
 ├── docker/
 └── helm/relaygate/
+tests/
+└── kind/run.sh                       # isolated RT2/GW3 acceptance
 ```
