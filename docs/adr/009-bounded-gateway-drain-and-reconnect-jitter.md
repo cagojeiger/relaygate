@@ -16,8 +16,8 @@ Gateway가 정상 배포 종료와 transport 장애를 같은 즉시 취소로 �
 
 ```text
 Gateway normal shutdown
-  -> 신규 session, REGISTER, OPEN, peer OPEN 중단
-  -> current Listener publication을 RT에서 철회
+  -> 신규 RelaySession admission, SDK PUBLISH/DIAL, peer OPEN 중단
+  -> current Binding publication을 RT에서 철회
   -> 이미 시작된 attempt와 Pipe만 drain
   -> active work == 0 또는 drain timeout
   -> 남은 session과 distributed runtime 종료
@@ -37,9 +37,9 @@ Drain 중 거절은 `UNAVAILABLE`이다. Gateway가 새 작업을 관찰했으�
 기존 Pipe를 제거하지 않으며 RT 장애 시에는 lease expiry가 stale mapping을 최종 정리한다.
 
 재연결 jitter는 현재 exponential backoff 단계의 `2/3..1` 범위에서 선택한다. SDK는 runtime별
-entropy를, Gateway의 RT worker는 Gateway와 shard별 entropy를 사용한다. 성공한 Connector session이
-안정 구간을 넘거나 Listener recovery registration이 성공하면 SDK backoff 단계를 초기화하고,
-RT connection 성공은 해당 shard worker의 backoff 단계를 초기화한다.
+entropy를, Gateway의 RT worker는 Gateway와 shard별 entropy를 사용한다. 성공한 RelaySession이
+안정 구간을 넘거나 Listener republish가 성공하면 SDK backoff 단계를 초기화하고, RT connection
+성공은 해당 shard worker의 backoff 단계를 초기화한다.
 
 RouteTable 정상 종료는 connection과 queued request를 종료한다. 완료 응답을 관찰하지 못한 요청은
 기존 operation uncertainty와 current-state 재등록 규칙으로 수렴한다. Gateway Pipe drain, RT

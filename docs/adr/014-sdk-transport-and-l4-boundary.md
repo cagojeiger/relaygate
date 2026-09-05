@@ -8,7 +8,7 @@
 ## 결정
 
 ```text
-Relay API              : transport 독립적인 listen / dial / accept / Pipe
+Relay API              : transport 독립적인 Relay.listen/dial + Listener.accept + Pipe
 0.2 SDK transport      : RelayGate framing over TLS/TCP
 GW <-> GW, GW <-> RT   : mTLS/TCP 유지
 외부 L4 진입점         : platform 소유

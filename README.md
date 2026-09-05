@@ -12,9 +12,9 @@ Relay B.dial(DestinationId)          dial 1회 -> Binding 1개 -> Pipe 1개
 Listener.accept()                    Pipe = opaque bidirectional byte stream
 ```
 
-고정 Connector/Listener 세션 역할은 없습니다. 하나의 `Relay`가 `listen`, `dial`, `accept`를
-동시에 수행합니다. `DestinationId`는 애플리케이션이 생성하고 보관하는 UUIDv4이며, 같은 주소를
-여러 Relay가 listen할 수 있습니다.
+고정 Connector/Listener 세션 역할은 없습니다. 하나의 `Relay`가 `listen`과 `dial`을 수행하고,
+반환된 `Listener`가 `accept`를 수행합니다. `DestinationId`는 애플리케이션이 생성하고 보관하는
+UUIDv4이며, 같은 주소를 여러 Relay가 listen할 수 있습니다.
 
 ## 책임 경계
 

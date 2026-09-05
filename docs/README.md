@@ -1,6 +1,6 @@
 # RelayGate 문서
 
-문서는 현재 계약만 다음 세 층으로 분리합니다.
+ADR은 결정 이력을 보존하고, SPEC과 TEST는 0.2 현재 계약만 다음 세 층으로 분리합니다.
 
 ```text
 ADR   왜 이 구조를 선택했는가
@@ -20,7 +20,8 @@ TEST  각 계약을 어떤 실행 증거로 검증하는가
                                │ mTLS control plane
                                │
 Relay A ── TLS ──► GW A ═════ GW B ◄── TLS ── Relay B
- listen/dial/accept       mTLS one hop       listen/dial/accept
+ listen/dial +             mTLS one hop       listen/dial +
+ Listener.accept                              Listener.accept
 
 data plane: Relay A <== GW A [-- GW B --] ==> Relay B
 ```
@@ -63,7 +64,9 @@ dial 1회 -> eligible Binding 1개 -> Pipe 1개
 | [013](adr/013-application-owned-destination.md) | DestinationId는 application-owned UUIDv4다. |
 | [014](adr/014-sdk-transport-and-l4-boundary.md) | SDK transport와 platform L4 진입점을 분리한다. |
 
-ADR 001–003은 0.1 역할/권한 모델의 기록이며 ADR 010–013이 그 의미를 대체합니다.
+ADR 001–003은 0.1 역할/권한 모델의 이력입니다. Pipe와 application 책임 경계는 유지되지만,
+고정 Connector/Listener 역할, `ClientId`와 `ClientKey`는 현재 계약이 아닙니다. 현재 해석은
+ADR 010–013과 SPEC을 따릅니다.
 
 ## SPEC
 

@@ -2,20 +2,18 @@
 
 | 항목 | 값 |
 | --- | --- |
-| 상태 | Partially superseded by ADR 010 and ADR 013 |
-| 전제 | [ADR 003](003-client-id-listener-binding.md), [ADR 004](004-current-state-routing-topology.md) |
-
-ADR 010과 ADR 013이 `ClientId`, `ListenerSession`, `ListenerBinding`을 각각
-`DestinationId`, `RelaySession`, `Binding`으로 대체한다. memory-only soft-state lifecycle 결정은 유지한다.
+| 상태 | Accepted; ADR 010·013 용어 적용 |
+| 전제 | [ADR 004](004-current-state-routing-topology.md), [ADR 010](010-symmetric-relay-session.md) |
 
 ## 맥락
 
-RouteTable의 목적은 과거를 복원하는 것이 아니라 현재 연결 가능한 Listener 위치를 찾는 것이다. durable history나 mutation replay를 관리하면 live session보다 저장 상태가 앞서는 별도 복구 문제가 생긴다.
+RouteTable의 목적은 과거를 복원하는 것이 아니라 현재 연결 가능한 Relay 위치를 찾는 것이다. durable
+history나 mutation replay를 관리하면 live RelaySession보다 저장 상태가 앞서는 별도 복구 문제가 생긴다.
 
 ## 결정
 
 ```text
-Gateway current ListenerBinding set
+Gateway current Binding set
              │ Register / Update / KeepAlive
              ▼
 RouteTable current MappingEntry set
@@ -24,11 +22,16 @@ RouteTable current MappingEntry set
            removed
 ```
 
-Gateway가 현재 소유한 live `ListenerSession`과 `ListenerBinding`이 truth다. Gateway는 session-shard별 registration lease를 얻고 current binding snapshot으로 mapping을 갱신한다. RouteTable은 active lease에 연결된 `MappingEntry`만 memory-only soft state로 보관하며, 갱신되지 않은 mapping은 제거한다.
+Gateway가 현재 소유한 live `RelaySession`과 `Binding`이 truth다. Gateway는 session-shard별 registration
+lease를 얻고 current Binding snapshot으로 mapping을 갱신한다. RouteTable은 active lease에 연결된
+`MappingEntry`만 memory-only soft state로 보관하며, 갱신되지 않은 mapping은 제거한다.
 
 새 mapping state는 `Register`만 만들 수 있고 RT가 새 `LeaseId`를 발급한다. `Update`와 `KeepAlive`는 현재 active lease에만 적용된다. `Deregister`, expiry 또는 RT restart로 종료된 lease의 늦은 operation은 새 mapping을 만들거나 과거 mapping을 되살리지 못한다. Gateway는 새 lease를 등록한 뒤 현재 snapshot을 다시 보낸다.
 
-여기서 `KeepAlive`는 Gateway가 RT registration lease를 갱신하는 control-plane operation이다. SDK와 Gateway 사이의 session liveness를 확인하는 periodic heartbeat와는 다른 계약이다. Owner Gateway는 lease가 active여도 process loss나 binding 제거와 lookup 사이의 경쟁을 막기 위해 `OPEN` 시점에 binding identity를 다시 확인한다.
+여기서 `KeepAlive`는 Gateway가 RT registration lease를 갱신하는 control-plane operation이다. SDK와
+Gateway 사이의 session liveness를 확인하는 periodic heartbeat와는 다른 계약이다. Owner Gateway는
+lease가 active여도 process loss나 Binding 제거와 lookup 사이의 경쟁을 막기 위해 연결 수립 시점에
+selected Binding identity를 다시 확인한다.
 
 ## 결과
 

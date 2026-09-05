@@ -2,7 +2,7 @@
 
 ```text
 StatefulSet relaygate-gateway      replicaCount = N
-StatefulSet relaygate-route-table shardCount   = M
+StatefulSet relaygate-rt           shardCount   = M
 headless peer/RT Services + SDK ClusterIP/LoadBalancer Service
 ShardDirectory ConfigMap
 external credential Secret + edge TLS Secret + internal mTLS Secret

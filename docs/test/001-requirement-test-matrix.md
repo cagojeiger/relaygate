@@ -15,5 +15,6 @@
 | `T-OBS-01` | `OBS-001`, `OBS-002`, `OBS-003`, `OBS-004` | RED/USE metric, cleanup baseline과 secret 비노출 |
 
 모든 in-scope requirement는 위 표와 [실행 증거 인덱스](001-executable-coverage.toml)에 정확히 한
-그룹으로 연결됩니다. Helm/kind acceptance는 Rust test 이름이 아닌 외부 runtime 증거이므로
-[TEST 004](004-rt2-gw3-closed-loop-test-plan.md)에서 별도로 닫습니다.
+그룹으로 연결됩니다. 실행 증거 인덱스는 Rust test의 존재를 검증하지만 Helm/kind runtime 성공을
+대신하지 않습니다. 특히 `SEC-011`의 L4 passthrough와 rolling/fault acceptance는
+[TEST 004](004-rt2-gw3-closed-loop-test-plan.md)의 외부 실행 증거로 별도로 닫습니다.
