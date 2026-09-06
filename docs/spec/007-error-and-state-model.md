@@ -13,7 +13,7 @@
 | `FAILED_PRECONDITION` | self Binding만 존재, 닫힌 object | 전제 변경 뒤 |
 | `UNAVAILABLE` | drain, dependency/transport 단절 | backoff 뒤 새 operation |
 | `DEADLINE_EXCEEDED` | bounded deadline 만료 | observation 확인 뒤 |
-| `RESOURCE_EXHAUSTED` | session/binding/pipe/queue/frame 상한 | 부하 감소 뒤 |
+| `RESOURCE_EXHAUSTED` | session/binding/pipe/remote DIAL/queue/frame 상한 | 부하 감소 뒤 |
 | `CANCELLED` | owner operation/session 종료 | caller 결정 |
 | `PROTOCOL_ERROR` | version, frame 순서·소유권 위반 | 구현/config 수정 뒤 |
 | `INTERNAL` | 내부 invariant/lock 실패 | 보수적으로 terminal |
@@ -93,3 +93,5 @@ RT restart와 connection loss는 `UNSYNCED`이며 local Binding은 유지합니�
 - **`STATE-004`**: late, duplicate와 foreign event는 current sibling state를 변경하지 않는다.
 - **`STATE-005`**: RT 장애와 restart는 local Binding과 established Pipe를 종료하지 않는다.
 - **`STATE-006`**: 모든 cleanup은 반복 적용해도 같은 empty/current-state 결과로 수렴한다.
+- **`STATE-007`**: remote DIAL admission 거절은 해당 요청만 끝내며 기존 session, Binding과
+  Pipe를 보존한다. terminal remote DIAL 결과와 caller session 종료는 점유한 admission을 반환한다.

@@ -232,6 +232,7 @@ pub(crate) struct GatewayLimits {
     pub(crate) max_sessions: usize,
     pub(crate) max_bindings: usize,
     pub(crate) max_pending_offers: usize,
+    pub(crate) max_remote_dial_attempts: usize,
     pub(crate) max_live_pipes: usize,
     pub(crate) offer_timeout: Duration,
 }
@@ -242,6 +243,7 @@ impl Default for GatewayLimits {
             max_sessions: crate::config::DEFAULT_MAX_SESSIONS,
             max_bindings: crate::config::DEFAULT_MAX_BINDINGS,
             max_pending_offers: crate::config::DEFAULT_MAX_PENDING_OFFERS,
+            max_remote_dial_attempts: crate::config::DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS,
             max_live_pipes: crate::config::DEFAULT_MAX_LIVE_PIPES,
             offer_timeout: crate::config::DEFAULT_OFFER_TIMEOUT,
         }

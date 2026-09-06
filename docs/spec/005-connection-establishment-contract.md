@@ -22,6 +22,9 @@ Relay A DIAL(dst)
 - **`DIAL-008`**: OFFER deadline은 selected RelaySession 전체를 종료해 불확실한 queue state를 정리한다.
 - **`DIAL-009`**: caller가 dial future를 취소하면 current PipeId에 `CANCEL`을 보내고 sibling은 유지한다.
 - **`DIAL-010`**: `OPENED`는 Listener queue admission만 뜻한다.
+- **`DIAL-011`**: Entry Gateway는 unresolved remote DIAL 수를 제한하고 초과 요청을
+  `RESOURCE_EXHAUSTED/NOT_OBSERVED`로 거절한다. 거절은 RelaySession, Binding과 기존 Pipe를
+  종료하지 않는다.
 
 ## observation
 

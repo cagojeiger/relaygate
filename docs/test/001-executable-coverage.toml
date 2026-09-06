@@ -33,7 +33,7 @@ rust = ["exact_artifact_bytes_define_generation_and_ordered_authority", "registe
 [[case]]
 id = "T-DIAL-01"
 status = "executable"
-rust = ["state::tests::duplicate_or_out_of_order_dial_identifiers_do_not_create_more_state", "state::tests::one_session_can_publish_and_dial_while_self_binding_is_excluded", "state::tests::accepted_pipe_relays_data_and_closes_without_residue", "state::tests::offer_timeout_closes_the_unresponsive_relay_and_preserves_sibling_binding"]
+rust = ["state::tests::duplicate_or_out_of_order_dial_identifiers_do_not_create_more_state", "state::tests::one_session_can_publish_and_dial_while_self_binding_is_excluded", "state::tests::accepted_pipe_relays_data_and_closes_without_residue", "state::tests::offer_timeout_closes_the_unresponsive_relay_and_preserves_sibling_binding", "state::tests::remote_dial_admission_rejects_before_resolve_and_releases_after_terminal_result"]
 
 [[case]]
 id = "T-PEER-01"
@@ -48,7 +48,7 @@ rust = ["sdk_gateway_path_uses_tls_before_cluster_admission", "session_admission
 [[case]]
 id = "T-STATE-01"
 status = "executable"
-rust = ["state::tests::session_removal_cleans_its_bindings_and_pipes_only", "state::tests::foreign_session_cannot_control_an_existing_pipe", "peer::transport::tests::terminal::reordering::opened_terminal_reordering_converges_once", "routing::runtime::tests::stale_epoch::worker_reconnect_epoch_ignores_late_update_completion"]
+rust = ["state::tests::session_removal_cleans_its_bindings_and_pipes_only", "state::tests::foreign_session_cannot_control_an_existing_pipe", "state::tests::remote_dial_admission_releases_all_slots_when_caller_session_ends", "peer::transport::tests::terminal::reordering::opened_terminal_reordering_converges_once", "routing::runtime::tests::stale_epoch::worker_reconnect_epoch_ignores_late_update_completion"]
 
 [[case]]
 id = "T-OBS-01"

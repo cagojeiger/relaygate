@@ -10,6 +10,7 @@ pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_SESSIONS: usize = 10_000;
 pub const DEFAULT_MAX_BINDINGS: usize = 100_000;
 pub const DEFAULT_MAX_PENDING_OFFERS: usize = 10_000;
+pub const DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS: usize = 128;
 pub const DEFAULT_MAX_LIVE_PIPES: usize = 100_000;
 pub const DEFAULT_OFFER_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_HEARTBEAT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
@@ -27,6 +28,7 @@ pub struct GatewayConfig {
     pub(crate) max_sessions: usize,
     pub(crate) max_bindings: usize,
     pub(crate) max_pending_offers: usize,
+    pub(crate) max_remote_dial_attempts: usize,
     pub(crate) max_live_pipes: usize,
     pub(crate) offer_timeout: Duration,
     pub(crate) heartbeat_idle_interval: Duration,
@@ -48,6 +50,7 @@ impl std::fmt::Debug for GatewayConfig {
             .field("max_sessions", &self.max_sessions)
             .field("max_bindings", &self.max_bindings)
             .field("max_pending_offers", &self.max_pending_offers)
+            .field("max_remote_dial_attempts", &self.max_remote_dial_attempts)
             .field("max_live_pipes", &self.max_live_pipes)
             .field("offer_timeout", &self.offer_timeout)
             .field("heartbeat_idle_interval", &self.heartbeat_idle_interval)
@@ -72,6 +75,7 @@ impl GatewayConfig {
             max_sessions: DEFAULT_MAX_SESSIONS,
             max_bindings: DEFAULT_MAX_BINDINGS,
             max_pending_offers: DEFAULT_MAX_PENDING_OFFERS,
+            max_remote_dial_attempts: DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS,
             max_live_pipes: DEFAULT_MAX_LIVE_PIPES,
             offer_timeout: DEFAULT_OFFER_TIMEOUT,
             heartbeat_idle_interval: DEFAULT_HEARTBEAT_IDLE_INTERVAL,
@@ -119,6 +123,12 @@ impl GatewayConfig {
     #[must_use]
     pub const fn with_max_pending_offers(mut self, maximum: usize) -> Self {
         self.max_pending_offers = maximum;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_remote_dial_attempts(mut self, maximum: usize) -> Self {
+        self.max_remote_dial_attempts = maximum;
         self
     }
 
@@ -175,6 +185,7 @@ impl GatewayConfig {
         if self.max_sessions == 0
             || self.max_bindings == 0
             || self.max_pending_offers == 0
+            || self.max_remote_dial_attempts == 0
             || self.max_live_pipes == 0
         {
             return Err(GatewayError::InvalidConfig(
@@ -263,5 +274,15 @@ mod tests {
         ] {
             assert!(config.validate().is_err());
         }
+    }
+
+    #[test]
+    fn zero_remote_dial_admission_limit_is_rejected() {
+        assert!(
+            GatewayConfig::new("test-token")
+                .with_max_remote_dial_attempts(0)
+                .validate()
+                .is_err()
+        );
     }
 }

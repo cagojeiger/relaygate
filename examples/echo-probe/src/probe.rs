@@ -592,7 +592,7 @@ async fn assert_new_remote_open_unavailable(
     }
 }
 
-async fn assert_echo(mut pipe: Pipe, payload: &[u8]) -> anyhow::Result<()> {
+pub(crate) async fn assert_echo(mut pipe: Pipe, payload: &[u8]) -> anyhow::Result<()> {
     timeout(ECHO_DEADLINE, async {
         pipe.write_all(payload).await?;
         pipe.shutdown().await?;
