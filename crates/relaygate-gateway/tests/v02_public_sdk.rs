@@ -102,6 +102,43 @@ async fn one_session_can_listen_dial_and_accept() -> TestResult {
 }
 
 #[tokio::test]
+async fn session_frame_buffers_grow_beyond_their_initial_capacity() -> TestResult {
+    let (address, shutdown, server) = start_gateway().await?;
+    let config = Config::new_insecure_for_tests(address.to_string(), CLUSTER_TOKEN)
+        .with_operation_timeout(Duration::from_secs(2));
+    let publisher = Relay::connect(config.clone()).await?;
+    let caller = Relay::connect(config).await?;
+    let destination = DestinationId::new();
+    let publication = publisher.listen(destination).await?;
+
+    let (dialed, accepted) = timeout(Duration::from_secs(2), async {
+        tokio::join!(caller.dial(destination), publication.accept())
+    })
+    .await?;
+    let mut dialed = dialed?;
+    let mut accepted = accepted?;
+    let payload: Vec<u8> = (0..64 * 1024).map(|index| (index % 251) as u8).collect();
+
+    dialed.write_all(&payload).await?;
+    dialed.shutdown().await?;
+    let mut received = Vec::new();
+    accepted.read_to_end(&mut received).await?;
+    assert_eq!(received, payload);
+
+    accepted.write_all(&payload).await?;
+    accepted.shutdown().await?;
+    received.clear();
+    dialed.read_to_end(&mut received).await?;
+    assert_eq!(received, payload);
+
+    publisher.close();
+    caller.close();
+    shutdown.cancel();
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn same_destination_selects_one_of_multiple_relays() -> TestResult {
     let (address, shutdown, server) = start_gateway().await?;
     let config = Config::new_insecure_for_tests(address.to_string(), CLUSTER_TOKEN)
