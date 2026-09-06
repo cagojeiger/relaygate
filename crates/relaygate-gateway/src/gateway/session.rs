@@ -21,6 +21,8 @@ use crate::state::ProtocolViolation;
 use super::{Inner, heartbeat::SessionHeartbeat};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const SDK_FRAME_INITIAL_CAPACITY: usize = 2 * 1024;
+const SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY: usize = 8 * 1024;
 
 impl Inner {
     pub(super) async fn run_session(
@@ -28,7 +30,12 @@ impl Inner {
         stream: BoxedIo,
         cancellation: CancellationToken,
     ) -> Result<(), SessionError> {
-        let mut framed = Framed::new(stream, FrameCodec::new(self.max_frame_len));
+        let mut framed = Framed::with_capacity(
+            stream,
+            FrameCodec::new(self.max_frame_len),
+            SDK_FRAME_INITIAL_CAPACITY,
+        );
+        framed.set_backpressure_boundary(SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY);
         let first = tokio::select! {
             _ = cancellation.cancelled() => return Ok(()),
             result = timeout(HANDSHAKE_TIMEOUT, framed.next()) => {

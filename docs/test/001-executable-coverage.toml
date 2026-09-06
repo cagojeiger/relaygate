@@ -18,7 +18,7 @@ rust = ["state::tests::publish_is_idempotent_but_unpublish_then_publish_creates_
 [[case]]
 id = "T-PIPE-01"
 status = "executable"
-rust = ["pipe::tests::owned_halves_can_read_and_write_concurrently", "pipe::tests::async_shutdown_sends_one_fin_and_keeps_the_read_half_alive", "peer::transport::tests::capacity::saturated_stream_and_aggregate_buffers_are_released_on_transport_loss"]
+rust = ["session_frame_buffers_grow_beyond_their_initial_capacity", "pipe::tests::owned_halves_can_read_and_write_concurrently", "pipe::tests::async_shutdown_sends_one_fin_and_keeps_the_read_half_alive", "peer::transport::tests::capacity::saturated_stream_and_aggregate_buffers_are_released_on_transport_loss"]
 
 [[case]]
 id = "T-BIND-01"
