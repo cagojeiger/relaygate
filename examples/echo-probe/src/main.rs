@@ -3,6 +3,7 @@ mod config;
 mod continuity;
 mod overload;
 mod probe;
+mod session_load;
 
 use std::env;
 
@@ -22,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Soak => probe::run_soak().await,
         Command::Overload => overload::run().await,
         Command::ReconnectStorm => probe::run_reconnect_storm().await,
+        Command::SessionLoad => session_load::run().await,
         Command::WaitClient(destination_id) => probe::wait_client_registered(&destination_id).await,
         Command::ExpectShardIsolation {
             unavailable_destination_id,
@@ -48,6 +50,7 @@ enum Command {
     Soak,
     Overload,
     ReconnectStorm,
+    SessionLoad,
     WaitClient(String),
     ExpectShardIsolation {
         unavailable_destination_id: String,
@@ -71,6 +74,7 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         Some("soak") => Command::Soak,
         Some("overload") => Command::Overload,
         Some("reconnect-storm") => Command::ReconnectStorm,
+        Some("session-load") => Command::SessionLoad,
         Some("wait-client") => {
             let Some(destination_id) = args.next() else {
                 bail!("wait-client requires a DestinationId argument");
@@ -104,7 +108,7 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         Some("continuity") => Command::Continuity,
         Some("continuity-check") => Command::ContinuityCheck,
         Some(other) => bail!(
-            "unknown command {other:?}; expected single, chat, matrix, soak, overload, reconnect-storm, wait-client, expect-shard-isolation, continuity, or continuity-check"
+            "unknown command {other:?}; expected single, chat, matrix, soak, overload, reconnect-storm, session-load, wait-client, expect-shard-isolation, continuity, or continuity-check"
         ),
     };
     if args.next().is_some() {
@@ -176,6 +180,15 @@ mod tests {
         anyhow::ensure!(matches!(
             command_from(["reconnect-storm".to_owned()]),
             Ok(Command::ReconnectStorm)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_session_load_command() -> anyhow::Result<()> {
+        anyhow::ensure!(matches!(
+            command_from(["session-load".to_owned()]),
+            Ok(Command::SessionLoad)
         ));
         Ok(())
     }
