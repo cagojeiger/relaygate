@@ -5,7 +5,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use relaygate_protocol::{BindingId, DestinationId, ErrorCode, Frame, PipeId, SessionId};
+use relaygate_protocol::{
+    BindingId, DestinationId, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
+};
+use relaygate_route_table::GatewayId;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -389,5 +392,111 @@ fn resource_limits_reject_without_leaking_state() -> TestResult {
     }));
     assert_eq!(state.snapshot().bindings, 1);
     assert_eq!(state.snapshot().pending_offers, 1);
+    Ok(())
+}
+
+#[test]
+fn remote_dial_admission_rejects_before_resolve_and_releases_after_terminal_result() -> TestResult {
+    let mut state = GatewayState::new_distributed(
+        GatewayLimits {
+            max_remote_dial_attempts: 1,
+            ..GatewayLimits::default()
+        },
+        GatewayId::new(),
+    );
+    let caller = add_session(&mut state);
+    let destination_a = destination(DESTINATION_A)?;
+    let destination_b = destination(DESTINATION_B)?;
+
+    let first = state.handle(
+        caller,
+        Frame::Dial {
+            connection_id: 1,
+            destination_id: destination_a,
+        },
+    )?;
+    let open_identity = first
+        .iter()
+        .find_map(|action| match action {
+            GatewayAction::ResolveRoute { open_identity, .. } => Some(*open_identity),
+            _ => None,
+        })
+        .ok_or("first remote DIAL did not start route resolution")?;
+    assert_eq!(state.snapshot().remote_open_attempts, 1);
+
+    let rejected = state.handle(
+        caller,
+        Frame::Dial {
+            connection_id: 2,
+            destination_id: destination_b,
+        },
+    )?;
+    assert!(sdk_frames(&rejected).any(|(target, frame)| {
+        target == caller
+            && matches!(
+                frame,
+                Frame::DialFailed {
+                    code: ErrorCode::ResourceExhausted,
+                    observation: PeerObservation::NotObserved,
+                    ..
+                }
+            )
+    }));
+    assert_eq!(state.snapshot().sessions, 1);
+    assert_eq!(state.snapshot().remote_open_attempts, 1);
+
+    state.route_failed(open_identity, ErrorCode::Unavailable, "test route failure");
+    assert_eq!(state.snapshot().remote_open_attempts, 0);
+
+    let admitted = state.handle(
+        caller,
+        Frame::Dial {
+            connection_id: 3,
+            destination_id: destination_b,
+        },
+    )?;
+    assert!(
+        admitted
+            .iter()
+            .any(|action| matches!(action, GatewayAction::ResolveRoute { .. }))
+    );
+    assert_eq!(state.snapshot().remote_open_attempts, 1);
+    Ok(())
+}
+
+#[test]
+fn remote_dial_admission_releases_all_slots_when_caller_session_ends() -> TestResult {
+    let mut state = GatewayState::new_distributed(
+        GatewayLimits {
+            max_remote_dial_attempts: 2,
+            ..GatewayLimits::default()
+        },
+        GatewayId::new(),
+    );
+    let caller = add_session(&mut state);
+
+    for (connection_id, destination_id) in [
+        (1, destination(DESTINATION_A)?),
+        (2, destination(DESTINATION_B)?),
+    ] {
+        let actions = state.handle(
+            caller,
+            Frame::Dial {
+                connection_id,
+                destination_id,
+            },
+        )?;
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, GatewayAction::ResolveRoute { .. }))
+        );
+    }
+    assert_eq!(state.snapshot().remote_open_attempts, 2);
+
+    state.remove_session(caller);
+    assert_eq!(state.snapshot().sessions, 0);
+    assert_eq!(state.snapshot().remote_open_attempts, 0);
+    assert!(state.is_drained());
     Ok(())
 }

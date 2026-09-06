@@ -109,6 +109,7 @@ impl Gateway {
             max_sessions: config.max_sessions,
             max_bindings: config.max_bindings,
             max_pending_offers: config.max_pending_offers,
+            max_remote_dial_attempts: config.max_remote_dial_attempts,
             max_live_pipes: config.max_live_pipes,
             offer_timeout: config.offer_timeout,
         };

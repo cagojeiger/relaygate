@@ -85,6 +85,9 @@ impl GatewayRuntimeConfig {
         if let Some(maximum) = optional_usize("RELAYGATE_MAX_PENDING_OFFERS")? {
             gateway = gateway.with_max_pending_offers(maximum);
         }
+        if let Some(maximum) = optional_usize("RELAYGATE_MAX_REMOTE_DIAL_ATTEMPTS")? {
+            gateway = gateway.with_max_remote_dial_attempts(maximum);
+        }
         if let Some(maximum) = optional_usize("RELAYGATE_MAX_LIVE_PIPES")? {
             gateway = gateway.with_max_live_pipes(maximum);
         }

@@ -98,6 +98,16 @@ impl GatewayState {
                 now,
             );
         };
+        if self.remote_open_attempts.len() >= self.limits.max_remote_dial_attempts {
+            return self.new_open_failed(
+                connector,
+                connection_id,
+                ErrorCode::ResourceExhausted,
+                PeerObservation::NotObserved,
+                "Gateway remote DIAL admission limit reached",
+                now,
+            );
+        }
         let Ok(route_destination_id) = RouteDestinationId::new(destination_id.to_string()) else {
             return self.new_open_failed(
                 connector,

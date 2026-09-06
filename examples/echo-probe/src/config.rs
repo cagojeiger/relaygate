@@ -16,6 +16,9 @@ pub(crate) const CONTINUITY_INTERVAL: Duration = Duration::from_millis(100);
 pub(crate) const CONTINUITY_FRESHNESS: Duration = Duration::from_secs(2);
 pub(crate) const DEFAULT_SOAK_DURATION: Duration = Duration::from_secs(60);
 pub(crate) const DEFAULT_SOAK_CONCURRENCY: usize = 64;
+pub(crate) const DEFAULT_OVERLOAD_DURATION: Duration = Duration::from_secs(15);
+pub(crate) const DEFAULT_OVERLOAD_WORKERS: usize = 256;
+pub(crate) const DEFAULT_OVERLOAD_SESSIONS: usize = 3;
 pub(crate) const DEFAULT_STORM_SESSIONS: usize = 100;
 pub(crate) const DEFAULT_STORM_PAUSE: Duration = Duration::from_secs(30);
 
@@ -83,6 +86,36 @@ pub(crate) fn soak_concurrency() -> anyhow::Result<usize> {
     .and_then(|value| {
         usize::try_from(value)
             .map_err(|_| anyhow::anyhow!("RELAYGATE_SOAK_CONCURRENCY is too large"))
+    })
+}
+
+pub(crate) fn overload_duration() -> anyhow::Result<Duration> {
+    positive_integer(
+        "RELAYGATE_OVERLOAD_DURATION_SECS",
+        DEFAULT_OVERLOAD_DURATION.as_secs(),
+    )
+    .map(Duration::from_secs)
+}
+
+pub(crate) fn overload_workers() -> anyhow::Result<usize> {
+    positive_integer(
+        "RELAYGATE_OVERLOAD_WORKERS",
+        DEFAULT_OVERLOAD_WORKERS as u64,
+    )
+    .and_then(|value| {
+        usize::try_from(value)
+            .map_err(|_| anyhow::anyhow!("RELAYGATE_OVERLOAD_WORKERS is too large"))
+    })
+}
+
+pub(crate) fn overload_sessions() -> anyhow::Result<usize> {
+    positive_integer(
+        "RELAYGATE_OVERLOAD_SESSIONS",
+        DEFAULT_OVERLOAD_SESSIONS as u64,
+    )
+    .and_then(|value| {
+        usize::try_from(value)
+            .map_err(|_| anyhow::anyhow!("RELAYGATE_OVERLOAD_SESSIONS is too large"))
     })
 }
 
