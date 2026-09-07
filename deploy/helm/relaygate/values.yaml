@@ -70,7 +70,7 @@ gateway:
 
   image:
     repository: ghcr.io/cagojeiger/relaygate-gateway
-    tag: "0.2.1"
+    tag: "0.2.2"
     pullPolicy: IfNotPresent
 
   sdkPort: 27420
