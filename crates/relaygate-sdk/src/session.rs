@@ -15,6 +15,9 @@ pub(crate) use outbound::{FrameCommit, SessionOutbound, session_outbound_channel
 
 pub(crate) type WireTransport = Framed<BoxedIo, FrameCodec>;
 
+const SDK_FRAME_INITIAL_CAPACITY: usize = 2 * 1024;
+const SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY: usize = 8 * 1024;
+
 pub(crate) struct EstablishedSession {
     pub(crate) id: SessionId,
     pub(crate) transport: WireTransport,
@@ -22,7 +25,12 @@ pub(crate) struct EstablishedSession {
 
 pub(crate) async fn establish(config: &Config) -> Result<EstablishedSession> {
     let stream = config.transport.connect(config.connect_timeout).await?;
-    let mut transport = Framed::new(stream, FrameCodec::new(config.max_frame_len));
+    let mut transport = Framed::with_capacity(
+        stream,
+        FrameCodec::new(config.max_frame_len),
+        SDK_FRAME_INITIAL_CAPACITY,
+    );
+    transport.set_backpressure_boundary(SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY);
     timeout(
         config.connect_timeout,
         transport.send(Frame::Hello {
