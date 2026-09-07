@@ -318,6 +318,38 @@ impl GatewayState {
         Ok(self.connector_failure(&pipe, pipe_id, code, PeerObservation::NotObserved, &message))
     }
 
+    pub(crate) fn offer_delivery_rejected(
+        &mut self,
+        listener: SessionId,
+        pipe_id: PipeId,
+    ) -> Vec<GatewayAction> {
+        let matches_pending_offer = self.pipes.get(&pipe_id).is_some_and(|pipe| {
+            pipe.phase == PipePhase::Offered && pipe.listener == PipeEndpoint::Sdk(listener)
+        });
+        if !matches_pending_offer {
+            return Vec::new();
+        }
+        let Some(pipe) = self.remove_pipe(pipe_id) else {
+            return Vec::new();
+        };
+        tracing::warn!(
+            component = "gateway",
+            event = "gateway.offer.admission_rejected",
+            relay_session_id = %listener.as_uuid(),
+            connection_id = pipe_id.connection_id(),
+            error_code = ?ErrorCode::ResourceExhausted,
+            observation = ?PeerObservation::NotObserved,
+            "Listener writer queue was full before OFFER admission"
+        );
+        self.connector_failure(
+            &pipe,
+            pipe_id,
+            ErrorCode::ResourceExhausted,
+            PeerObservation::NotObserved,
+            "selected RelaySession writer queue is full",
+        )
+    }
+
     pub(super) fn cancel(
         &mut self,
         connector: SessionId,

@@ -25,6 +25,9 @@ Relay A DIAL(dst)
 - **`DIAL-011`**: Entry Gateway는 unresolved remote DIAL 수를 제한하고 초과 요청을
   `RESOURCE_EXHAUSTED/NOT_OBSERVED`로 거절한다. 거절은 RelaySession, Binding과 기존 Pipe를
   종료하지 않는다.
+- **`DIAL-012`**: selected Listener의 bounded writer queue가 OFFER를 받기 전에 가득 차면 해당
+  DIAL만 `RESOURCE_EXHAUSTED/NOT_OBSERVED`로 끝낸다. ListenerSession, Binding과 기존 Pipe는
+  보존한다. OFFER 이외 frame의 writer 실패는 observation이 불확실하므로 session failure다.
 
 ## observation
 
