@@ -25,9 +25,9 @@ TLS/TCP는 application fallback 목록의 한 후보가 아니다. certificate c
 ClusterToken 검증 실패는 해당 연결의 terminal failure이며 평문이나 다른 transport로 자동 전환하지
 않는다.
 
-SDK-facing TLS와 cluster-internal mTLS는 별도 Secret과 trust domain으로 운영할 수 있다. Helm은
-certificate를 발급하지 않고 두 Secret을 read-only로 mount한다. certificate hot reload는 제공하지
-않으며 각 reload token 변경으로 대상 workload를 rollout한다.
+SDK-facing TLS와 cluster-internal mTLS는 별도 Secret과 trust domain으로 운영할 수 있다. Helm은 edge
+Secret을 read-only로 mount한다. 내부 mTLS는 기존 Secret 또는 ADR 016의 cert-manager leaf certificate를
+사용한다. certificate hot reload는 제공하지 않으며 각 reload token 변경으로 대상 workload를 rollout한다.
 
 RelayGate chart는 공용 Envoy Gateway, `GatewayClass`, `TCPRoute`, `TLSRoute`를 소유하지 않는다.
 공유 L4 entry를 쓰는 환경은 platform/GitOps가 TLS passthrough 경로를 만들고, Gateway process가 TLS를

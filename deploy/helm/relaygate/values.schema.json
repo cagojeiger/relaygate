@@ -110,6 +110,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "source",
             "existingSecret",
             "caKey",
             "gatewayCertificateKey",
@@ -118,9 +119,14 @@
             "routeTablePrivateKeyKey",
             "gatewayServerName",
             "routeTableServerName",
-            "reloadToken"
+            "reloadToken",
+            "certManager"
           ],
           "properties": {
+            "source": {
+              "type": "string",
+              "enum": ["existingSecret", "certManager"]
+            },
             "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
             "caKey": { "$ref": "#/definitions/secretKey" },
             "gatewayCertificateKey": { "$ref": "#/definitions/secretKey" },
@@ -129,7 +135,43 @@
             "routeTablePrivateKeyKey": { "$ref": "#/definitions/secretKey" },
             "gatewayServerName": { "$ref": "#/definitions/dnsSubdomain" },
             "routeTableServerName": { "$ref": "#/definitions/dnsSubdomain" },
-            "reloadToken": { "type": "string" }
+            "reloadToken": { "type": "string" },
+            "certManager": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["issuerRef", "trustSecret"],
+              "properties": {
+                "issuerRef": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "kind", "group"],
+                  "properties": {
+                    "name": { "$ref": "#/definitions/optionalDnsSubdomain" },
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 63,
+                      "pattern": "^[A-Za-z][A-Za-z0-9]*$"
+                    },
+                    "group": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 253,
+                      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                    }
+                  }
+                },
+                "trustSecret": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "key"],
+                  "properties": {
+                    "name": { "$ref": "#/definitions/optionalDnsSubdomain" },
+                    "key": { "$ref": "#/definitions/secretKey" }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -391,6 +433,11 @@
       "minLength": 1,
       "maxLength": 253,
       "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "optionalDnsSubdomain": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
     },
     "secretKey": {
       "type": "string",

@@ -11,7 +11,7 @@
 SDK <-> GW : TLS/TCP + 서버 인증 + ClusterToken, client 인증서 없음
 GW  <-> GW : mTLS/TCP + 기존 peer handshake의 logical GatewayId 검증
 GW  <-> RT : mTLS/TCP + 기존 RT transport의 logical identity 검증
-Helm       : 외부에서 만든 certificate Secret을 mount하고 경로를 배선
+Helm       : existing Secret 또는 cert-manager leaf Secret을 mount하고 경로를 배선
 ```
 
 0.2 runtime은 framed protocol을 native TLS/TCP 위에서 실행한다. HTTP를 사용하지 않으므로 이를
@@ -22,10 +22,10 @@ port-forward처럼 dial 주소와 인증 이름이 다른 환경을 위해 serve
 확인하고, 현재 peer/RT handshake는 protocol이 주장하는 `GatewayId`와 `ShardId`를 기존 배포 config와
 대조한다. certificate 검증 실패나 logical identity 불일치는 연결 실패이며 평문으로 전환하지 않는다.
 
-TLS는 Rust runtime이 수행한다. Helm은 certificate를 생성하지 않고 `existingSecret`의 CA, certificate,
-private key를 read-only file로 mount한다. certificate 변경은 새 process rollout로 적용하며 0.2는
-hot reload를 제공하지 않는다. 명시적인 개발용 insecure profile은 unit test에만 허용하고 배포 차트의
-기본 또는 fallback으로 제공하지 않는다.
+TLS는 Rust runtime이 수행한다. Helm 기본 모드는 `existingSecret`의 CA, certificate, private key를
+read-only file로 mount한다. ADR 016의 선택적 mode는 cert-manager leaf `Certificate`만 생성한다.
+certificate 변경은 새 process rollout로 적용하며 0.2는 hot reload를 제공하지 않는다. 명시적인 개발용
+insecure profile은 unit test에만 허용하고 배포 차트의 기본 또는 fallback으로 제공하지 않는다.
 
 ## 결과
 
