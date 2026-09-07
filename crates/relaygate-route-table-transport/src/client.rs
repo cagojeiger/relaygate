@@ -522,7 +522,7 @@ mod tests {
             observe_request(
                 "resolve",
                 Instant::now(),
-                &Err(TransportError::unavailable("test failure")),
+                &Err::<(), _>(TransportError::unavailable("test failure")),
             );
         });
 
