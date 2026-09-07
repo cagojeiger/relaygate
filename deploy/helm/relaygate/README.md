@@ -121,6 +121,9 @@ LoadBalancer Service에 설정한 값은 변경할 수 없으므로 다른 class
 
 `helm.sh/chart`는 workload object metadata에만 기록합니다. Pod template에는 version-independent label만
 사용하므로 chart package version 자체는 runtime rollout 사유가 되지 않습니다.
+이 규칙을 처음 포함한 chart로 upgrade할 때는 기존 Pod template에서 `helm.sh/chart` label을
+제거하므로 Gateway와 RT가 각각 한 번 rolling replacement됩니다. 이후 chart version만 바꾸는
+upgrade는 runtime Pod를 교체하지 않습니다.
 
 RT online resharding, replication, quorum, Gateway Pipe migration과 certificate hot reload는 제공하지
 않습니다.
