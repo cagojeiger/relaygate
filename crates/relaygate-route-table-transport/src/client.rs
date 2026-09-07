@@ -474,7 +474,7 @@ fn validate_duration(name: &'static str, value: Duration) -> Result<(), Transpor
 
 #[cfg(test)]
 mod tests {
-    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+    use metrics_util::{CompositeKey, debugging::DebugValue, debugging::DebuggingRecorder};
 
     use super::*;
 
@@ -526,8 +526,9 @@ mod tests {
         }));
     }
 
-    fn has_label(key: &metrics::Key, expected_key: &str, expected_value: &str) -> bool {
-        key.labels()
+    fn has_label(key: &CompositeKey, expected_key: &str, expected_value: &str) -> bool {
+        key.key()
+            .labels()
             .any(|label| label.key() == expected_key && label.value() == expected_value)
     }
 }
