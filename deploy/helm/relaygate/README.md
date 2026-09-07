@@ -11,8 +11,9 @@ host/외부 SDK ── TLS/TCP ──► platform L4 ── passthrough ──�
                                          └── RouteTable StatefulSet × M shards
 ```
 
-SDK application, certificate 발급, Secret, platform Gateway, PVC와 application 저장소는 포함하지 않습니다.
-RouteTable은 memory-only이며 `emptyDir`와 `volumeClaimTemplates`를 사용하지 않습니다.
+SDK application, edge certificate 발급, CA/Issuer, platform Gateway, PVC와 application 저장소는 포함하지
+않습니다. 선택적으로 cert-manager용 내부 leaf `Certificate`만 만듭니다. RouteTable은 memory-only이며
+`emptyDir`와 `volumeClaimTemplates`를 사용하지 않습니다.
 
 ## 사전 준비
 
@@ -36,7 +37,7 @@ edge TLS Secret:
 공개 CA 인증서는 `trustMode=webPkiRoots`를 사용합니다. 이때 Gateway readiness와 SDK는
 Mozilla public root set으로 server name을 검증하며 edge Secret에는 `tls.crt`, `tls.key`만 필요합니다.
 
-internal mTLS Secret:
+기본 `tls.internal.source=existingSecret`의 internal mTLS Secret:
 
 | key | 용도 |
 | --- | --- |
@@ -67,6 +68,30 @@ kubectl -n relaygate create secret generic relaygate-internal-tls \
   --from-file=route-table.crt \
   --from-file=route-table.key
 ```
+
+cert-manager가 설치된 cluster에서는 내부 leaf 인증서만 자동 발급할 수 있습니다. platform이
+Issuer/ClusterIssuer와 그 CA의 public trust bundle Secret을 먼저 제공합니다.
+
+```yaml
+tls:
+  internal:
+    source: certManager
+    gatewayServerName: relaygate-gateway.internal
+    routeTableServerName: relaygate-route-table.internal
+    certManager:
+      issuerRef:
+        name: relaygate-internal
+        kind: ClusterIssuer
+        group: cert-manager.io
+      trustSecret:
+        name: relaygate-internal-ca
+        key: ca.crt
+```
+
+이 mode는 `<release>-gw-internal-tls`, `<release>-rt-internal-tls` leaf Secret을 생성합니다. cert-manager는
+leaf를 갱신하지만 RelayGate runtime은 file hot reload를 하지 않습니다. 갱신 후
+`tls.internal.reloadToken` 변경 또는 platform reloader로 Gateway/RT를 rollout해야 합니다. root CA
+rotation은 cert-manager CA Issuer가 자동 처리하지 않으므로 old/new trust overlap을 platform에서 관리합니다.
 
 ## 설치
 
@@ -118,7 +143,7 @@ LoadBalancer Service에 설정한 값은 변경할 수 없으므로 다른 class
 | chart version만 변경 | runtime Pod replacement 없음 |
 | ClusterToken rotation | current + next 배포 → SDK 이동 → new current만 배포 |
 | edge certificate | Secret 갱신 뒤 `tls.edge.reloadToken` 변경으로 Gateway rollout |
-| internal certificate | Secret 갱신 뒤 `tls.internal.reloadToken` 변경으로 Gateway/RT rollout |
+| internal certificate | existing Secret 또는 cert-manager leaf 갱신 뒤 `tls.internal.reloadToken` 변경/reloader로 Gateway/RT rollout |
 | Gateway 증가 | 새 GatewayName/key를 먼저 허용하고 rollout한 뒤 replica 증가 |
 | RT shard 수/domain/port | maintenance window에서 기존 release/pod 완전 종료 후 새 directory로 설치 |
 
@@ -128,8 +153,8 @@ LoadBalancer Service에 설정한 값은 변경할 수 없으므로 다른 class
 제거하므로 Gateway와 RT가 각각 한 번 rolling replacement됩니다. 이후 chart version만 바꾸는
 upgrade는 runtime Pod를 교체하지 않습니다.
 
-RT online resharding, replication, quorum, Gateway Pipe migration과 certificate hot reload는 제공하지
-않습니다.
+RT online resharding, replication, quorum, Gateway Pipe migration, certificate hot reload와 root CA
+rotation 자동화는 제공하지 않습니다.
 
 ## 주요 values
 
@@ -145,6 +170,7 @@ tls:
     serverName: relaygate-gateway.internal
     reloadToken: ""
   internal:
+    source: existingSecret
     existingSecret: relaygate-internal-tls
     gatewayServerName: relaygate-gateway.internal
     routeTableServerName: relaygate-route-table.internal

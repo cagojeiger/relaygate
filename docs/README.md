@@ -46,7 +46,7 @@ dial 1회 -> eligible Binding 1개 -> Pipe 1개
 | Transport | SDK TLS와 내부 mTLS 설정·handshake |
 | Server | process config, dependency wiring, readiness, metric, shutdown |
 | Application | Destination 생성·보관, Pipe 상대 인증·인가, payload 의미·재시도·필요한 E2E 보호 |
-| Helm | RT/GW resource와 외부 Secret file 배선 |
+| Helm | RT/GW resource, 외부 Secret 배선과 선택적 내부 leaf Certificate |
 
 ## 현재 ADR
 
@@ -64,6 +64,7 @@ dial 1회 -> eligible Binding 1개 -> Pipe 1개
 | [013](adr/013-application-owned-destination.md) | DestinationId는 application-owned UUIDv4다. |
 | [014](adr/014-sdk-transport-and-l4-boundary.md) | SDK transport와 platform L4 진입점을 분리한다. |
 | [015](adr/015-public-edge-webpki-trust.md) | 공개 edge 인증서는 bundled Web PKI roots로 검증한다. |
+| [016](adr/016-cert-manager-internal-leaf-certificates.md) | cert-manager는 내부 leaf 인증서만 자동화한다. |
 
 ADR 001–003은 0.1 역할/권한 모델의 이력입니다. Pipe와 application 책임 경계는 유지되지만,
 고정 Connector/Listener 역할, `ClientId`와 `ClientKey`는 현재 계약이 아닙니다. 현재 해석은

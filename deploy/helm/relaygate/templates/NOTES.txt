@@ -4,7 +4,14 @@ RelayGate 구성:
   RouteTable shard:   {{ .Values.routeTable.shardCount }}
   credential Secret:  {{ .Values.credentials.existingSecret }}
   edge TLS Secret:    {{ .Values.tls.edge.existingSecret }}
+{{ if eq .Values.tls.internal.source "certManager" }}
+  internal TLS source: cert-manager
+  Gateway leaf Secret: {{ include "relaygate.internalGatewayCertificateSecretName" . }}
+  RouteTable leaf Secret: {{ include "relaygate.internalRouteTableCertificateSecretName" . }}
+  CA trust Secret: {{ .Values.tls.internal.certManager.trustSecret.name }}
+{{ else }}
   internal TLS Secret: {{ .Values.tls.internal.existingSecret }}
+{{ end }}
   SDK Service type:   {{ .Values.gateway.service.type }}
 
 cluster 내부 SDK endpoint:
@@ -16,8 +23,9 @@ workload 확인:
   kubectl -n {{ .Release.Namespace }} get statefulset,pod,service \
     -l app.kubernetes.io/instance={{ .Release.Name }}
 
-차트는 credential, certificate나 persistent volume을 만들지 않는다. 예상되는 모든 Gateway pod
-이름은 Secret의 {{ .Values.credentials.internalGatewayKeysKey }} 값에 있어야 한다.
+차트는 credential Secret, Issuer, CA나 persistent volume을 만들지 않는다. cert-manager mode에서만
+Gateway와 RouteTable leaf Certificate를 만든다. 예상되는 모든 Gateway pod 이름은 Secret의
+{{ .Values.credentials.internalGatewayKeysKey }} 값에 있어야 한다.
 SDK는 {{ .Values.tls.edge.serverName }} 이름으로 Gateway certificate를 검증하고 ClusterToken을
 제시해야 한다. Secret data 변경 뒤에는 workload를 재시작해야 한다. routeTable.shardCount 변경은 exact
 ShardDirectory generation을 바꾸므로 maintenance window에서 `helm uninstall --wait`와

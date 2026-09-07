@@ -14,8 +14,8 @@ credentials:
   reloadToken: ""
 
 tls:
-  # 차트는 인증서를 발급하지 않는다. SDK-facing TLS와 cluster-internal mTLS는
-  # 별도 trust domain으로 운영할 수 있도록 서로 다른 Secret을 mount한다.
+  # SDK-facing TLS와 cluster-internal mTLS는 별도 trust domain으로 운영한다.
+  # 차트는 edge certificate, Issuer와 CA를 만들지 않는다.
   edge:
     existingSecret: relaygate-edge-tls
     # customCa는 caKey를 mount하고, webPkiRoots는 공개 root set을 사용한다.
@@ -26,6 +26,9 @@ tls:
     serverName: relaygate-gateway.internal
     reloadToken: ""
   internal:
+    # existingSecret(기본)은 하나의 사전 생성 Secret을 사용한다. certManager는
+    # platform Issuer로 Gateway/RouteTable leaf certificate를 각각 발급한다.
+    source: existingSecret
     existingSecret: relaygate-internal-tls
     caKey: ca.crt
     gatewayCertificateKey: gateway.crt
@@ -35,6 +38,15 @@ tls:
     gatewayServerName: relaygate-gateway.internal
     routeTableServerName: relaygate-route-table.internal
     reloadToken: ""
+    certManager:
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+      # Issuer CA의 public trust bundle이다. leaf private key Secret과 분리한다.
+      trustSecret:
+        name: ""
+        key: ca.crt
 
 serviceAccount:
   create: true
