@@ -32,6 +32,7 @@ ABSENT -> CONNECTING -> ACTIVE -> RECONNECTING -> ACTIVE
 | --- | --- |
 | TLS/HELLO 실패 | session 생성 없음 |
 | transport/heartbeat/writer 실패 | current session, 그 session의 dial/Pipe; Listener는 SUSPENDED |
+| 전송 전 OFFER writer queue full | 해당 dial만 `RESOURCE_EXHAUSTED/NOT_OBSERVED` |
 | terminal admission 실패 | Relay와 Listener BLOCKED |
 | explicit Relay close | runtime, Listener, attempt와 Pipe CLOSED |
 
@@ -77,6 +78,7 @@ RT restart와 connection loss는 `UNSYNCED`이며 local Binding은 유지합니�
 | --- | --- | --- | --- |
 | SDK–GW 단절 | session 소유 Pipe/dial/current Binding | 다른 session과 Binding | SDK reconnect + Listener republish |
 | selected Listener OFFER 불확실 | selected RelaySession 전체 | sibling session/Binding | SDK reconnect; caller는 새 dial |
+| selected Listener OFFER 전송 전 queue full | 해당 dial | selected session/Binding과 기존 Pipe | 부하 감소 뒤 새 dial |
 | GW–GW transport 단절 | 해당 transport의 stream/Pipe | local Binding, 다른 transport | 다음 dial이 새 transport 사용 |
 | GW–RT 단절 | remote resolve와 sync 상태 | local Binding, established Pipe | worker reconnect + full snapshot |
 | RT restart | shard의 모든 lease/mapping | GW local Binding, Pipe | Gateway 재등록 |
@@ -95,3 +97,5 @@ RT restart와 connection loss는 `UNSYNCED`이며 local Binding은 유지합니�
 - **`STATE-006`**: 모든 cleanup은 반복 적용해도 같은 empty/current-state 결과로 수렴한다.
 - **`STATE-007`**: remote DIAL admission 거절은 해당 요청만 끝내며 기존 session, Binding과
   Pipe를 보존한다. terminal remote DIAL 결과와 caller session 종료는 점유한 admission을 반환한다.
+- **`STATE-008`**: OFFER가 Listener writer queue에 들어가지 못한 것이 확정되면 pending OFFER를
+  제거하고 해당 DIAL만 `NOT_OBSERVED`로 끝낸다. 다른 writer failure는 session 단위로 닫는다.

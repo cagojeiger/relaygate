@@ -32,30 +32,49 @@ pub(crate) struct Delivery {
 }
 
 impl Delivery {
-    pub(crate) fn deliver(self) -> Option<SessionId> {
+    pub(crate) fn deliver(self) -> Option<DeliveryFailure> {
         if let Err(error) = self.sender.try_send(self.frame) {
-            let queue_state = match error {
-                mpsc::error::TrySendError::Full(_) => "full",
-                mpsc::error::TrySendError::Closed(_) => "closed",
+            let (queue_state, frame) = match error {
+                mpsc::error::TrySendError::Full(frame) => ("full", frame),
+                mpsc::error::TrySendError::Closed(frame) => ("closed", frame),
             };
+            let offer = matches!(&frame, Frame::Offer { .. });
             tracing::warn!(
                 component = "gateway",
                 event = "gateway.session.writer_queue_rejected",
                 session_id = %self.target.as_uuid(),
                 queue_state,
+                frame = if offer { "offer" } else { "other" },
                 error_code = ?ErrorCode::ResourceExhausted,
-                "closing a session whose bounded writer queue cannot accept a frame"
+                "bounded SDK writer queue could not accept a frame"
             );
             metrics::counter!(
                 "relaygate_gateway_writer_queue_rejections_total",
                 "reason" => queue_state
             )
             .increment(1);
+            if queue_state == "full"
+                && let Frame::Offer { pipe_id, .. } = frame
+            {
+                return Some(DeliveryFailure::OfferQueueFull {
+                    listener: self.target,
+                    pipe_id,
+                });
+            }
             self.cancellation.cancel();
-            return Some(self.target);
+            return Some(DeliveryFailure::SessionUnavailable(self.target));
         }
         None
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeliveryFailure {
+    OfferQueueFull {
+        listener: SessionId,
+        pipe_id: PipeId,
+    },
+    SessionUnavailable(SessionId),
 }
 
 #[derive(Debug, Clone)]

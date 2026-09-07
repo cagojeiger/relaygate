@@ -10,7 +10,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{
     peer::{OpenIdentity, PeerEvent, PeerFailure, PeerOpenRequest, PeerTarget},
-    state::{GatewayAction, GatewayState, PeerDelivery},
+    state::{DeliveryFailure, GatewayAction, GatewayState, PeerDelivery},
 };
 
 use super::{Inner, route_resolver::RouteResolver};
@@ -80,17 +80,27 @@ impl Inner {
         while let Some(action) = pending.pop_front() {
             match action {
                 GatewayAction::SendSdkFrame(delivery) => {
-                    let Some(failed_session) = delivery.deliver() else {
+                    let Some(failure) = delivery.deliver() else {
                         continue;
                     };
-                    if cleaned.insert(failed_session) {
-                        let cleanup_actions = {
-                            let mut state = self.lock_state();
-                            let actions = state.remove_session(failed_session);
-                            self.commit_registration_actions(&actions);
-                            actions
-                        };
-                        pending.extend(cleanup_actions);
+                    match failure {
+                        DeliveryFailure::OfferQueueFull { listener, pipe_id } => {
+                            pending.extend(self.transition(|state| {
+                                state.offer_delivery_rejected(listener, pipe_id)
+                            }));
+                        }
+                        DeliveryFailure::SessionUnavailable(failed_session)
+                            if cleaned.insert(failed_session) =>
+                        {
+                            let cleanup_actions = {
+                                let mut state = self.lock_state();
+                                let actions = state.remove_session(failed_session);
+                                self.commit_registration_actions(&actions);
+                                actions
+                            };
+                            pending.extend(cleanup_actions);
+                        }
+                        DeliveryFailure::SessionUnavailable(_) => {}
                     }
                 }
                 GatewayAction::PublishRegistration { .. } => {}
