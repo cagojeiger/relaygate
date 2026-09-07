@@ -191,8 +191,14 @@ impl RouteTableClient {
         generation: ShardDirectoryGeneration,
         key: &RegistrationKey,
     ) -> Result<RegistrationAck, TransportError> {
-        let response = self.request(WireRequest::register(generation, key)).await?;
-        response_registration_ack(response, "REGISTER", None, None)
+        let started_at = Instant::now();
+        let result = async {
+            let response = self.request(WireRequest::register(generation, key)).await?;
+            response_registration_ack(response, "REGISTER", None, None)
+        }
+        .await;
+        observe_request("register", started_at, &result);
+        result
     }
 
     pub async fn update(
@@ -203,12 +209,18 @@ impl RouteTableClient {
         revision: RegistrationRevision,
         snapshot: &MappingSnapshot,
     ) -> Result<RegistrationAck, TransportError> {
-        let response = self
-            .request(WireRequest::update(
-                generation, key, lease_id, revision, snapshot,
-            ))
-            .await?;
-        response_registration_ack(response, "UPDATE", Some(lease_id), Some(revision))
+        let started_at = Instant::now();
+        let result = async {
+            let response = self
+                .request(WireRequest::update(
+                    generation, key, lease_id, revision, snapshot,
+                ))
+                .await?;
+            response_registration_ack(response, "UPDATE", Some(lease_id), Some(revision))
+        }
+        .await;
+        observe_request("update", started_at, &result);
+        result
     }
 
     pub async fn keep_alive(
@@ -217,10 +229,16 @@ impl RouteTableClient {
         key: &RegistrationKey,
         lease_id: LeaseId,
     ) -> Result<RegistrationAck, TransportError> {
-        let response = self
-            .request(WireRequest::keep_alive(generation, key, lease_id))
-            .await?;
-        response_registration_ack(response, "KEEP_ALIVE", Some(lease_id), None)
+        let started_at = Instant::now();
+        let result = async {
+            let response = self
+                .request(WireRequest::keep_alive(generation, key, lease_id))
+                .await?;
+            response_registration_ack(response, "KEEP_ALIVE", Some(lease_id), None)
+        }
+        .await;
+        observe_request("keep_alive", started_at, &result);
+        result
     }
 
     pub async fn deregister(
@@ -229,10 +247,16 @@ impl RouteTableClient {
         key: &RegistrationKey,
         lease_id: LeaseId,
     ) -> Result<(), TransportError> {
-        let response = self
-            .request(WireRequest::deregister(generation, key, lease_id))
-            .await?;
-        response_deregistered(response)
+        let started_at = Instant::now();
+        let result = async {
+            let response = self
+                .request(WireRequest::deregister(generation, key, lease_id))
+                .await?;
+            response_deregistered(response)
+        }
+        .await;
+        observe_request("deregister", started_at, &result);
+        result
     }
 
     pub async fn resolve(
@@ -240,10 +264,16 @@ impl RouteTableClient {
         generation: ShardDirectoryGeneration,
         destination_id: &DestinationId,
     ) -> Result<BindingSet, TransportError> {
-        let response = self
-            .request(WireRequest::resolve(generation, destination_id))
-            .await?;
-        response_bindings(response, destination_id)
+        let started_at = Instant::now();
+        let result = async {
+            let response = self
+                .request(WireRequest::resolve(generation, destination_id))
+                .await?;
+            response_bindings(response, destination_id)
+        }
+        .await;
+        observe_request("resolve", started_at, &result);
+        result
     }
 
     async fn request(&self, request: WireRequest) -> Result<WireResponse, TransportError> {
@@ -273,6 +303,30 @@ impl RouteTableClient {
             TransportError::unavailable("RouteTable client connection actor stopped")
         })?
     }
+}
+
+fn observe_request<T>(
+    operation: &'static str,
+    started_at: Instant,
+    result: &Result<T, TransportError>,
+) {
+    let (outcome, code) = match result {
+        Ok(_) => ("success", "ok"),
+        Err(error) => ("error", error.code().metric_name()),
+    };
+    metrics::counter!(
+        "relaygate_gateway_route_table_requests_total",
+        "operation" => operation,
+        "outcome" => outcome,
+        "code" => code
+    )
+    .increment(1);
+    metrics::histogram!(
+        "relaygate_gateway_route_table_request_duration_seconds",
+        "operation" => operation,
+        "outcome" => outcome
+    )
+    .record(started_at.elapsed().as_secs_f64());
 }
 
 struct ClientCommand {
@@ -443,6 +497,8 @@ fn validate_duration(name: &'static str, value: Duration) -> Result<(), Transpor
 
 #[cfg(test)]
 mod tests {
+    use metrics_util::{CompositeKey, debugging::DebugValue, debugging::DebuggingRecorder};
+
     use super::*;
 
     #[test]
@@ -454,5 +510,48 @@ mod tests {
         assert!(RouteTableClientConfig::new(1, 1024, second, Duration::ZERO, second).is_err());
         assert!(RouteTableClientConfig::new(1, 1024, second, second, Duration::ZERO).is_err());
         assert!(RouteTableClientConfig::new(usize::MAX, 1024, second, second, second).is_err());
+    }
+
+    #[test]
+    fn client_request_metrics_separate_operation_outcome_and_code() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            observe_request("resolve", Instant::now(), &Ok(()));
+            observe_request(
+                "resolve",
+                Instant::now(),
+                &Err::<(), _>(TransportError::unavailable("test failure")),
+            );
+        });
+
+        let snapshot = snapshotter.snapshot().into_vec();
+        assert!(snapshot.iter().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_gateway_route_table_requests_total"
+                && has_label(key, "operation", "resolve")
+                && has_label(key, "outcome", "success")
+                && has_label(key, "code", "ok")
+                && matches!(value, DebugValue::Counter(1))
+        }));
+        assert!(snapshot.iter().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_gateway_route_table_requests_total"
+                && has_label(key, "operation", "resolve")
+                && has_label(key, "outcome", "error")
+                && has_label(key, "code", "unavailable")
+                && matches!(value, DebugValue::Counter(1))
+        }));
+        assert!(snapshot.iter().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_gateway_route_table_request_duration_seconds"
+                && has_label(key, "operation", "resolve")
+                && has_label(key, "outcome", "success")
+                && matches!(value, DebugValue::Histogram(values) if values.len() == 1)
+        }));
+    }
+
+    fn has_label(key: &CompositeKey, expected_key: &str, expected_value: &str) -> bool {
+        key.key()
+            .labels()
+            .any(|label| label.key() == expected_key && label.value() == expected_value)
     }
 }

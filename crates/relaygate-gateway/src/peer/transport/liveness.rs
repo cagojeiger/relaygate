@@ -21,6 +21,7 @@ pub(super) struct TransportLiveness {
 #[derive(Debug)]
 struct PendingHeartbeat {
     nonce: u64,
+    sent_at: Instant,
     deadline: Instant,
 }
 
@@ -62,11 +63,14 @@ impl TransportLiveness {
         }
     }
 
-    pub(super) fn observe_inbound(&mut self, frame: &PeerFrame) {
-        match (&self.pending, frame) {
+    pub(super) fn observe_inbound(&mut self, frame: &PeerFrame) -> Option<Duration> {
+        let round_trip = match (&self.pending, frame) {
             (Some(pending), PeerFrame::Pong { nonce })
-                if pending.nonce == *nonce && Instant::now() < pending.deadline => {}
-            (Some(_), _) | (None, PeerFrame::Pong { .. }) => return,
+                if pending.nonce == *nonce && Instant::now() < pending.deadline =>
+            {
+                Some(pending.sent_at.elapsed())
+            }
+            (Some(_), _) | (None, PeerFrame::Pong { .. }) => return None,
             (
                 None,
                 PeerFrame::Ping { .. }
@@ -77,13 +81,14 @@ impl TransportLiveness {
                 | PeerFrame::Fin { .. }
                 | PeerFrame::Close { .. }
                 | PeerFrame::Reset { .. },
-            ) => {}
+            ) => None,
             (_, PeerFrame::Hello(_))
             | (_, PeerFrame::Welcome(_))
-            | (_, PeerFrame::HandshakeRejected { .. }) => return,
-        }
+            | (_, PeerFrame::HandshakeRejected { .. }) => return None,
+        };
         self.last_inbound = Instant::now();
         self.pending = None;
+        round_trip
     }
 
     pub(super) fn response_timed_out(&self) -> bool {
@@ -134,6 +139,7 @@ impl TransportLiveness {
         self.next_nonce = self.next_nonce.wrapping_add(1).max(1);
         self.pending = Some(PendingHeartbeat {
             nonce,
+            sent_at: now,
             deadline: now + self.heartbeat_response_timeout,
         });
         Some(LivenessAction::Ping(PeerFrame::Ping { nonce }))
@@ -141,7 +147,9 @@ impl TransportLiveness {
 
     pub(super) fn mark_probe_committed(&mut self) {
         if let Some(pending) = self.pending.as_mut() {
-            pending.deadline = Instant::now() + self.heartbeat_response_timeout;
+            let now = Instant::now();
+            pending.sent_at = now;
+            pending.deadline = now + self.heartbeat_response_timeout;
         }
     }
 }
@@ -207,10 +215,14 @@ mod tests {
         ));
         assert!(liveness.pending.is_some());
 
-        liveness.observe_inbound(&PeerFrame::Data {
-            stream_id: crate::peer::identity::StreamId::from_raw(0),
-            payload: bytes::Bytes::from_static(b"x"),
-        });
+        assert!(
+            liveness
+                .observe_inbound(&PeerFrame::Data {
+                    stream_id: crate::peer::identity::StreamId::from_raw(0),
+                    payload: bytes::Bytes::from_static(b"x"),
+                })
+                .is_none()
+        );
         assert!(liveness.pending.is_some());
     }
 
@@ -223,7 +235,11 @@ mod tests {
             Some(LivenessAction::Ping(_))
         ));
 
-        liveness.observe_inbound(&PeerFrame::Pong { nonce: 999 });
+        assert!(
+            liveness
+                .observe_inbound(&PeerFrame::Pong { nonce: 999 })
+                .is_none()
+        );
         assert!(liveness.pending.is_some());
     }
 
@@ -236,7 +252,11 @@ mod tests {
             Some(LivenessAction::Ping(PeerFrame::Ping { nonce: 1 }))
         ));
 
-        liveness.observe_inbound(&PeerFrame::Pong { nonce: 1 });
+        assert!(
+            liveness
+                .observe_inbound(&PeerFrame::Pong { nonce: 1 })
+                .is_some()
+        );
 
         assert!(liveness.pending.is_none());
     }
@@ -253,7 +273,11 @@ mod tests {
             pending.deadline = Instant::now() - Duration::from_millis(1);
         }
 
-        liveness.observe_inbound(&PeerFrame::Pong { nonce: 1 });
+        assert!(
+            liveness
+                .observe_inbound(&PeerFrame::Pong { nonce: 1 })
+                .is_none()
+        );
 
         assert!(liveness.pending.is_some());
         assert!(liveness.response_timed_out());

@@ -176,6 +176,22 @@ fn describe_metrics() {
         "relaygate_gateway_peer_transport_closed_total",
         "Gateway peer transport closures by bounded terminal reason."
     );
+    describe_histogram!(
+        "relaygate_gateway_heartbeat_duration_seconds",
+        "Successful Gateway heartbeat round trips by bounded transport type."
+    );
+    describe_counter!(
+        "relaygate_gateway_heartbeat_timeouts_total",
+        "Gateway heartbeat response timeouts by bounded transport type."
+    );
+    describe_counter!(
+        "relaygate_gateway_route_table_requests_total",
+        "Gateway-observed RouteTable request results, including local queueing and transport failures."
+    );
+    describe_histogram!(
+        "relaygate_gateway_route_table_request_duration_seconds",
+        "Gateway-observed RouteTable request latency including local queueing and network round trip."
+    );
     describe_gauge!(
         "relaygate_route_table_registrations",
         "Current live registrations on this RouteTable shard."

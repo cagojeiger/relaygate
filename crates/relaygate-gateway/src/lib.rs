@@ -8,6 +8,7 @@ mod auth;
 mod config;
 mod error;
 mod gateway;
+mod metrics;
 mod observation;
 mod peer;
 mod registry;

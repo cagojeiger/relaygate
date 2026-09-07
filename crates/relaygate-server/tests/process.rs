@@ -930,6 +930,7 @@ fn occupied_metrics_address_fails_before_gateway_serve() -> Result<(), Box<dyn E
 async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets()
 -> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
+    let metrics_address = unused_loopback_address()?;
     let secret = "must-not-appear-heartbeat-key";
     let mut server = ChildGuard::spawn_captured(
         server_command()
@@ -937,6 +938,8 @@ async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets(
             .env("RELAYGATE_CLUSTER_TOKEN", secret)
             .env("RELAYGATE_LOG", "debug")
             .env("RELAYGATE_LOG_FORMAT", "json")
+            .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
+            .env("RELAYGATE_METRICS_INTERVAL_MS", "20")
             .env("RELAYGATE_SDK_HEARTBEAT_IDLE_MS", "40")
             .env("RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS", "40"),
     )?;
@@ -953,6 +956,17 @@ async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets(
         ended.is_none(),
         "Gateway should close the SDK session after heartbeat timeout: {ended:?}"
     );
+    let metrics = wait_for_metrics(
+        &metrics_address,
+        &mut server,
+        "relaygate_gateway_heartbeat_timeouts_total",
+    )?;
+    assert!(metric_has_labels(
+        &metrics,
+        "relaygate_gateway_heartbeat_timeouts_total",
+        &["role=\"gateway\"", "transport=\"sdk\""]
+    ));
+    assert!(!metrics.contains(secret));
 
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
