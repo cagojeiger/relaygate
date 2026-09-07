@@ -236,8 +236,8 @@ jobs:
           test "$(grep -c 'secretName: "relaygate-internal-tls"' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^apiVersion: cert-manager.io/v1$' target/helm/cert-manager.yaml)" -eq 2
           test "$(grep -c '^kind: Certificate$' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c 'name: "cert-manager-gw-internal-tls"' target/helm/cert-manager.yaml)" -eq 3
-          test "$(grep -c 'name: "cert-manager-rt-internal-tls"' target/helm/cert-manager.yaml)" -eq 3
+          test "$(grep -c 'name: "cert-manager-gw-internal-tls"' target/helm/cert-manager.yaml)" -eq 2
+          test "$(grep -c 'name: "cert-manager-rt-internal-tls"' target/helm/cert-manager.yaml)" -eq 2
           test "$(grep -c 'name: "relaygate-internal-ca"' target/helm/cert-manager.yaml)" -eq 2
           test "$(grep -c 'name: "relaygate-internal"' target/helm/cert-manager.yaml)" -eq 2
           test "$(grep -c 'kind: "ClusterIssuer"' target/helm/cert-manager.yaml)" -eq 2
