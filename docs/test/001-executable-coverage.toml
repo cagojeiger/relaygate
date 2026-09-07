@@ -53,4 +53,4 @@ rust = ["state::tests::session_removal_cleans_its_bindings_and_pipes_only", "sta
 [[case]]
 id = "T-OBS-01"
 status = "executable"
-rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", "gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets", "metrics::tests::heartbeat_metrics_use_only_the_bounded_transport_label", "client::tests::client_request_metrics_separate_operation_outcome_and_code", "json_logs_expose_stable_startup_and_snapshot_fields_without_secrets", "route_table_expiry_metric_counts_removed_soft_state_once"]
+rust = ["gateway_metrics_expose_current_state_and_red_signals_without_secrets", "gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets", "gateway::tests::snapshot_admission_requires_capacity_and_non_draining_state", "metrics::tests::heartbeat_metrics_use_only_the_bounded_transport_label", "client::tests::client_request_metrics_separate_operation_outcome_and_code", "json_logs_expose_stable_startup_and_snapshot_fields_without_secrets", "route_table_expiry_metric_counts_removed_soft_state_once"]

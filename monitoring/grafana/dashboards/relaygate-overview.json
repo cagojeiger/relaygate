@@ -202,7 +202,7 @@
         "x": 18,
         "y": 0
       },
-      "description": "선택한 Gateway 중 신규 SDK work를 받을 수 있는 비율이다. scrape up과 별개이며 drain 중인 instance는 0으로 계산한다.",
+      "description": "선택한 Gateway 중 drain 상태가 아니고 SDK session semaphore에 여유가 있어 신규 transport를 받을 수 있는 비율이다. scrape up과 별개다.",
       "id": 4,
       "options": {
         "colorMode": "value",
@@ -219,7 +219,7 @@
       },
       "targets": [
         {
-          "expr": "sum(1 - relaygate_gateway_draining{instance=~\"$gateway\"}) / clamp_min(count(relaygate_gateway_draining{instance=~\"$gateway\"}), 1)",
+          "expr": "sum(relaygate_gateway_sdk_admission_ready{instance=~\"$gateway\"}) / clamp_min(count(relaygate_gateway_sdk_admission_ready{instance=~\"$gateway\"}), 1)",
           "legendFormat": "SDK admission ready",
           "refId": "A"
         }

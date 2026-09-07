@@ -9,6 +9,7 @@ GW 3)와 Grafana dashboard provisioning을 확인합니다. `observability-probe
 - DIAL result와 end-to-end duration 존재
 - GW가 체감한 RT request result/latency와 RT actor service latency가 별도 metric으로 존재
 - SDK/peer heartbeat RTT와 timeout이 같은 bounded `transport` 축으로 존재
+- SDK admission ready가 non-draining과 session capacity를 함께 반영
 - session/binding/pending offer/live Pipe/peer stream/RT mapping current gauge 존재
 - recovery, lease expiry와 dependency transition counter 존재
 - topology probe 종료 뒤 current state gauge가 baseline으로 수렴

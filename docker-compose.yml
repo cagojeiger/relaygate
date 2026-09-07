@@ -365,6 +365,7 @@ services:
           sleep 1
         done
         for expression in \
+          'sum(relaygate_gateway_sdk_admission_ready) == 3' \
           'sum(relaygate_gateway_publish_results_total{outcome="success"}) > 0' \
           'sum(relaygate_gateway_route_dependency_transitions_total{current="ready"}) > 0' \
           'sum(relaygate_gateway_route_connection_attempts_total{outcome="success"}) > 0' \

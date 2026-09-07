@@ -55,6 +55,11 @@ impl MetricsRuntime {
 
 pub(crate) fn observe_gateway(snapshot: GatewaySnapshot) {
     gauge!("relaygate_gateway_draining").set(if snapshot.draining { 1.0 } else { 0.0 });
+    gauge!("relaygate_gateway_sdk_admission_ready").set(if snapshot.sdk_admission_ready {
+        1.0
+    } else {
+        0.0
+    });
     gauge!("relaygate_gateway_sessions").set(snapshot.sessions as f64);
     gauge!("relaygate_gateway_bindings").set(snapshot.bindings as f64);
     gauge!("relaygate_gateway_pending_offers").set(snapshot.pending_offers as f64);
@@ -111,6 +116,10 @@ fn describe_metrics() {
     describe_gauge!(
         "relaygate_gateway_draining",
         "Whether this Gateway has stopped admitting new work and is draining existing work."
+    );
+    describe_gauge!(
+        "relaygate_gateway_sdk_admission_ready",
+        "Whether this Gateway is non-draining and has capacity for a new SDK transport."
     );
     describe_gauge!(
         "relaygate_gateway_sessions",

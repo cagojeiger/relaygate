@@ -810,6 +810,7 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     )?;
     assert!(body.contains("role=\"gateway\""));
     assert!(body.contains("relaygate_gateway_sessions"));
+    assert!(body.contains("relaygate_gateway_sdk_admission_ready"));
     assert!(body.contains("relaygate_gateway_route_dependency"));
     assert!(metric_has_labels(
         &body,
