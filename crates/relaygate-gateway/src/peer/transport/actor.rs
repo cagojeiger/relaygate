@@ -6,6 +6,7 @@ use super::{
     state::TransportActor,
     writer::run_writer,
 };
+use crate::metrics::{HeartbeatTransport, observe_heartbeat_round_trip, observe_heartbeat_timeout};
 use crate::peer::{config::GatewayPeerConfig, handshake::EstablishedPeer};
 use futures_util::StreamExt;
 use tokio::{
@@ -82,8 +83,11 @@ pub(super) async fn run_transport_actor(
                 };
                 match frame {
                     Ok(frame) => {
-                        liveness.observe_inbound(&frame);
+                        if let Some(round_trip) = liveness.observe_inbound(&frame) {
+                            observe_heartbeat_round_trip(HeartbeatTransport::Peer, round_trip);
+                        }
                         if liveness.response_timed_out() {
+                            observe_heartbeat_timeout(HeartbeatTransport::Peer);
                             tracing::debug!(
                                 component = "gateway",
                                 event = "gateway.peer.transport.heartbeat_timeout",
@@ -130,6 +134,7 @@ pub(super) async fn run_transport_actor(
                             liveness.mark_probe_committed();
                         }
                         LivenessAction::HeartbeatTimeout => {
+                            observe_heartbeat_timeout(HeartbeatTransport::Peer);
                             tracing::debug!(
                                 component = "gateway",
                                 event = "gateway.peer.transport.heartbeat_timeout",

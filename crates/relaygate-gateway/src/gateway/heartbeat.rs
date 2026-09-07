@@ -15,6 +15,7 @@ pub(super) struct SessionHeartbeat {
 #[derive(Debug)]
 struct PendingHeartbeat {
     nonce: u64,
+    sent_at: Instant,
     deadline: Instant,
 }
 
@@ -34,11 +35,14 @@ impl SessionHeartbeat {
         }
     }
 
-    pub(super) fn observe_inbound(&mut self, frame: &Frame) {
-        match (&self.pending, frame) {
+    pub(super) fn observe_inbound(&mut self, frame: &Frame) -> Option<Duration> {
+        let round_trip = match (&self.pending, frame) {
             (Some(pending), Frame::Pong { nonce })
-                if pending.nonce == *nonce && Instant::now() < pending.deadline => {}
-            (Some(_), _) | (None, Frame::Pong { .. }) => return,
+                if pending.nonce == *nonce && Instant::now() < pending.deadline =>
+            {
+                Some(pending.sent_at.elapsed())
+            }
+            (Some(_), _) | (None, Frame::Pong { .. }) => return None,
             (None, Frame::Hello { .. })
             | (None, Frame::Welcome { .. })
             | (None, Frame::SessionRejected { .. })
@@ -58,10 +62,11 @@ impl SessionHeartbeat {
             | (None, Frame::Close { .. })
             | (None, Frame::Reset { .. })
             | (None, Frame::Ping { .. })
-            | (None, Frame::Cancel { .. }) => {}
-        }
+            | (None, Frame::Cancel { .. }) => None,
+        };
         self.last_inbound = Instant::now();
         self.pending = None;
+        round_trip
     }
 
     pub(super) fn response_timed_out(&self) -> bool {
@@ -91,6 +96,7 @@ impl SessionHeartbeat {
         self.next_nonce = self.next_nonce.wrapping_add(1).max(1);
         self.pending = Some(PendingHeartbeat {
             nonce,
+            sent_at: now,
             deadline: now + self.response_timeout,
         });
         Some(Frame::Ping { nonce })
@@ -98,7 +104,9 @@ impl SessionHeartbeat {
 
     pub(super) fn mark_probe_committed(&mut self) {
         if let Some(pending) = self.pending.as_mut() {
-            pending.deadline = Instant::now() + self.response_timeout;
+            let now = Instant::now();
+            pending.sent_at = now;
+            pending.deadline = now + self.response_timeout;
         }
     }
 }
@@ -139,7 +147,11 @@ mod tests {
         heartbeat.last_inbound = Instant::now() - Duration::from_secs(30);
         let previous_deadline = heartbeat.next_deadline();
 
-        heartbeat.observe_inbound(&Frame::Ping { nonce: 7 });
+        assert!(
+            heartbeat
+                .observe_inbound(&Frame::Ping { nonce: 7 })
+                .is_none()
+        );
 
         assert!(heartbeat.next_deadline() > previous_deadline);
         assert!(heartbeat.pending.is_none());
@@ -156,16 +168,28 @@ mod tests {
         ));
         assert!(heartbeat.pending.is_some());
 
-        heartbeat.observe_inbound(&Frame::Data {
-            pipe_id: PipeId::new(SessionId::new(), 1),
-            payload: Bytes::from_static(b"x"),
-        });
+        assert!(
+            heartbeat
+                .observe_inbound(&Frame::Data {
+                    pipe_id: PipeId::new(SessionId::new(), 1),
+                    payload: Bytes::from_static(b"x"),
+                })
+                .is_none()
+        );
         assert!(heartbeat.pending.is_some());
 
-        heartbeat.observe_inbound(&Frame::Pong { nonce: 999 });
+        assert!(
+            heartbeat
+                .observe_inbound(&Frame::Pong { nonce: 999 })
+                .is_none()
+        );
         assert!(heartbeat.pending.is_some());
 
-        heartbeat.observe_inbound(&Frame::Pong { nonce: 1 });
+        assert!(
+            heartbeat
+                .observe_inbound(&Frame::Pong { nonce: 1 })
+                .is_some()
+        );
         assert!(heartbeat.pending.is_none());
     }
 
@@ -200,7 +224,11 @@ mod tests {
             pending.deadline = Instant::now() - Duration::from_millis(1);
         }
 
-        heartbeat.observe_inbound(&Frame::Pong { nonce: 1 });
+        assert!(
+            heartbeat
+                .observe_inbound(&Frame::Pong { nonce: 1 })
+                .is_none()
+        );
 
         assert!(heartbeat.pending.is_some());
         assert!(heartbeat.response_timed_out());

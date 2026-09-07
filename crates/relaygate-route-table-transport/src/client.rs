@@ -247,32 +247,63 @@ impl RouteTableClient {
     }
 
     async fn request(&self, request: WireRequest) -> Result<WireResponse, TransportError> {
-        let deadline = Instant::now()
-            .checked_add(self.request_timeout)
-            .ok_or_else(|| TransportError::internal("RouteTable request deadline overflow"))?;
-        let (reply, response) = oneshot::channel();
-        let command = ClientCommand {
-            request,
-            deadline,
-            reply,
-        };
-        match self.commands.try_send(command) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                return Err(TransportError::resource_exhausted(
-                    "RouteTable client command queue is full",
-                ));
+        let operation = request.operation_name();
+        let started_at = Instant::now();
+        let result = async {
+            let deadline = Instant::now()
+                .checked_add(self.request_timeout)
+                .ok_or_else(|| TransportError::internal("RouteTable request deadline overflow"))?;
+            let (reply, response) = oneshot::channel();
+            let command = ClientCommand {
+                request,
+                deadline,
+                reply,
+            };
+            match self.commands.try_send(command) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    return Err(TransportError::resource_exhausted(
+                        "RouteTable client command queue is full",
+                    ));
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(TransportError::unavailable(
+                        "RouteTable client connection is closed",
+                    ));
+                }
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                return Err(TransportError::unavailable(
-                    "RouteTable client connection is closed",
-                ));
-            }
+            response.await.map_err(|_| {
+                TransportError::unavailable("RouteTable client connection actor stopped")
+            })?
         }
-        response.await.map_err(|_| {
-            TransportError::unavailable("RouteTable client connection actor stopped")
-        })?
+        .await;
+        observe_request(operation, started_at, &result);
+        result
     }
+}
+
+fn observe_request(
+    operation: &'static str,
+    started_at: Instant,
+    result: &Result<WireResponse, TransportError>,
+) {
+    let (outcome, code) = match result {
+        Ok(_) => ("success", "ok"),
+        Err(error) => ("error", error.code().metric_name()),
+    };
+    metrics::counter!(
+        "relaygate_gateway_route_table_requests_total",
+        "operation" => operation,
+        "outcome" => outcome,
+        "code" => code
+    )
+    .increment(1);
+    metrics::histogram!(
+        "relaygate_gateway_route_table_request_duration_seconds",
+        "operation" => operation,
+        "outcome" => outcome
+    )
+    .record(started_at.elapsed().as_secs_f64());
 }
 
 struct ClientCommand {
@@ -443,6 +474,8 @@ fn validate_duration(name: &'static str, value: Duration) -> Result<(), Transpor
 
 #[cfg(test)]
 mod tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
     use super::*;
 
     #[test]
@@ -454,5 +487,47 @@ mod tests {
         assert!(RouteTableClientConfig::new(1, 1024, second, Duration::ZERO, second).is_err());
         assert!(RouteTableClientConfig::new(1, 1024, second, second, Duration::ZERO).is_err());
         assert!(RouteTableClientConfig::new(usize::MAX, 1024, second, second, second).is_err());
+    }
+
+    #[test]
+    fn client_request_metrics_separate_operation_outcome_and_code() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            observe_request("resolve", Instant::now(), &Ok(WireResponse::Deregistered));
+            observe_request(
+                "resolve",
+                Instant::now(),
+                &Err(TransportError::unavailable("test failure")),
+            );
+        });
+
+        let snapshot = snapshotter.snapshot().into_vec();
+        assert!(snapshot.iter().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_gateway_route_table_requests_total"
+                && has_label(key, "operation", "resolve")
+                && has_label(key, "outcome", "success")
+                && has_label(key, "code", "ok")
+                && matches!(value, DebugValue::Counter(1))
+        }));
+        assert!(snapshot.iter().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_gateway_route_table_requests_total"
+                && has_label(key, "operation", "resolve")
+                && has_label(key, "outcome", "error")
+                && has_label(key, "code", "unavailable")
+                && matches!(value, DebugValue::Counter(1))
+        }));
+        assert!(snapshot.iter().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_gateway_route_table_request_duration_seconds"
+                && has_label(key, "operation", "resolve")
+                && has_label(key, "outcome", "success")
+                && matches!(value, DebugValue::Histogram(values) if values.len() == 1)
+        }));
+    }
+
+    fn has_label(key: &metrics::Key, expected_key: &str, expected_value: &str) -> bool {
+        key.labels()
+            .any(|label| label.key() == expected_key && label.value() == expected_value)
     }
 }
