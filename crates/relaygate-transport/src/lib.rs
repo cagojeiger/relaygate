@@ -28,11 +28,24 @@ pub struct ClientTlsConfig {
 }
 
 impl ClientTlsConfig {
+    /// Trusts the public Mozilla root certificate set bundled by `webpki-roots`.
+    pub fn with_webpki_roots(server_name: impl Into<String>) -> Result<Self, TlsConfigError> {
+        let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        Self::with_root_store(server_name, roots)
+    }
+
     pub fn server_authenticated(
         server_name: impl Into<String>,
         ca_pem: &[u8],
     ) -> Result<Self, TlsConfigError> {
         let roots = root_store(ca_pem)?;
+        Self::with_root_store(server_name, roots)
+    }
+
+    fn with_root_store(
+        server_name: impl Into<String>,
+        roots: RootCertStore,
+    ) -> Result<Self, TlsConfigError> {
         let mut config = ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();

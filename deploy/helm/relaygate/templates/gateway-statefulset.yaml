@@ -101,8 +101,10 @@ spec:
                   name: {{ .Values.credentials.existingSecret | quote }}
                   key: {{ .Values.credentials.nextClusterTokenKey | quote }}
                   optional: true
+            {{- if eq .Values.tls.edge.trustMode "customCa" }}
             - name: RELAYGATE_SDK_TLS_CA_PATH
               value: /etc/relaygate/tls/edge/ca.crt
+            {{- end }}
             - name: RELAYGATE_SDK_TLS_CERT_PATH
               value: /etc/relaygate/tls/edge/tls.crt
             - name: RELAYGATE_SDK_TLS_KEY_PATH
@@ -184,8 +186,10 @@ spec:
             secretName: {{ .Values.tls.edge.existingSecret | quote }}
             defaultMode: 0440
             items:
+              {{- if eq .Values.tls.edge.trustMode "customCa" }}
               - key: {{ .Values.tls.edge.caKey | quote }}
                 path: ca.crt
+              {{- end }}
               - key: {{ .Values.tls.edge.certificateKey | quote }}
                 path: tls.crt
               - key: {{ .Values.tls.edge.privateKeyKey | quote }}

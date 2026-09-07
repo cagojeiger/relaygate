@@ -11,8 +11,9 @@ Listener::close()               -> Listener 종료
 Relay::close()                  -> 전체 runtime 종료
 ```
 
-`Config`는 Gateway 주소, `ClusterToken`, TLS CA/server name, timeout, heartbeat, reconnect와 bounded
-queue 값을 가진다. SDK는 환경 변수를 읽지 않는다.
+`Config`는 Gateway 주소, `ClusterToken`, TLS trust source/server name, timeout, heartbeat, reconnect와
+bounded queue 값을 가진다. trust source는 명시적 custom CA 또는 bundled public Web PKI roots이며 SDK는
+환경 변수를 읽지 않는다.
 
 ## session 복구
 

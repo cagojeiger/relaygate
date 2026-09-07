@@ -61,6 +61,17 @@ let mut incoming = listener.accept().await?;
 # }
 ```
 
+공개 CA 인증서를 사용하는 Gateway는 별도 CA 파일 대신 bundled Web PKI roots를 선택합니다.
+
+```rust,no_run
+# use relaygate_sdk::ClientTlsConfig;
+# fn main() -> Result<(), relaygate_sdk::TlsConfigError> {
+let tls = ClientTlsConfig::with_webpki_roots("relaygate.project-jelly.io")?;
+# let _ = tls;
+# Ok(())
+# }
+```
+
 세션이 끊기면 SDK는 jitter가 포함된 bounded backoff로 재연결하고, 이미 반환된 `Listener`만 새
 Session/Binding으로 다시 등록합니다. 기존 Pipe, 완료가 불확실한 dial과 payload는 자동 replay하지
 않습니다.
@@ -98,7 +109,7 @@ tests/kind/run.sh
 배포 전에 release namespace에 다음 Secret을 준비해야 합니다.
 
 - credential Secret: `internal-gateway-keys`, `cluster-token`, 선택적 `next-cluster-token`
-- edge TLS Secret: `ca.crt`, `tls.crt`, `tls.key`
+- edge TLS Secret: `tls.crt`, `tls.key`, custom CA mode에서는 `ca.crt`
 - internal mTLS Secret: `ca.crt`, `gateway.crt`, `gateway.key`, `route-table.crt`, `route-table.key`
 
 ```bash

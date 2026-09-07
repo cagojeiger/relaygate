@@ -86,6 +86,11 @@ jobs:
             --set-string gateway.service.loadBalancerClass=example.io/l4 \
             --set gateway.service.externalTrafficPolicy=Local \
             > target/helm/load-balancer.yaml
+          helm template webpki deploy/helm/relaygate \
+            --namespace relaygate-test \
+            --kube-version 1.32.0 \
+            --set tls.edge.trustMode=webPkiRoots \
+            > target/helm/webpki.yaml
           helm template true deploy/helm/relaygate \
             --namespace relaygate-test \
             --kube-version 1.32.0 \
@@ -208,6 +213,13 @@ jobs:
           test "$(grep -c '^              mountPath: /etc/relaygate/tls/edge$' target/helm/default.yaml)" -eq 1
           test "$(grep -c '^              mountPath: /etc/relaygate/tls/internal$' target/helm/default.yaml)" -eq 2
           grep -Fq 'name: RELAYGATE_SDK_TLS_CERT_PATH' target/helm/default.yaml
+          grep -Fq 'name: RELAYGATE_SDK_TLS_CA_PATH' target/helm/default.yaml
+          if grep -Fq 'name: RELAYGATE_SDK_TLS_CA_PATH' target/helm/webpki.yaml; then
+            echo "Helm chart mounted a custom edge CA in public Web PKI mode"
+            exit 1
+          fi
+          test "$(grep -c 'key: "ca.crt"' target/helm/default.yaml)" -eq 3
+          test "$(grep -c 'key: "ca.crt"' target/helm/webpki.yaml)" -eq 2
           grep -Fq 'name: RELAYGATE_INTERNAL_TLS_CA_PATH' target/helm/default.yaml
           grep -Fq 'name: RELAYGATE_PEER_TLS_SERVER_NAME' target/helm/default.yaml
           grep -Fq 'name: RELAYGATE_RT_TLS_SERVER_NAME' target/helm/default.yaml
@@ -278,6 +290,12 @@ jobs:
             --kube-version 1.32.0 \
             --set routeTable.shardCount=2049 >/dev/null 2>&1; then
             echo "Helm schema accepted a RouteTable directory larger than the ConfigMap-safe bound"
+            exit 1
+          fi
+          if helm template invalid deploy/helm/relaygate \
+            --kube-version 1.32.0 \
+            --set tls.edge.trustMode=unknown >/dev/null 2>&1; then
+            echo "Helm schema accepted an unknown edge TLS trust mode"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \

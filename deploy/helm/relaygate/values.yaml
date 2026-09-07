@@ -18,6 +18,8 @@ tls:
   # 별도 trust domain으로 운영할 수 있도록 서로 다른 Secret을 mount한다.
   edge:
     existingSecret: relaygate-edge-tls
+    # customCa는 caKey를 mount하고, webPkiRoots는 공개 root set을 사용한다.
+    trustMode: customCa
     caKey: ca.crt
     certificateKey: tls.crt
     privateKeyKey: tls.key

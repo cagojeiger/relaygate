@@ -63,6 +63,7 @@ dial 1회 -> eligible Binding 1개 -> Pipe 1개
 | [012](adr/012-deployment-transport-security.md) | SDK 구간은 TLS, 내부 구간은 mTLS를 사용한다. |
 | [013](adr/013-application-owned-destination.md) | DestinationId는 application-owned UUIDv4다. |
 | [014](adr/014-sdk-transport-and-l4-boundary.md) | SDK transport와 platform L4 진입점을 분리한다. |
+| [015](adr/015-public-edge-webpki-trust.md) | 공개 edge 인증서는 bundled Web PKI roots로 검증한다. |
 
 ADR 001–003은 0.1 역할/권한 모델의 이력입니다. Pipe와 application 책임 경계는 유지되지만,
 고정 Connector/Listener 역할, `ClientId`와 `ClientKey`는 현재 계약이 아닙니다. 현재 해석은

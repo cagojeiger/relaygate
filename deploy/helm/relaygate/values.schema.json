@@ -86,6 +86,7 @@
           "additionalProperties": false,
           "required": [
             "existingSecret",
+            "trustMode",
             "caKey",
             "certificateKey",
             "privateKeyKey",
@@ -94,6 +95,10 @@
           ],
           "properties": {
             "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
+            "trustMode": {
+              "type": "string",
+              "enum": ["customCa", "webPkiRoots"]
+            },
             "caKey": { "$ref": "#/definitions/secretKey" },
             "certificateKey": { "$ref": "#/definitions/secretKey" },
             "privateKeyKey": { "$ref": "#/definitions/secretKey" },

@@ -63,6 +63,34 @@ async fn tls_requires_the_configured_server_name() -> Result<(), Box<dyn std::er
 }
 
 #[tokio::test]
+async fn webpki_roots_reject_a_private_ca() -> Result<(), Box<dyn std::error::Error>> {
+    let CertifiedKey { cert, signing_key } =
+        generate_simple_self_signed(vec!["relaygate.test".to_owned()])?;
+    let server = ServerTlsConfig::server_authenticated(
+        cert.pem().as_bytes(),
+        signing_key.serialize_pem().as_bytes(),
+    )?;
+    let client = ClientTlsConfig::with_webpki_roots("relaygate.test")?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let accepted = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let _ = server.accept(stream).await;
+        Ok::<_, io::Error>(())
+    });
+
+    assert!(
+        client
+            .connect(TcpStream::connect(address).await?)
+            .await
+            .is_err(),
+        "the public root set accepted a private CA"
+    );
+    accepted.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn mutual_tls_requires_a_client_certificate() -> Result<(), Box<dyn std::error::Error>> {
     let CertifiedKey { cert, signing_key } =
         generate_simple_self_signed(vec!["relaygate.internal".to_owned()])?;
