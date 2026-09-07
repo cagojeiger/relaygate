@@ -40,15 +40,22 @@ async fn main() -> Result<()> {
                     .await
                     .context("Gateway SDK admission readiness check failed")
             } else {
-                let ca_path = env::var("RELAYGATE_SDK_TLS_CA_PATH")
-                    .context("RELAYGATE_SDK_TLS_CA_PATH is required for Gateway checks")?;
                 let server_name = env::var("RELAYGATE_SDK_TLS_SERVER_NAME")
                     .context("RELAYGATE_SDK_TLS_SERVER_NAME is required for Gateway checks")?;
-                let tls = ClientTlsConfig::server_authenticated(
-                    server_name,
-                    &std::fs::read(&ca_path)
-                        .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?,
-                )?;
+                let tls = match env::var("RELAYGATE_SDK_TLS_CA_PATH") {
+                    Ok(ca_path) => ClientTlsConfig::server_authenticated(
+                        server_name,
+                        &std::fs::read(&ca_path)
+                            .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?,
+                    )?,
+                    Err(env::VarError::NotPresent) => {
+                        ClientTlsConfig::with_webpki_roots(server_name)?
+                    }
+                    Err(error) => {
+                        return Err(error)
+                            .context("RELAYGATE_SDK_TLS_CA_PATH is not valid Unicode");
+                    }
+                };
                 check(address, cluster_token, &tls, DEFAULT_CHECK_DEADLINE)
                     .await
                     .context("Gateway SDK admission readiness check failed")

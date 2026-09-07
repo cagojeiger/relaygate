@@ -30,8 +30,11 @@ edge TLS Secret:
 
 | key | 용도 |
 | --- | --- |
-| `ca.crt` | SDK가 신뢰할 CA |
 | `tls.crt`, `tls.key` | SDK-facing Gateway TLS server identity |
+| `ca.crt` | `tls.edge.trustMode=customCa`에서 SDK가 신뢰할 CA |
+
+공개 CA 인증서는 `trustMode=webPkiRoots`를 사용합니다. 이때 Gateway readiness와 SDK는
+Mozilla public root set으로 server name을 검증하며 edge Secret에는 `tls.crt`, `tls.key`만 필요합니다.
 
 internal mTLS Secret:
 
@@ -138,6 +141,7 @@ credentials:
 tls:
   edge:
     existingSecret: relaygate-edge-tls
+    trustMode: customCa
     serverName: relaygate-gateway.internal
     reloadToken: ""
   internal:

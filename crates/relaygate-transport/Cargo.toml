@@ -12,6 +12,7 @@ rustls-pemfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
 rcgen = "0.14"
