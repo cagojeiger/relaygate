@@ -56,6 +56,11 @@ app.kubernetes.io/component: {{ .component | quote }}
 
 {{- define "relaygate.labels" -}}
 helm.sh/chart: {{ include "relaygate.chart" .root | quote }}
+{{ include "relaygate.podLabels" . }}
+{{- end }}
+
+{{/* Stable workload identity. Chart version must not trigger a Pod rollout. */}}
+{{- define "relaygate.podLabels" -}}
 {{ include "relaygate.selectorLabels" . }}
 app.kubernetes.io/managed-by: {{ .root.Release.Service | quote }}
 app.kubernetes.io/part-of: "relaygate"

@@ -91,6 +91,69 @@ jobs:
             --kube-version 1.32.0 \
             --set-string serviceAccount.name=true \
             > target/helm/ambiguous-name.yaml
+
+          render_pod_template() {
+            chart="$1"
+            template="$2"
+            output="$3"
+            shift 3
+            helm template rollout-isolation "$chart" \
+              --namespace relaygate-test \
+              --kube-version 1.32.0 \
+              --show-only "templates/${template}-statefulset.yaml" \
+              "$@" |
+              awk '/^  template:$/ { found = 1 } found' > "$output"
+            test -s "$output"
+          }
+
+          render_pod_template deploy/helm/relaygate gateway \
+            target/helm/rollout-base-gateway.yaml
+          render_pod_template deploy/helm/relaygate route-table \
+            target/helm/rollout-base-route-table.yaml
+
+          cp -R deploy/helm/relaygate target/helm/chart-version-only
+          sed 's/^version: .*/version: 99.99.99/' \
+            target/helm/chart-version-only/Chart.yaml \
+            > target/helm/chart-version-only/Chart.yaml.new
+          mv target/helm/chart-version-only/Chart.yaml.new \
+            target/helm/chart-version-only/Chart.yaml
+          render_pod_template target/helm/chart-version-only gateway \
+            target/helm/rollout-chart-version-gateway.yaml
+          render_pod_template target/helm/chart-version-only route-table \
+            target/helm/rollout-chart-version-route-table.yaml
+          cmp -s target/helm/rollout-base-gateway.yaml \
+            target/helm/rollout-chart-version-gateway.yaml
+          cmp -s target/helm/rollout-base-route-table.yaml \
+            target/helm/rollout-chart-version-route-table.yaml
+
+          render_pod_template deploy/helm/relaygate gateway \
+            target/helm/rollout-gateway-image-gateway.yaml \
+            --set-string gateway.image.tag=rollout-sentinel
+          render_pod_template deploy/helm/relaygate route-table \
+            target/helm/rollout-gateway-image-route-table.yaml \
+            --set-string gateway.image.tag=rollout-sentinel
+          if cmp -s target/helm/rollout-base-gateway.yaml \
+            target/helm/rollout-gateway-image-gateway.yaml; then
+            echo "Gateway image change did not change the Gateway Pod template"
+            exit 1
+          fi
+          cmp -s target/helm/rollout-base-route-table.yaml \
+            target/helm/rollout-gateway-image-route-table.yaml
+
+          render_pod_template deploy/helm/relaygate gateway \
+            target/helm/rollout-route-table-image-gateway.yaml \
+            --set-string routeTable.image.tag=rollout-sentinel
+          render_pod_template deploy/helm/relaygate route-table \
+            target/helm/rollout-route-table-image-route-table.yaml \
+            --set-string routeTable.image.tag=rollout-sentinel
+          cmp -s target/helm/rollout-base-gateway.yaml \
+            target/helm/rollout-route-table-image-gateway.yaml
+          if cmp -s target/helm/rollout-base-route-table.yaml \
+            target/helm/rollout-route-table-image-route-table.yaml; then
+            echo "RouteTable image change did not change the RouteTable Pod template"
+            exit 1
+          fi
+
           long_release_prefix=$(printf 'a%.0s' {1..44})
           for suffix in one two; do
             helm template "${long_release_prefix}-${suffix}" deploy/helm/relaygate \
