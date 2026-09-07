@@ -191,8 +191,14 @@ impl RouteTableClient {
         generation: ShardDirectoryGeneration,
         key: &RegistrationKey,
     ) -> Result<RegistrationAck, TransportError> {
-        let response = self.request(WireRequest::register(generation, key)).await?;
-        response_registration_ack(response, "REGISTER", None, None)
+        let started_at = Instant::now();
+        let result = async {
+            let response = self.request(WireRequest::register(generation, key)).await?;
+            response_registration_ack(response, "REGISTER", None, None)
+        }
+        .await;
+        observe_request("register", started_at, &result);
+        result
     }
 
     pub async fn update(
@@ -203,12 +209,18 @@ impl RouteTableClient {
         revision: RegistrationRevision,
         snapshot: &MappingSnapshot,
     ) -> Result<RegistrationAck, TransportError> {
-        let response = self
-            .request(WireRequest::update(
-                generation, key, lease_id, revision, snapshot,
-            ))
-            .await?;
-        response_registration_ack(response, "UPDATE", Some(lease_id), Some(revision))
+        let started_at = Instant::now();
+        let result = async {
+            let response = self
+                .request(WireRequest::update(
+                    generation, key, lease_id, revision, snapshot,
+                ))
+                .await?;
+            response_registration_ack(response, "UPDATE", Some(lease_id), Some(revision))
+        }
+        .await;
+        observe_request("update", started_at, &result);
+        result
     }
 
     pub async fn keep_alive(
@@ -217,10 +229,16 @@ impl RouteTableClient {
         key: &RegistrationKey,
         lease_id: LeaseId,
     ) -> Result<RegistrationAck, TransportError> {
-        let response = self
-            .request(WireRequest::keep_alive(generation, key, lease_id))
-            .await?;
-        response_registration_ack(response, "KEEP_ALIVE", Some(lease_id), None)
+        let started_at = Instant::now();
+        let result = async {
+            let response = self
+                .request(WireRequest::keep_alive(generation, key, lease_id))
+                .await?;
+            response_registration_ack(response, "KEEP_ALIVE", Some(lease_id), None)
+        }
+        .await;
+        observe_request("keep_alive", started_at, &result);
+        result
     }
 
     pub async fn deregister(
@@ -229,10 +247,16 @@ impl RouteTableClient {
         key: &RegistrationKey,
         lease_id: LeaseId,
     ) -> Result<(), TransportError> {
-        let response = self
-            .request(WireRequest::deregister(generation, key, lease_id))
-            .await?;
-        response_deregistered(response)
+        let started_at = Instant::now();
+        let result = async {
+            let response = self
+                .request(WireRequest::deregister(generation, key, lease_id))
+                .await?;
+            response_deregistered(response)
+        }
+        .await;
+        observe_request("deregister", started_at, &result);
+        result
     }
 
     pub async fn resolve(
@@ -240,52 +264,51 @@ impl RouteTableClient {
         generation: ShardDirectoryGeneration,
         destination_id: &DestinationId,
     ) -> Result<BindingSet, TransportError> {
-        let response = self
-            .request(WireRequest::resolve(generation, destination_id))
-            .await?;
-        response_bindings(response, destination_id)
+        let started_at = Instant::now();
+        let result = async {
+            let response = self
+                .request(WireRequest::resolve(generation, destination_id))
+                .await?;
+            response_bindings(response, destination_id)
+        }
+        .await;
+        observe_request("resolve", started_at, &result);
+        result
     }
 
     async fn request(&self, request: WireRequest) -> Result<WireResponse, TransportError> {
-        let operation = request.operation_name();
-        let started_at = Instant::now();
-        let result = async {
-            let deadline = Instant::now()
-                .checked_add(self.request_timeout)
-                .ok_or_else(|| TransportError::internal("RouteTable request deadline overflow"))?;
-            let (reply, response) = oneshot::channel();
-            let command = ClientCommand {
-                request,
-                deadline,
-                reply,
-            };
-            match self.commands.try_send(command) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    return Err(TransportError::resource_exhausted(
-                        "RouteTable client command queue is full",
-                    ));
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(TransportError::unavailable(
-                        "RouteTable client connection is closed",
-                    ));
-                }
+        let deadline = Instant::now()
+            .checked_add(self.request_timeout)
+            .ok_or_else(|| TransportError::internal("RouteTable request deadline overflow"))?;
+        let (reply, response) = oneshot::channel();
+        let command = ClientCommand {
+            request,
+            deadline,
+            reply,
+        };
+        match self.commands.try_send(command) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                return Err(TransportError::resource_exhausted(
+                    "RouteTable client command queue is full",
+                ));
             }
-            response.await.map_err(|_| {
-                TransportError::unavailable("RouteTable client connection actor stopped")
-            })?
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(TransportError::unavailable(
+                    "RouteTable client connection is closed",
+                ));
+            }
         }
-        .await;
-        observe_request(operation, started_at, &result);
-        result
+        response.await.map_err(|_| {
+            TransportError::unavailable("RouteTable client connection actor stopped")
+        })?
     }
 }
 
-fn observe_request(
+fn observe_request<T>(
     operation: &'static str,
     started_at: Instant,
-    result: &Result<WireResponse, TransportError>,
+    result: &Result<T, TransportError>,
 ) {
     let (outcome, code) = match result {
         Ok(_) => ("success", "ok"),
@@ -495,7 +518,7 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            observe_request("resolve", Instant::now(), &Ok(WireResponse::Deregistered));
+            observe_request("resolve", Instant::now(), &Ok(()));
             observe_request(
                 "resolve",
                 Instant::now(),
