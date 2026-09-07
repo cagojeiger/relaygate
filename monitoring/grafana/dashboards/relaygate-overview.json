@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "SDK DIAL에서 Listener Pipe까지의 RED, Gateway/RouteTable current-state USE, route dependency와 one-hop relay 포화 신호를 함께 본다. scrape up은 수집 가능성이지 SDK admission readiness가 아니다.",
+  "description": "process, SDK admission, RT dependency와 peer health를 분리하고 DIAL, heartbeat, GW-RT, RT actor latency와 RED/USE/recovery를 함께 본다.",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -190,7 +190,9 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps"
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
         },
         "overrides": []
       },
@@ -200,7 +202,7 @@
         "x": 18,
         "y": 0
       },
-      "description": "선택한 Gateway가 protocol상 수락한 새 Relay DIAL의 초당 요청 수다. 거절된 중복·과거 ConnectionId frame은 포함하지 않는다.",
+      "description": "선택한 Gateway 중 drain 상태가 아니고 SDK session semaphore에 여유가 있어 신규 transport를 받을 수 있는 비율이다. scrape up과 별개다.",
       "id": 4,
       "options": {
         "colorMode": "value",
@@ -217,12 +219,12 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(relaygate_gateway_dial_requests_total{instance=~\"$gateway\"}[$__rate_interval]))",
-          "legendFormat": "DIAL/s",
+          "expr": "sum(relaygate_gateway_sdk_admission_ready{instance=~\"$gateway\"}) / clamp_min(count(relaygate_gateway_sdk_admission_ready{instance=~\"$gateway\"}), 1)",
+          "legendFormat": "SDK admission ready",
           "refId": "A"
         }
       ],
-      "title": "DIAL request rate",
+      "title": "SDK admission-ready ratio",
       "type": "stat"
     },
     {
@@ -242,7 +244,7 @@
         "x": 0,
         "y": 4
       },
-      "description": "선택한 Gateway가 처리한 dial의 terminal 결과를 bounded outcome/code별로 본다. success, system error와 caller cancellation을 구분한다.",
+      "description": "선택한 Gateway가 수락한 DIAL request rate와 terminal result rate를 함께 본다. 둘의 지속적인 차이는 처리 중 work 또는 누락된 terminal 신호다.",
       "id": 5,
       "options": {
         "legend": {
@@ -255,12 +257,17 @@
       },
       "targets": [
         {
+          "expr": "sum(rate(relaygate_gateway_dial_requests_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "legendFormat": "request",
+          "refId": "A"
+        },
+        {
           "expr": "sum by (outcome, code) (rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "{{outcome}} / {{code}}",
-          "refId": "A"
+          "refId": "B"
         }
       ],
-      "title": "Gateway DIAL result rate",
+      "title": "Gateway DIAL request/result rate",
       "type": "timeseries"
     },
     {
@@ -474,6 +481,102 @@
       },
       "fieldConfig": {
         "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "description": "Gateway가 writer에 heartbeat PING을 commit한 뒤 일치하는 PONG을 받을 때까지의 liveness RTT다. DATA latency가 아니며 sdk와 peer 경계를 분리한다.",
+      "id": 20,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{transport}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{transport}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{transport}}",
+          "refId": "C"
+        }
+      ],
+      "title": "Gateway heartbeat RTT",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "description": "Gateway RT client queue 진입부터 operation별 typed 응답 검증 또는 transport failure까지의 latency다. 아래 RT actor service latency와 비교하면 queue/network 비용을 분리할 수 있다.",
+      "id": 21,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{operation}} / {{outcome}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{operation}} / {{outcome}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{operation}} / {{outcome}}",
+          "refId": "C"
+        }
+      ],
+      "title": "Gateway-observed RouteTable latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
           "unit": "reqps"
         },
         "overrides": []
@@ -482,7 +585,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 19
+        "y": 26
       },
       "description": "선택한 RouteTable shard가 처리한 register, update, keep-alive, resolve 요청률과 결과다.",
       "id": 10,
@@ -520,7 +623,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 19
+        "y": 26
       },
       "description": "RouteTable instance·operation·outcome별 actor service p95다. network와 actor queue 대기시간은 포함하지 않는다.",
       "id": 11,
@@ -558,7 +661,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 19
+        "y": 26
       },
       "description": "선택한 shard가 현재 보유한 registration, binding mapping, logical route와 expiry index의 합계다. All은 전체 shard 합계이며 영속 데이터량이 아니라 soft-state current state다.",
       "id": 12,
@@ -611,7 +714,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 26
+        "y": 33
       },
       "description": "정상 DIAL hot path를 제외한 Gateway 제어 경계의 실패·전이·종료율이다. label은 닫힌 code/reason만 사용한다.",
       "id": 13,
@@ -649,6 +752,16 @@
           "expr": "sum by (outcome, code) (rate(relaygate_gateway_route_connection_attempts_total{instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "RT connect {{outcome}} / {{code}}",
           "refId": "E"
+        },
+        {
+          "expr": "sum by (transport) (rate(relaygate_gateway_heartbeat_timeouts_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "legendFormat": "heartbeat timeout / {{transport}}",
+          "refId": "F"
+        },
+        {
+          "expr": "sum by (operation, code) (rate(relaygate_gateway_route_table_requests_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+          "legendFormat": "RT client {{operation}} / {{code}}",
+          "refId": "G"
         }
       ],
       "title": "Gateway lifecycle and failure episodes",
@@ -669,7 +782,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 26
+        "y": 33
       },
       "description": "SDK embedding application이 recorder를 설치한 경우 보이는 role·outcome별 managed reconnect attempt rate다. RelayGate SDK 자체는 exporter를 열지 않는다.",
       "id": 14,
@@ -707,7 +820,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 34
+        "y": 41
       },
       "description": "RouteTable 인증 실패, operation별 오류와 lease 만료 정리율을 함께 본다. 만료는 영속 손실이 아니라 refresh되지 않은 soft state 정리다.",
       "id": 15,
@@ -755,7 +868,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 34
+        "y": 41
       },
       "description": "SDK embedding application이 recorder를 설치한 경우 보이는 role별 managed reconnect 복구 시간 p95다. RelayGate SDK 자체는 exporter를 열지 않는다.",
       "id": 19,
@@ -793,7 +906,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 42
+        "y": 49
       },
       "description": "Kubernetes/cAdvisor가 제공하는 RelayGate container별 CPU core 사용량이다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
       "id": 16,
@@ -831,7 +944,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 42
+        "y": 49
       },
       "description": "Kubernetes/cAdvisor가 제공하는 RelayGate container별 working set memory다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
       "id": 17,
@@ -869,7 +982,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 42
+        "y": 49
       },
       "description": "Kubernetes/cAdvisor가 제공하는 RelayGate pod 전체의 network receive/transmit 처리량이다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
       "id": 18,
@@ -902,6 +1015,8 @@
   "schemaVersion": 42,
   "tags": [
     "relaygate",
+    "health",
+    "latency",
     "red",
     "use"
   ],
@@ -995,5 +1110,5 @@
   "timezone": "browser",
   "title": "RelayGate RED / USE",
   "uid": "relaygate-overview",
-  "version": 1
+  "version": 2
 }

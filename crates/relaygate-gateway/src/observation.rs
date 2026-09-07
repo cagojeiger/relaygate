@@ -35,6 +35,8 @@ impl RouteDependencyHealth {
 pub struct GatewaySnapshot {
     /// Whether this Gateway has stopped admitting new work and is draining existing work.
     pub draining: bool,
+    /// Whether this Gateway can admit at least one new SDK transport now.
+    pub sdk_admission_ready: bool,
     /// Total number of live SDK sessions.
     pub sessions: usize,
     /// Number of live Destination bindings published on this Gateway.
@@ -69,6 +71,7 @@ impl GatewaySnapshot {
     ) -> Self {
         Self {
             draining,
+            sdk_admission_ready: false,
             sessions,
             bindings,
             pending_offers,

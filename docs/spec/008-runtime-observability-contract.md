@@ -45,7 +45,7 @@ payload와 무제한 error body를 넣지 않습니다.
 | 질문 | 지표 | 의미 |
 | --- | --- | --- |
 | process가 scrape 가능한가 | Prometheus `up` | process/metrics endpoint 도달 가능성 |
-| SDK admission이 열려 있는가 | `relaygate_gateway_draining` | `0`이면 신규 SDK work 허용, `1`이면 drain 중 |
+| SDK admission이 열려 있는가 | `relaygate_gateway_sdk_admission_ready`, `relaygate_gateway_draining` | non-draining이고 session capacity가 남은 경우에만 ready |
 | RT current state를 사용할 수 있는가 | `relaygate_gateway_route_dependency{state}` | `DISABLED`, `READY`, `DEGRADED`, `TERMINAL` one-hot 상태 |
 | RT와 아직 수렴하지 않은 publication이 있는가 | `relaygate_gateway_route_registrations_unsynced` | Gateway가 관측한 미수렴 registration 수 |
 | peer transport가 준비되었는가 | `relaygate_gateway_peer_transports_connecting`, `relaygate_gateway_peer_transports_ready` | 연결 중/재사용 가능한 transport 수 |
@@ -98,3 +98,4 @@ DestinationId, SessionId, BindingId, PipeId, Gateway 주소, credential과 자�
 - **`OBS-006`**: DIAL, GW→RT, RT actor와 heartbeat latency는 측정 경계가 다른 histogram으로 기록한다.
 - **`OBS-007`**: SDK와 peer heartbeat timeout은 bounded `transport` label counter로 기록한다.
 - **`OBS-008`**: established Pipe DATA RTT는 core metric으로 추정하지 않고 명시적인 latency probe로 측정한다.
+- **`OBS-009`**: SDK admission ready는 non-draining 상태와 session semaphore 여유가 모두 있을 때만 참이다.

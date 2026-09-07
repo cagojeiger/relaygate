@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::state::GatewayAction;
 use relaygate_protocol::{DestinationId, ErrorCode, Frame, PeerObservation};
 use tokio::sync::mpsc;
@@ -6,6 +8,23 @@ use tokio_util::sync::CancellationToken;
 use super::{Gateway, GatewayConfig};
 
 const CLUSTER_TOKEN: &str = "gateway-test-token";
+
+#[tokio::test]
+async fn snapshot_admission_requires_capacity_and_non_draining_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let gateway = Gateway::new(GatewayConfig::new(CLUSTER_TOKEN).with_max_sessions(1))?;
+    assert!(gateway.snapshot().sdk_admission_ready);
+
+    let permit = Arc::clone(&gateway.inner.session_slots).try_acquire_owned()?;
+    assert!(!gateway.snapshot().sdk_admission_ready);
+
+    drop(permit);
+    assert!(gateway.snapshot().sdk_admission_ready);
+
+    gateway.inner.begin_draining();
+    assert!(!gateway.snapshot().sdk_admission_ready);
+    Ok(())
+}
 
 #[tokio::test]
 async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
