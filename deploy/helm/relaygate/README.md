@@ -110,12 +110,17 @@ LoadBalancer Service에 설정한 값은 변경할 수 없으므로 다른 class
 
 | 변경 | 절차 |
 | --- | --- |
-| Gateway/RT image | 각각 독립 tag로 rolling replacement |
+| Gateway image | Gateway StatefulSet만 rolling replacement |
+| RT image | RT StatefulSet만 rolling replacement |
+| chart version만 변경 | runtime Pod replacement 없음 |
 | ClusterToken rotation | current + next 배포 → SDK 이동 → new current만 배포 |
 | edge certificate | Secret 갱신 뒤 `tls.edge.reloadToken` 변경으로 Gateway rollout |
 | internal certificate | Secret 갱신 뒤 `tls.internal.reloadToken` 변경으로 Gateway/RT rollout |
 | Gateway 증가 | 새 GatewayName/key를 먼저 허용하고 rollout한 뒤 replica 증가 |
 | RT shard 수/domain/port | maintenance window에서 기존 release/pod 완전 종료 후 새 directory로 설치 |
+
+`helm.sh/chart`는 workload object metadata에만 기록합니다. Pod template에는 version-independent label만
+사용하므로 chart package version 자체는 runtime rollout 사유가 되지 않습니다.
 
 RT online resharding, replication, quorum, Gateway Pipe migration과 certificate hot reload는 제공하지
 않습니다.

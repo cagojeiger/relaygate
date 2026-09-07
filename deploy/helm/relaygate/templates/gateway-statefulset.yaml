@@ -31,7 +31,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "relaygate.labels" (dict "root" . "component" "gateway") | nindent 8 }}
+        {{- include "relaygate.podLabels" (dict "root" . "component" "gateway") | nindent 8 }}
         {{- with .Values.gateway.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
