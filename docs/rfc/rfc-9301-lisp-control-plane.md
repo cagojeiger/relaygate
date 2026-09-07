@@ -1,31 +1,24 @@
-# RFC 9301: Locator/ID Separation Protocol (LISP) Control Plane
+# RFC 9301: LISP Control Plane
 
-- 원문: [RFC Editor](https://www.rfc-editor.org/rfc/rfc9301.html)
-- 성격: Standards Track, 2022년 10월
+| 항목 | 값 |
+| --- | --- |
+| 원문 | [RFC Editor](https://www.rfc-editor.org/rfc/rfc9301.html) |
+| 성격 | Standards Track, 2022-10 |
+| 목적 | EID-to-RLOC mapping register·resolve interface |
 
-## 범위
+| operation | 역할 |
+| --- | --- |
+| Map-Register | ETR이 EID와 RLOC set 등록 |
+| Map-Notify | 요청된 Register 수신 확인 |
+| Map-Request | cache miss, reachability, TTL 갱신 조회 |
+| Map-Reply | nonce로 request와 연결하고 mapping 전달 |
+| Map-Server/Resolver | 한 장치 또는 분리된 service role |
 
-LISP control plane은 Map-Resolver와 Map-Server를 통해 EID-to-RLOC mapping을 등록하고
-조회하는 service interface를 정의한다.
+```text
+publisher ── Register ──► Mapping System ◄── Request ── resolver
+```
 
-## 핵심
+Message format, address family와 authentication은 LISP 고유 영역입니다. Internal database architecture,
+cache policy와 locator reachability는 구현 system의 별도 결정입니다.
 
-- ETR은 Map-Register로 EID와 RLOC 집합을 주기적으로 등록한다.
-- Map-Notify는 요청된 경우 Map-Register 수신을 확인한다.
-- ITR은 cache miss, reachability 확인 또는 TTL 갱신을 위해 Map-Request를 보낸다.
-- Map-Reply는 요청과 nonce로 연결되며 mapping cache를 갱신할 수 있다.
-- mapping service interface는 router를 내부 mapping database 구현과 분리한다.
-- Map-Server와 Map-Resolver 역할은 한 장치에 함께 둘 수 있다.
-
-## 구분할 점
-
-- LISP message format, EID/RLOC address family와 authentication은 LISP 고유 계약이다.
-- control-plane interface는 내부 mapping database architecture를 고정하지 않는다.
-- mapping cache와 locator reachability는 별도 문제다.
-
-## 읽을 절
-
-- [§4 Basic Overview](https://www.rfc-editor.org/rfc/rfc9301.html#section-4)
-- [§5.2–5.7 Mapping Messages](https://www.rfc-editor.org/rfc/rfc9301.html#section-5.2)
-- [§6 Changing Mapping Contents](https://www.rfc-editor.org/rfc/rfc9301.html#section-6)
-- [§7 Routing Locator Reachability](https://www.rfc-editor.org/rfc/rfc9301.html#section-7)
+원문 절: [§4](https://www.rfc-editor.org/rfc/rfc9301.html#section-4), [§5.2–5.7](https://www.rfc-editor.org/rfc/rfc9301.html#section-5.2), [§6](https://www.rfc-editor.org/rfc/rfc9301.html#section-6), [§7](https://www.rfc-editor.org/rfc/rfc9301.html#section-7)

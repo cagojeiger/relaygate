@@ -3,19 +3,16 @@ clusterDomain: cluster.local
 imagePullSecrets: []
 
 credentials:
-  # 차트는 credential을 만들거나 영속화하지 않는다. workload 시작 전에 release
-  # namespace에 이 Secret이 있어야 한다.
+  # Workload가 release namespace의 operator-managed credential을 읽는다.
   existingSecret: relaygate-credentials
   internalGatewayKeysKey: internal-gateway-keys
   clusterTokenKey: cluster-token
   nextClusterTokenKey: next-cluster-token
-  # Secret data는 pod template에 포함되지 않는다. 값을 바꾼 뒤 이 token도 새 값으로
-  # 바꾸면 Gateway와 RT가 startup credential을 다시 읽도록 restart된다.
+  # Credential 변경과 함께 값을 바꾸면 Gateway/RT가 startup config를 다시 읽는다.
   reloadToken: ""
 
 tls:
-  # SDK-facing TLS와 cluster-internal mTLS는 별도 trust domain으로 운영한다.
-  # 차트는 edge certificate, Issuer와 CA를 만들지 않는다.
+  # SDK edge와 internal mTLS는 별도 trust domain이며 platform이 Issuer/CA를 소유한다.
   edge:
     existingSecret: relaygate-edge-tls
     # customCa는 caKey를 mount하고, webPkiRoots는 공개 root set을 사용한다.
@@ -26,8 +23,7 @@ tls:
     serverName: relaygate-gateway.internal
     reloadToken: ""
   internal:
-    # existingSecret(기본)은 하나의 사전 생성 Secret을 사용한다. certManager는
-    # platform Issuer로 Gateway/RouteTable leaf certificate를 각각 발급한다.
+    # existingSecret 또는 platform Issuer가 발급하는 role별 leaf를 사용한다.
     source: existingSecret
     existingSecret: relaygate-internal-tls
     caKey: ca.crt
@@ -43,7 +39,7 @@ tls:
         name: ""
         kind: ClusterIssuer
         group: cert-manager.io
-      # Issuer CA의 public trust bundle이다. leaf private key Secret과 분리한다.
+      # Issuer CA의 public trust bundle. Leaf private key Secret과 분리한다.
       trustSecret:
         name: ""
         key: ca.crt
@@ -70,8 +66,7 @@ containerSecurityContext:
       - ALL
 
 metrics:
-  # relaygate-server가 제공하는 low-cardinality Prometheus endpoint다.
-  # Service는 cluster 내부 전용이며 payload와 credential은 노출하지 않는다.
+  # Cluster-internal low-cardinality Prometheus endpoint.
   enabled: true
   intervalMs: 5000
   gatewayPort: 27422
@@ -109,14 +104,11 @@ gateway:
   drainTimeoutMs: 120000
   terminationGracePeriodSeconds: 135
 
-  # capacity와 timeout override를 추가할 수 있다. 차트가 관리하는 identity, address,
-  # directory와 credential 변수는 재정의할 수 없다.
+  # Chart-managed 값 이외의 capacity/timeout override.
   extraEnv: []
 
 routeTable:
-  # 하나의 StatefulSet이 logical shard rt-0 .. rt-(shardCount-1)를 각각 한 pod로
-  # 실행한다. replica 수가 아니라 shard 수이며 일반적인 scale 변경 대상이 아니다.
-  # ShardDirectory ConfigMap 크기를 제한하기 위해 1..2048만 허용한다.
+  # StatefulSet ordinal별 logical shard 수. 허용 범위 1..2048.
   shardCount: 2
 
   image:
@@ -138,6 +130,5 @@ routeTable:
   topologySpreadConstraints: []
   terminationGracePeriodSeconds: 30
 
-  # queue, frame과 handshake override를 추가할 수 있다. 차트가 관리하는 identity,
-  # address, directory와 credential 변수는 재정의할 수 없다.
+  # Chart-managed 값 이외의 queue/frame/handshake override.
   extraEnv: []

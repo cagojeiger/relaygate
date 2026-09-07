@@ -1,101 +1,109 @@
 # SPEC 007: 오류와 canonical 상태 모델
 
-이 문서가 state/event 의미의 기준입니다.
+State와 event 의미의 기준 문서입니다.
 
 ## 오류
 
-| code | 대표 조건 | retry 판단 |
+| code | 대표 조건 | 새 operation 조건 |
 | --- | --- | --- |
-| `INVALID_ARGUMENT` | UUID/config/frame 값 오류 | 입력 변경 전 금지 |
-| `UNAUTHENTICATED` | TLS/ClusterToken/component credential 실패 | credential/config 변경 뒤 |
-| `PERMISSION_DENIED` | 인증된 내부 component의 owner/operation 권한 불일치 | identity/config 변경 뒤 |
-| `NOT_FOUND` | current Binding 없음 | 상태 변경 뒤 새 dial |
-| `FAILED_PRECONDITION` | self Binding만 존재, 닫힌 object | 전제 변경 뒤 |
-| `UNAVAILABLE` | drain, dependency/transport 단절 | backoff 뒤 새 operation |
-| `DEADLINE_EXCEEDED` | bounded deadline 만료 | observation 확인 뒤 |
-| `RESOURCE_EXHAUSTED` | session/binding/pipe/remote DIAL/queue/frame 상한 | 부하 감소 뒤 |
+| `INVALID_ARGUMENT` | UUID/config/frame 오류 | 입력 변경 |
+| `UNAUTHENTICATED` | TLS/ClusterToken/component credential 실패 | credential/config 변경 |
+| `PERMISSION_DENIED` | authenticated component owner/operation 불일치 | identity/config 변경 |
+| `NOT_FOUND` | current Binding 없음 | 상태 변경 |
+| `FAILED_PRECONDITION` | self Binding만 존재, closed object | 전제 변경 |
+| `UNAVAILABLE` | drain, dependency/transport loss | backoff |
+| `DEADLINE_EXCEEDED` | bounded deadline 만료 | observation 확인 |
+| `RESOURCE_EXHAUSTED` | session/binding/Pipe/dial/queue/frame 상한 | 부하 감소 |
 | `CANCELLED` | owner operation/session 종료 | caller 결정 |
-| `PROTOCOL_ERROR` | version, frame 순서·소유권 위반 | 구현/config 수정 뒤 |
-| `INTERNAL` | 내부 invariant/lock 실패 | 보수적으로 terminal |
-| `ALREADY_EXISTS` | 같은 Relay의 동일 Destination Listener 중복 | 기존 Listener 종료 뒤 |
+| `PROTOCOL_ERROR` | version, frame order·ownership 위반 | 구현/config 수정 |
+| `INTERNAL` | internal invariant/lock failure | terminal |
+| `ALREADY_EXISTS` | 같은 Relay·Destination Listener 중복 | 기존 Listener 종료 |
 
-## RelaySession
+## 상태 전이
 
-```text
-ABSENT -> CONNECTING -> ACTIVE -> RECONNECTING -> ACTIVE
-                         │              │
-                         ├────────────► BLOCKED
-                         └────────────► CLOSED
+```mermaid
+stateDiagram-v2
+    state RelaySession {
+        [*] --> CONNECTING
+        CONNECTING --> ACTIVE
+        ACTIVE --> RECONNECTING
+        RECONNECTING --> ACTIVE
+        CONNECTING --> BLOCKED
+        ACTIVE --> BLOCKED
+        RECONNECTING --> BLOCKED
+        CONNECTING --> CLOSED
+        ACTIVE --> CLOSED
+        RECONNECTING --> CLOSED
+        BLOCKED --> CLOSED
+    }
+    state Listener {
+        [*] --> REGISTERING
+        REGISTERING --> ACTIVE
+        REGISTERING --> BLOCKED
+        REGISTERING --> CLOSED
+        ACTIVE --> SUSPENDED
+        SUSPENDED --> ACTIVE
+        ACTIVE --> BLOCKED
+        SUSPENDED --> BLOCKED
+        ACTIVE --> CLOSED
+        SUSPENDED --> CLOSED
+        BLOCKED --> CLOSED
+    }
 ```
 
-| 이벤트 | 종료 범위 |
-| --- | --- |
-| TLS/HELLO 실패 | session 생성 없음 |
-| transport/heartbeat/writer 실패 | current session, 그 session의 dial/Pipe; Listener는 SUSPENDED |
-| 전송 전 OFFER writer queue full | 해당 dial만 `RESOURCE_EXHAUSTED/NOT_OBSERVED` |
-| terminal admission 실패 | Relay와 Listener BLOCKED |
-| explicit Relay close | runtime, Listener, attempt와 Pipe CLOSED |
-
-## Listener와 Binding
-
-```text
-Listener: REGISTERING -> ACTIVE -> SUSPENDED -> ACTIVE
-                           ├─────► BLOCKED
-                           └─────► CLOSED
-Binding : ABSENT -> ACTIVE -> REMOVED   (terminal)
+```mermaid
+stateDiagram-v2
+    state Dial {
+        [*] --> REQUESTED
+        REQUESTED --> RESOLVING
+        RESOLVING --> OFFERED
+        OFFERED --> OPENED
+        REQUESTED --> FAILED
+        RESOLVING --> FAILED
+        OFFERED --> FAILED
+    }
+    state Pipe {
+        [*] --> OFFERED
+        OFFERED --> OPEN
+        OPEN --> HALF_CLOSED
+        OPEN --> CLOSED
+        HALF_CLOSED --> CLOSED
+    }
 ```
 
-session reconnect는 Listener identity를 유지하지만 새 SessionId와 BindingId를 만듭니다. 늦은 old-session
-PUBLISHED/OFFER는 새 Listener 또는 Binding을 만들지 못합니다.
-
-## dial과 Pipe
-
-```text
-Dial: REQUESTED -> RESOLVING -> OFFERED -> OPENED
-          └──────────── terminal failure ───────► FAILED
-
-Pipe: ABSENT -> OFFERED -> OPEN -> HALF_CLOSED -> CLOSED
-                  └──────── RESET/owner loss ───► CLOSED
+```mermaid
+stateDiagram-v2
+    [*] --> REGISTERING: RT Register
+    REGISTERING --> SYNCED
+    SYNCED --> UNSYNCED: RT loss/restart
+    UNSYNCED --> SYNCED: full snapshot
+    SYNCED --> DEREGISTERING
+    DEREGISTERING --> REMOVED
+    REGISTERING --> TERMINAL: auth/config
+    UNSYNCED --> TERMINAL: auth/config
 ```
 
-성공과 실패는 terminal입니다. selected Binding의 실패가 sibling Binding fallback으로 이어지지 않으며,
-새 연결은 application이 새 `dial`을 호출해야 합니다.
+## 장애 전파
 
-## RT registration
-
-```text
-ABSENT -> REGISTERING -> SYNCED -> UNSYNCED -> SYNCED
-                           └────► DEREGISTERING -> REMOVED
-terminal auth/config error ────────────────────► TERMINAL
-```
-
-RT restart와 connection loss는 `UNSYNCED`이며 local Binding은 유지합니다. current snapshot이 재등록되면
-`SYNCED`로 돌아옵니다.
-
-## 장애 전파 경계
-
-| 장애 | 반드시 종료 | 반드시 보존 | 복구 |
+| 장애 | 종료 범위 | 유지 범위 | 복구 |
 | --- | --- | --- | --- |
-| SDK–GW 단절 | session 소유 Pipe/dial/current Binding | 다른 session과 Binding | SDK reconnect + Listener republish |
-| selected Listener OFFER 불확실 | selected RelaySession 전체 | sibling session/Binding | SDK reconnect; caller는 새 dial |
-| selected Listener OFFER 전송 전 queue full | 해당 dial | selected session/Binding과 기존 Pipe | 부하 감소 뒤 새 dial |
-| GW–GW transport 단절 | 해당 transport의 stream/Pipe | local Binding, 다른 transport | 다음 dial이 새 transport 사용 |
-| GW–RT 단절 | remote resolve와 sync 상태 | local Binding, established Pipe | worker reconnect + full snapshot |
-| RT restart | shard의 모든 lease/mapping | GW local Binding, Pipe | Gateway 재등록 |
-| GW drain/종료 | 신규 admission 중지 후 deadline에 owned state | 다른 GW/RT state | SDK/peer reconnect; 기존 Pipe resume 없음 |
+| SDK–GW loss | session 소유 Pipe/dial/Binding | 다른 session·Binding | reconnect + Listener republish |
+| OFFER uncertain | selected RelaySession | sibling session·Binding | reconnect; caller 새 dial |
+| OFFER pre-commit full | 해당 dial | selected session·Binding·Pipe | 부하 감소 뒤 새 dial |
+| GW–GW loss | 해당 transport의 stream/Pipe | local Binding·다른 transport | 다음 dial이 transport 생성 |
+| GW–RT loss | remote resolve·sync | local Binding·established Pipe | worker reconnect + snapshot |
+| RT restart | 해당 shard lease/mapping | Gateway local Binding·Pipe | Gateway 재등록 |
+| GW drain | 신규 admission 후 deadline의 owned state | 다른 GW·RT state | SDK/peer reconnect |
 
-모든 terminal cleanup은 idempotent해야 하며 unknown/late event는 no-op 또는 offending session의
-`PROTOCOL_ERROR`로 닫힙니다. 종료된 state를 다시 활성화하지 않습니다.
+## 불변 조건
 
-## 상태 불변 조건
-
-- **`STATE-001`**: terminal state는 같은 incarnation에서 다시 활성화되지 않는다.
-- **`STATE-002`**: session 종료는 그 session이 소유한 Binding, attempt와 Pipe만 정리한다.
-- **`STATE-003`**: 불확실한 publish/dial 결과는 current session 종료로 orphan 가능성을 닫는다.
-- **`STATE-004`**: late, duplicate와 foreign event는 current sibling state를 변경하지 않는다.
-- **`STATE-005`**: RT 장애와 restart는 local Binding과 established Pipe를 종료하지 않는다.
-- **`STATE-006`**: 모든 cleanup은 반복 적용해도 같은 empty/current-state 결과로 수렴한다.
-- **`STATE-007`**: remote DIAL admission 거절은 해당 요청만 끝내며 기존 session, Binding과
-  Pipe를 보존한다. terminal remote DIAL 결과와 caller session 종료는 점유한 admission을 반환한다.
-- **`STATE-008`**: OFFER가 Listener writer queue에 들어가지 못한 것이 확정되면 pending OFFER를
-  제거하고 해당 DIAL만 `NOT_OBSERVED`로 끝낸다. 다른 writer failure는 session 단위로 닫는다.
+| ID | 계약 |
+| --- | --- |
+| `STATE-001` | terminal incarnation은 terminal 상태를 유지한다. |
+| `STATE-002` | session terminal cleanup은 그 session 소유 Binding, attempt와 Pipe에 한정된다. |
+| `STATE-003` | uncertain publish/dial은 current session 종료로 orphan 가능성을 제거한다. |
+| `STATE-004` | late·duplicate·foreign event는 current sibling state와 격리된다. |
+| `STATE-005` | RT loss/restart 동안 local Binding과 established Pipe를 유지한다. |
+| `STATE-006` | cleanup 반복 적용은 같은 empty/current-state 결과로 수렴한다. |
+| `STATE-007` | remote DIAL rejection은 request scope이며 모든 terminal path가 admission을 반환한다. |
+| `STATE-008` | OFFER pre-commit failure는 request scope, 그 밖의 writer uncertainty는 session scope다. |

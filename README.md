@@ -1,41 +1,33 @@
 # RelayGate
 
-RelayGate는 NAT 뒤 애플리케이션이 외부로 연 하나의 장기 세션을 통해 논리 주소를 수신하고,
-다른 논리 주소로 양방향 byte stream을 여는 Rust relay입니다.
+NAT 뒤 애플리케이션이 outbound session 하나로 논리 주소를 수신하고 다른 주소로 양방향 byte stream을
+여는 Rust relay입니다.
 
-```text
-Relay A ── TLS ──► GW A ══ mTLS, 최대 one hop ══ GW B ◄── TLS ── Relay B
-                       └──────── mTLS ────────► RT shards
-
-Relay A.listen(DestinationId)        DestinationId -> 0..N live Binding
-Relay B.dial(DestinationId)          dial 1회 -> Binding 1개 -> Pipe 1개
-Listener.accept()                    Pipe = opaque bidirectional byte stream
+```mermaid
+flowchart LR
+    RA[Relay A<br/>listen · dial · accept] -->|TLS| GWA[Gateway A]
+    GWA <-->|mTLS · 최대 one hop| GWB[Gateway B]
+    GWB <-->|TLS| RB[Relay B<br/>listen · dial · accept]
+    GWA -->|mTLS · register/resolve| RT[RouteTable shards]
+    GWB -->|mTLS · register/resolve| RT
 ```
 
-고정 Connector/Listener 세션 역할은 없습니다. 하나의 `Relay`가 `listen`과 `dial`을 수행하고,
-반환된 `Listener`가 `accept`를 수행합니다. `DestinationId`는 애플리케이션이 생성하고 보관하는
-UUIDv4이며, 같은 주소를 여러 Relay가 listen할 수 있습니다.
+```text
+DestinationId -> live Binding 0..N
+dial 1회      -> Binding 1개 -> opaque bidirectional Pipe 1개
+```
 
-## 책임 경계
+## 책임
 
-RelayGate가 제공하는 것:
+| RelayGate | Application |
+| --- | --- |
+| TLS와 ClusterToken session admission | DestinationId 생성·보관 |
+| live Binding 조회와 local/one-hop Pipe | Pipe 상대 인증·인가 |
+| bounded queue, timeout, heartbeat, cleanup | payload framing·의미·acknowledgement·retry |
+| SDK reconnect와 Listener republish | 필요한 E2E payload 보호 |
 
-- SDK–Gateway TLS와 단일 trust-domain `ClusterToken` admission
-- live `DestinationId -> BindingSet` 조회
-- local 또는 최대 one-hop Pipe 연결
-- bounded queue, timeout, heartbeat, cleanup과 재연결
-- GW–GW 및 GW–RT mTLS
-
-RelayGate가 제공하지 않는 것:
-
-- 사용자·장비 identity와 Destination별 ACL
-- payload 해석, 업무 acknowledgement와 payload retry
-- 기존 Pipe의 migration 또는 resume
-- Destination 발급·영속 저장
-- RT persistence, replication과 online resharding
-
-Pipe 상대 인증이나 RelayGate 운영자에게도 숨겨야 하는 payload 보호는 Pipe 위의 application
-protocol이 담당합니다.
+RouteTable은 memory-only current state를 유지합니다. 새 연결은 새 `dial`로 시작하며 기존 Pipe와 payload의
+수명은 해당 Pipe와 application이 소유합니다.
 
 ## Rust SDK
 
@@ -43,9 +35,8 @@ protocol이 담당합니다.
 use relaygate_sdk::{ClientTlsConfig, Config, DestinationId, GatewayTransportConfig, Relay};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let ca = std::fs::read("ca.crt")?;
-let tls = ClientTlsConfig::server_authenticated("relaygate-gateway.internal", &ca)?;
-let transport = GatewayTransportConfig::tls_tcp("127.0.0.1:27420", tls);
+let tls = ClientTlsConfig::with_webpki_roots("relaygate.project-jelly.io")?;
+let transport = GatewayTransportConfig::tls_tcp("relaygate.project-jelly.io:443", tls);
 let relay = Relay::connect(Config::new(
     std::env::var("RELAYGATE_CLUSTER_TOKEN")?,
     transport,
@@ -54,101 +45,55 @@ let relay = Relay::connect(Config::new(
 let destination = DestinationId::new();
 let listener = relay.listen(destination).await?;
 
-// 다른 Relay에서: let mut pipe = relay.dial(destination).await?;
+// 다른 Relay: let mut pipe = relay.dial(destination).await?;
 let mut incoming = listener.accept().await?;
 # let _ = &mut incoming;
 # Ok(())
 # }
 ```
 
-공개 CA 인증서를 사용하는 Gateway는 별도 CA 파일 대신 bundled Web PKI roots를 선택합니다.
+private CA 환경은 `ClientTlsConfig::server_authenticated(server_name, ca)`를 사용합니다. session loss 뒤
+SDK는 jitter가 포함된 bounded backoff로 재연결하고 live Listener를 새 Binding으로 등록합니다.
 
-```rust,no_run
-# use relaygate_sdk::ClientTlsConfig;
-# fn main() -> Result<(), relaygate_sdk::TlsConfigError> {
-let tls = ClientTlsConfig::with_webpki_roots("relaygate.project-jelly.io")?;
-# let _ = tls;
-# Ok(())
-# }
-```
+## 검증
 
-세션이 끊기면 SDK는 jitter가 포함된 bounded backoff로 재연결하고, 이미 반환된 `Listener`만 새
-Session/Binding으로 다시 등록합니다. 기존 Pipe, 완료가 불확실한 dial과 payload는 자동 replay하지
-않습니다.
+| 범위 | 명령 |
+| --- | --- |
+| Rust compile/test | `cargo fmt --all --check && cargo check --workspace && cargo test --workspace` |
+| Rust lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
+| RT2/GW3 Compose | `docker compose up --build --abort-on-container-exit --exit-code-from topology-probe` |
+| observability | `docker compose --profile observability up --build --abort-on-container-exit --exit-code-from observability-probe observability-probe` |
+| isolated Kubernetes | `tests/kind/run.sh` |
 
-## 로컬 검증
-
-Docker Compose는 RT 2개, Gateway 3개, TLS 초기화 컨테이너, SDK 예제와 topology probe를 띄웁니다.
-개발용 인증서는 named volume에 일회성으로 생성되며 저장소에는 개인키를 남기지 않습니다.
+Compose 종료:
 
 ```bash
-docker compose up --build --abort-on-container-exit --exit-code-from topology-probe
-docker compose down --volumes --remove-orphans
-```
-
-관측 스택까지 확인하려면:
-
-```bash
-docker compose --profile observability up --build \
-  --abort-on-container-exit --exit-code-from observability-probe \
-  observability-probe
 docker compose --profile observability down --volumes --remove-orphans
-```
-
-격리된 Kubernetes에서 RT2/GW3, Envoy passthrough, rolling restart, reconnect storm과 bounded soak를
-검증하려면 `kind`, `kubectl`, `helm`, Docker가 준비된 환경에서 실행합니다. 임시 cluster와 인증서는
-종료 시 제거되고 증거는 `target/kind-acceptance`에 남습니다.
-
-```bash
-tests/kind/run.sh
 ```
 
 ## Helm
 
-차트는 RT와 Gateway만 배포합니다. SDK workload, credential과 certificate를 생성하지 않습니다.
-배포 전에 release namespace에 다음 Secret을 준비해야 합니다.
-
-- credential Secret: `internal-gateway-keys`, `cluster-token`, 선택적 `next-cluster-token`
-- edge TLS Secret: `tls.crt`, `tls.key`, custom CA mode에서는 `ca.crt`
-- internal mTLS Secret: `ca.crt`, `gateway.crt`, `gateway.key`, `route-table.crt`, `route-table.key`
+차트는 RouteTable과 Gateway를 배포하며 credential과 certificate는 release namespace의 Secret을
+사용합니다. 기본 topology는 RT shard 2개와 Gateway 3개입니다.
 
 ```bash
 helm lint deploy/helm/relaygate
 helm template relaygate deploy/helm/relaygate --kube-version 1.32.0
 ```
 
-기본 topology는 `RouteTable shard 2 / Gateway 3`입니다. RT 수는 replica가 아니라 hash partition
-수이므로 StatefulSet만 scale하지 말고 동일한 ShardDirectory generation과 함께 배포해야 합니다.
+설치와 rotation 절차는 [Helm chart README](deploy/helm/relaygate/README.md)를 따릅니다.
 
-## 개발 검증
-
-```bash
-cargo fmt --all --check
-cargo check --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-```
-
-설계 결정은 [ADR](docs/adr/), 동작 계약은 [SPEC](docs/spec/), 검증 대응은
-[TEST](docs/test/)에 있습니다.
-
-## Workspace
+## 구조
 
 ```text
 crates/
-├── relaygate-protocol/              # SDK–GW wire
-├── relaygate-transport/             # TLS/mTLS transport adapter
-├── relaygate-sdk/                   # public Relay, Listener, Pipe API
-├── relaygate-gateway/               # binding, dial, relay, cleanup
-├── relaygate-route-table/           # memory-only current-state shard
-├── relaygate-route-table-transport/ # GW–RT bounded transport/auth
-└── relaygate-server/                # config, process wiring, metrics, shutdown
-examples/
-├── echo-listener/
-└── echo-probe/
-deploy/
-├── docker/
-└── helm/relaygate/
-tests/
-└── kind/run.sh                       # isolated RT2/GW3 acceptance
+├── relaygate-protocol/              SDK-GW wire
+├── relaygate-transport/             TLS/mTLS adapter
+├── relaygate-sdk/                   public Relay, Listener, Pipe API
+├── relaygate-gateway/               Binding, dial, relay, cleanup
+├── relaygate-route-table/           memory-only current-state shard
+├── relaygate-route-table-transport/ GW-RT bounded transport/auth
+└── relaygate-server/                config, wiring, metrics, shutdown
 ```
+
+[문서 지도](docs/)에서 ADR, SPEC, TEST와 RFC 근거를 확인할 수 있습니다.

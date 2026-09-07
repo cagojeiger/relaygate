@@ -1,59 +1,45 @@
 # ADR 004: RouteTable은 hash-sharded mapping authority다
 
-| 항목 | 값 |
+| 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted; ADR 010·013 용어 적용 |
-| 전제 | [ADR 010](010-symmetric-relay-session.md), [ADR 013](013-application-owned-destination.md) |
-
-## 맥락
-
-Gateway가 여러 대일 때 Entry Gateway는 해당 `DestinationId`의 live Binding을 소유한 Gateway를
-찾아야 한다. 모든 mapping을 모든 Gateway에 복제하지 않고 route key 수에 따라 수평 분산할
-control plane이 필요하다.
+| 상태 | Accepted |
+| 목적 | `DestinationId`의 live Binding 위치 조회 |
+| 확장 축 | route key를 여러 shard로 분할 |
 
 ## 결정
 
 ```text
-Gateway × G ──► RouteTable shard × R
-
-ShardDirectoryGeneration            = SHA-256(exact ShardDirectory artifact bytes)
-Authority(Generation, DestinationId) = exactly 1 logical shard
-Endpoint(Generation, ShardId)        = exactly 1 stable logical endpoint
-Mappings(DestinationId)              = 0..N live Binding entries
+ShardDirectoryGeneration             = SHA-256(exact directory bytes)
+Authority(generation, DestinationId)  = logical shard 1개
+Mappings(DestinationId)               = live Binding 0..N
 ```
 
-`RouteTable`은 packet FIB가 아니라 identifier-to-locator Mapping System이다. `DestinationId`의
-deterministic hash partition이 하나의 logical shard authority를 정하고, 그 shard가 live Binding에서
-파생된 현재 mapping set을 관리한다.
+```mermaid
+flowchart LR
+    GWA[Gateway A] -->|register owned Binding| RT[RouteTable shard]
+    GWB[Gateway B] -->|resolve Destination| RT
+    GWB -->|payload · 최대 one hop| GWA
+```
 
-RFC 7426의 용어로 RT mapping과 Gateway의 registration·resolve는 control plane이다. established Pipe의 payload forwarding은 data plane이며 이 경로에 RouteTable이 참여하지 않는다.
+| 축 | 현재 모델 |
+| --- | --- |
+| mapping system | identifier-to-locator control plane |
+| authority | deterministic hash가 Destination별 shard 하나를 선택 |
+| directory | 모든 process가 동일한 불변 artifact와 generation 사용 |
+| shard endpoint | logical shard마다 stable endpoint 하나 |
+| Gateway state | owned Binding 등록, remote dial마다 resolve |
+| data plane | established Pipe가 RT를 우회 |
+| directory 변경 | coordinated restart 후 current Binding 재등록 |
+| replica/failover | 별도 결정 전까지 shard endpoint 하나가 authority |
 
-각 Gateway와 RT process는 동일한 immutable shard directory artifact를 배포받고 그 exact bytes의 SHA-256을 `ShardDirectoryGeneration`으로 사용한다. generation은 운영자가 별도로 부여하거나 재사용하지 않는다. process는 시작할 때 generation과 directory를 고정하고, 모든 RT operation은 같은 generation일 때만 처리한다. directory artifact가 바뀌는 최초 운영 모델은 mixed-generation 전환이 아니라 coordinated restart와 current-state 재등록·갱신이다.
+## 효과
 
-최초 모델에서 하나의 logical shard record는 정확히 하나의 stable RT endpoint를 가진다. 그 endpoint는 하나의 process 주소 또는 하나의 logical service 주소일 수 있지만, 서로 독립적으로 쓰이는 여러 RT instance를 뜻하지 않는다. 한 shard의 복수 replica와 failover는 별도 합의 없이는 같은 authority가 아니므로 이 결정에 포함하지 않는다.
-
-Gateway는 RT 전체 mapping을 복제하거나 구독하지 않는다. 자신이 소유한 Binding은 authority shard에
-registration으로 반영하고, 원격 Binding이 필요한 dial마다 해당 `DestinationId`를 resolve한다.
-payload와 established Pipe는 RouteTable을 통과하지 않는다.
-
-## 결과
-
-- shard는 route key와 mapping 용량을 분산한다.
-- 하나의 authority와 여러 destination binding을 구분한다.
-- Gateway는 generation으로 식별되는 작은 불변 shard directory만 공유하고 remote mapping cache를 core authority로 사용하지 않는다.
-- partition 수와 replica 수는 서로 다른 축이다.
-- 최초 모델은 shard당 stable logical endpoint 하나만 허용한다.
-- replication과 failover는 이 결정에서 자동으로 따라오지 않는다.
-- 잘못 섞인 directory generation은 조용한 오라우팅 대신 명시적 실패가 된다.
-- 같은 directory artifact는 같은 generation을 만들고 한 byte라도 바뀌면 generation을 다시 계산한다.
-- directory 변경은 최초 버전에서 coordinated restart 비용을 가진다.
-
-## 이 ADR에서 정하지 않는 것
-
-- online 또는 rolling shard directory 변경
-- logical shard의 replica와 failover
-- registration과 resolve protocol, 오류와 timeout
-- 구현 자료구조와 wire format
+| 속성 | 결과 |
+| --- | --- |
+| scale | route key와 mapping 용량을 shard로 분산 |
+| consistency | mixed generation을 명시적 실패로 처리 |
+| Gateway memory | 작은 directory와 local Binding만 필수 |
+| recovery | current Gateway state로 RT mapping 재구축 |
 
 ## 참고
 

@@ -12,13 +12,16 @@ host Rust SDK ── TLS/TCP ──┤
                     RT-0      hash       RT-1
 ```
 
-kind에는 RT와 Gateway만 배포하고 SDK는 host에서 실행합니다. 격리된 cluster name, local image와
-일회성 certificate/Secret을 사용하며 종료 시 해당 cluster만 삭제합니다. Gateway별 직접 진입은
-local/one-hop과 장애 범위를 결정적으로 검증하고, Envoy 경로는 외부 L4 passthrough만 별도로 검증합니다.
+| 항목 | 구성 |
+| --- | --- |
+| cluster | 격리된 name, local image, 일회성 certificate/Secret |
+| SDK | host Rust process |
+| direct entry | local/one-hop과 fault scope 검증 |
+| Envoy entry | external L4 passthrough 검증 |
+| evidence | `target/kind-acceptance` artifact |
+| cleanup | 실행이 생성한 cluster와 certificate 제거 |
 
-`tests/kind/run.sh`가 아래 acceptance를 한 번에 실행합니다. GitHub Actions의 `Kind Acceptance`는
-runtime 관련 PR과 수동 실행에서 같은 harness를 사용하고, 성공 여부와 무관하게
-`target/kind-acceptance` 증거를 업로드합니다.
+`tests/kind/run.sh`와 GitHub Actions `Kind Acceptance`가 같은 acceptance harness를 실행합니다.
 
 ## acceptance
 
@@ -40,6 +43,5 @@ runtime 관련 PR과 수동 실행에서 같은 harness를 사용하고, 성공 
 
 ## stop condition
 
-모든 ID에 command output, pod state, metric snapshot과 로그 검색 결과가 있어야 합니다. rolling/storm/soak
-뒤에는 새 dial과 cleanup baseline을 함께 확인합니다. Helm render 성공, pod Ready 또는 단일 echo만으로
-완료하지 않습니다.
+모든 ID는 command output, pod state, metric snapshot과 log search evidence를 남깁니다. rolling/storm/soak의
+완료 조건은 fresh dial 성공과 cleanup baseline 수렴입니다.

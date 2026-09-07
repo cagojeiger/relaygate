@@ -7,18 +7,20 @@ GW A <===== PeerTransport A->B =====> GW B
          Stream N = Pipe N
 ```
 
-- **`PEER-001`**: remote data path는 Entry Gateway에서 Owner Gateway까지 최대 one hop이다.
-- **`PEER-002`**: RT는 payload와 established Pipe 경로에 참여하지 않는다.
-- **`PEER-003`**: ordered Gateway pair는 방향별 PeerTransport를 최대 하나 유지한다.
-- **`PEER-004`**: 방향별 두 transport가 존재할 수 있으며 각 transport는 여러 RelayStream을 multiplex한다.
-- **`PEER-005`**: StreamId는 initiator bit와 방향별 monotonic counter로 충돌을 막는다.
-- **`PEER-006`**: 한 stream의 FIN/CLOSE/RESET은 sibling stream을 보존한다.
-- **`PEER-007`**: writer commit 실패나 transport loss는 그 transport의 모든 stream만 terminal cleanup한다.
-- **`PEER-008`**: stream이 0인 transport는 idle retirement deadline 뒤 닫는다.
-- **`PEER-009`**: idle 중 heartbeat 응답이 없으면 transport와 그 stream을 닫는다.
-- **`PEER-010`**: peer OPEN은 Destination, selected Binding과 origin open identity를 current state와 검증한다.
-- **`PEER-011`**: unknown/late/foreign frame은 state를 부활시키지 않는다.
-- **`PEER-012`**: peer 연결과 handshake, queue와 frame은 모두 bounded다.
+| ID | 계약 |
+| --- | --- |
+| `PEER-001` | remote data path는 Entry Gateway → Owner Gateway 한 hop이다. |
+| `PEER-002` | RT는 register·resolve control plane에 위치한다. |
+| `PEER-003` | ordered Gateway pair의 PeerTransport는 방향별 0..1개다. |
+| `PEER-004` | 두 방향 transport는 독립적이고 각각 여러 RelayStream을 multiplex한다. |
+| `PEER-005` | StreamId는 initiator bit와 방향별 monotonic counter로 유일하다. |
+| `PEER-006` | stream FIN/CLOSE/RESET cleanup은 해당 stream에 한정된다. |
+| `PEER-007` | writer commit failure와 transport loss는 해당 transport의 stream 전체를 terminal cleanup한다. |
+| `PEER-008` | empty transport는 idle-retirement deadline에 정상 종료한다. |
+| `PEER-009` | active transport heartbeat timeout은 transport와 소속 stream을 종료한다. |
+| `PEER-010` | peer OPEN은 Destination, Binding과 origin open identity를 current state와 대조한다. |
+| `PEER-011` | unknown·late·foreign frame은 current state를 유지하는 terminal/no-op 결과다. |
+| `PEER-012` | peer connect, handshake, queue와 frame은 bounded다. |
 
-PeerTransport는 availability optimization이며 Pipe continuation을 보장하지 않습니다. 다음 dial은 필요하면
-새 transport를 만들지만 종료된 stream을 복원하지 않습니다.
+PeerTransport는 다음 dial에서 재생성할 수 있는 availability optimization입니다. Established stream의
+lifecycle은 해당 transport terminal 결과로 끝납니다.

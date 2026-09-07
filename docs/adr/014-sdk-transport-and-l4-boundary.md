@@ -1,45 +1,44 @@
-# ADR 014: SDK transport와 외부 L4 진입점을 분리한다
+# ADR 014: protocol transport와 외부 L4 진입점을 분리한다
 
-| 항목 | 값 |
+| 항목 | 결정 |
 | --- | --- |
-| 상태 | 채택, 구현됨 |
-| 관계 | ADR 012의 SDK-facing transport와 배포 경계를 구체화 |
+| 상태 | Accepted, implemented |
+| SDK transport | RelayGate framing over TLS/TCP |
+| internal transport | mTLS/TCP |
+| public entry | platform-owned L4 passthrough |
 
 ## 결정
 
 ```text
-Relay API              : transport 독립적인 Relay.listen/dial + Listener.accept + Pipe
-0.2 SDK transport      : RelayGate framing over TLS/TCP
-GW <-> GW, GW <-> RT   : mTLS/TCP 유지
-외부 L4 진입점         : platform 소유
-Helm 기본 Service      : ClusterIP
-선택적 직접 노출       : Service type LoadBalancer
-공유 Gateway 경유      : TCPRoute 또는 TLSRoute passthrough
+SDK <-> GW : TLS/TCP + server authentication + ClusterToken
+GW  <-> GW : mTLS/TCP + logical Gateway handshake
+GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
+
+public L4
+  ├── dedicated Service type LoadBalancer
+  └── shared TCPRoute/TLSRoute passthrough -> Gateway ClusterIP
 ```
 
-SDK 공개 설정은 `GatewayTransportConfig`를 받는다. 0.2는 `tls_tcp`만 제공하며 HTTP/2와 HTTP/3를
-구현하지 않는다. 이후 transport가 추가돼도 `Relay`, `Listener`, `Pipe` API와 application 호출
-흐름은 바뀌지 않는다.
+| 경계 | 현재 계약 |
+| --- | --- |
+| public SDK API | `Relay.listen/dial`, `Listener.accept`, `Pipe` |
+| transport config | `GatewayTransportConfig::tls_tcp` |
+| TLS verification | certificate chain, server name, `relaygate/2` ALPN |
+| edge termination | RelayGate Gateway process |
+| internal identity | mTLS certificate와 logical handshake의 일치 |
+| certificate load | process startup, reload token 또는 platform reloader가 rollout |
+| Helm ownership | Gateway/RT Service와 Secret wiring |
+| platform ownership | public GatewayClass, L4 route, load balancer, Issuer·CA |
 
-TLS/TCP는 application fallback 목록의 한 후보가 아니다. certificate chain, server name, ALPN 또는
-ClusterToken 검증 실패는 해당 연결의 terminal failure이며 평문이나 다른 transport로 자동 전환하지
-않는다.
+TLS validation failure는 terminal connection failure입니다. 공개 API는 transport adapter와 분리되어 이후
+새 transport 결정이 SDK의 Relay·Listener·Pipe 사용법을 유지할 수 있습니다.
 
-SDK-facing TLS와 cluster-internal mTLS는 별도 Secret과 trust domain으로 운영할 수 있다. Helm은 edge
-Secret을 read-only로 mount한다. 내부 mTLS는 기존 Secret 또는 ADR 016의 cert-manager leaf certificate를
-사용한다. certificate hot reload는 제공하지 않으며 각 reload token 변경으로 대상 workload를 rollout한다.
+## 효과
 
-RelayGate chart는 공용 Envoy Gateway, `GatewayClass`, `TCPRoute`, `TLSRoute`를 소유하지 않는다.
-공유 L4 entry를 쓰는 환경은 platform/GitOps가 TLS passthrough 경로를 만들고, Gateway process가 TLS를
-종단한다.
-
-## 결과
-
-- 현재 구현과 검증 범위는 TLS/TCP 하나로 유지된다.
-- 향후 edge transport 추가가 public Relay API 변경을 강제하지 않는다.
-- edge certificate rotation은 내부 mTLS rotation과 분리된다.
-- `ClusterIP` 환경, 직접 `LoadBalancer`, 공유 L4 Gateway를 같은 chart로 지원한다.
-- native HTTP/2·HTTP/3 stream mapping과 transport fallback 정책은 구현 전 별도 결정이 필요하다.
+- SDK-facing TLS와 internal mTLS trust domain을 독립 운영합니다.
+- L4는 byte stream을 passthrough하고 Gateway가 protocol 보안을 종단합니다.
+- application E2E 보호와 Pipe peer 인증은 Pipe 위 protocol이 담당합니다.
+- RT shard topology와 service mesh는 transport 선택과 독립된 결정입니다.
 
 ## 참고
 

@@ -1,30 +1,25 @@
-# RFC 2205: Resource ReSerVation Protocol (RSVP)
+# RFC 2205: Resource ReSerVation Protocol
 
-- 원문: [RFC Editor](https://www.rfc-editor.org/rfc/rfc2205.html)
-- 성격: Standards Track, 1997년 9월
+| 항목 | 값 |
+| --- | --- |
+| 원문 | [RFC Editor](https://www.rfc-editor.org/rfc/rfc2205.html) |
+| 성격 | Standards Track, 1997-09 |
+| 목적 | 경로상의 resource reservation state 관리 |
 
-## 범위
+```mermaid
+stateDiagram-v2
+    [*] --> ACTIVE: install
+    ACTIVE --> ACTIVE: refresh
+    ACTIVE --> REMOVED: timeout / teardown
+```
 
-RSVP는 application data를 전달하거나 route를 계산하는 protocol이 아니라, 경로상의
-resource reservation state를 만들고 유지하는 control protocol이다.
+| 개념 | 의미 |
+| --- | --- |
+| soft state | periodic refresh가 존재를 유지 |
+| expiry | refresh deadline 뒤 자동 제거 |
+| teardown | 빠른 명시적 제거 |
+| plane separation | control state와 data forwarding path 분리 |
 
-## 핵심
+reservation, QoS와 multicast는 RSVP 고유 영역이고 refresh-or-expire는 재사용 가능한 상태 원리입니다.
 
-- RSVP state는 periodic refresh message로 유지되는 soft state다.
-- refresh가 없으면 state는 timeout 후 자동으로 제거된다.
-- 명시적 teardown은 빠른 제거를 돕지만 soft-state cleanup을 대체하지 않는다.
-- control state와 data forwarding path는 분리된다.
-- refresh와 timeout은 membership 및 route 변화에 점진적으로 수렴하게 한다.
-
-## 구분할 점
-
-- RSVP의 reservation, QoS, multicast 모델은 일반적인 registry protocol이 아니다.
-- refresh-or-expire 원리는 재사용할 수 있지만 RSVP message와 time parameter가 그대로
-  적용되는 것은 아니다.
-
-## 읽을 절
-
-- [§1 Introduction](https://www.rfc-editor.org/rfc/rfc2205.html#section-1)
-- [§2.3 Soft State](https://www.rfc-editor.org/rfc/rfc2205.html#section-2.3)
-- [§2.4 Teardown](https://www.rfc-editor.org/rfc/rfc2205.html#section-2.4)
-- [§3.7 Time Parameters](https://www.rfc-editor.org/rfc/rfc2205.html#section-3.7)
+원문 절: [§2.3](https://www.rfc-editor.org/rfc/rfc2205.html#section-2.3), [§2.4](https://www.rfc-editor.org/rfc/rfc2205.html#section-2.4), [§3.7](https://www.rfc-editor.org/rfc/rfc2205.html#section-3.7)

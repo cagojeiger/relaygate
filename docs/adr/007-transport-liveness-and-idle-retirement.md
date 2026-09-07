@@ -1,54 +1,36 @@
 # ADR 007: Transport liveness와 idle retirement를 분리한다
 
-| 항목 | 값 |
+| 항목 | 결정 |
 | --- | --- |
 | 상태 | Accepted |
-| 전제 | [ADR 001](001-relayed-pipe-responsibility-boundary.md), [ADR 006](006-one-hop-peer-multiplexing.md) |
-
-## 맥락
-
-RelayGate는 오래 살아 있는 SDK-Gateway session과 Gateway 간 `PeerTransport` 위에 여러 Pipe를 올린다. 아무 frame도 오가지 않는 silent network failure를 operation deadline에서만 발견하면, 죽은 transport가 current state에 오래 남을 수 있다.
-
-반대로 application `Pipe.read()`가 조용하다는 이유만으로 Pipe나 session을 닫으면 opaque byte stream 계약을 깨뜨린다.
+| active transport | activity-aware `PING/PONG` |
+| empty PeerTransport | idle-retirement timer |
 
 ## 결정
 
-```text
-SDK-Gateway session
-  └── activity-aware Ping/Pong
-        timeout -> whole session close
-
-PeerTransport(stream_count > 0)
-  └── activity-aware Ping/Pong
-        timeout -> PeerTransport close
-
-PeerTransport(stream_count == 0)
-  └── no keepalive
-        idle timeout -> PeerTransport retire
+```mermaid
+flowchart TD
+    T[Transport] --> S{live stream?}
+    S -->|SDK session 또는 peer stream 있음| A[activity-aware heartbeat]
+    A -->|matching PONG| T
+    A -->|response deadline| C[transport close + owned state cleanup]
+    S -->|PeerTransport stream 0개| I[idle timer]
+    I -->|새 stream| T
+    I -->|idle deadline| R[normal retirement]
 ```
 
-Heartbeat는 transport liveness만 확인한다. Pipe health, application health, payload 처리 성공, delivery acknowledgement를 뜻하지 않는다.
+| 신호 | 의미 |
+| --- | --- |
+| valid inbound activity | 다음 PING 이전의 idle deadline 갱신 |
+| committed PING + matching PONG | transport path 생존 확인 |
+| Pipe read idle | 정상 application 상태 |
+| RT KeepAlive | RouteTable lease 갱신 |
 
-RFC 5880에서 참고하는 원리는 application과 routing 의미에 독립적인 경로 생존 감지다. RelayGate는 BFD packet format, 상태 머신과 timer 협상을 구현하지 않고 기존 transport의 Ping/Pong 계약에 이 책임 경계만 적용한다.
-
-Heartbeat timer는 valid inbound transport activity가 있으면 `PING` 전송 전에는 연장될 수 있다. idle interval 동안 inbound activity가 없을 때 `PING`을 보내고, 그 `PING`이 commit된 뒤 configured response deadline 전에 matching `PONG`을 받지 못하면 해당 transport를 닫는다. unrelated inbound frame, outbound write, nonce가 다른 `PONG`, deadline 이후의 늦은 `PONG`은 이미 commit된 probe를 만족시키지 않는다.
-
-`PeerTransport`는 live `RelayStream`이 하나 이상 있을 때만 heartbeat 대상이다. stream 수가 0이 되면 keepalive를 중단하고 idle-retirement timer를 시작한다. 새 stream이 같은 transport를 재사용하면 retirement timer는 취소된다. timeout까지 재사용되지 않으면 transport를 정상 종료한다.
-
-RT registration의 `KeepAlive`는 RouteTable soft state lease 갱신이다. SDK-Gateway 또는 peer transport heartbeat와 같은 계약이 아니다.
-
-## 결과
-
-- silent failure는 bounded timeout 안에 session 또는 active PeerTransport cleanup으로 수렴한다.
-- idle Pipe read는 실패 조건이 아니다.
-- 빈 PeerTransport는 즉시 닫지 않고 재사용 기회를 갖지만, 무기한 유지하지 않는다.
-- Gateway pair의 eager full mesh나 RT sharding 변경은 요구하지 않는다.
-- heartbeat 실패는 기존 Pipe나 payload를 replay, reroute, resume하지 않는다.
+Heartbeat timeout은 해당 session 또는 PeerTransport를 닫고 소유 state를 정리합니다. 새 Pipe는 이후
+`dial`에서 새 transport를 사용할 수 있으며 application payload lifecycle은 application이 관리합니다.
 
 ## 참고
 
-- [RFC 9293](../rfc/rfc-9293-tcp-connection-roles.md)
-- [RFC 4254](../rfc/rfc-4254-ssh-channel.md)
-- [RFC 9000](../rfc/rfc-9000-quic-streams.md)
-- [RFC 9113](../rfc/rfc-9113-http2-connection-lifecycle.md)
 - [RFC 5880](../rfc/rfc-5880-bfd-liveness.md)
+- [RFC 9113](../rfc/rfc-9113-http2-connection-lifecycle.md)
+- [RFC 9000](../rfc/rfc-9000-quic-streams.md)

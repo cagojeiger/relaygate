@@ -1,9 +1,10 @@
 # ADR 010: 하나의 Relay 세션이 송신과 수신을 함께 수행한다
 
-| 항목 | 값 |
+| 항목 | 결정 |
 | --- | --- |
-| 상태 | 채택, 구현됨 |
-| 변경 대상 | ADR 001·003의 고정 Connector/Listener 세션 역할 |
+| 상태 | Accepted, implemented |
+| SDK runtime | `Relay` |
+| session role | Pipe마다 dialer와 listener로 결정 |
 
 ## 결정
 
@@ -14,27 +15,19 @@ Relay::dial(DestinationId)   ──► Pipe
 Listener::accept()           ──► Pipe
 
 Destination * ◄── Binding ──► * RelaySession
-dial 1회 ──► Binding 1개 ──► 양방향 Pipe 1개
+dial 1회 ──► Binding 1개 ──► bidirectional Pipe 1개
 ```
 
-SDK, wire와 Gateway 상태 모델에서 고정 `Connector/Listener` 역할과 `SessionRole`을 제거한다.
-송신자와 수신자는 Pipe마다 정해지는 역할이며 세션 종류가 아니다. `Listener`는 하나의
-Destination을 계속 수신하겠다는 SDK handle이고 별도 transport session이 아니다.
+| 규칙 | 결과 |
+| --- | --- |
+| 하나의 Relay·Destination | pending/active Listener 최대 하나 |
+| 여러 Relay·Destination | live Binding 0..N |
+| self Binding | dial candidate에서 제외 |
+| session loss | live Listener를 새 SessionId·BindingId로 재등록 |
+| existing Pipe·committed dial | terminal 결과로 유지, 새 operation이 복구 담당 |
 
-한 Relay 안에는 같은 Destination의 닫히지 않은 Listener를 최대 하나만 둔다. 다른 Relay는 같은
-Destination을 동시에 listen할 수 있다. 자기 RelaySession이 소유한 Binding은 dial 후보에서 제외하며,
-다른 후보가 없으면 `FAILED_PRECONDITION`으로 끝낸다.
-
-세션이 끊기면 기존 Pipe와 commit된 dial은 복구하거나 replay하지 않는다. SDK는 RelaySession을
-재연결하고 이미 반환된 live Listener만 새 SessionId와 BindingId로 다시 publish한다.
-
-## 결과
-
-- NAT 뒤의 한 application이 outbound 세션 하나로 수신과 송신을 모두 수행한다.
-- public SDK는 `Relay`, `Listener`, `Pipe`의 socket-like API를 제공한다.
-- Listener의 bounded queue admission이 수신 Pipe 생성 시점이고 `accept()`는 Pipe를 한 번만 꺼낸다.
-- Pipe는 항상 1:1이며 fan-out, 기존 Pipe 이동과 payload replay를 제공하지 않는다.
-- 0.1 wire와 0.2 wire의 혼용은 지원하지 않는다.
+`Listener`는 Destination 수신 의도를 소유하는 handle이고 별도 transport session이 아닙니다. bounded
+incoming queue admission이 Pipe 수신 경계를 만들며 `accept()`는 각 Pipe를 한 번 반환합니다.
 
 ## 참고
 
