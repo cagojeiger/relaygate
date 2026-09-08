@@ -46,8 +46,14 @@ jobs:
       - name: Validate local observability assets
         run: |
           docker compose --profile observability config --quiet
-          python3 -m json.tool \
-            monitoring/grafana/dashboards/relaygate-overview.json >/dev/null
+          for dashboard in monitoring/grafana/dashboards/*.json; do
+            python3 -m json.tool "$dashboard" >/dev/null
+          done
+
+      - name: Verify dashboard query semantics
+        run: |
+          export PROMTOOL="docker run --rm --volume $PWD:$PWD --workdir $PWD --entrypoint promtool prom/prometheus:v3.13.1"
+          python3 .github/scripts/test_observability.py -v
 
       - name: Validate GitHub Actions workflows
         run: >-
@@ -557,6 +563,31 @@ jobs:
           docker compose --profile observability up -d --no-deps prometheus grafana
           docker compose --profile observability run --rm --no-deps observability-probe
 
+      - name: Verify Grafana navigation and capture dashboards
+        timeout-minutes: 5
+        run: |
+          # Real DIALs after scrape startup produce non-idle RED samples for visual review.
+          for _ in {1..6}; do
+            docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+            sleep 2
+          done
+          mkdir -p "$RUNNER_TEMP/grafana-screenshots"
+          docker run --rm --init --ipc=host --network host \
+            --volume "$PWD:/work:ro" \
+            --volume "$RUNNER_TEMP/grafana-screenshots:/captures" \
+            --env GRAFANA_SCREENSHOTS=/captures \
+            --env NODE_PATH=/tmp/browser/node_modules \
+            mcr.microsoft.com/playwright:v1.63.0-noble \
+            /bin/sh -ec 'npm install --prefix /tmp/browser --no-save --package-lock=false playwright@1.63.0; node /work/.github/scripts/grafana_ui.cjs'
+
+      - name: Upload Grafana screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: relaygate-grafana
+          path: ${{ runner.temp }}/grafana-screenshots
+          if-no-files-found: ignore
+
       - name: Verify unrelated pair continuity across Gateway B restart
         run: |
           prometheus_has() {
@@ -580,6 +611,22 @@ jobs:
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 22222222-2222-4222-8222-222222222222
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+
+      - name: Measure established Pipe DATA RTT
+        run: |
+          docker compose run --rm --no-deps \
+            -e RELAYGATE_LATENCY_WARMUP=100 \
+            -e RELAYGATE_LATENCY_SAMPLES=1000 \
+            topology-probe relaygate-echo-probe latency | tee latency.log
+          python3 .github/scripts/test_observability.py --probe latency.log
+
+      - name: Upload DATA RTT measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: relaygate-data-rtt
+          path: latency.log
+          if-no-files-found: ignore
 
       - name: Verify rt-0 failure isolation and established Pipe continuity
         run: |
@@ -644,6 +691,26 @@ jobs:
           prometheus_has 'sum(relaygate_gateway_route_dependency{state="READY"}) == 3'
           prometheus_has 'sum(relaygate_gateway_route_registrations_unsynced) == 0'
           prometheus_has 'sum(relaygate_gateway_route_dependency_transitions_total{previous="degraded",current="ready"}) > 0'
+
+      - name: Verify logical cleanup baseline
+        run: |
+          docker compose stop listener-a listener-b listener-c continuity-ac continuity-a-zero
+          for metric in \
+            relaygate_gateway_sessions relaygate_gateway_bindings \
+            relaygate_gateway_pending_offers relaygate_gateway_live_pipes \
+            relaygate_gateway_originated_pipes relaygate_gateway_remote_dial_attempts \
+            relaygate_gateway_peer_streams relaygate_route_table_mappings; do
+            matched=false
+            for _ in {1..60}; do
+              if curl -fsSG --data-urlencode "query=sum($metric{cluster=\"compose\",namespace=\"relaygate\"}) == 0" \
+                http://127.0.0.1:29090/api/v1/query | jq -e '.data.result | length > 0' >/dev/null; then
+                matched=true
+                break
+              fi
+              sleep 1
+            done
+            test "$matched" = true || { echo "Cleanup did not converge: $metric"; exit 1; }
+          done
 
       - name: Capture logs
         if: failure()

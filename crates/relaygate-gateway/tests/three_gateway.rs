@@ -154,6 +154,9 @@ async fn three_gateway_case() -> TestResult {
             let owner = owner.gateway.snapshot();
             let non_owner = non_owner.gateway.snapshot();
             entry.live_pipes == 1
+                && entry.originated_pipes == 1
+                && owner.originated_pipes == 0
+                && non_owner.originated_pipes == 0
                 && entry.peer_streams == 1
                 && owner.live_pipes == 1
                 && owner.peer_streams == 1
@@ -345,6 +348,7 @@ async fn exercise_repeated_failure_recovery(
             gateways.iter().all(|gateway| {
                 let snapshot = gateway.gateway.snapshot();
                 snapshot.pending_offers == 0
+                    && snapshot.originated_pipes == 0
                     && snapshot.live_pipes == 0
                     && snapshot.remote_open_attempts == 0
                     && snapshot.peer_transports_connecting == 0

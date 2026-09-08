@@ -5,9 +5,9 @@ NAT 뒤 애플리케이션이 outbound session 하나로 논리 주소를 수신
 
 ```mermaid
 flowchart LR
-    RA[Relay A<br/>listen · dial · accept] -->|TLS| GWA[Gateway A]
+    RA[Relay A<br/>listen · dial<br/>Listener::accept] -->|TLS| GWA[Gateway A]
     GWA <-->|mTLS · 최대 one hop| GWB[Gateway B]
-    GWB <-->|TLS| RB[Relay B<br/>listen · dial · accept]
+    GWB <-->|TLS| RB[Relay B<br/>listen · dial<br/>Listener::accept]
     GWA -->|mTLS · register/resolve| RT[RouteTable shards]
     GWB -->|mTLS · register/resolve| RT
 ```
@@ -64,6 +64,7 @@ SDK는 jitter가 포함된 bounded backoff로 재연결하고 live Listener를 �
 | Rust lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | RT2/GW3 Compose | `docker compose up --build --abort-on-container-exit --exit-code-from topology-probe` |
 | observability | `docker compose --profile observability up --build --abort-on-container-exit --exit-code-from observability-probe observability-probe` |
+| 연결 후 DATA RTT | topology 실행 중 `docker compose run --rm --no-deps topology-probe relaygate-echo-probe latency` |
 | isolated Kubernetes | `tests/kind/run.sh` |
 
 Compose 종료:

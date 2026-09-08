@@ -1,0 +1,1679 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "개요에서 상태·부하를 판단하고 상세 화면에서 원인 후보를 확인한다. No data는 미수집 또는 정의되지 않은 비율이다. DATA RTT는 별도 explicit probe가 측정한다.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "type": "link",
+      "title": "운영 개요",
+      "url": "/d/relaygate-overview",
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false,
+      "tags": []
+    },
+    {
+      "type": "link",
+      "title": "SDK 복구",
+      "url": "/d/relaygate-sdk",
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false,
+      "tags": []
+    }
+  ],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "noValue": "No data",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      },
+      "description": "Prometheus가 수집할 수 있는 Gateway target 비율이다. process 또는 network 생존 신호이며 SDK admission readiness를 보장하지 않는다. 발견된 target 비율이며 replica 충족은 Kubernetes replica 패널에서 확인한다.",
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}) / clamp_min(count(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}), 1)",
+          "legendFormat": "Gateway scrape up",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "title": "GW 수집 가능률",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "noValue": "No data",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      },
+      "description": "Prometheus가 수집할 수 있는 RouteTable shard target 비율이다. shard table 내용이나 Gateway의 route 준비 상태를 보장하지 않는다. 발견된 target 비율이며 replica 충족은 Kubernetes replica 패널에서 확인한다.",
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-route-table\"}) / clamp_min(count(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-route-table\"}), 1)",
+          "legendFormat": "RouteTable scrape up",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "title": "RT 수집 가능률",
+      "type": "stat"
+    },
+    {
+      "id": 100,
+      "title": "연결과 큐 · Gateway",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 5,
+            "w": 12,
+            "h": 7
+          },
+          "description": "originated Pipe는 호출 SDK를 가진 GW에서 한 번 센다. GW Pipe 상태 합계는 one-hop 양단을 포함한다. session은 사용자 수가 아니며 순간 snapshot 합계는 전역 원자적 값이 아니다.",
+          "id": 8,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(relaygate_gateway_sessions{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "SDK 세션",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum(relaygate_gateway_bindings{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "등록",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(relaygate_gateway_originated_pipes{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "고유 Pipe",
+              "range": true,
+              "refId": "F",
+              "instant": false
+            },
+            {
+              "expr": "sum(relaygate_gateway_live_pipes{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "GW Pipe 상태 · 양단 포함",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "세션 · 등록 · Pipe 상태",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 5,
+            "w": 12,
+            "h": 7
+          },
+          "description": "originated Pipe는 호출 SDK를 가진 GW에서 한 번 센다. GW Pipe 상태 합계는 one-hop 양단을 포함한다. session은 사용자 수가 아니며 순간 snapshot 합계는 전역 원자적 값이 아니다.",
+          "id": 31,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(relaygate_gateway_pending_offers{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "수신 OFFER",
+              "refId": "D"
+            },
+            {
+              "expr": "sum(relaygate_gateway_remote_dial_attempts{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "원격 DIAL",
+              "refId": "E"
+            }
+          ],
+          "title": "진행 중 연결",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 12,
+            "w": 12,
+            "h": 7
+          },
+          "description": "GW별 PeerTransport/stream endpoint와 미동기화 등록의 합계. transport와 stream은 양단 GW가 각각 센다. 사용량 0 직후 idle retirement까지 transport가 유지될 수 있다.",
+          "id": 9,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(relaygate_gateway_peer_transports_connecting{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "연결 중 transport",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum(relaygate_gateway_peer_transports_ready{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "재사용 가능 transport",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum(relaygate_gateway_peer_streams{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "stream · 양단 포함",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "GW 간 transport · stream",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 12,
+            "w": 12,
+            "h": 7
+          },
+          "description": "sessions는 handshake 점유 포함. pending_opens는 OFFER+remote attempt의 공통 예산이고 remote_dials는 그 안의 remote 하위 예산이다. 자원별 제약을 독립 판정하며 비율을 합산하지 않는다. 상한은 설정값이며 지속 가능한 사용자 용량은 부하 실험으로 검증한다.",
+          "id": 22,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "relaygate_gateway_resource_used{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"} / relaygate_gateway_resource_limit{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}",
+              "legendFormat": "{{instance}} {{resource}}",
+              "range": true,
+              "refId": "A",
+              "instant": false
+            }
+          ],
+          "title": "GW별 자원 점유율",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 19,
+            "w": 12,
+            "h": 7
+          },
+          "description": "full/closed SDK writer queue 거절. 현재 pending 수는 current work에서 확인한다.",
+          "id": 23,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (instance, reason) (rate(relaygate_gateway_writer_queue_rejections_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
+              "legendFormat": "{{instance}} {{reason}}",
+              "range": true,
+              "refId": "A",
+              "instant": false
+            }
+          ],
+          "title": "SDK writer 큐 거절",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 19,
+            "w": 12,
+            "h": 7
+          },
+          "description": "SDK/peer별 heartbeat p95. 생존 확인 왕복시간이며 application DATA RTT와 다르다.",
+          "id": 20,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
+              "legendFormat": "p95 {{transport}}",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "Heartbeat 왕복시간",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 26,
+            "w": 12,
+            "h": 7
+          },
+          "description": "정상 DIAL hot path를 제외한 Gateway 제어 경계의 실패·전이·종료율이다. label은 닫힌 code/reason만 사용한다.",
+          "id": 13,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (direction, code) (rate(relaygate_gateway_peer_handshakes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+              "legendFormat": "peer 연결 {{direction}} / {{code}}",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum by (reason) (rate(relaygate_gateway_peer_transport_closed_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
+              "legendFormat": "peer 종료 / {{reason}}",
+              "refId": "D",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum by (transport) (rate(relaygate_gateway_heartbeat_timeouts_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
+              "legendFormat": "heartbeat timeout / {{transport}}",
+              "refId": "F",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "Peer 종료 · 연결 실패",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 26,
+            "w": 12,
+            "h": 7
+          },
+          "description": "정상 DIAL hot path를 제외한 Gateway 제어 경계의 실패·전이·종료율이다. label은 닫힌 code/reason만 사용한다.",
+          "id": 32,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (code) (rate(relaygate_gateway_publish_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+              "legendFormat": "등록 거절 / {{code}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "등록 거절",
+          "type": "timeseries"
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "title": "라우팅과 수렴 · RouteTable",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 6,
+            "w": 12,
+            "h": 7
+          },
+          "description": "GW별 PeerTransport/stream endpoint와 미동기화 등록의 합계. transport와 stream은 양단 GW가 각각 센다. 사용량 0 직후 idle retirement까지 transport가 유지될 수 있다.",
+          "id": 33,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(relaygate_gateway_route_registrations_unsynced{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+              "legendFormat": "미수렴 등록",
+              "refId": "D"
+            }
+          ],
+          "title": "RT 등록 미수렴",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 6,
+            "w": 12,
+            "h": 7
+          },
+          "description": "정상 DIAL hot path를 제외한 Gateway 제어 경계의 실패·전이·종료율이다. label은 닫힌 code/reason만 사용한다.",
+          "id": 34,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (previous, current) (rate(relaygate_gateway_route_dependency_transitions_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
+              "legendFormat": "RT {{previous}} -> {{current}}",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum by (outcome, code) (rate(relaygate_gateway_route_connection_attempts_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
+              "legendFormat": "RT 연결 {{outcome}} / {{code}}",
+              "refId": "E",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum by (operation, code) (rate(relaygate_gateway_route_table_requests_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+              "legendFormat": "RT 요청 {{operation}} / {{code}}",
+              "refId": "G",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "GW→RT 연결 · 상태 전이",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 13,
+            "w": 12,
+            "h": 7
+          },
+          "description": "client 큐 진입 시도부터 RT 응답·실패까지의 시간. RT actor service 시간과 비교해 병목 후보를 좁힌다. 서로 다른 표본의 p95 차이는 network p95가 아니다.",
+          "id": 21,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
+              "legendFormat": "p50 {{operation}} / {{outcome}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
+              "legendFormat": "p95 {{operation}} / {{outcome}}",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
+              "legendFormat": "p99 {{operation}} / {{outcome}}",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "GW→RT 요청 지연",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 13,
+            "w": 12,
+            "h": 7
+          },
+          "description": "RouteTable instance·operation·outcome별 actor service p95다. network와 actor queue 대기시간은 포함하지 않는다.",
+          "id": 11,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, instance, operation, outcome) (rate(relaygate_route_table_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"}[$__rate_interval])))",
+              "legendFormat": "p95 {{instance}} / {{operation}} / {{outcome}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "RT 내부 처리시간 p95",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 20,
+            "w": 12,
+            "h": 7
+          },
+          "description": "선택한 RouteTable shard가 처리한 register, update, keep-alive, resolve 요청률과 결과다.",
+          "id": 10,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (operation, outcome) (rate(relaygate_route_table_requests_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"}[$__rate_interval]))",
+              "legendFormat": "{{operation}} / {{outcome}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "RT 요청과 결과",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 20,
+            "w": 12,
+            "h": 7
+          },
+          "description": "선택한 shard가 현재 보유한 registration, binding mapping, logical route와 expiry index의 합계다. All은 전체 shard 합계이며 영속 데이터량이 아니라 soft-state current state다.",
+          "id": 12,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(relaygate_route_table_registrations{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
+              "legendFormat": "등록",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum(relaygate_route_table_mappings{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
+              "legendFormat": "매핑",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum(relaygate_route_table_routes{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
+              "legendFormat": "Destination",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum(relaygate_route_table_expiry_records{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
+              "legendFormat": "만료 인덱스",
+              "refId": "D",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "RT 등록 · 매핑 · 만료 인덱스",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 27,
+            "w": 12,
+            "h": 7
+          },
+          "description": "RouteTable 인증 실패, operation별 오류와 lease 만료 정리율을 함께 본다. 만료는 영속 손실이 아니라 refresh되지 않은 soft state 정리다.",
+          "id": 15,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (code) (rate(relaygate_route_table_handshakes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\",outcome=\"error\"}[$__rate_interval]))",
+              "legendFormat": "연결 검증 / {{code}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum by (operation, code) (rate(relaygate_route_table_requests_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\",outcome=\"error\"}[$__rate_interval]))",
+              "legendFormat": "{{operation}} / {{code}}",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum(rate(relaygate_route_table_expired_registrations_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"}[$__rate_interval]))",
+              "legendFormat": "만료 정리",
+              "refId": "C",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "RT 오류 · 만료 정리",
+          "type": "timeseries"
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "title": "배포와 자원 · Kubernetes 수집 필요",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 7,
+            "w": 12,
+            "h": 7
+          },
+          "description": "kube-state-metrics StatefulSet desired/ready 수. scrape target 비율과 별도 판정한다. namespace 내 StatefulSet을 선택한다. 미수집은 No data.",
+          "id": 26,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "kube_statefulset_replicas{cluster=~\"$cluster\",namespace=~\"$namespace\",statefulset=~\"$statefulset\"}",
+              "legendFormat": "기대 {{statefulset}}",
+              "range": true,
+              "refId": "A",
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "kube_statefulset_status_replicas_ready{cluster=~\"$cluster\",namespace=~\"$namespace\",statefulset=~\"$statefulset\"}",
+              "legendFormat": "Ready {{statefulset}}",
+              "range": true,
+              "refId": "B",
+              "instant": false
+            }
+          ],
+          "title": "Pod 기대값 · Ready",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 7,
+            "w": 12,
+            "h": 7
+          },
+          "description": "Pod별 throttled periods / total periods. CPU limit으로 실행이 지연되는지 사용 CPU와 함께 본다.",
+          "id": 27,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (pod, container) (rate(container_cpu_cfs_throttled_periods_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\"}[$__rate_interval])) / sum by (pod, container) (rate(container_cpu_cfs_periods_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\"}[$__rate_interval]))",
+              "legendFormat": "{{pod}} {{container}}",
+              "range": true,
+              "refId": "A",
+              "instant": false
+            }
+          ],
+          "title": "CPU 제한에 의한 지연",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "cores",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 14,
+            "w": 12,
+            "h": 7
+          },
+          "description": "Kubernetes/cAdvisor가 제공하는 RelayGate container별 CPU core 사용량이다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
+          "id": 16,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\",image!=\"\"}[$__rate_interval]))",
+              "legendFormat": "{{pod}} {{container}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "CPU 사용량",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 14,
+            "w": 12,
+            "h": 7
+          },
+          "description": "Pod별 working set/RSS와 memory limit. 논리 상태 복귀와 반복 부하 후 기준선 추세를 함께 본다. RSS 잔류만으로 누수/해제 성공을 판정하지 않는다. cAdvisor·kube-state-metrics 미수집은 No data.",
+          "id": 17,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod, container) (container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\",image!=\"\"})",
+              "legendFormat": "{{pod}} {{container}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (pod, container) (container_memory_rss{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\",image!=\"\"})",
+              "legendFormat": "RSS {{pod}} {{container}}",
+              "range": true,
+              "refId": "B",
+              "instant": false
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max by (pod, container) (kube_pod_container_resource_limits{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\",resource=\"memory\"})",
+              "legendFormat": "한도 {{pod}} {{container}}",
+              "range": true,
+              "refId": "C",
+              "instant": false
+            }
+          ],
+          "title": "메모리 · Working set / RSS / 한도",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps",
+              "noValue": "No data",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false,
+                "axisCenteredZero": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 21,
+            "w": 12,
+            "h": 7
+          },
+          "description": "Pod network RX/TX; interface lo 제외. GW 간 양단, TLS/framing 비용을 포함하며 application payload goodput과 다르다. 중복 scrape는 수집 설정에서 제거한다.",
+          "id": 18,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": []
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_network_receive_bytes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",interface!=\"lo\"}[$__rate_interval]))",
+              "legendFormat": "RX {{pod}}",
+              "refId": "A",
+              "range": true,
+              "instant": false
+            },
+            {
+              "expr": "sum by (pod) (rate(container_network_transmit_bytes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",interface!=\"lo\"}[$__rate_interval]))",
+              "legendFormat": "TX {{pod}}",
+              "refId": "B",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "title": "Pod 네트워크 · RX / TX",
+          "type": "timeseries"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 42,
+  "tags": [
+    "relaygate",
+    "health",
+    "latency",
+    "red",
+    "use"
+  ],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, cluster)",
+        "includeAll": true,
+        "label": "클러스터",
+        "multi": false,
+        "name": "cluster",
+        "options": [],
+        "query": {
+          "query": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, cluster)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{cluster=~\"$cluster\",job=~\"relaygate-(gateway|route-table)\"}, namespace)",
+        "includeAll": true,
+        "label": "네임스페이스",
+        "multi": false,
+        "name": "namespace",
+        "options": [],
+        "query": {
+          "query": "label_values(up{cluster=~\"$cluster\",job=~\"relaygate-(gateway|route-table)\"}, namespace)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}, instance)",
+        "includeAll": true,
+        "label": "GW",
+        "multi": false,
+        "name": "gateway",
+        "options": [],
+        "query": {
+          "query": "label_values(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-route-table\"}, instance)",
+        "includeAll": true,
+        "label": "RT",
+        "multi": false,
+        "name": "route_table",
+        "options": [],
+        "query": {
+          "query": "label_values(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-route-table\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"}, pod)",
+        "includeAll": true,
+        "label": "Pod",
+        "multi": false,
+        "name": "pod",
+        "options": [],
+        "query": {
+          "query": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"}, pod)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(kube_statefulset_replicas{cluster=~\"$cluster\",namespace=~\"$namespace\"}, statefulset)",
+        "includeAll": true,
+        "label": "StatefulSet",
+        "multi": false,
+        "name": "statefulset",
+        "options": [],
+        "query": {
+          "query": "label_values(kube_statefulset_replicas{cluster=~\"$cluster\",namespace=~\"$namespace\"}, statefulset)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "RelayGate · GW·RT 진단",
+  "uid": "relaygate-runtime",
+  "version": 4
+}

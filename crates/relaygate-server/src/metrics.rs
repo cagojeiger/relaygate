@@ -10,7 +10,7 @@ use crate::config::optional_duration_millis;
 const DEFAULT_METRICS_INTERVAL: Duration = Duration::from_secs(5);
 const LATENCY_BUCKETS_SECONDS: &[f64] = &[
     0.000_1, 0.000_25, 0.000_5, 0.001, 0.002_5, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
-    5.0, 10.0,
+    5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +64,29 @@ pub(crate) fn observe_gateway(snapshot: GatewaySnapshot) {
     gauge!("relaygate_gateway_bindings").set(snapshot.bindings as f64);
     gauge!("relaygate_gateway_pending_offers").set(snapshot.pending_offers as f64);
     gauge!("relaygate_gateway_live_pipes").set(snapshot.live_pipes as f64);
+    gauge!("relaygate_gateway_originated_pipes").set(snapshot.originated_pipes as f64);
+    for (resource, used, limit) in [
+        (
+            "sessions",
+            snapshot.session_slots_used,
+            snapshot.max_sessions,
+        ),
+        ("bindings", snapshot.bindings, snapshot.max_bindings),
+        (
+            "pending_opens",
+            snapshot.pending_offers + snapshot.remote_open_attempts,
+            snapshot.max_pending_offers,
+        ),
+        (
+            "remote_dials",
+            snapshot.remote_open_attempts,
+            snapshot.max_remote_dial_attempts,
+        ),
+        ("pipes", snapshot.live_pipes, snapshot.max_live_pipes),
+    ] {
+        gauge!("relaygate_gateway_resource_used", "resource" => resource).set(used as f64);
+        gauge!("relaygate_gateway_resource_limit", "resource" => resource).set(limit as f64);
+    }
     gauge!("relaygate_gateway_route_registrations_synced")
         .set(snapshot.route_registrations_synced as f64);
     gauge!("relaygate_gateway_route_registrations_unsynced")
@@ -135,7 +158,19 @@ fn describe_metrics() {
     );
     describe_gauge!(
         "relaygate_gateway_live_pipes",
-        "Current admitted Pipes on this Gateway."
+        "Current admitted Pipe states on this Gateway; remote Pipes exist at both Gateways."
+    );
+    describe_gauge!(
+        "relaygate_gateway_originated_pipes",
+        "Current open Pipes initiated by this Gateway's SDK sessions; one count per logical Pipe."
+    );
+    describe_gauge!(
+        "relaygate_gateway_resource_used",
+        "Current occupied resource slots; sessions include in-progress handshakes."
+    );
+    describe_gauge!(
+        "relaygate_gateway_resource_limit",
+        "Configured resource slot limit, not a measured sustainable capacity."
     );
     describe_gauge!(
         "relaygate_gateway_route_registrations_synced",

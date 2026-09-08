@@ -942,6 +942,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "relaygate-sdk",
+ "serde_json",
  "tokio",
  "tracing-subscriber",
 ]

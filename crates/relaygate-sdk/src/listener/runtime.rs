@@ -25,6 +25,7 @@ use crate::{
 use self::session::run_relay_session;
 
 pub(super) async fn relay_supervisor(inner: Arc<RelayInner>, initial: EstablishedSession) {
+    metrics::gauge!("relaygate_sdk_reconnect_in_progress").increment(0.0);
     let mut established = Some(initial);
     let mut backoff = ReconnectBackoff::new(
         inner.config.reconnect_initial,

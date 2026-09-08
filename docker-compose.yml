@@ -402,8 +402,10 @@ services:
         until curl -fsS http://grafana:3000/api/health | grep -Eq '"database"[[:space:]]*:[[:space:]]*"ok"'; do
           attempts=$$((attempts + 1)); test "$$attempts" -lt 60; sleep 1
         done
-        curl -fsS 'http://grafana:3000/api/search?query=RelayGate' |
-          grep -q '"uid":"relaygate-overview"'
+        for dashboard in relaygate-overview relaygate-runtime relaygate-sdk; do
+          curl -fsS "http://grafana:3000/api/dashboards/uid/$$dashboard" |
+            grep -q "\"uid\":\"$$dashboard\""
+        done
         echo 'RelayGate Prometheus targets and Grafana dashboard verified'
     depends_on:
       prometheus:

@@ -155,6 +155,7 @@ fn accepted_pipe_relays_data_and_closes_without_residue() -> TestResult {
         target == caller && matches!(frame, Frame::Opened { pipe_id: opened } if *opened == pipe_id)
     }));
     assert_eq!(state.snapshot().live_pipes, 1);
+    assert_eq!(state.snapshot().originated_pipes, 1);
 
     let actions = state.handle(
         caller,
@@ -171,6 +172,7 @@ fn accepted_pipe_relays_data_and_closes_without_residue() -> TestResult {
     state.handle(caller, Frame::Fin { pipe_id })?;
     state.handle(receiver, Frame::Fin { pipe_id })?;
     assert_eq!(state.snapshot().live_pipes, 0);
+    assert_eq!(state.snapshot().originated_pipes, 0);
     assert_eq!(state.pipe_count(), 0);
     Ok(())
 }

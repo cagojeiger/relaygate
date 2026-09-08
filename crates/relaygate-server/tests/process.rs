@@ -728,6 +728,10 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
             .env("RELAYGATE_BIND_ADDR", &address)
             .env("RELAYGATE_CLUSTER_TOKEN", secret)
             .env("RELAYGATE_MAX_BINDINGS", "1")
+            .env("RELAYGATE_MAX_SESSIONS", "17")
+            .env("RELAYGATE_MAX_PENDING_OFFERS", "13")
+            .env("RELAYGATE_MAX_REMOTE_DIAL_ATTEMPTS", "3")
+            .env("RELAYGATE_MAX_LIVE_PIPES", "11")
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
             .env("RELAYGATE_METRICS_INTERVAL_MS", "20")
             .env("RELAYGATE_LOG", "info")
@@ -806,10 +810,51 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     let body = wait_for_metrics(
         &metrics_address,
         &mut server,
-        "relaygate_gateway_dial_results_total",
+        "relaygate_gateway_originated_pipes{role=\"gateway\"} 1",
     )?;
     assert!(body.contains("role=\"gateway\""));
     assert!(body.contains("relaygate_gateway_sessions"));
+    assert!(body.contains("relaygate_gateway_originated_pipes"));
+    for (resource, limit, used) in [
+        ("sessions", 17, None),
+        ("bindings", 1, Some(1.0)),
+        ("pending_opens", 13, Some(0.0)),
+        ("remote_dials", 3, Some(0.0)),
+        ("pipes", 11, Some(1.0)),
+    ] {
+        let resource_label = format!("resource=\"{resource}\"");
+        for (metric, expected) in [
+            ("relaygate_gateway_resource_limit", Some(f64::from(limit))),
+            ("relaygate_gateway_resource_used", used),
+        ] {
+            let line = body
+                .lines()
+                .find(|line| {
+                    line.starts_with(&format!("{metric}{{")) && line.contains(&resource_label)
+                })
+                .ok_or_else(|| io::Error::other(format!("missing {metric}/{resource}")))?;
+            let value: f64 = line
+                .split_whitespace()
+                .last()
+                .ok_or_else(|| io::Error::other("missing metric value"))?
+                .parse()?;
+            if let Some(expected) = expected {
+                assert_eq!(value, expected, "{metric}/{resource}");
+            } else {
+                assert!((3.0..=17.0).contains(&value));
+            }
+        }
+    }
+    assert!(metric_has_labels(
+        &body,
+        "relaygate_gateway_resource_limit",
+        &["resource=\"bindings\""]
+    ));
+    assert!(metric_has_labels(
+        &body,
+        "relaygate_gateway_resource_used",
+        &["resource=\"sessions\""]
+    ));
     assert!(body.contains("relaygate_gateway_sdk_admission_ready"));
     assert!(body.contains("relaygate_gateway_route_dependency"));
     assert!(metric_has_labels(
@@ -842,7 +887,8 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
         &[
             "role=\"gateway\"",
             "outcome=\"error\"",
-            "code=\"not_found\""
+            "code=\"not_found\"",
+            "class=\"request\""
         ]
     ));
     assert!(body.contains("relaygate_gateway_dial_duration_seconds_bucket"));

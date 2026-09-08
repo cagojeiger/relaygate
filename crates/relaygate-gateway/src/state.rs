@@ -15,6 +15,8 @@ use crate::{
     registry::{Binding, LocalRegistry},
 };
 
+#[cfg(test)]
+mod observation_tests;
 mod opening;
 mod pipe;
 mod registration;
@@ -279,6 +281,7 @@ pub(crate) struct GatewayState {
     remote_open_attempts: HashMap<OpenIdentity, RemoteOpenAttempt>,
     pending_offer_count: usize,
     live_pipe_count: usize,
+    originated_pipe_count: usize,
     draining: bool,
     gateway_id: Option<GatewayId>,
     limits: GatewayLimits,
@@ -303,6 +306,7 @@ impl GatewayState {
             remote_open_attempts: HashMap::new(),
             pending_offer_count: 0,
             live_pipe_count: 0,
+            originated_pipe_count: 0,
             draining: false,
             gateway_id,
             limits,
@@ -387,6 +391,12 @@ impl GatewayState {
             self.draining,
         );
         snapshot.remote_open_attempts = self.remote_open_attempts.len();
+        snapshot.originated_pipes = self.originated_pipe_count;
+        snapshot.max_sessions = self.limits.max_sessions;
+        snapshot.max_bindings = self.limits.max_bindings;
+        snapshot.max_pending_offers = self.limits.max_pending_offers;
+        snapshot.max_remote_dial_attempts = self.limits.max_remote_dial_attempts;
+        snapshot.max_live_pipes = self.limits.max_live_pipes;
         snapshot
     }
 
@@ -441,7 +451,12 @@ impl GatewayState {
         }
         match pipe.phase {
             PipePhase::Offered => self.pending_offer_count -= 1,
-            PipePhase::Open => self.live_pipe_count -= 1,
+            PipePhase::Open => {
+                self.live_pipe_count -= 1;
+                if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+                    self.originated_pipe_count -= 1;
+                }
+            }
         }
         Some(pipe)
     }
@@ -454,12 +469,18 @@ impl GatewayState {
         pipe.phase = PipePhase::Open;
         self.pending_offer_count -= 1;
         self.live_pipe_count += 1;
+        if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+            self.originated_pipe_count += 1;
+        }
         Some(pipe)
     }
 
     fn insert_open(&mut self, pipe_id: PipeId, pipe: PipeEntry) {
         debug_assert_eq!(pipe.phase, PipePhase::Open);
         self.index_peer_pipe(pipe_id, &pipe);
+        if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+            self.originated_pipe_count += 1;
+        }
         let previous = self.pipes.insert(pipe_id, pipe);
         debug_assert!(previous.is_none());
         self.live_pipe_count += 1;
@@ -500,6 +521,7 @@ fn observe_dial_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
     let Some(started_at) = started_at else {
         return;
     };
+    let class = dial_result_class(code);
     let (outcome, code) = match code {
         None => ("success", "ok"),
         Some(ErrorCode::Cancelled) => ("cancelled", "cancelled"),
@@ -508,7 +530,8 @@ fn observe_dial_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
     metrics::counter!(
         "relaygate_gateway_dial_results_total",
         "outcome" => outcome,
-        "code" => code
+        "code" => code,
+        "class" => class
     )
     .increment(1);
     metrics::histogram!(
@@ -516,6 +539,25 @@ fn observe_dial_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
         "outcome" => outcome
     )
     .record(started_at.elapsed().as_secs_f64());
+}
+
+fn dial_result_class(code: Option<ErrorCode>) -> &'static str {
+    match code {
+        None => "success",
+        Some(ErrorCode::Cancelled) => "cancelled",
+        Some(ErrorCode::ResourceExhausted) => "capacity",
+        Some(ErrorCode::Unavailable | ErrorCode::DeadlineExceeded) => "availability",
+        Some(ErrorCode::Internal) => "internal",
+        Some(
+            ErrorCode::InvalidArgument
+            | ErrorCode::Unauthenticated
+            | ErrorCode::PermissionDenied
+            | ErrorCode::NotFound
+            | ErrorCode::FailedPrecondition
+            | ErrorCode::ProtocolError
+            | ErrorCode::AlreadyExists,
+        ) => "request",
+    }
 }
 
 pub(super) const fn error_code_name(code: ErrorCode) -> &'static str {

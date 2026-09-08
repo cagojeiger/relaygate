@@ -22,6 +22,9 @@ peer auth · payload · ack                     peer auth · payload · ack
 | Application | DestinationId 생성·보관, Pipe 상대 인증·인가, payload framing·의미·acknowledgement·업무 재시도, 필요한 E2E 보호 |
 | Platform | 외부 L4 진입점, 인증서·Secret 공급, workload 배포·재시작 |
 
+Session admission은 trust domain 단위입니다. Per-Destination ACL과 tenant isolation은 application이
+Pipe 위 protocol로 적용합니다.
+
 ```text
 DestinationId -> live Binding 0..N
 dial 1회      -> eligible Binding 1개 -> Pipe 1개

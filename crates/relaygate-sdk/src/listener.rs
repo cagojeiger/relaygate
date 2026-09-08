@@ -220,6 +220,10 @@ impl Relay {
 
     /// Opens one Pipe to a Destination. A committed dial is never replayed.
     pub async fn dial(&self, destination_id: DestinationId) -> Result<Pipe> {
+        crate::observability::observe("dial", self.dial_inner(destination_id)).await
+    }
+
+    async fn dial_inner(&self, destination_id: DestinationId) -> Result<Pipe> {
         let deadline = self.inner.config.operation_deadline()?;
         let mut current = self.inner.current.subscribe();
         loop {
