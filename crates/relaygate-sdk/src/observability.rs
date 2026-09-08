@@ -5,6 +5,10 @@ pub(crate) use operation::observe;
 #[cfg(test)]
 mod contract_tests;
 
+// Tracing callsite interest is process-global even with a thread-local subscriber.
+#[cfg(test)]
+static RECONNECT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) struct ReconnectEpisode {
     started_at: Instant,
     attempts: u64,
@@ -95,6 +99,9 @@ mod tests {
     #[test]
     fn reconnect_episode_records_recovery_and_runtime_close()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = RECONNECT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         let logs = Arc::new(Mutex::new(Vec::new()));

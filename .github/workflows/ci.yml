@@ -527,6 +527,12 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Verify SDK observability isolation
+        run: |
+          for _ in {1..20}; do
+            cargo test -p relaygate-sdk --lib --locked -- --test-threads=8
+          done
+
       - name: Audit requirement-test traceability
         run: |
           mkdir -p target/contract
