@@ -11,6 +11,18 @@ flowchart LR
 
 Compose observability profile은 `observability-probe`를 완료형 probe로 사용합니다.
 
+## 화면 검증
+
+| 화면 | 기본 표시 | 검증 |
+| --- | --- | --- |
+| `relaygate-overview` | 숫자 4 + 추이 4, 필터 3개 | 집계값·분류·자원별 최대 점유율 |
+| `relaygate-runtime` | 수집 카드 2 + 접힌 영역 3 | 펼친 영역의 중첩 패널까지 PromQL 검사 |
+| `relaygate-sdk` | 수집 전제 + 추이 4 | 미수집을 정상 0과 구분 |
+
+CI의 `grafana_ui.cjs`는 실제 Grafana에서 세 화면 provisioning, 시간·필터 유지 링크와 row 펼침을 검증한다.
+`relaygate-grafana` artifact는 밝은/어두운 개요, 좁은 화면, 펼치기 전후 진단, SDK 미수집 화면을 보관한다.
+스크린샷은 시각 리뷰 증거이며 픽셀 차이 자동 합격 판정은 아니다. 런타임 계측의 동작 계약은 Rust/PromQL 검증이 담당한다.
+
 | 범주 | 증거 |
 | --- | --- |
 | RED | GW DIAL 결과 class, SDK 접속·dial, publish, RT request/actor result와 duration |
@@ -60,7 +72,7 @@ echo goodput은 성공한 왕복 payload bytes / 측정 구간이며 streaming �
 
 | 계약 | 검증 위치 | 기대값 |
 | --- | --- | --- |
-| `OBS-010`, `OBS-013` | `.github/scripts/test_observability.py` + pinned `promtool` | 다른 cluster·namespace의 sentinel 제외, 모든 패널 PromQL 파싱, 미수집은 No data |
+| `OBS-010`, `OBS-013` | `.github/scripts/test_observability.py` + pinned `promtool` | 다른 cluster·namespace의 sentinel 제외, 세 화면의 중첩 패널 PromQL 파싱, 미수집은 No data |
 | `OBS-011` | Gateway local/three-Gateway tests + PromQL fixture | local Pipe 1회, remote Pipe 호출 GW 1회·양단 상태 2개, 종료 후 0, used/limit 비율 |
 | `OBS-012` | SDK observability contract tests | 중첩 reconnect 2→1→0, close/drop cleanup, polled dial 취소 1회 기록 |
 | `OBS-008` | Compose `latency` + JSON validator | 9개 경로, 요청 sample 전부 완료, byte 수와 RTT 분위수 일치 |

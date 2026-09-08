@@ -46,8 +46,9 @@ jobs:
       - name: Validate local observability assets
         run: |
           docker compose --profile observability config --quiet
-          python3 -m json.tool \
-            monitoring/grafana/dashboards/relaygate-overview.json >/dev/null
+          for dashboard in monitoring/grafana/dashboards/*.json; do
+            python3 -m json.tool "$dashboard" >/dev/null
+          done
 
       - name: Verify dashboard query semantics
         run: |
@@ -561,6 +562,26 @@ jobs:
         run: |
           docker compose --profile observability up -d --no-deps prometheus grafana
           docker compose --profile observability run --rm --no-deps observability-probe
+
+      - name: Verify Grafana navigation and capture dashboards
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$RUNNER_TEMP/grafana-screenshots"
+          docker run --rm --init --ipc=host --network host \
+            --volume "$PWD:/work:ro" \
+            --volume "$RUNNER_TEMP/grafana-screenshots:/captures" \
+            --env GRAFANA_SCREENSHOTS=/captures \
+            --env NODE_PATH=/tmp/browser/node_modules \
+            mcr.microsoft.com/playwright:v1.63.0-noble \
+            /bin/sh -ec 'npm install --prefix /tmp/browser --no-save --package-lock=false playwright@1.63.0; node /work/.github/scripts/grafana_ui.cjs'
+
+      - name: Upload Grafana screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: relaygate-grafana
+          path: ${{ runner.temp }}/grafana-screenshots
+          if-no-files-found: ignore
 
       - name: Verify unrelated pair continuity across Gateway B restart
         run: |

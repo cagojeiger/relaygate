@@ -113,6 +113,23 @@ enumeration으로 구성합니다. Instance identity는 Prometheus target metada
 
 ## 수집과 해석
 
+### 운영 화면
+
+```text
+운영 개요: 준비율 · 세션/Pipe → 요청 · 지연 · 결과 · 용량
+  ├─ GW·RT 진단: 연결/큐 → 라우팅/수렴 → Kubernetes
+  └─ SDK 복구: 진행 중 재연결 ↔ 종료 시간, 접속/DIAL
+```
+
+| 화면 | 표시 |
+| --- | --- |
+| 운영 개요 | instant 숫자 4개 + 추이 4개; 자원 점유율은 선택 GW 중 자원별 최댓값 |
+| GW·RT 진단 | 수집 가능률 + 접힌 진단 영역 3개; 개별 GW·RT·Pod 필터 |
+| SDK 복구 | 애플리케이션 수집 전제와 미수집 표시, DATA RTT와 다른 시간 경계 |
+
+시간·공통 필터를 유지하는 링크로 이동한다. 상세 숫자·비율의 해석은 아래 수집 계약을 따른다.
+화면 구성은 [Design](../../DESIGN.md), 화면·쿼리 검증은 [TEST 006](../test/006-local-observability-test-plan.md)이 소유한다.
+
 | 대상 | 수집 계약 |
 | --- | --- |
 | GW·RT | Prometheus target의 `cluster`, `namespace`, `instance` label을 유지한다. Compose는 `compose/relaygate`를 사용한다. |

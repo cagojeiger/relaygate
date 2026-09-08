@@ -1,0 +1,393 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "개요에서 상태·부하를 판단하고 상세 화면에서 원인 후보를 확인한다. No data는 미수집 또는 정의되지 않은 비율이다. DATA RTT는 별도 explicit probe가 측정한다.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "type": "link",
+      "title": "운영 개요",
+      "url": "/d/relaygate-overview",
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false,
+      "tags": []
+    },
+    {
+      "type": "link",
+      "title": "GW·RT 진단",
+      "url": "/d/relaygate-runtime",
+      "icon": "dashboard",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false,
+      "tags": []
+    }
+  ],
+  "panels": [
+    {
+      "id": 40,
+      "type": "text",
+      "title": "SDK 관측 범위",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "애플리케이션의 metrics recorder·scrape 설정이 있을 때 값이 표시됩니다. **No data = 미수집 또는 표본 없음**입니다. 진행 중 재연결과 종료 표본을 함께 확인합니다. **DATA RTT는 별도 latency probe 결과**이며 아래 접속·DIAL 지연과 다릅니다."
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 12,
+        "h": 7
+      },
+      "description": "SDK process 내 진행 중 episode 수. 0 복귀 전까지 미회복 상태가 존재한다. 연속 비영 구간은 process 수준 지속 시간이며 개별 episode 최대 나이와 다르다. SDK recorder·scrape 미설정은 No data.",
+      "id": 24,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "relaygate_sdk_reconnect_in_progress{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$sdk\"}",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A",
+          "instant": false
+        }
+      ],
+      "title": "아직 재연결 중인 수",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 3,
+        "w": 12,
+        "h": 7
+      },
+      "description": "recovered/closed/aborted로 끝난 episode의 시간. recovered는 session과 desired Listener 복구 기준이다. 진행 중인 episode는 별도 패널에서 본다. SDK app recorder·scrape 설정이 필요하다.",
+      "id": 19,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, outcome) (rate(relaygate_sdk_reconnect_episode_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$sdk\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{outcome}}",
+          "range": true,
+          "refId": "A",
+          "instant": false
+        }
+      ],
+      "title": "재연결 종료시간 p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "No data",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 7
+      },
+      "description": "SDK embedding application이 recorder를 설치한 경우 보이는 role·outcome별 managed reconnect attempt rate다. RelayGate SDK 자체는 exporter를 열지 않는다.",
+      "id": 14,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance, outcome) (rate(relaygate_sdk_reconnect_attempts_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$sdk\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{outcome}}",
+          "range": true,
+          "refId": "A",
+          "instant": false
+        }
+      ],
+      "title": "재연결 시도와 결과",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 7
+      },
+      "description": "session_connect는 transport+TLS+HELLO/WELCOME 1회 시도. dial은 API 진입부터 Pipe 반환·실패·future 취소까지이며 session/queue 대기를 포함한다. application retry는 별도 호출이다. DATA RTT는 explicit latency probe로 측정한다.",
+      "id": 25,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, operation, outcome) (rate(relaygate_sdk_operation_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$sdk\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{operation}} {{outcome}}",
+          "range": true,
+          "refId": "A",
+          "instant": false
+        }
+      ],
+      "title": "SDK 접속 · DIAL 대기시간 p95",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 42,
+  "tags": [
+    "relaygate",
+    "health",
+    "latency",
+    "red",
+    "use"
+  ],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, cluster)",
+        "includeAll": true,
+        "label": "클러스터",
+        "multi": false,
+        "name": "cluster",
+        "options": [],
+        "query": {
+          "query": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, cluster)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{cluster=~\"$cluster\",job=~\"relaygate-(gateway|route-table)\"}, namespace)",
+        "includeAll": true,
+        "label": "네임스페이스",
+        "multi": false,
+        "name": "namespace",
+        "options": [],
+        "query": {
+          "query": "label_values(up{cluster=~\"$cluster\",job=~\"relaygate-(gateway|route-table)\"}, namespace)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(relaygate_sdk_operation_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\"}, instance)",
+        "includeAll": true,
+        "label": "SDK",
+        "multi": false,
+        "name": "sdk",
+        "options": [],
+        "query": {
+          "query": "label_values(relaygate_sdk_operation_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "RelayGate · SDK 복구",
+  "uid": "relaygate-sdk",
+  "version": 4
+}
