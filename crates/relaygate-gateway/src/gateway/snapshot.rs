@@ -10,6 +10,9 @@ impl Gateway {
     #[must_use]
     pub fn snapshot(&self) -> GatewaySnapshot {
         let mut snapshot = self.inner.lock_state().snapshot();
+        snapshot.session_slots_used = snapshot
+            .max_sessions
+            .saturating_sub(self.inner.session_slots.available_permits());
         snapshot.sdk_admission_ready =
             !snapshot.draining && self.inner.session_slots.available_permits() > 0;
         if let Some(routing) = &self.inner.routing {

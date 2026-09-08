@@ -14,11 +14,16 @@ async fn snapshot_admission_requires_capacity_and_non_draining_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let gateway = Gateway::new(GatewayConfig::new(CLUSTER_TOKEN).with_max_sessions(1))?;
     assert!(gateway.snapshot().sdk_admission_ready);
+    assert_eq!(gateway.snapshot().max_sessions, 1);
+    assert_eq!(gateway.snapshot().session_slots_used, 0);
 
     let permit = Arc::clone(&gateway.inner.session_slots).try_acquire_owned()?;
     assert!(!gateway.snapshot().sdk_admission_ready);
+    assert_eq!(gateway.snapshot().session_slots_used, 1);
+    assert_eq!(gateway.snapshot().sessions, 0);
 
     drop(permit);
+    assert_eq!(gateway.snapshot().session_slots_used, 0);
     assert!(gateway.snapshot().sdk_admission_ready);
 
     gateway.inner.begin_draining();

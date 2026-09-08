@@ -1,8 +1,15 @@
 use std::time::Instant;
 
+mod operation;
+pub(crate) use operation::observe;
+#[cfg(test)]
+mod contract_tests;
+
 pub(crate) struct ReconnectEpisode {
     started_at: Instant,
     attempts: u64,
+    active: metrics::Gauge,
+    outcome: &'static str,
 }
 
 impl ReconnectEpisode {
@@ -12,9 +19,13 @@ impl ReconnectEpisode {
             event = "sdk.session.reconnect_started",
             "SDK session reconnect episode started"
         );
+        let active = metrics::gauge!("relaygate_sdk_reconnect_in_progress");
+        active.increment(1.0);
         Self {
             started_at: Instant::now(),
             attempts: 0,
+            active,
+            outcome: "aborted",
         }
     }
 
@@ -27,7 +38,8 @@ impl ReconnectEpisode {
         .increment(1);
     }
 
-    pub(crate) fn recover(self) {
+    pub(crate) fn recover(mut self) {
+        self.outcome = "recovered";
         let elapsed = self.started_at.elapsed();
         metrics::histogram!("relaygate_sdk_reconnect_duration_seconds")
             .record(elapsed.as_secs_f64());
@@ -40,7 +52,8 @@ impl ReconnectEpisode {
         );
     }
 
-    pub(crate) fn close(self) {
+    pub(crate) fn close(mut self) {
+        self.outcome = "closed";
         let elapsed = self.started_at.elapsed();
         tracing::info!(
             component = "sdk",
@@ -49,6 +62,16 @@ impl ReconnectEpisode {
             downtime_ms = elapsed.as_millis(),
             "SDK session reconnect episode closed with its runtime"
         );
+    }
+}
+
+impl Drop for ReconnectEpisode {
+    fn drop(&mut self) {
+        self.active.decrement(1.0);
+        metrics::counter!("relaygate_sdk_reconnect_episodes_total", "outcome" => self.outcome)
+            .increment(1);
+        metrics::histogram!("relaygate_sdk_reconnect_episode_duration_seconds", "outcome" => self.outcome)
+            .record(self.started_at.elapsed().as_secs_f64());
     }
 }
 

@@ -1,6 +1,7 @@
 mod chat;
 mod config;
 mod continuity;
+mod latency;
 mod overload;
 mod probe;
 
@@ -21,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Matrix => probe::run_matrix().await,
         Command::Soak => probe::run_soak().await,
         Command::Overload => overload::run().await,
+        Command::Latency => latency::run().await,
         Command::ReconnectStorm => probe::run_reconnect_storm().await,
         Command::WaitClient(destination_id) => probe::wait_client_registered(&destination_id).await,
         Command::ExpectShardIsolation {
@@ -47,6 +49,7 @@ enum Command {
     Matrix,
     Soak,
     Overload,
+    Latency,
     ReconnectStorm,
     WaitClient(String),
     ExpectShardIsolation {
@@ -70,6 +73,7 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         Some("matrix") => Command::Matrix,
         Some("soak") => Command::Soak,
         Some("overload") => Command::Overload,
+        Some("latency") => Command::Latency,
         Some("reconnect-storm") => Command::ReconnectStorm,
         Some("wait-client") => {
             let Some(destination_id) = args.next() else {
@@ -104,7 +108,7 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         Some("continuity") => Command::Continuity,
         Some("continuity-check") => Command::ContinuityCheck,
         Some(other) => bail!(
-            "unknown command {other:?}; expected single, chat, matrix, soak, overload, reconnect-storm, wait-client, expect-shard-isolation, continuity, or continuity-check"
+            "unknown command {other:?}; expected single, chat, matrix, soak, overload, latency, reconnect-storm, wait-client, expect-shard-isolation, continuity, or continuity-check"
         ),
     };
     if args.next().is_some() {

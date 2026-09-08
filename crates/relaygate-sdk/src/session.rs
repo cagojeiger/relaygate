@@ -24,6 +24,10 @@ pub(crate) struct EstablishedSession {
 }
 
 pub(crate) async fn establish(config: &Config) -> Result<EstablishedSession> {
+    crate::observability::observe("session_connect", establish_inner(config)).await
+}
+
+async fn establish_inner(config: &Config) -> Result<EstablishedSession> {
     let stream = config.transport.connect(config.connect_timeout).await?;
     let mut transport = Framed::with_capacity(
         stream,

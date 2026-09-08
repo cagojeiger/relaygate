@@ -64,6 +64,7 @@ SDK는 jitter가 포함된 bounded backoff로 재연결하고 live Listener를 �
 | Rust lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | RT2/GW3 Compose | `docker compose up --build --abort-on-container-exit --exit-code-from topology-probe` |
 | observability | `docker compose --profile observability up --build --abort-on-container-exit --exit-code-from observability-probe observability-probe` |
+| 연결 후 DATA RTT | topology 실행 중 `docker compose run --rm --no-deps topology-probe relaygate-echo-probe latency` |
 | isolated Kubernetes | `tests/kind/run.sh` |
 
 Compose 종료:

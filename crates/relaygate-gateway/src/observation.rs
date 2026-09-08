@@ -45,6 +45,15 @@ pub struct GatewaySnapshot {
     pub pending_offers: usize,
     /// Number of admitted Pipes currently relaying bytes.
     pub live_pipes: usize,
+    /// Open Pipes whose initiating SDK is local; counted once across Gateways.
+    pub originated_pipes: usize,
+    /// Occupied SDK transport slots, including handshakes before session admission.
+    pub session_slots_used: usize,
+    pub max_sessions: usize,
+    pub max_bindings: usize,
+    pub max_pending_offers: usize,
+    pub max_remote_dial_attempts: usize,
+    pub max_live_pipes: usize,
     /// Last observed RouteTable dependency summary for this Gateway.
     pub route_dependency_health: RouteDependencyHealth,
     /// Number of session-shard registrations last confirmed by routing workers.

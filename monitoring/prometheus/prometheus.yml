@@ -10,12 +10,18 @@ scrape_configs:
           - gateway-a:27422
           - gateway-b:27422
           - gateway-c:27422
+        labels:
+          cluster: compose
+          namespace: relaygate
 
   - job_name: relaygate-route-table
     static_configs:
       - targets:
           - rt-0:27431
           - rt-1:27431
+        labels:
+          cluster: compose
+          namespace: relaygate
 
   - job_name: prometheus
     static_configs:

@@ -12,8 +12,9 @@
 | `T-PEER-01` | `PEER-001`, `PEER-002`, `PEER-003`, `PEER-004`, `PEER-005`, `PEER-006`, `PEER-007`, `PEER-008`, `PEER-009`, `PEER-010`, `PEER-011`, `PEER-012` | one-hop multiplexing, direction arbitration, heartbeat/idle/terminal cleanup |
 | `T-STATE-01` | `STATE-001`, `STATE-002`, `STATE-003`, `STATE-004`, `STATE-005`, `STATE-006`, `STATE-007`, `STATE-008` | terminal no-resurrection, owner-scoped cleanup, RT 독립, admission 격리와 idempotent convergence |
 | `T-SEC-01` | `SEC-001`, `SEC-002`, `SEC-003`, `SEC-004`, `SEC-005`, `SEC-006`, `SEC-007`, `SEC-008`, `SEC-009`, `SEC-010`, `SEC-011` | 명시적 TLS/TCP, server name/ALPN, mTLS, token, Secret 분리와 L4 passthrough |
-| `T-OBS-01` | `OBS-001`, `OBS-002`, `OBS-003`, `OBS-004`, `OBS-005`, `OBS-006`, `OBS-007`, `OBS-008`, `OBS-009` | health 경계, RED/USE/latency metric, cleanup baseline과 secret 비노출 |
+| `T-OBS-01` | `OBS-001`, `OBS-002`, `OBS-003`, `OBS-004`, `OBS-005`, `OBS-006`, `OBS-007`, `OBS-008`, `OBS-009`, `OBS-010`, `OBS-011`, `OBS-012`, `OBS-013` | health·RED/USE·latency·cleanup·redaction; PromQL과 DATA probe 증거는 [TEST 006](006-local-observability-test-plan.md) |
 
 모든 requirement는 위 표의 그룹 하나와 [실행 증거 인덱스](001-executable-coverage.toml)에 연결됩니다.
 인덱스는 Rust test 존재를, [TEST 004](004-rt2-gw3-closed-loop-test-plan.md)는 L4 passthrough와
-rolling/fault runtime acceptance를 검증합니다.
+rolling/fault runtime acceptance를 검증합니다. Rust test 존재율은 전체 관측 계약의 의미 검증률이 아니며
+PromQL fixture와 Compose DATA probe의 성공 증거를 함께 확인합니다.

@@ -42,7 +42,7 @@
         "x": 0,
         "y": 0
       },
-      "description": "Prometheus가 수집할 수 있는 Gateway target 비율이다. process 또는 network 생존 신호이며 SDK admission readiness를 보장하지 않는다.",
+      "description": "Prometheus가 수집할 수 있는 Gateway target 비율이다. process 또는 network 생존 신호이며 SDK admission readiness를 보장하지 않는다. 발견된 target 비율이며 replica 충족은 Kubernetes replica 패널에서 확인한다.",
       "id": 1,
       "options": {
         "colorMode": "background",
@@ -59,7 +59,7 @@
       },
       "targets": [
         {
-          "expr": "sum(up{job=\"relaygate-gateway\"}) / clamp_min(count(up{job=\"relaygate-gateway\"}), 1)",
+          "expr": "sum(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}) / clamp_min(count(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}), 1)",
           "legendFormat": "Gateway scrape up",
           "refId": "A"
         }
@@ -100,7 +100,7 @@
         "x": 6,
         "y": 0
       },
-      "description": "Prometheus가 수집할 수 있는 RouteTable shard target 비율이다. shard table 내용이나 Gateway의 route 준비 상태를 보장하지 않는다.",
+      "description": "Prometheus가 수집할 수 있는 RouteTable shard target 비율이다. shard table 내용이나 Gateway의 route 준비 상태를 보장하지 않는다. 발견된 target 비율이며 replica 충족은 Kubernetes replica 패널에서 확인한다.",
       "id": 2,
       "options": {
         "colorMode": "background",
@@ -117,7 +117,7 @@
       },
       "targets": [
         {
-          "expr": "sum(up{job=\"relaygate-route-table\"}) / clamp_min(count(up{job=\"relaygate-route-table\"}), 1)",
+          "expr": "sum(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-route-table\"}) / clamp_min(count(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-route-table\"}), 1)",
           "legendFormat": "RouteTable scrape up",
           "refId": "A"
         }
@@ -175,7 +175,7 @@
       },
       "targets": [
         {
-          "expr": "sum(relaygate_gateway_route_dependency{state=\"READY\"}) / clamp_min(count(up{job=\"relaygate-gateway\"}), 1)",
+          "expr": "sum(relaygate_gateway_route_dependency{cluster=~\"$cluster\",namespace=~\"$namespace\",state=\"READY\"}) / clamp_min(count(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}), 1)",
           "legendFormat": "Route dependency READY",
           "refId": "A"
         }
@@ -219,7 +219,7 @@
       },
       "targets": [
         {
-          "expr": "sum(relaygate_gateway_sdk_admission_ready{instance=~\"$gateway\"}) / clamp_min(count(relaygate_gateway_sdk_admission_ready{instance=~\"$gateway\"}), 1)",
+          "expr": "sum(relaygate_gateway_sdk_admission_ready{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}) / clamp_min(count(relaygate_gateway_sdk_admission_ready{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}), 1)",
           "legendFormat": "SDK admission ready",
           "refId": "A"
         }
@@ -257,12 +257,12 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(relaygate_gateway_dial_requests_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum(rate(relaygate_gateway_dial_requests_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "request",
           "refId": "A"
         },
         {
-          "expr": "sum by (outcome, code) (rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum by (outcome, code) (rate(relaygate_gateway_dial_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "{{outcome}} / {{code}}",
           "refId": "B"
         }
@@ -289,7 +289,7 @@
         "x": 8,
         "y": 4
       },
-      "description": "선택한 Gateway의 DIAL terminal 결과 중 system error와 cancellation의 비율이다. cancellation은 RelayGate 장애율에 합산하지 않는다.",
+      "description": "request=요청·프로토콜 거절, capacity=용량 거절, availability=단절·timeout, internal=내부 오류. 원인 책임은 code·로그로 확인한다. 무요청 구간은 비율 없음.",
       "id": 6,
       "options": {
         "legend": {
@@ -302,17 +302,18 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval])) / clamp_min(sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0.001)",
-          "legendFormat": "error",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (class) (rate(relaygate_gateway_dial_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])) / on() group_left (sum(rate(relaygate_gateway_dial_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])) > 0)",
+          "legendFormat": "{{class}}",
+          "range": true,
           "refId": "A"
-        },
-        {
-          "expr": "sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\",outcome=\"cancelled\"}[$__rate_interval])) / clamp_min(sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0.001)",
-          "legendFormat": "cancelled",
-          "refId": "B"
         }
       ],
-      "title": "Gateway DIAL terminal ratios",
+      "title": "DIAL 결과 분류 비율",
       "type": "timeseries"
     },
     {
@@ -345,7 +346,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, instance, outcome) (rate(relaygate_gateway_dial_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, outcome) (rate(relaygate_gateway_dial_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
           "legendFormat": "p95 {{instance}} / {{outcome}}",
           "refId": "A"
         }
@@ -370,7 +371,7 @@
         "x": 0,
         "y": 11
       },
-      "description": "선택한 Gateway가 현재 소유한 session, binding, live Pipe, pending offer와 remote dial attempt의 합계를 본다. All은 cluster 합계이며 특정 instance로 drill-down할 수 있다.",
+      "description": "originated Pipe는 호출 SDK를 가진 GW에서 한 번 센다. GW Pipe 상태 합계는 one-hop 양단을 포함한다. session은 사용자 수가 아니며 순간 snapshot 합계는 전역 원자적 값이 아니다.",
       "id": 8,
       "options": {
         "legend": {
@@ -383,32 +384,43 @@
       },
       "targets": [
         {
-          "expr": "sum(relaygate_gateway_sessions{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_sessions{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
           "legendFormat": "sessions",
           "refId": "A"
         },
         {
-          "expr": "sum(relaygate_gateway_bindings{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_bindings{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
           "legendFormat": "bindings",
           "refId": "B"
         },
         {
-          "expr": "sum(relaygate_gateway_live_pipes{instance=~\"$gateway\"})",
-          "legendFormat": "live pipes",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(relaygate_gateway_originated_pipes{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+          "legendFormat": "고유 Pipe (호출 GW 기준)",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "expr": "sum(relaygate_gateway_live_pipes{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
+          "legendFormat": "GW Pipe 상태 (원격 양단 포함)",
           "refId": "C"
         },
         {
-          "expr": "sum(relaygate_gateway_pending_offers{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_pending_offers{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
           "legendFormat": "pending offers",
           "refId": "D"
         },
         {
-          "expr": "sum(relaygate_gateway_remote_dial_attempts{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_remote_dial_attempts{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
           "legendFormat": "remote attempts",
           "refId": "E"
         }
       ],
-      "title": "Gateway current work",
+      "title": "SDK session · 고유 Pipe · GW 상태",
       "type": "timeseries"
     },
     {
@@ -428,7 +440,7 @@
         "x": 12,
         "y": 11
       },
-      "description": "선택한 Gateway의 one-hop PeerTransport/RelayStream, RT 미동기화, bounded writer queue 거절과 DIAL terminal gap을 본다. All은 cluster 합계이며 terminal gap은 장시간 지속될 때만 누락 또는 지연 신호다.",
+      "description": "GW별 PeerTransport/stream endpoint와 미동기화 등록의 합계. transport와 stream은 양단 GW가 각각 센다. 사용량 0 직후 idle retirement까지 transport가 유지될 수 있다.",
       "id": 9,
       "options": {
         "legend": {
@@ -441,37 +453,27 @@
       },
       "targets": [
         {
-          "expr": "sum(relaygate_gateway_peer_transports_connecting{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_peer_transports_connecting{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
           "legendFormat": "connecting",
           "refId": "A"
         },
         {
-          "expr": "sum(relaygate_gateway_peer_transports_ready{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_peer_transports_ready{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
           "legendFormat": "ready",
           "refId": "B"
         },
         {
-          "expr": "sum(relaygate_gateway_peer_streams{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_peer_streams{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
           "legendFormat": "streams",
           "refId": "C"
         },
         {
-          "expr": "sum(relaygate_gateway_route_registrations_unsynced{instance=~\"$gateway\"})",
+          "expr": "sum(relaygate_gateway_route_registrations_unsynced{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"})",
           "legendFormat": "unsynced",
           "refId": "D"
-        },
-        {
-          "expr": "sum by (reason) (rate(relaygate_gateway_writer_queue_rejections_total{instance=~\"$gateway\"}[$__rate_interval]))",
-          "legendFormat": "queue reject / {{reason}}",
-          "refId": "E"
-        },
-        {
-          "expr": "clamp_min(sum(rate(relaygate_gateway_dial_requests_total{instance=~\"$gateway\"}[$__rate_interval])) - sum(rate(relaygate_gateway_dial_results_total{instance=~\"$gateway\"}[$__rate_interval])), 0)",
-          "legendFormat": "DIAL terminal gap",
-          "refId": "F"
         }
       ],
-      "title": "Gateway peer and saturation signals",
+      "title": "Peer · RT 현재 상태",
       "type": "timeseries"
     },
     {
@@ -504,17 +506,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
           "legendFormat": "p50 {{transport}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
           "legendFormat": "p95 {{transport}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, transport) (rate(relaygate_gateway_heartbeat_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
           "legendFormat": "p99 {{transport}}",
           "refId": "C"
         }
@@ -539,7 +541,7 @@
         "x": 12,
         "y": 19
       },
-      "description": "Gateway RT client queue 진입부터 operation별 typed 응답 검증 또는 transport failure까지의 latency다. 아래 RT actor service latency와 비교하면 queue/network 비용을 분리할 수 있다.",
+      "description": "client 큐 진입 시도부터 RT 응답·실패까지의 시간. RT actor service 시간과 비교해 병목 후보를 좁힌다. 서로 다른 표본의 p95 차이는 network p95가 아니다.",
       "id": 21,
       "options": {
         "legend": {
@@ -552,17 +554,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
           "legendFormat": "p50 {{operation}} / {{outcome}}",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
           "legendFormat": "p95 {{operation}} / {{outcome}}",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, operation, outcome) (rate(relaygate_gateway_route_table_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])))",
           "legendFormat": "p99 {{operation}} / {{outcome}}",
           "refId": "C"
         }
@@ -600,7 +602,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (operation, outcome) (rate(relaygate_route_table_requests_total{instance=~\"$route_table\"}[$__rate_interval]))",
+          "expr": "sum by (operation, outcome) (rate(relaygate_route_table_requests_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"}[$__rate_interval]))",
           "legendFormat": "{{operation}} / {{outcome}}",
           "refId": "A"
         }
@@ -638,7 +640,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, instance, operation, outcome) (rate(relaygate_route_table_request_duration_seconds_bucket{instance=~\"$route_table\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, operation, outcome) (rate(relaygate_route_table_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"}[$__rate_interval])))",
           "legendFormat": "p95 {{instance}} / {{operation}} / {{outcome}}",
           "refId": "A"
         }
@@ -676,22 +678,22 @@
       },
       "targets": [
         {
-          "expr": "sum(relaygate_route_table_registrations{instance=~\"$route_table\"})",
+          "expr": "sum(relaygate_route_table_registrations{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
           "legendFormat": "registrations",
           "refId": "A"
         },
         {
-          "expr": "sum(relaygate_route_table_mappings{instance=~\"$route_table\"})",
+          "expr": "sum(relaygate_route_table_mappings{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
           "legendFormat": "mappings",
           "refId": "B"
         },
         {
-          "expr": "sum(relaygate_route_table_routes{instance=~\"$route_table\"})",
+          "expr": "sum(relaygate_route_table_routes{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
           "legendFormat": "routes",
           "refId": "C"
         },
         {
-          "expr": "sum(relaygate_route_table_expiry_records{instance=~\"$route_table\"})",
+          "expr": "sum(relaygate_route_table_expiry_records{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
           "legendFormat": "expiry records",
           "refId": "D"
         }
@@ -729,37 +731,37 @@
       },
       "targets": [
         {
-          "expr": "sum by (code) (rate(relaygate_gateway_publish_results_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+          "expr": "sum by (code) (rate(relaygate_gateway_publish_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
           "legendFormat": "publication / {{code}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (previous, current) (rate(relaygate_gateway_route_dependency_transitions_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum by (previous, current) (rate(relaygate_gateway_route_dependency_transitions_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "RT {{previous}} -> {{current}}",
           "refId": "B"
         },
         {
-          "expr": "sum by (direction, code) (rate(relaygate_gateway_peer_handshakes_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+          "expr": "sum by (direction, code) (rate(relaygate_gateway_peer_handshakes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
           "legendFormat": "peer handshake {{direction}} / {{code}}",
           "refId": "C"
         },
         {
-          "expr": "sum by (reason) (rate(relaygate_gateway_peer_transport_closed_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum by (reason) (rate(relaygate_gateway_peer_transport_closed_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "peer closed / {{reason}}",
           "refId": "D"
         },
         {
-          "expr": "sum by (outcome, code) (rate(relaygate_gateway_route_connection_attempts_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum by (outcome, code) (rate(relaygate_gateway_route_connection_attempts_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "RT connect {{outcome}} / {{code}}",
           "refId": "E"
         },
         {
-          "expr": "sum by (transport) (rate(relaygate_gateway_heartbeat_timeouts_total{instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum by (transport) (rate(relaygate_gateway_heartbeat_timeouts_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
           "legendFormat": "heartbeat timeout / {{transport}}",
           "refId": "F"
         },
         {
-          "expr": "sum by (operation, code) (rate(relaygate_gateway_route_table_requests_total{instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
+          "expr": "sum by (operation, code) (rate(relaygate_gateway_route_table_requests_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\",outcome=\"error\"}[$__rate_interval]))",
           "legendFormat": "RT client {{operation}} / {{code}}",
           "refId": "G"
         }
@@ -797,8 +799,14 @@
       },
       "targets": [
         {
-          "expr": "sum by (role, outcome) (rate(relaygate_sdk_reconnect_attempts_total[$__rate_interval]))",
-          "legendFormat": "{{role}} / {{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance, outcome) (rate(relaygate_sdk_reconnect_attempts_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$sdk\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{outcome}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -835,17 +843,17 @@
       },
       "targets": [
         {
-          "expr": "sum by (code) (rate(relaygate_route_table_handshakes_total{instance=~\"$route_table\",outcome=\"error\"}[$__rate_interval]))",
+          "expr": "sum by (code) (rate(relaygate_route_table_handshakes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\",outcome=\"error\"}[$__rate_interval]))",
           "legendFormat": "handshake / {{code}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (operation, code) (rate(relaygate_route_table_requests_total{instance=~\"$route_table\",outcome=\"error\"}[$__rate_interval]))",
+          "expr": "sum by (operation, code) (rate(relaygate_route_table_requests_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\",outcome=\"error\"}[$__rate_interval]))",
           "legendFormat": "{{operation}} / {{code}}",
           "refId": "B"
         },
         {
-          "expr": "sum(rate(relaygate_route_table_expired_registrations_total{instance=~\"$route_table\"}[$__rate_interval]))",
+          "expr": "sum(rate(relaygate_route_table_expired_registrations_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"}[$__rate_interval]))",
           "legendFormat": "expired registrations",
           "refId": "C"
         }
@@ -870,7 +878,7 @@
         "x": 12,
         "y": 41
       },
-      "description": "SDK embedding application이 recorder를 설치한 경우 보이는 role별 managed reconnect 복구 시간 p95다. RelayGate SDK 자체는 exporter를 열지 않는다.",
+      "description": "recovered/closed/aborted로 끝난 episode의 시간. recovered는 session과 desired Listener 복구 기준이다. 진행 중인 episode는 별도 패널에서 본다. SDK app recorder·scrape 설정이 필요하다.",
       "id": 19,
       "options": {
         "legend": {
@@ -883,12 +891,18 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, role) (rate(relaygate_sdk_reconnect_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "{{role}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, outcome) (rate(relaygate_sdk_reconnect_episode_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$sdk\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{outcome}}",
+          "range": true,
           "refId": "A"
         }
       ],
-      "title": "SDK reconnect recovery p95",
+      "title": "SDK 재연결 종료 시간 p95",
       "type": "timeseries"
     },
     {
@@ -921,8 +935,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"}[$__rate_interval]))",
-          "legendFormat": "{{container}}",
+          "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\",image!=\"\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}} {{container}}",
           "refId": "A"
         }
       ],
@@ -946,7 +960,7 @@
         "x": 8,
         "y": 49
       },
-      "description": "Kubernetes/cAdvisor가 제공하는 RelayGate container별 working set memory다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
+      "description": "Pod별 working set/RSS와 memory limit. 논리 상태 복귀와 반복 부하 후 기준선 추세를 함께 본다. RSS 잔류만으로 누수/해제 성공을 판정하지 않는다. cAdvisor·kube-state-metrics 미수집은 No data.",
       "id": 17,
       "options": {
         "legend": {
@@ -959,9 +973,31 @@
       },
       "targets": [
         {
-          "expr": "sum by (container) (container_memory_working_set_bytes{namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"})",
-          "legendFormat": "{{container}}",
+          "expr": "sum by (pod, container) (container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\",image!=\"\"})",
+          "legendFormat": "{{pod}} {{container}}",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pod, container) (container_memory_rss{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\",image!=\"\"})",
+          "legendFormat": "RSS {{pod}} {{container}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (pod, container) (kube_pod_container_resource_limits{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\",resource=\"memory\"})",
+          "legendFormat": "limit {{pod}} {{container}}",
+          "range": true,
+          "refId": "C"
         }
       ],
       "title": "Kubernetes memory working set",
@@ -984,7 +1020,7 @@
         "x": 16,
         "y": 49
       },
-      "description": "Kubernetes/cAdvisor가 제공하는 RelayGate pod 전체의 network receive/transmit 처리량이다. 로컬 Prometheus에 해당 exporter가 없으면 No data가 정상이다.",
+      "description": "Pod network RX/TX; interface lo 제외. GW 간 양단, TLS/framing 비용을 포함하며 application payload goodput과 다르다. 중복 scrape는 수집 설정에서 제거한다.",
       "id": 18,
       "options": {
         "legend": {
@@ -997,17 +1033,292 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(container_network_receive_bytes_total{namespace=~\"$namespace\",pod=~\".*relaygate.*\"}[$__rate_interval]))",
-          "legendFormat": "receive",
+          "expr": "sum by (pod) (rate(container_network_receive_bytes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",interface!=\"lo\"}[$__rate_interval]))",
+          "legendFormat": "RX {{pod}}",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(container_network_transmit_bytes_total{namespace=~\"$namespace\",pod=~\".*relaygate.*\"}[$__rate_interval]))",
-          "legendFormat": "transmit",
+          "expr": "sum by (pod) (rate(container_network_transmit_bytes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",interface!=\"lo\"}[$__rate_interval]))",
+          "legendFormat": "TX {{pod}}",
           "refId": "B"
         }
       ],
       "title": "Kubernetes network throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 57
+      },
+      "description": "sessions는 handshake 점유 포함. pending_opens는 OFFER+remote attempt. 상한은 설정값이며 지속 가능한 사용자 용량은 부하 실험으로 검증한다.",
+      "id": 22,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "relaygate_gateway_resource_used{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"} / relaygate_gateway_resource_limit{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}",
+          "legendFormat": "{{instance}} {{resource}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "GW 자원 사용률 / 설정 상한",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 57
+      },
+      "description": "full/closed SDK writer queue 거절. 현재 pending 수는 current work에서 확인한다.",
+      "id": 23,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance, reason) (rate(relaygate_gateway_writer_queue_rejections_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "GW 큐 거절률",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 65
+      },
+      "description": "SDK process 내 진행 중 episode 수. 0 복귀 전까지 미회복 상태가 존재한다. 연속 비영 구간은 process 수준 지속 시간이며 개별 episode 최대 나이와 다르다. SDK recorder·scrape 미설정은 No data.",
+      "id": 24,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "relaygate_sdk_reconnect_in_progress{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$sdk\"}",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "SDK 진행 중인 재연결",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 65
+      },
+      "description": "session_connect는 transport+TLS+HELLO/WELCOME 1회 시도. dial은 API 진입부터 Pipe 반환·실패·future 취소까지이며 session/queue 대기를 포함한다. application retry는 별도 호출이다. DATA RTT는 explicit latency probe로 측정한다.",
+      "id": 25,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, instance, operation, outcome) (rate(relaygate_sdk_operation_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$sdk\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{operation}} {{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "SDK 접속 · dial p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 73
+      },
+      "description": "kube-state-metrics StatefulSet desired/ready 수. scrape target 비율과 별도 판정한다. namespace 내 StatefulSet을 선택한다. 미수집은 No data.",
+      "id": 26,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "kube_statefulset_replicas{cluster=~\"$cluster\",namespace=~\"$namespace\",statefulset=~\"$statefulset\"}",
+          "legendFormat": "desired {{statefulset}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "kube_statefulset_status_replicas_ready{cluster=~\"$cluster\",namespace=~\"$namespace\",statefulset=~\"$statefulset\"}",
+          "legendFormat": "ready {{statefulset}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Kubernetes replica 기대값 / Ready",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 73
+      },
+      "description": "Pod별 throttled periods / total periods. CPU limit으로 실행이 지연되는지 사용 CPU와 함께 본다.",
+      "id": 27,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pod, container) (rate(container_cpu_cfs_throttled_periods_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\"}[$__rate_interval])) / sum by (pod, container) (rate(container_cpu_cfs_periods_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"gateway|route-table\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}} {{container}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Kubernetes CPU throttling",
       "type": "timeseries"
     }
   ],
@@ -1033,14 +1344,40 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, namespace)",
+        "definition": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, cluster)",
+        "includeAll": true,
+        "label": "Cluster",
+        "multi": false,
+        "name": "cluster",
+        "options": [],
+        "query": {
+          "query": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, cluster)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{cluster=~\"$cluster\",job=~\"relaygate-(gateway|route-table)\"}, namespace)",
         "includeAll": true,
         "label": "Namespace",
         "multi": false,
         "name": "namespace",
         "options": [],
         "query": {
-          "query": "label_values(up{job=~\"relaygate-(gateway|route-table)\"}, namespace)",
+          "query": "label_values(up{cluster=~\"$cluster\",job=~\"relaygate-(gateway|route-table)\"}, namespace)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -1059,14 +1396,14 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(up{job=\"relaygate-gateway\"}, instance)",
+        "definition": "label_values(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}, instance)",
         "includeAll": true,
         "label": "Gateway",
         "multi": false,
         "name": "gateway",
         "options": [],
         "query": {
-          "query": "label_values(up{job=\"relaygate-gateway\"}, instance)",
+          "query": "label_values(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-gateway\"}, instance)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -1085,14 +1422,92 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(up{job=\"relaygate-route-table\"}, instance)",
+        "definition": "label_values(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-route-table\"}, instance)",
         "includeAll": true,
         "label": "RouteTable",
         "multi": false,
         "name": "route_table",
         "options": [],
         "query": {
-          "query": "label_values(up{job=\"relaygate-route-table\"}, instance)",
+          "query": "label_values(up{cluster=~\"$cluster\",namespace=~\"$namespace\",job=\"relaygate-route-table\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(relaygate_sdk_operation_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\"}, instance)",
+        "includeAll": true,
+        "label": "SDK",
+        "multi": false,
+        "name": "sdk",
+        "options": [],
+        "query": {
+          "query": "label_values(relaygate_sdk_operation_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"}, pod)",
+        "includeAll": true,
+        "label": "Pod",
+        "multi": false,
+        "name": "pod",
+        "options": [],
+        "query": {
+          "query": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",container=~\"gateway|route-table\",image!=\"\"}, pod)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(kube_statefulset_replicas{cluster=~\"$cluster\",namespace=~\"$namespace\"}, statefulset)",
+        "includeAll": true,
+        "label": "StatefulSet",
+        "multi": false,
+        "name": "statefulset",
+        "options": [],
+        "query": {
+          "query": "label_values(kube_statefulset_replicas{cluster=~\"$cluster\",namespace=~\"$namespace\"}, statefulset)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -1110,5 +1525,5 @@
   "timezone": "browser",
   "title": "RelayGate RED / USE",
   "uid": "relaygate-overview",
-  "version": 2
+  "version": 3
 }
