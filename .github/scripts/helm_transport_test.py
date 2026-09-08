@@ -9,7 +9,10 @@ CHART = Path(__file__).resolve().parents[2] / "deploy/helm/relaygate"
 
 
 def render(*settings):
-    command = ["helm", "template", "relaygate", str(CHART), "--namespace", "relaygate"]
+    command = [
+        "helm", "template", "relaygate", str(CHART), "--namespace", "relaygate",
+        "--kube-version", "1.32.0",
+    ]
     for setting in settings:
         command.extend(["--set", setting])
     return subprocess.run(command, capture_output=True, text=True, check=False)
