@@ -566,6 +566,11 @@ jobs:
       - name: Verify Grafana navigation and capture dashboards
         timeout-minutes: 5
         run: |
+          # Real DIALs after scrape startup produce non-idle RED samples for visual review.
+          for _ in {1..6}; do
+            docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
+            sleep 2
+          done
           mkdir -p "$RUNNER_TEMP/grafana-screenshots"
           docker run --rm --init --ipc=host --network host \
             --volume "$PWD:/work:ro" \

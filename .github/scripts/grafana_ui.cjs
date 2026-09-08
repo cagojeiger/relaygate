@@ -17,11 +17,14 @@ async function main() {
     }
   });
   const base = process.env.GRAFANA_URL || 'http://127.0.0.1:23000';
-  const params = 'var-cluster=compose&var-namespace=relaygate&from=now-15m&to=now';
+  const params = 'var-cluster=compose&var-namespace=relaygate&from=now-5m&to=now';
   async function capture(name) {
     // Settling is only for the screenshot; contract assertions use locators/API results.
     await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: 'Cancel', exact: true }).waitFor({ state: 'hidden' });
     await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.mouse.move(0, 0);
     await page.screenshot({ path: `${output}/${name}.png`, fullPage: true });
   }
   try {
