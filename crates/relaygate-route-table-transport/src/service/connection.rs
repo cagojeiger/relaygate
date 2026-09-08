@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_route_table::{AuthenticatedGatewayId, GatewayId, RequestContext};
@@ -11,7 +11,7 @@ use tokio_util::{codec::Framed, sync::CancellationToken};
 use uuid::Uuid;
 
 use crate::{
-    ErrorCode, GatewayName, InternalGatewayKey, TransportError, TrustedGatewayKeys,
+    ErrorCode, GatewayName, TransportError,
     codec::{CodecError, FrameCodec},
     dto::WireRequest,
     frame::{GATEWAY_ROLE, ROUTE_TABLE_ROLE, WireFrame},
@@ -25,14 +25,12 @@ use super::{
 
 pub(super) async fn handle_connection(
     stream: BoxedIo,
-    keys: Arc<TrustedGatewayKeys>,
     requests: mpsc::Sender<ServiceCommand>,
     config: RouteTableServiceConfig,
     shutdown: CancellationToken,
 ) {
     let mut framed = Framed::new(stream, FrameCodec::new(config.max_frame_len));
-    let context = match authenticate(&mut framed, &keys, config.handshake_timeout, &shutdown).await
-    {
+    let context = match authenticate(&mut framed, config.handshake_timeout, &shutdown).await {
         Ok(Some(context)) => {
             observe_handshake("success", "ok");
             context
@@ -79,7 +77,6 @@ pub(super) async fn handle_connection(
 
 async fn authenticate(
     framed: &mut Framed<BoxedIo, FrameCodec>,
-    keys: &TrustedGatewayKeys,
     timeout: Duration,
     shutdown: &CancellationToken,
 ) -> Result<Option<RequestContext>, TransportError> {
@@ -93,7 +90,6 @@ async fn authenticate(
             role,
             gateway_name,
             gateway_id,
-            internal_gateway_key,
         } = frame
         else {
             observe_handshake("error", "protocol_error");
@@ -108,17 +104,13 @@ async fn authenticate(
 
         let name = GatewayName::new(gateway_name).ok();
         let gateway_id = Uuid::parse_str(&gateway_id).ok().map(GatewayId::from_uuid);
-        let key = InternalGatewayKey::from_wire(internal_gateway_key);
-        let authenticated = name
-            .as_ref()
-            .is_some_and(|name| keys.authenticate(name, &key));
-        if !authenticated || gateway_id.is_none() {
-            let error = TransportError::unauthenticated();
+        if name.is_none() || gateway_id.is_none() {
+            let error = TransportError::protocol("invalid Gateway identity claims");
             observe_handshake("error", error.code().metric_name());
             tracing::debug!(
                 event = "route_table.handshake.rejected",
                 error_code = error.code().metric_name(),
-                "RouteTable rejected Gateway authentication"
+                "RouteTable rejected invalid Gateway identity claims"
             );
             let _ = framed
                 .send(WireFrame::HandshakeRejected {

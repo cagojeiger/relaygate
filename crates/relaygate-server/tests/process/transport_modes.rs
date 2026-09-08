@@ -37,8 +37,7 @@ fn internal_transport_rejects_unknown_and_conflicting_modes_before_serving()
         command
             .arg("route-table")
             .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
-            .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
-            .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=test-key");
+            .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path());
         if let Some(mode) = mode {
             command.env("RELAYGATE_INTERNAL_TRANSPORT", mode);
         }
@@ -52,7 +51,7 @@ fn internal_transport_rejects_unknown_and_conflicting_modes_before_serving()
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_plaintext_route_table_authenticates_without_certificates()
+async fn explicit_plaintext_route_table_admits_without_keys_or_certificates()
 -> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
     let artifact = ShardDirectoryArtifact::create()?;
@@ -62,31 +61,14 @@ async fn explicit_plaintext_route_table_authenticates_without_certificates()
             .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
             .env("RELAYGATE_INTERNAL_TRANSPORT", "plaintext")
             .env("RELAYGATE_RT_BIND_ADDR", &address)
-            .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
-            .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=test-key"),
+            .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path()),
     )?;
-    let client =
-        wait_until_route_table_ready(&address, GatewayId::new(), "test-key", &mut server).await?;
+    let client = wait_until_route_table_ready(&address, GatewayId::new(), &mut server).await?;
     let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
     let error = client
         .resolve(directory.generation(), &DestinationId::new(DESTINATION_A)?)
         .await;
     assert!(matches!(error, Err(error) if error.code() == RouteTableErrorCode::NotFound));
 
-    let rejected = RouteTableClient::connect(
-        &address,
-        GatewayName::new("gw-a")?,
-        GatewayId::new(),
-        InternalGatewayKey::new("wrong-key")?,
-        RouteTableClientConfig::new(
-            8,
-            1024 * 1024,
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        )?,
-    )
-    .await;
-    assert!(matches!(rejected, Err(error) if error.code() == RouteTableErrorCode::Unauthenticated));
     Ok(())
 }

@@ -54,7 +54,7 @@ fn tracked_payload(drops: &Arc<AtomicUsize>) -> Bytes {
 #[tokio::test]
 async fn saturated_stream_and_aggregate_buffers_are_released_on_transport_loss()
 -> Result<(), Box<dyn Error>> {
-    let config = GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_queue_bounds(4, 4, 4, 1, 1);
+    let config = GatewayPeerConfig::new("gateway-a")?.with_queue_bounds(4, 4, 4, 1, 1);
     let peer_gateway_id = GatewayId::new();
     let peer_transport_id = PeerTransportId::new();
     let stream_ids = [StreamId::from_raw(0), StreamId::from_raw(2)];

@@ -19,5 +19,5 @@ pub use config::GatewayConfig;
 pub use error::GatewayError;
 pub use gateway::{Gateway, check, check_insecure_for_tests};
 pub use observation::{GatewaySnapshot, RouteDependencyHealth};
-pub use peer::{GatewayPeerConfig, TrustedPeerConfig};
+pub use peer::GatewayPeerConfig;
 pub use routing::GatewayRoutingConfig;

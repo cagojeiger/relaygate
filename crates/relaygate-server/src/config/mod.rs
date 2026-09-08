@@ -5,7 +5,6 @@ mod transport;
 use std::{env, fs, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use relaygate_route_table_transport::{GatewayName, InternalGatewayKey};
 use tokio::time::Instant;
 
 pub(crate) use gateway::GatewayRuntimeConfig;
@@ -42,34 +41,6 @@ pub(super) fn load_internal_tls() -> Result<InternalTlsMaterial> {
             format!("failed to read internal TLS private key at {private_key_path:?}")
         })?,
     })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct GatewayCredential {
-    pub(super) name: String,
-    pub(super) key: String,
-}
-
-pub(super) fn parse_gateway_credentials(value: String) -> Result<Vec<GatewayCredential>> {
-    if value.is_empty() {
-        bail!("RELAYGATE_INTERNAL_GATEWAY_KEYS must contain at least one GatewayName=Key entry");
-    }
-    let mut parsed: Vec<GatewayCredential> = Vec::new();
-    for entry in value.split(',') {
-        let Some((name, key)) = entry.split_once('=') else {
-            bail!("RELAYGATE_INTERNAL_GATEWAY_KEYS entries must use GatewayName=Key");
-        };
-        GatewayName::new(name.to_owned())?;
-        InternalGatewayKey::new(key.to_owned())?;
-        if parsed.iter().any(|credential| credential.name == name) {
-            bail!("RELAYGATE_INTERNAL_GATEWAY_KEYS contains duplicate GatewayName {name:?}");
-        }
-        parsed.push(GatewayCredential {
-            name: name.to_owned(),
-            key: key.to_owned(),
-        });
-    }
-    Ok(parsed)
 }
 
 pub(crate) fn optional_usize(name: &str) -> Result<Option<usize>> {
@@ -112,7 +83,7 @@ mod tests {
 
     use tokio::time::Instant;
 
-    use super::{duration_millis, parse_gateway_credentials};
+    use super::duration_millis;
 
     #[test]
     fn duration_rejects_zero_milliseconds() {
@@ -126,16 +97,5 @@ mod tests {
             duration_millis("RELAYGATE_STATS_INTERVAL_MS", &u64::MAX.to_string()).is_ok(),
             Instant::now().checked_add(duration).is_some()
         );
-    }
-
-    #[test]
-    fn gateway_credentials_are_non_empty_unique_and_preserve_equals() -> anyhow::Result<()> {
-        assert!(parse_gateway_credentials(String::new()).is_err());
-        assert!(parse_gateway_credentials("gw-a".to_owned()).is_err());
-        assert!(parse_gateway_credentials("gw-a=one,gw-a=two".to_owned()).is_err());
-        let parsed = parse_gateway_credentials("gw-a=key=with=equals".to_owned())?;
-        assert_eq!(parsed[0].name, "gw-a");
-        assert_eq!(parsed[0].key, "key=with=equals");
-        Ok(())
     }
 }

@@ -115,7 +115,7 @@ async fn local_data_and_fin_survive_remote_fin_under_writer_pressure() -> Result
 
 #[tokio::test]
 async fn duplicate_fin_and_data_after_fin_are_stream_scoped() -> Result<(), Box<dyn Error>> {
-    let config = GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_queue_bounds(4, 4, 4, 4, 2);
+    let config = GatewayPeerConfig::new("gateway-a")?.with_queue_bounds(4, 4, 4, 4, 2);
     let stream_ids = [StreamId::from_raw(0), StreamId::from_raw(2)];
     let identities = [
         OpenIdentity::new(GatewayId::new(), SessionId::new(), 1),

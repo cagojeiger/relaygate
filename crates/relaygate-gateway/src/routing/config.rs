@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use relaygate_route_table::{GatewayLocator, ShardDirectory};
-use relaygate_route_table_transport::{GatewayName, InternalGatewayKey, RouteTableClientConfig};
+use relaygate_route_table_transport::{GatewayName, RouteTableClientConfig};
 use relaygate_transport::ClientTlsConfig;
 use tokio::{sync::Semaphore, time::Instant};
 
@@ -18,7 +18,6 @@ const DEFAULT_ROUTING_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 pub struct GatewayRoutingConfig {
     pub(super) directory: ShardDirectory,
     pub(super) gateway_name: GatewayName,
-    pub(super) internal_gateway_key: InternalGatewayKey,
     pub(super) gateway_locator: GatewayLocator,
     pub(super) client: RouteTableClientConfig,
     pub(super) tls: Option<ClientTlsConfig>,
@@ -33,14 +32,12 @@ impl GatewayRoutingConfig {
     pub fn new(
         directory: ShardDirectory,
         gateway_name: GatewayName,
-        internal_gateway_key: InternalGatewayKey,
         gateway_locator: GatewayLocator,
         client: RouteTableClientConfig,
     ) -> Self {
         Self {
             directory,
             gateway_name,
-            internal_gateway_key,
             gateway_locator,
             client,
             tls: None,

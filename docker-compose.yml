@@ -32,7 +32,6 @@ x-gateway-environment: &gateway-environment
   RELAYGATE_PEER_BIND_ADDR: 0.0.0.0:27421
   RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
   RELAYGATE_RT_SHARD_DIRECTORY_PATH: /etc/relaygate/shard-directory.json
-  RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
   RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
   RELAYGATE_SDK_TLS_CERT_PATH: /etc/relaygate/tls/gateway.crt
   RELAYGATE_SDK_TLS_KEY_PATH: /etc/relaygate/tls/gateway.key
@@ -77,8 +76,8 @@ x-route-table-environment: &route-table-environment
   RELAYGATE_RT_BIND_ADDR: 0.0.0.0:27430
   RELAYGATE_RT_SHARD_DIRECTORY_PATH: /etc/relaygate/shard-directory.json
   RELAYGATE_RT_LEASE_TTL_MS: "3000"
-  RELAYGATE_INTERNAL_GATEWAY_KEYS: gateway-a=dev-gateway-a-v1,gateway-b=dev-gateway-b-v1,gateway-c=dev-gateway-c-v1
   RELAYGATE_INTERNAL_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+  RELAYGATE_PEER_TLS_SERVER_NAME: relaygate-gateway.internal
   RELAYGATE_INTERNAL_TLS_CERT_PATH: /etc/relaygate/tls/route-table.crt
   RELAYGATE_INTERNAL_TLS_KEY_PATH: /etc/relaygate/tls/route-table.key
   RELAYGATE_LOG: info

@@ -6,7 +6,6 @@ use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 use super::{
-    auth::TrustedPeers,
     codec::PeerFrameCodec,
     config::GatewayPeerConfig,
     event::{PeerFailure, PeerTarget},
@@ -31,7 +30,6 @@ pub(super) struct InboundHello {
 
 pub(super) async fn dial_and_handshake(
     config: GatewayPeerConfig,
-    trusted: TrustedPeers,
     local_gateway_id: GatewayId,
     target: PeerTarget,
     peer_transport_id: PeerTransportId,
@@ -79,7 +77,6 @@ pub(super) async fn dial_and_handshake(
     let mut framed = PeerFramed::new(stream, PeerFrameCodec::new(config.max_frame_len));
     let hello = PeerHandshake {
         gateway_name: config.local_gateway_name.clone(),
-        internal_gateway_key: config.local_gateway_key.clone(),
         gateway_id: local_gateway_id,
         expected_peer_gateway_id: target.gateway_id(),
         dialer_gateway_id: local_gateway_id,
@@ -113,12 +110,6 @@ pub(super) async fn dial_and_handshake(
 
     match response {
         PeerFrame::Welcome(welcome) => {
-            if !trusted.authenticate(&welcome.gateway_name, &welcome.internal_gateway_key) {
-                return Err(PeerFailure::not_observed(
-                    ErrorCode::Unauthenticated,
-                    "peer Gateway credential was rejected",
-                ));
-            }
             if welcome.gateway_id != target.gateway_id()
                 || welcome.expected_peer_gateway_id != local_gateway_id
                 || welcome.dialer_gateway_id != local_gateway_id
@@ -152,7 +143,6 @@ pub(super) async fn dial_and_handshake(
 pub(super) async fn receive_inbound_hello(
     stream: TcpStream,
     config: GatewayPeerConfig,
-    trusted: TrustedPeers,
     local_gateway_id: GatewayId,
 ) -> Result<InboundHello, PeerFailure> {
     stream.set_nodelay(true).map_err(|_| {
@@ -208,19 +198,6 @@ pub(super) async fn receive_inbound_hello(
         ));
     };
 
-    if !trusted.authenticate(&hello.gateway_name, &hello.internal_gateway_key) {
-        reject_handshake(
-            &mut framed,
-            ErrorCode::Unauthenticated,
-            "peer Gateway credential was rejected",
-            config.handshake_timeout,
-        )
-        .await;
-        return Err(PeerFailure::not_observed(
-            ErrorCode::Unauthenticated,
-            "peer Gateway credential was rejected",
-        ));
-    }
     if hello.gateway_id == local_gateway_id
         || hello.expected_peer_gateway_id != local_gateway_id
         || hello.dialer_gateway_id != hello.gateway_id
@@ -252,7 +229,6 @@ pub(super) async fn complete_inbound_handshake(
 ) -> Result<EstablishedPeer, PeerFailure> {
     let welcome = PeerHandshake {
         gateway_name: config.local_gateway_name,
-        internal_gateway_key: config.local_gateway_key,
         gateway_id: local_gateway_id,
         expected_peer_gateway_id: hello.remote_gateway_id,
         dialer_gateway_id: hello.remote_gateway_id,

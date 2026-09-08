@@ -2,15 +2,15 @@ use std::{error::Error, io, net::SocketAddr, time::Duration};
 
 use relaygate_gateway::{
     Gateway, GatewayConfig, GatewayError, GatewayPeerConfig, GatewayRoutingConfig,
-    TrustedPeerConfig, check_insecure_for_tests,
+    check_insecure_for_tests,
 };
 use relaygate_route_table::{
     DestinationId as RouteDestinationId, GatewayId, GatewayLocator, RouteTableConfig,
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
-    GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig, RouteTableService,
-    RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
+    GatewayName, RouteTableClient, RouteTableClientConfig, RouteTableService,
+    RouteTableServiceConfig, TransportError,
 };
 use relaygate_sdk::{
     Config as SdkConfig, DestinationId, ErrorCode as SdkErrorCode, Listener,
@@ -33,18 +33,9 @@ const CLIENT_C: &str = "33333333-3333-4333-8333-333333333333";
 const CLIENT_MISSING: &str = "99999999-9999-4999-8999-999999999999";
 const CLIENT_SHARED: &str = "44444444-4444-4444-8444-444444444444";
 const GATEWAY_A: &str = "gateway-a";
-const GATEWAY_A_KEY: &str = "gateway-a-key";
 const GATEWAY_B: &str = "gateway-b";
-const GATEWAY_B_KEY: &str = "gateway-b-key";
 const GATEWAY_C: &str = "gateway-c";
-const GATEWAY_C_KEY: &str = "gateway-c-key";
 const SHARD_ID: &str = "rt-0";
-
-const ALL_GATEWAYS: [(&str, &str); 3] = [
-    (GATEWAY_A, GATEWAY_A_KEY),
-    (GATEWAY_B, GATEWAY_B_KEY),
-    (GATEWAY_C, GATEWAY_C_KEY),
-];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn rt_one_gateway_three_forms_a_closed_current_state_relay() -> TestResult {
@@ -59,9 +50,9 @@ async fn three_gateway_case() -> TestResult {
     let generation = directory.generation();
     let route_table = RunningRouteTable::start(route_listener, directory.clone())?;
 
-    let mut gateway_a = RunningGateway::start(GATEWAY_A, GATEWAY_A_KEY, directory.clone()).await?;
-    let mut gateway_b = RunningGateway::start(GATEWAY_B, GATEWAY_B_KEY, directory.clone()).await?;
-    let mut gateway_c = RunningGateway::start(GATEWAY_C, GATEWAY_C_KEY, directory.clone()).await?;
+    let mut gateway_a = RunningGateway::start(GATEWAY_A, directory.clone()).await?;
+    let mut gateway_b = RunningGateway::start(GATEWAY_B, directory.clone()).await?;
+    let mut gateway_c = RunningGateway::start(GATEWAY_C, directory.clone()).await?;
 
     let listener_runtime_a = Relay::connect(sdk_config(gateway_a.sdk_address)).await?;
     let listener_runtime_b = Relay::connect(sdk_config(gateway_b.sdk_address)).await?;
@@ -96,7 +87,6 @@ async fn three_gateway_case() -> TestResult {
         route_endpoint,
         GatewayName::new(GATEWAY_A)?,
         GatewayId::new(),
-        InternalGatewayKey::new(GATEWAY_A_KEY)?,
         route_client_config()?,
     )
     .await?;
@@ -285,7 +275,6 @@ async fn three_gateway_case() -> TestResult {
         route_endpoint,
         GatewayName::new(GATEWAY_A)?,
         GatewayId::new(),
-        InternalGatewayKey::new(GATEWAY_A_KEY)?,
         route_client_config()?,
     )
     .await?;
@@ -440,7 +429,7 @@ struct RunningGateway {
 }
 
 impl RunningGateway {
-    async fn start(name: &str, key: &str, directory: ShardDirectory) -> TestResult<Self> {
+    async fn start(name: &str, directory: ShardDirectory) -> TestResult<Self> {
         let sdk_listener = TcpListener::bind("127.0.0.1:0").await?;
         let sdk_address = sdk_listener.local_addr()?;
         let peer_listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -448,7 +437,6 @@ impl RunningGateway {
         let routing = GatewayRoutingConfig::new(
             directory,
             GatewayName::new(name)?,
-            InternalGatewayKey::new(key)?,
             GatewayLocator::new(peer_address.to_string())?,
             route_client_config()?,
         )
@@ -456,12 +444,7 @@ impl RunningGateway {
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(40))
         .with_desired_scan_interval(Duration::from_millis(10))
         .with_shutdown_timeout(Duration::from_millis(200));
-        let trusted_peers = ALL_GATEWAYS
-            .into_iter()
-            .filter(|(peer_name, _)| *peer_name != name)
-            .map(|(peer_name, peer_key)| TrustedPeerConfig::new(peer_name, peer_key))
-            .collect::<Result<Vec<_>, _>>()?;
-        let peer = GatewayPeerConfig::new(name, key, trusted_peers)?.with_timeouts(
+        let peer = GatewayPeerConfig::new(name)?.with_timeouts(
             Duration::from_millis(200),
             Duration::from_millis(200),
             Duration::from_secs(1),
@@ -539,15 +522,8 @@ impl RunningRouteTable {
             RouteTableConfig::new(Duration::from_secs(2)).map_err(TransportError::from)?,
         )
         .map_err(TransportError::from)?;
-        let trusted = TrustedGatewayKeys::new(
-            ALL_GATEWAYS
-                .into_iter()
-                .map(|(name, key)| Ok((GatewayName::new(name)?, InternalGatewayKey::new(key)?)))
-                .collect::<Result<Vec<_>, TransportError>>()?,
-        )?;
         let service = RouteTableService::new(
             shard,
-            trusted,
             RouteTableServiceConfig::new(64, 32, 16, 256 * 1024, Duration::from_millis(200))?,
         );
         let shutdown = CancellationToken::new();

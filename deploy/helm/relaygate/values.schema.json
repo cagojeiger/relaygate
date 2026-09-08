@@ -41,7 +41,6 @@
       "additionalProperties": false,
       "required": [
         "existingSecret",
-        "internalGatewayKeysKey",
         "clusterTokenKey",
         "nextClusterTokenKey",
         "reloadToken"
@@ -52,12 +51,6 @@
           "minLength": 1,
           "maxLength": 253,
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
-        },
-        "internalGatewayKeysKey": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 253,
-          "pattern": "^[-._a-zA-Z0-9]+$"
         },
         "clusterTokenKey": {
           "type": "string",

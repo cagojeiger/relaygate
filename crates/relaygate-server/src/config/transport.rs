@@ -42,7 +42,7 @@ fn parse_internal_transport(
     if insecure_test {
         if trusted_local != Some("true") {
             bail!(
-                "RELAYGATE_RT_TRUSTED_LOCAL must be `true` to enable the local/CI plain-TCP key adapter"
+                "RELAYGATE_RT_TRUSTED_LOCAL must be `true` to enable the local/CI unauthenticated plain-TCP adapter"
             );
         }
         return Ok(InternalTransport::Plaintext);

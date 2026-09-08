@@ -1,16 +1,14 @@
 use std::{env, fs, time::Duration};
 
 use anyhow::{Context, Result};
-use relaygate_gateway::{
-    GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, TrustedPeerConfig,
-};
+use relaygate_gateway::{GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig};
 use relaygate_route_table::{GatewayLocator, ShardDirectory};
-use relaygate_route_table_transport::{GatewayName, InternalGatewayKey, RouteTableClientConfig};
+use relaygate_route_table_transport::{GatewayName, RouteTableClientConfig};
 use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
 
 use super::{
     InternalTransport, insecure_test_transport, internal_transport, load_internal_tls,
-    optional_duration_millis, optional_usize, parse_gateway_credentials,
+    optional_duration_millis, optional_usize,
 };
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:27420";
@@ -21,12 +19,11 @@ const DEFAULT_RT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_RT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_RT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-const DISTRIBUTED_ENVIRONMENT: [&str; 6] = [
+const DISTRIBUTED_ENVIRONMENT: [&str; 5] = [
     "RELAYGATE_RT_TRUSTED_LOCAL",
     "RELAYGATE_RT_SHARD_DIRECTORY_PATH",
     "RELAYGATE_GATEWAY_NAME",
     "RELAYGATE_GATEWAY_LOCATOR",
-    "RELAYGATE_INTERNAL_GATEWAY_KEYS",
     "RELAYGATE_PEER_BIND_ADDR",
 ];
 
@@ -139,26 +136,7 @@ fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
         env::var("RELAYGATE_GATEWAY_LOCATOR")
             .context("RELAYGATE_GATEWAY_LOCATOR is required for distributed Gateway mode")?,
     )?;
-    let credentials = parse_gateway_credentials(
-        env::var("RELAYGATE_INTERNAL_GATEWAY_KEYS")
-            .context("RELAYGATE_INTERNAL_GATEWAY_KEYS is required for distributed Gateway mode")?,
-    )?;
-    let local = credentials
-        .iter()
-        .find(|credential| credential.name == gateway_name_value)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "RELAYGATE_INTERNAL_GATEWAY_KEYS has no entry for local GatewayName {:?}",
-                gateway_name_value
-            )
-        })?;
-    let internal_gateway_key = InternalGatewayKey::new(local.key.clone())?;
-    let trusted_peers = credentials
-        .iter()
-        .filter(|credential| credential.name != gateway_name_value)
-        .map(|credential| TrustedPeerConfig::new(&credential.name, &credential.key))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut peer = GatewayPeerConfig::new(gateway_name_value, local.key.clone(), trusted_peers)?;
+    let mut peer = GatewayPeerConfig::new(gateway_name_value)?;
     let peer_heartbeat_idle = optional_duration_millis("RELAYGATE_PEER_HEARTBEAT_IDLE_MS")?
         .unwrap_or_else(|| peer.heartbeat_idle_interval());
     let peer_heartbeat_response = optional_duration_millis("RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS")?
@@ -177,13 +155,7 @@ fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
         DEFAULT_RT_HANDSHAKE_TIMEOUT,
         DEFAULT_RT_REQUEST_TIMEOUT,
     )?;
-    let mut routing = GatewayRoutingConfig::new(
-        directory,
-        gateway_name,
-        internal_gateway_key,
-        gateway_locator,
-        client,
-    );
+    let mut routing = GatewayRoutingConfig::new(directory, gateway_name, gateway_locator, client);
     if !insecure {
         let material = load_internal_tls()?;
         let peer_server_name = env::var("RELAYGATE_PEER_TLS_SERVER_NAME")
@@ -192,12 +164,13 @@ fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
             .context("RELAYGATE_RT_TLS_SERVER_NAME is required")?;
         peer = peer.with_tls(
             ClientTlsConfig::mutually_authenticated(
-                peer_server_name,
+                peer_server_name.clone(),
                 &material.ca,
                 &material.certificate,
                 &material.private_key,
             )?,
             ServerTlsConfig::mutually_authenticated(
+                peer_server_name,
                 &material.ca,
                 &material.certificate,
                 &material.private_key,

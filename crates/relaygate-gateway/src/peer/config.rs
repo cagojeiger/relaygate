@@ -12,10 +12,7 @@ use tokio::{sync::Semaphore, time::Instant};
 use crate::GatewayError;
 use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
 
-use super::{
-    error::PeerError,
-    identity::{PeerGatewayKey, PeerGatewayName},
-};
+use super::{error::PeerError, identity::PeerGatewayName};
 
 const DEFAULT_MANAGER_QUEUE_CAPACITY: usize = 256;
 const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 256;
@@ -101,43 +98,11 @@ impl OpenCommitGate {
     }
 }
 
-/// One trusted stable peer entry for the local/CI plain-TCP adapter.
-#[derive(Clone)]
-pub struct TrustedPeerConfig {
-    pub(super) gateway_name: PeerGatewayName,
-    pub(super) internal_gateway_key: PeerGatewayKey,
-}
-
-impl TrustedPeerConfig {
-    pub fn new(
-        gateway_name: impl Into<String>,
-        internal_gateway_key: impl Into<String>,
-    ) -> Result<Self, GatewayError> {
-        Ok(Self {
-            gateway_name: PeerGatewayName::new(gateway_name).map_err(config_error)?,
-            internal_gateway_key: PeerGatewayKey::new(internal_gateway_key)
-                .map_err(config_error)?,
-        })
-    }
-}
-
-impl std::fmt::Debug for TrustedPeerConfig {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TrustedPeerConfig")
-            .field("gateway_name", &self.gateway_name)
-            .field("internal_gateway_key", &self.internal_gateway_key)
-            .finish()
-    }
-}
-
-/// Immutable bounds, deadlines, local identity, and trusted allowlist for one
+/// Immutable bounds, deadlines, local identity for one
 /// Gateway peer runtime incarnation.
 #[derive(Clone)]
 pub struct GatewayPeerConfig {
     pub(super) local_gateway_name: PeerGatewayName,
-    pub(super) local_gateway_key: PeerGatewayKey,
-    pub(super) trusted_peers: Vec<TrustedPeerConfig>,
     pub(super) manager_queue_capacity: usize,
     pub(super) event_queue_capacity: usize,
     pub(super) transport_queue_capacity: usize,
@@ -162,15 +127,9 @@ pub struct GatewayPeerConfig {
 }
 
 impl GatewayPeerConfig {
-    pub fn new(
-        local_gateway_name: impl Into<String>,
-        local_gateway_key: impl Into<String>,
-        trusted_peers: impl IntoIterator<Item = TrustedPeerConfig>,
-    ) -> Result<Self, GatewayError> {
+    pub fn new(local_gateway_name: impl Into<String>) -> Result<Self, GatewayError> {
         let config = Self {
             local_gateway_name: PeerGatewayName::new(local_gateway_name).map_err(config_error)?,
-            local_gateway_key: PeerGatewayKey::new(local_gateway_key).map_err(config_error)?,
-            trusted_peers: trusted_peers.into_iter().collect(),
             manager_queue_capacity: DEFAULT_MANAGER_QUEUE_CAPACITY,
             event_queue_capacity: DEFAULT_EVENT_QUEUE_CAPACITY,
             transport_queue_capacity: DEFAULT_TRANSPORT_QUEUE_CAPACITY,
@@ -332,21 +291,6 @@ impl GatewayPeerConfig {
         )?;
         validate_deadline_timeout("idle_retirement_timeout", self.idle_retirement_timeout)?;
 
-        for (index, peer) in self.trusted_peers.iter().enumerate() {
-            if peer.gateway_name == self.local_gateway_name {
-                return Err(PeerError::InvalidArgument(
-                    "trusted peer Gateway name must differ from the local Gateway name",
-                ));
-            }
-            if self.trusted_peers[..index]
-                .iter()
-                .any(|candidate| candidate.gateway_name == peer.gateway_name)
-            {
-                return Err(PeerError::InvalidArgument(
-                    "trusted peer Gateway names must be unique",
-                ));
-            }
-        }
         Ok(())
     }
 }
@@ -381,8 +325,6 @@ impl std::fmt::Debug for GatewayPeerConfig {
         formatter
             .debug_struct("GatewayPeerConfig")
             .field("local_gateway_name", &self.local_gateway_name)
-            .field("local_gateway_key", &self.local_gateway_key)
-            .field("trusted_peers", &self.trusted_peers)
             .field("manager_queue_capacity", &self.manager_queue_capacity)
             .field("event_queue_capacity", &self.event_queue_capacity)
             .field("transport_queue_capacity", &self.transport_queue_capacity)
@@ -417,36 +359,12 @@ mod tests {
     fn unrepresentable_deadline_configuration_is_rejected() -> TestResult {
         let valid = Duration::from_secs(1);
         for config in [
-            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_timeouts(
-                Duration::MAX,
-                valid,
-                valid,
-            ),
-            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_timeouts(
-                valid,
-                Duration::MAX,
-                valid,
-            ),
-            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_timeouts(
-                valid,
-                valid,
-                Duration::MAX,
-            ),
-            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_liveness(
-                Duration::MAX,
-                valid,
-                valid,
-            ),
-            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_liveness(
-                valid,
-                Duration::MAX,
-                valid,
-            ),
-            GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_liveness(
-                valid,
-                valid,
-                Duration::MAX,
-            ),
+            GatewayPeerConfig::new("gateway-a")?.with_timeouts(Duration::MAX, valid, valid),
+            GatewayPeerConfig::new("gateway-a")?.with_timeouts(valid, Duration::MAX, valid),
+            GatewayPeerConfig::new("gateway-a")?.with_timeouts(valid, valid, Duration::MAX),
+            GatewayPeerConfig::new("gateway-a")?.with_liveness(Duration::MAX, valid, valid),
+            GatewayPeerConfig::new("gateway-a")?.with_liveness(valid, Duration::MAX, valid),
+            GatewayPeerConfig::new("gateway-a")?.with_liveness(valid, valid, Duration::MAX),
         ] {
             assert!(config.validate().is_err());
         }

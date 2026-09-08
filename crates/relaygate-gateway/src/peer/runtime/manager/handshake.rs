@@ -26,12 +26,10 @@ impl Manager {
         self.handshakes_inflight += 1;
         let sender = self.handshake_notice_sender.clone();
         let config = self.config.clone();
-        let trusted = self.trusted.clone();
         let local_gateway_id = self.local_gateway_id;
         let remote_gateway_id = target.gateway_id();
         self.tasks.spawn(async move {
-            let result =
-                dial_and_handshake(config, trusted, local_gateway_id, target, transport_id).await;
+            let result = dial_and_handshake(config, local_gateway_id, target, transport_id).await;
             let _ = sender
                 .send(HandshakeNotice::Outbound {
                     remote_gateway_id,
@@ -57,10 +55,9 @@ impl Manager {
         self.handshakes_inflight += 1;
         let sender = self.handshake_notice_sender.clone();
         let config = self.config.clone();
-        let trusted = self.trusted.clone();
         let local_gateway_id = self.local_gateway_id;
         self.tasks.spawn(async move {
-            let result = receive_inbound_hello(stream, config, trusted, local_gateway_id).await;
+            let result = receive_inbound_hello(stream, config, local_gateway_id).await;
             let _ = sender.send(HandshakeNotice::InboundHello(result)).await;
         });
     }

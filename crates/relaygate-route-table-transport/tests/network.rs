@@ -13,11 +13,11 @@ use support::{
 
 #[tokio::test]
 async fn full_registration_lifecycle_and_ready_empty_not_found() -> TestResult {
-    let service = RunningService::start(Duration::from_secs(5), [("gw-a", "key-a")]).await?;
+    let service = RunningService::start(Duration::from_secs(5)).await?;
     let gateway_id = gateway(1);
     let relay_session_id = session(11);
     let key = registration_key(gateway_id, relay_session_id)?;
-    let client = service.connect("gw-a", gateway_id, "key-a").await?;
+    let client = service.connect("gw-a", gateway_id).await?;
     let destination_id = DestinationId::new("11111111-1111-4111-8111-111111111111")?;
 
     let empty = client
@@ -75,37 +75,13 @@ async fn full_registration_lifecycle_and_ready_empty_not_found() -> TestResult {
 }
 
 #[tokio::test]
-async fn authentication_and_owner_mismatch_are_terminal_and_do_not_create_state() -> TestResult {
-    let service = RunningService::start(
-        Duration::from_secs(5),
-        [("gw-a", "key-a"), ("gw-b", "key-b")],
-    )
-    .await?;
+async fn plaintext_admits_unlisted_gateways_but_owner_mismatch_creates_no_state() -> TestResult {
+    let service = RunningService::start(Duration::from_secs(5)).await?;
 
-    let wrong = service
-        .connect("gw-a", gateway(1), "wrong-secret")
-        .await
-        .err();
-    assert_eq!(
-        wrong.as_ref().map(|error| error.code()),
-        Some(ErrorCode::Unauthenticated)
-    );
-    assert!(
-        !wrong
-            .as_ref()
-            .is_some_and(|error| error.to_string().contains("wrong-secret"))
-    );
+    let unlisted = service.connect("gw-unlisted", gateway(9)).await?;
+    drop(unlisted);
 
-    let unknown = service
-        .connect("gw-unknown", gateway(1), "key-a")
-        .await
-        .err();
-    assert_eq!(
-        unknown.map(|error| error.code()),
-        Some(ErrorCode::Unauthenticated)
-    );
-
-    let client_a = service.connect("gw-a", gateway(1), "key-a").await?;
+    let client_a = service.connect("gw-a", gateway(1)).await?;
     let key_b = registration_key(gateway(2), session(22))?;
     let denied = client_a.register(service.generation, &key_b).await.err();
     assert_eq!(
@@ -113,7 +89,7 @@ async fn authentication_and_owner_mismatch_are_terminal_and_do_not_create_state(
         Some(ErrorCode::PermissionDenied)
     );
 
-    let client_b = service.connect("gw-b", gateway(2), "key-b").await?;
+    let client_b = service.connect("gw-b", gateway(2)).await?;
     client_b
         .deregister(
             service.generation,
@@ -127,9 +103,9 @@ async fn authentication_and_owner_mismatch_are_terminal_and_do_not_create_state(
 
 #[tokio::test]
 async fn service_loss_is_reported_as_unavailable_without_reconnect() -> TestResult {
-    let service = RunningService::start(Duration::from_secs(5), [("gw-a", "key-a")]).await?;
+    let service = RunningService::start(Duration::from_secs(5)).await?;
     let generation = service.generation;
-    let client = service.connect("gw-a", gateway(1), "key-a").await?;
+    let client = service.connect("gw-a", gateway(1)).await?;
     service.stop().await?;
 
     let error = client
@@ -159,9 +135,9 @@ async fn restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot() -> T
         binding(111),
     )?;
 
-    let service_a = RunningService::start(Duration::from_secs(5), [("gw-a", "key-a")]).await?;
+    let service_a = RunningService::start(Duration::from_secs(5)).await?;
     let generation = service_a.generation;
-    let client_a = service_a.connect("gw-a", gateway_id, "key-a").await?;
+    let client_a = service_a.connect("gw-a", gateway_id).await?;
     let registered = client_a.register(generation, &key).await?;
     let old_lease = registered.lease_id();
     client_a
@@ -179,9 +155,9 @@ async fn restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot() -> T
     );
     service_a.stop().await?;
 
-    let service_b = RunningService::start(Duration::from_secs(5), [("gw-a", "key-a")]).await?;
+    let service_b = RunningService::start(Duration::from_secs(5)).await?;
     assert_eq!(service_b.generation, generation);
-    let client_b = service_b.connect("gw-a", gateway_id, "key-a").await?;
+    let client_b = service_b.connect("gw-a", gateway_id).await?;
     let empty = client_b.resolve(generation, &destination_id).await.err();
     assert_eq!(empty.map(|error| error.code()), Some(ErrorCode::NotFound));
 
@@ -224,12 +200,10 @@ async fn restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot() -> T
 
 #[tokio::test]
 async fn connection_limit_rejects_the_next_handshake_as_resource_exhausted() -> TestResult {
-    let service =
-        RunningService::start_with_max_connections(Duration::from_secs(5), [("gw-a", "key-a")], 1)
-            .await?;
-    let first = service.connect("gw-a", gateway(1), "key-a").await?;
+    let service = RunningService::start_with_max_connections(Duration::from_secs(5), 1).await?;
+    let first = service.connect("gw-a", gateway(1)).await?;
 
-    let rejected = service.connect("gw-a", gateway(2), "key-a").await.err();
+    let rejected = service.connect("gw-a", gateway(2)).await.err();
     assert_eq!(
         rejected.map(|error| error.code()),
         Some(ErrorCode::ResourceExhausted)
@@ -241,12 +215,10 @@ async fn connection_limit_rejects_the_next_handshake_as_resource_exhausted() -> 
 
 #[tokio::test]
 async fn shutdown_completes_with_an_unread_handshake_stalled_connection() -> TestResult {
-    let service =
-        RunningService::start_with_max_connections(Duration::from_secs(5), [("gw-a", "key-a")], 1)
-            .await?;
+    let service = RunningService::start_with_max_connections(Duration::from_secs(5), 1).await?;
     let _stalled = TcpStream::connect(service.endpoint).await?;
 
-    let rejected = service.connect("gw-a", gateway(2), "key-a").await.err();
+    let rejected = service.connect("gw-a", gateway(2)).await.err();
     assert_eq!(
         rejected.map(|error| error.code()),
         Some(ErrorCode::ResourceExhausted)
@@ -260,11 +232,9 @@ async fn shutdown_completes_with_an_unread_handshake_stalled_connection() -> Tes
 #[tokio::test]
 async fn oversized_binding_set_returns_resource_exhausted_and_connection_stays_usable() -> TestResult
 {
-    let service =
-        RunningService::start_with_limits(Duration::from_secs(30), [("gw-a", "key-a")], 8, 1024)
-            .await?;
+    let service = RunningService::start_with_limits(Duration::from_secs(30), 8, 1024).await?;
     let gateway_id = gateway(1);
-    let client = service.connect("gw-a", gateway_id, "key-a").await?;
+    let client = service.connect("gw-a", gateway_id).await?;
     let generation = service.generation;
     let large_destination_id = DestinationId::new("33333333-3333-4333-8333-333333333333")?;
 

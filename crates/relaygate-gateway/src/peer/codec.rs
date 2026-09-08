@@ -8,13 +8,11 @@ use uuid::Uuid;
 
 use super::{
     frame::PeerFrame,
-    identity::{
-        OpenIdentity, PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId, StreamId,
-    },
+    identity::{OpenIdentity, PeerGatewayName, PeerHandshake, PeerTransportId, StreamId},
 };
 
 const MAGIC: [u8; 2] = *b"GP";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const HEADER_LEN: usize = 8;
 const MAX_STRING_LEN: usize = u16::MAX as usize;
 
@@ -187,11 +185,7 @@ fn frame_metadata(frame: &PeerFrame) -> Result<(u8, usize), PeerCodecError> {
 
 fn handshake_wire_len(handshake: &PeerHandshake) -> Result<usize, PeerCodecError> {
     let name = string_wire_len("gateway_name", handshake.gateway_name.as_str())?;
-    let key = string_wire_len(
-        "internal_gateway_key",
-        handshake.internal_gateway_key.expose_secret(),
-    )?;
-    checked_add(checked_add(name, key)?, 64)
+    checked_add(name, 64)
 }
 
 fn string_wire_len(field: &'static str, value: &str) -> Result<usize, PeerCodecError> {
@@ -273,11 +267,6 @@ fn put_handshake(
     handshake: PeerHandshake,
 ) -> Result<(), PeerCodecError> {
     put_string(destination, "gateway_name", handshake.gateway_name.as_str())?;
-    put_string(
-        destination,
-        "internal_gateway_key",
-        handshake.internal_gateway_key.expose_secret(),
-    )?;
     put_gateway_id(destination, handshake.gateway_id);
     put_gateway_id(destination, handshake.expected_peer_gateway_id);
     put_gateway_id(destination, handshake.dialer_gateway_id);
@@ -466,12 +455,8 @@ impl PayloadReader {
     fn handshake(&mut self) -> Result<PeerHandshake, PeerCodecError> {
         let gateway_name = PeerGatewayName::new(self.non_empty_string("gateway_name")?)
             .map_err(|_| PeerCodecError::InvalidField("gateway_name"))?;
-        let internal_gateway_key =
-            PeerGatewayKey::new(self.non_empty_string("internal_gateway_key")?)
-                .map_err(|_| PeerCodecError::InvalidField("internal_gateway_key"))?;
         Ok(PeerHandshake {
             gateway_name,
-            internal_gateway_key,
             gateway_id: self.gateway_id("gateway_id")?,
             expected_peer_gateway_id: self.gateway_id("expected_peer_gateway_id")?,
             dialer_gateway_id: self.gateway_id("dialer_gateway_id")?,

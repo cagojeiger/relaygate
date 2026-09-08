@@ -8,8 +8,8 @@ use super::{
     error::PeerError,
     frame::PeerFrame,
     identity::{
-        OpenIdentity, PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerOpenProgress,
-        PeerTransportId, RemoteStreamGuard, StreamEndpoint, StreamId, StreamIdAllocator,
+        OpenIdentity, PeerGatewayName, PeerHandshake, PeerOpenProgress, PeerTransportId,
+        RemoteStreamGuard, StreamEndpoint, StreamId, StreamIdAllocator,
     },
     pool::PeerPool,
     stream::RelayStream,
@@ -174,8 +174,8 @@ fn peer_open_failure_observation_depends_on_writer_commit_point() {
 
 #[test]
 fn peer_frame_codec_round_trips_every_frame_kind() -> Result<(), Box<dyn std::error::Error>> {
-    let dialer_handshake = handshake("gw-a", "key-a")?;
-    let acceptor_handshake = handshake("gw-b", "key-b")?;
+    let dialer_handshake = handshake("gw-a")?;
+    let acceptor_handshake = handshake("gw-b")?;
     let stream_id = StreamId::from_raw(2);
     let frames = vec![
         PeerFrame::Hello(dialer_handshake),
@@ -396,13 +396,17 @@ fn peer_frame_codec_bounds_strings_and_rejects_empty_open_destination() {
 }
 
 #[test]
-fn peer_handshake_round_trip_preserves_uuid_claims_and_redacts_key()
+fn peer_handshake_round_trip_preserves_uuid_claims_without_credentials()
 -> Result<(), Box<dyn std::error::Error>> {
-    let handshake = handshake("gw-a", "do-not-log")?;
+    let handshake = handshake("gw-a")?;
     let expected = handshake.clone();
     let debug = format!("{:?}", PeerFrame::Hello(handshake.clone()));
-    assert!(!debug.contains("do-not-log"));
-    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("internal_gateway_key"));
+    assert!(
+        PeerFrameCodec::new(1024)
+            .validate(&PeerFrame::Hello(handshake.clone()))
+            .is_ok()
+    );
 
     let mut codec = PeerFrameCodec::new(1024);
     let mut encoded = BytesMut::new();
@@ -424,10 +428,9 @@ fn peer_data_debug_reports_only_length() {
     assert!(!debug.contains("payload-must-not-be-logged"));
 }
 
-fn handshake(name: &str, key: &str) -> Result<PeerHandshake, Box<dyn std::error::Error>> {
+fn handshake(name: &str) -> Result<PeerHandshake, Box<dyn std::error::Error>> {
     Ok(PeerHandshake {
         gateway_name: PeerGatewayName::new(name)?,
-        internal_gateway_key: PeerGatewayKey::new(key)?,
         gateway_id: GatewayId::new(),
         expected_peer_gateway_id: GatewayId::new(),
         dialer_gateway_id: GatewayId::new(),

@@ -18,7 +18,6 @@ Kubernetes 1.32 이상과 release namespace의 다음 Secret이 필요합니다.
 
 | Secret | key | 용도 |
 | --- | --- | --- |
-| credential | `internal-gateway-keys` | `GatewayName=InternalGatewayKey,...` |
 | credential | `cluster-token`, 선택적 `next-cluster-token` | SDK trust-domain admission과 rotation |
 | edge TLS | `tls.crt`, `tls.key` | SDK-facing Gateway identity |
 | edge TLS | `ca.crt` | custom CA mode의 trust anchor |
@@ -29,7 +28,6 @@ Kubernetes 1.32 이상과 release namespace의 다음 Secret이 필요합니다.
 ```bash
 kubectl create namespace relaygate
 kubectl -n relaygate create secret generic relaygate-credentials \
-  --from-literal=internal-gateway-keys='relaygate-gateway-0=replace-a,relaygate-gateway-1=replace-b,relaygate-gateway-2=replace-c' \
   --from-literal=cluster-token='replace-cluster-token'
 ```
 
@@ -44,7 +42,7 @@ tls:
     mode: plaintext
 ```
 
-plain TCP에서는 내부 키와 payload가 암호화되지 않는다. 모드 전환은 GW/RT를 함께 변경하는 maintenance 작업이다.
+plain TCP는 내부 인증과 암호화를 제공하지 않는다. mTLS는 신뢰 CA와 Gateway 역할 SAN을 검증하며 별도 내부 키를 사용하지 않는다. 모드 전환은 GW/RT를 함께 변경하는 maintenance 작업이다.
 
 | 구간 | mode | 공급 방식 |
 | --- | --- | --- |
@@ -121,7 +119,7 @@ SDK endpoint 기본값은 `relaygate.relaygate.svc.cluster.local:27420`입니다
 | ClusterToken | current+next → SDK 이동 → next를 current로 승격 |
 | edge certificate | Secret 갱신 → `tls.edge.reloadToken` 변경 |
 | internal certificate | Secret/leaf 갱신 → `tls.internal.reloadToken` 또는 reloader |
-| Gateway 증가 | GatewayName/key 허용 → rollout → replica 증가 |
+| Gateway 증가 | replica 증가 → mTLS Gateway 역할 인증 → 현재 상태 등록 |
 | RT shard directory | maintenance window의 coordinated restart |
 
 ## 주요 values

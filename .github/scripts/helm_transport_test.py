@@ -38,12 +38,12 @@ class InternalTransportTests(unittest.TestCase):
             self.assertIn("mountPath: /etc/relaygate/tls/internal", item)
             self.assertNotIn("secret.reloader.stakater.com/reload:", item)
 
-    def test_plaintext_keeps_edge_tls_and_keys_but_removes_internal_certificates(self):
+    def test_plaintext_keeps_edge_tls_and_token_but_removes_internal_certificates(self):
         output = self.successful("tls.internal.mode=plaintext")
         for component in ("gateway", "route-table"):
             item = workload(output, component)
             self.assertIn('name: RELAYGATE_INTERNAL_TRANSPORT\n              value: "plaintext"', item)
-            self.assertIn("name: RELAYGATE_INTERNAL_GATEWAY_KEYS", item)
+            self.assertNotIn("RELAYGATE_INTERNAL_GATEWAY_KEYS", item)
             self.assertNotIn("RELAYGATE_INTERNAL_TLS_", item)
             self.assertNotIn("name: internal-tls", item)
             self.assertNotIn("RELAYGATE_INSECURE_TEST_TRANSPORT", item)
@@ -83,7 +83,7 @@ class InternalTransportTests(unittest.TestCase):
 
     def test_extra_env_cannot_bypass_transport_selection(self):
         for component in ("gateway", "routeTable"):
-            for name in ("RELAYGATE_INTERNAL_TRANSPORT", "RELAYGATE_INSECURE_TEST_TRANSPORT", "RELAYGATE_RT_TRUSTED_LOCAL"):
+            for name in ("RELAYGATE_INTERNAL_TRANSPORT", "RELAYGATE_INTERNAL_GATEWAY_KEYS", "RELAYGATE_INSECURE_TEST_TRANSPORT", "RELAYGATE_RT_TRUSTED_LOCAL"):
                 with self.subTest(component=component, name=name):
                     result = render(f"{component}.extraEnv[0].name={name}", f"{component}.extraEnv[0].value=blocked")
                     self.assertNotEqual(result.returncode, 0)

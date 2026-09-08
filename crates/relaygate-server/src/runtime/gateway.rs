@@ -38,7 +38,7 @@ pub(crate) async fn serve(
                     component = "gateway",
                     event = "gateway.internal_transport.plaintext_enabled",
                     transport = "plain_tcp",
-                    "internal plaintext transport selected; keys and payload are not encrypted"
+                    "internal plaintext transport selected; traffic is unauthenticated and unencrypted"
                 );
             }
             (

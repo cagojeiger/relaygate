@@ -10,7 +10,7 @@ process startup에서 unknown transport mode·legacy test flag 혼용·mTLS mate
 | code | 대표 조건 | 새 operation 조건 |
 | --- | --- | --- |
 | `INVALID_ARGUMENT` | UUID/config/frame 오류 | 입력 변경 |
-| `UNAUTHENTICATED` | TLS/ClusterToken/component credential 실패 | credential/config 변경 |
+| `UNAUTHENTICATED` | TLS 인증서/ClusterToken 검증 실패 | credential/config 변경 |
 | `PERMISSION_DENIED` | authenticated component owner/operation 불일치 | identity/config 변경 |
 | `NOT_FOUND` | current Binding 없음 | 상태 변경 |
 | `FAILED_PRECONDITION` | self Binding만 존재, closed object | 전제 변경 |

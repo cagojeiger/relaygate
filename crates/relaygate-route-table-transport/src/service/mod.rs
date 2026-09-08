@@ -13,7 +13,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{ErrorCode, TransportError, TrustedGatewayKeys, codec::FrameCodec};
+use crate::{ErrorCode, TransportError, codec::FrameCodec};
 
 use actor::{ServiceCommand, spawn_shard_actor};
 use connection::{handle_connection, reject_over_capacity};
@@ -55,21 +55,15 @@ impl RouteTableServiceConfig {
 /// A bounded TCP service that single-owns one memory-only RouteTable shard.
 pub struct RouteTableService {
     shard: RouteTableShard,
-    trusted_gateway_keys: TrustedGatewayKeys,
     config: RouteTableServiceConfig,
     tls: Option<ServerTlsConfig>,
 }
 
 impl RouteTableService {
     #[must_use]
-    pub const fn new(
-        shard: RouteTableShard,
-        trusted_gateway_keys: TrustedGatewayKeys,
-        config: RouteTableServiceConfig,
-    ) -> Self {
+    pub const fn new(shard: RouteTableShard, config: RouteTableServiceConfig) -> Self {
         Self {
             shard,
-            trusted_gateway_keys,
             config,
             tls: None,
         }
@@ -104,13 +98,7 @@ impl RouteTableService {
             ) -> JoinHandle<RouteTableShard>
             + Send,
     {
-        let Self {
-            shard,
-            trusted_gateway_keys,
-            config,
-            tls,
-        } = self;
-        let keys = Arc::new(trusted_gateway_keys);
+        let Self { shard, config, tls } = self;
         let permits = Arc::new(Semaphore::new(config.max_connections));
         let (requests, request_receiver) = mpsc::channel(config.request_queue_capacity);
         let runtime_shutdown = shutdown.child_token();
@@ -162,7 +150,6 @@ impl RouteTableService {
                     };
                     match Arc::clone(&permits).try_acquire_owned() {
                         Ok(permit) => {
-                            let keys = Arc::clone(&keys);
                             let requests = requests.clone();
                             let connection_shutdown = runtime_shutdown.child_token();
                             let tls = tls.clone();
@@ -190,7 +177,6 @@ impl RouteTableService {
                                 };
                                 handle_connection(
                                     stream,
-                                    keys,
                                     requests,
                                     config,
                                     connection_shutdown,
@@ -252,7 +238,6 @@ impl fmt::Debug for RouteTableService {
         formatter
             .debug_struct("RouteTableService")
             .field("shard_id", &self.shard.shard_id())
-            .field("trusted_gateway_keys", &self.trusted_gateway_keys)
             .field("config", &self.config)
             .finish_non_exhaustive()
     }

@@ -18,8 +18,8 @@ internal = plaintext | mTLS(existing Secret | cert-manager leaf + CA trust Secre
 | network | SDK Service는 ClusterIP/LoadBalancer, peer/RT는 cluster-internal |
 | TLS isolation | edge/internal trust와 role별 private key 분리 |
 | internal source | `existingSecret` 또는 platform Issuer 기반 `certManager` |
-| internal plaintext | 내부 certificate·mount 없이 SDK TLS와 key admission 유지 |
-| reload | credential/TLS token이 해당 workload만 rollout |
+| internal plaintext | 내부 certificate·mount 없이 SDK TLS와 ClusterToken 유지, 내부 무인증 |
+| reload | credential token은 GW만, TLS token은 해당 workload만 rollout |
 | automatic reload | StatefulSet metadata에서 role별 leaf와 공개 trust Secret만 watch |
 | security context | non-root read, 일반 사용자 write 차단 |
 | state | memory-only RT와 persistent volume 0개 |

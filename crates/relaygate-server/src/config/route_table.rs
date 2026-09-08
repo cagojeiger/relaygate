@@ -2,9 +2,7 @@ use std::{env, fs, time::Duration};
 
 use anyhow::{Context, Result};
 use relaygate_route_table::{RouteTableConfig, RouteTableShard, ShardDirectory, ShardId};
-use relaygate_route_table_transport::{
-    GatewayName, InternalGatewayKey, RouteTableServiceConfig, TrustedGatewayKeys,
-};
+use relaygate_route_table_transport::RouteTableServiceConfig;
 use relaygate_transport::ServerTlsConfig;
 
 use super::{
@@ -24,9 +22,7 @@ const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 pub(crate) struct RouteTableRuntimeConfig {
     pub(crate) bind_address: String,
     pub(crate) shard: RouteTableShard,
-    pub(crate) trusted_gateways: TrustedGatewayKeys,
     pub(crate) service: RouteTableServiceConfig,
-    pub(crate) configured_gateways: usize,
     pub(crate) tls: Option<ServerTlsConfig>,
 }
 
@@ -48,20 +44,6 @@ impl RouteTableRuntimeConfig {
             optional_duration_millis("RELAYGATE_RT_LEASE_TTL_MS")?.unwrap_or(DEFAULT_LEASE_TTL);
         let shard = RouteTableShard::new(directory, shard_id, RouteTableConfig::new(lease_ttl)?)?;
 
-        let gateway_keys = parse_gateway_credentials(
-            env::var("RELAYGATE_INTERNAL_GATEWAY_KEYS")
-                .context("RELAYGATE_INTERNAL_GATEWAY_KEYS is required")?,
-        )?
-        .into_iter()
-        .map(|credential| {
-            Ok((
-                GatewayName::new(credential.name)?,
-                InternalGatewayKey::new(credential.key)?,
-            ))
-        })
-        .collect::<Result<Vec<_>, relaygate_route_table_transport::TransportError>>()?;
-        let configured_gateways = gateway_keys.len();
-        let trusted_gateways = TrustedGatewayKeys::new(gateway_keys)?;
         let service = RouteTableServiceConfig::new(
             optional_usize("RELAYGATE_RT_REQUEST_QUEUE_CAPACITY")?
                 .unwrap_or(DEFAULT_REQUEST_QUEUE_CAPACITY),
@@ -77,6 +59,8 @@ impl RouteTableRuntimeConfig {
         } else {
             let material = load_internal_tls()?;
             Some(ServerTlsConfig::mutually_authenticated(
+                env::var("RELAYGATE_PEER_TLS_SERVER_NAME")
+                    .context("RELAYGATE_PEER_TLS_SERVER_NAME is required")?,
                 &material.ca,
                 &material.certificate,
                 &material.private_key,
@@ -86,9 +70,7 @@ impl RouteTableRuntimeConfig {
         Ok(Self {
             bind_address,
             shard,
-            trusted_gateways,
             service,
-            configured_gateways,
             tls,
         })
     }

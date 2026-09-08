@@ -7,11 +7,8 @@ async fn same_direction_duplicate_preserves_ready_transport_for_open_and_data() 
     let gateway_a = GatewayId::new();
     let gateway_b = GatewayId::new();
     let shutdown = CancellationToken::new();
-    let (handle_b, mut events_b, runtime_b) = PeerRuntime::start(
-        test_config("gateway-b", "key-b", "gateway-a", "key-a")?,
-        gateway_b,
-        shutdown.clone(),
-    )?;
+    let (handle_b, mut events_b, runtime_b) =
+        PeerRuntime::start(test_config("gateway-b")?, gateway_b, shutdown.clone())?;
     let serve = tokio::spawn(runtime_b.serve(listener));
 
     let first_transport_id = PeerTransportId::new();
@@ -185,7 +182,6 @@ fn handshake(
 ) -> TestResult<PeerHandshake> {
     Ok(PeerHandshake {
         gateway_name: PeerGatewayName::new("gateway-a")?,
-        internal_gateway_key: PeerGatewayKey::new("key-a")?,
         gateway_id: gateway_a,
         expected_peer_gateway_id: gateway_b,
         dialer_gateway_id: gateway_a,

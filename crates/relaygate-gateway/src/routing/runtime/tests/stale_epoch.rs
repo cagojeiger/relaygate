@@ -6,8 +6,8 @@ use relaygate_route_table::{
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
-    ErrorCode, GatewayName, InternalGatewayKey, RouteTableClientConfig, RouteTableService,
-    RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
+    ErrorCode, GatewayName, RouteTableClientConfig, RouteTableService, RouteTableServiceConfig,
+    TransportError,
 };
 use tokio::{net::TcpListener, sync::watch};
 use tokio_util::sync::CancellationToken;
@@ -34,7 +34,6 @@ async fn stale_epoch_case() -> TestResult {
     let directory = one_shard_directory(proxy.endpoint())?;
     let gateway_id = GatewayId::from_uuid(Uuid::from_u128(100));
     let gateway_name = GatewayName::new("gw-worker-epoch")?;
-    let gateway_key = InternalGatewayKey::new("worker-epoch-test-key")?;
     let route_shutdown = CancellationToken::new();
     let route_task = tokio::spawn(
         RouteTableService::new(
@@ -43,7 +42,6 @@ async fn stale_epoch_case() -> TestResult {
                 ShardId::new("rt-0")?,
                 RouteTableConfig::new(Duration::from_secs(30))?,
             )?,
-            TrustedGatewayKeys::new([(gateway_name.clone(), gateway_key.clone())])?,
             RouteTableServiceConfig::new(16, 16, 4, 256 * 1024, Duration::from_secs(1))?,
         )
         .serve(route_listener, route_shutdown.clone()),
@@ -54,7 +52,6 @@ async fn stale_epoch_case() -> TestResult {
         GatewayRoutingConfig::new(
             directory,
             gateway_name,
-            gateway_key,
             GatewayLocator::new("gw-worker-epoch.internal:27431")?,
             RouteTableClientConfig::new(
                 16,

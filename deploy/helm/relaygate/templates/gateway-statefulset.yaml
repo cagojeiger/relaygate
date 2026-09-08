@@ -89,11 +89,6 @@ spec:
               value: "$(POD_NAME)"
             - name: RELAYGATE_GATEWAY_LOCATOR
               value: "$(POD_NAME).{{ include "relaygate.gatewayPeerServiceName" . }}.$(POD_NAMESPACE).svc.{{ .Values.clusterDomain }}:{{ .Values.gateway.peerPort }}"
-            - name: RELAYGATE_INTERNAL_GATEWAY_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.credentials.existingSecret | quote }}
-                  key: {{ .Values.credentials.internalGatewayKeysKey | quote }}
             - name: RELAYGATE_CLUSTER_TOKEN
               valueFrom:
                 secretKeyRef:

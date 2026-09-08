@@ -5,8 +5,8 @@ use relaygate_route_table::{
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
-    GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig, RouteTableService,
-    RouteTableServiceConfig, TrustedGatewayKeys,
+    GatewayName, RouteTableClient, RouteTableClientConfig, RouteTableService,
+    RouteTableServiceConfig,
 };
 use tokio::{net::TcpListener, time::timeout};
 use tokio_util::sync::CancellationToken;
@@ -30,7 +30,6 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
     let generation = directory.generation();
     let gateway_id = gateway(1_000);
     let gateway_name = GatewayName::new("gw-multi-shard")?;
-    let gateway_key = InternalGatewayKey::new("multi-shard-key")?;
     let service_config =
         RouteTableServiceConfig::new(32, 32, 8, 256 * 1024, Duration::from_secs(1))?;
     let lease_ttl = Duration::from_secs(3);
@@ -42,8 +41,6 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         directory.clone(),
         "rt-0",
         lease_ttl,
-        gateway_name.clone(),
-        gateway_key.clone(),
         service_config,
         shutdown_0.clone(),
     )?;
@@ -52,8 +49,6 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         directory.clone(),
         "rt-1",
         lease_ttl,
-        gateway_name.clone(),
-        gateway_key.clone(),
         service_config,
         shutdown_1.clone(),
     )?;
@@ -70,7 +65,6 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         GatewayRoutingConfig::new(
             directory.clone(),
             gateway_name.clone(),
-            gateway_key.clone(),
             GatewayLocator::new("gw-multi-shard.internal:27431")?,
             client_config,
         )
@@ -109,22 +103,10 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         RouteDependencyHealth::Ready
     );
 
-    let lease_client_0 = connect_lease_client(
-        endpoint_0,
-        gateway_name.clone(),
-        gateway_id,
-        gateway_key.clone(),
-        client_config,
-    )
-    .await?;
-    let lease_client_1 = connect_lease_client(
-        endpoint_1,
-        gateway_name.clone(),
-        gateway_id,
-        gateway_key.clone(),
-        client_config,
-    )
-    .await?;
+    let lease_client_0 =
+        connect_lease_client(endpoint_0, gateway_name.clone(), gateway_id, client_config).await?;
+    let lease_client_1 =
+        connect_lease_client(endpoint_1, gateway_name.clone(), gateway_id, client_config).await?;
     let relay_session_id = project_session_id(session_id);
     let key_0 = RegistrationKey::new(gateway_id, relay_session_id, ShardId::new("rt-0")?);
     let key_1 = RegistrationKey::new(gateway_id, relay_session_id, ShardId::new("rt-1")?);
@@ -202,7 +184,6 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
     let directory = two_live_shard_directory(endpoint_0, endpoint_1)?;
     let gateway_id = gateway(4_000);
     let gateway_name = GatewayName::new("gw-terminal-shard")?;
-    let gateway_key = InternalGatewayKey::new("correct-key")?;
     let service_config =
         RouteTableServiceConfig::new(32, 32, 8, 256 * 1024, Duration::from_secs(1))?;
 
@@ -210,11 +191,9 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
     let shutdown_1 = CancellationToken::new();
     let task_0 = spawn_service(
         listener_0,
-        directory.clone(),
+        two_live_shard_directory(endpoint_0, "127.0.0.1:1".parse()?)?,
         "rt-0",
         Duration::from_secs(3),
-        gateway_name.clone(),
-        InternalGatewayKey::new("wrong-key")?,
         service_config,
         shutdown_0.clone(),
     )?;
@@ -223,8 +202,6 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
         directory.clone(),
         "rt-1",
         Duration::from_secs(3),
-        gateway_name.clone(),
-        gateway_key.clone(),
         service_config,
         shutdown_1.clone(),
     )?;
@@ -241,7 +218,6 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
         GatewayRoutingConfig::new(
             directory.clone(),
             gateway_name,
-            gateway_key,
             GatewayLocator::new("gw-terminal-shard.internal:27431")?,
             client_config,
         )
@@ -264,6 +240,17 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
         }],
     )?;
     wait_for_resolve(&handle, healthy_client.clone()).await?;
+    let broken_destination = clients_by_shard(&directory)?["rt-0"].clone();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let _ = handle.resolve(broken_destination.clone()).await;
+            if handle.current_counts().dependency_health == RouteDependencyHealth::Terminal {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
     wait_for_health(&handle, RouteDependencyHealth::Terminal).await?;
 
     let resolved = handle.resolve(healthy_client).await?;
@@ -284,8 +271,6 @@ fn spawn_service(
     directory: ShardDirectory,
     shard_id: &str,
     lease_ttl: Duration,
-    gateway_name: GatewayName,
-    gateway_key: InternalGatewayKey,
     config: RouteTableServiceConfig,
     shutdown: CancellationToken,
 ) -> TestResult<tokio::task::JoinHandle<Result<(), relaygate_route_table_transport::TransportError>>>
@@ -296,7 +281,6 @@ fn spawn_service(
             ShardId::new(shard_id)?,
             RouteTableConfig::new(lease_ttl)?,
         )?,
-        TrustedGatewayKeys::new([(gateway_name, gateway_key)])?,
         config,
     );
     Ok(tokio::spawn(service.serve(listener, shutdown)))
@@ -306,10 +290,9 @@ async fn connect_lease_client(
     endpoint: std::net::SocketAddr,
     gateway_name: GatewayName,
     gateway_id: relaygate_route_table::GatewayId,
-    gateway_key: InternalGatewayKey,
     config: RouteTableClientConfig,
 ) -> Result<RouteTableClient, relaygate_route_table_transport::TransportError> {
-    RouteTableClient::connect(endpoint, gateway_name, gateway_id, gateway_key, config).await
+    RouteTableClient::connect(endpoint, gateway_name, gateway_id, config).await
 }
 
 async fn wait_for_counts(handle: &RoutingHandle, synced: usize, unsynced: usize) -> TestResult {

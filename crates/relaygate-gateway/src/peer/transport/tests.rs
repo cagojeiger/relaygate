@@ -77,7 +77,7 @@ fn external_force_close_preserves_first_failure_reason() {
 }
 
 fn actor_for_open(writer_capacity: usize) -> Result<TestActor, Box<dyn Error>> {
-    let config = GatewayPeerConfig::new("gateway-a", "key-a", [])?
+    let config = GatewayPeerConfig::new("gateway-a")?
         .with_queue_bounds(4, 4, 4, writer_capacity, 2)
         .with_timeouts(
             std::time::Duration::from_millis(500),
@@ -576,7 +576,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
 #[tokio::test]
 async fn cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport()
 -> Result<(), Box<dyn Error>> {
-    let config = GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_queue_bounds(4, 4, 4, 4, 1);
+    let config = GatewayPeerConfig::new("gateway-a")?.with_queue_bounds(4, 4, 4, 4, 1);
     let peer_gateway_id = GatewayId::new();
     let peer_transport_id = PeerTransportId::new();
     let stream_ids = [
@@ -701,7 +701,7 @@ async fn cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport()
 
 #[tokio::test]
 async fn invalid_frame_during_local_opening_emits_failed_not_reset() -> Result<(), Box<dyn Error>> {
-    let config = GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_queue_bounds(4, 4, 4, 4, 2);
+    let config = GatewayPeerConfig::new("gateway-a")?.with_queue_bounds(4, 4, 4, 4, 2);
     let peer_gateway_id = GatewayId::new();
     let peer_transport_id = PeerTransportId::new();
     let stream_id = StreamId::from_raw(0);

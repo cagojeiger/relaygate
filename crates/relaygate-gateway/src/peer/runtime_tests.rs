@@ -18,12 +18,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     GatewayPeerConfig, OpenIdentity, PeerEvent, PeerFailure, PeerHandle, PeerOpenRequest,
-    PeerRuntime, PeerStreamKey, PeerTarget, TrustedPeerConfig,
+    PeerRuntime, PeerStreamKey, PeerTarget,
     codec::PeerFrameCodec,
     config::{ConnectGate, OpenCommitGate},
     event::PeerCounts,
     frame::PeerFrame,
-    identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId, StreamId},
+    identity::{PeerGatewayName, PeerHandshake, PeerTransportId, StreamId},
 };
 
 mod duplicate_cleanup;
@@ -52,20 +52,8 @@ impl RuntimePair {
     }
 
     async fn start_with_event_capacity(event_capacity: usize) -> TestResult<Self> {
-        let config_a = test_config_with_event_capacity(
-            "gateway-a",
-            "key-a",
-            "gateway-b",
-            "key-b",
-            event_capacity,
-        )?;
-        let config_b = test_config_with_event_capacity(
-            "gateway-b",
-            "key-b",
-            "gateway-a",
-            "key-a",
-            event_capacity,
-        )?;
+        let config_a = test_config_with_event_capacity("gateway-a", event_capacity)?;
+        let config_b = test_config_with_event_capacity("gateway-b", event_capacity)?;
         Self::start_with_configs(config_a, config_b).await
     }
 
@@ -132,34 +120,22 @@ impl RuntimePair {
     }
 }
 
-fn test_config(
-    local_name: &str,
-    local_key: &str,
-    peer_name: &str,
-    peer_key: &str,
-) -> Result<GatewayPeerConfig, crate::GatewayError> {
-    test_config_with_event_capacity(local_name, local_key, peer_name, peer_key, 64)
+fn test_config(local_name: &str) -> Result<GatewayPeerConfig, crate::GatewayError> {
+    test_config_with_event_capacity(local_name, 64)
 }
 
 fn test_config_with_event_capacity(
     local_name: &str,
-    local_key: &str,
-    peer_name: &str,
-    peer_key: &str,
     event_capacity: usize,
 ) -> Result<GatewayPeerConfig, crate::GatewayError> {
-    Ok(GatewayPeerConfig::new(
-        local_name,
-        local_key,
-        [TrustedPeerConfig::new(peer_name, peer_key)?],
-    )?
-    .with_queue_bounds(64, event_capacity, 64, 64, 8)
-    .with_resource_limits(64, 64, 16, 64 * 1024)
-    .with_timeouts(
-        Duration::from_millis(500),
-        Duration::from_millis(500),
-        Duration::from_secs(1),
-    ))
+    Ok(GatewayPeerConfig::new(local_name)?
+        .with_queue_bounds(64, event_capacity, 64, 64, 8)
+        .with_resource_limits(64, 64, 16, 64 * 1024)
+        .with_timeouts(
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+        ))
 }
 
 async fn next_event(events: &mut super::PeerEvents) -> TestResult<PeerEvent> {
@@ -223,9 +199,8 @@ async fn fast_opened_event_and_open_commit_reply_keep_exact_correlation() -> Tes
 #[tokio::test]
 async fn production_actor_queues_second_open_behind_paused_commit() -> TestResult {
     let gate = OpenCommitGate::new();
-    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
-        .with_open_commit_gate(gate.clone());
-    let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?;
+    let config_a = test_config("gateway-a")?.with_open_commit_gate(gate.clone());
+    let config_b = test_config("gateway-b")?;
     let mut pair = RuntimePair::start_with_configs(config_a, config_b).await?;
 
     let first_request = pair.request_a_to_b(1)?;
@@ -444,9 +419,8 @@ async fn ready_transport_is_reused_and_preserves_per_transport_data_order() -> T
 #[tokio::test]
 async fn simultaneous_opens_share_ready_transport_after_candidate_timeout() -> TestResult {
     let gate_a = ConnectGate::new();
-    let config_a =
-        test_config("gateway-a", "key-a", "gateway-b", "key-b")?.with_connect_gate(gate_a.clone());
-    let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?;
+    let config_a = test_config("gateway-a")?.with_connect_gate(gate_a.clone());
+    let config_b = test_config("gateway-b")?;
     let mut pair = RuntimePair::start_with_configs(config_a, config_b).await?;
 
     let request_a_to_b = pair.request_a_to_b(1)?;
@@ -578,54 +552,14 @@ async fn simultaneous_opens_share_ready_transport_after_candidate_timeout() -> T
 }
 
 #[tokio::test]
-async fn unknown_name_and_wrong_key_fail_unauthenticated_before_open_commit() -> TestResult {
-    assert_untrusted_peer_fails_before_open_commit("gateway-a", "wrong-key").await?;
-    assert_untrusted_peer_fails_before_open_commit("unknown-gateway", "key-a").await
-}
-
-async fn assert_untrusted_peer_fails_before_open_commit(
-    trusted_name: &str,
-    trusted_key: &str,
-) -> TestResult {
-    let listener_a = TcpListener::bind("127.0.0.1:0").await?;
-    let listener_b = TcpListener::bind("127.0.0.1:0").await?;
-    let gateway_a = GatewayId::new();
-    let gateway_b = GatewayId::new();
-    let locator_b = GatewayLocator::new(listener_b.local_addr()?.to_string())?;
-    let shutdown_a = CancellationToken::new();
-    let shutdown_b = CancellationToken::new();
-    let (handle_a, _events_a, runtime_a) = PeerRuntime::start(
-        test_config("gateway-a", "key-a", "gateway-b", "key-b")?,
-        gateway_a,
-        shutdown_a.clone(),
-    )?;
-    let (_handle_b, _events_b, runtime_b) = PeerRuntime::start(
-        test_config("gateway-b", "key-b", trusted_name, trusted_key)?,
-        gateway_b,
-        shutdown_b.clone(),
-    )?;
-    let serve_a = tokio::spawn(runtime_a.serve(listener_a));
-    let serve_b = tokio::spawn(runtime_b.serve(listener_b));
-    let request = PeerOpenRequest::new(
-        PeerTarget::new(gateway_b, locator_b),
-        OpenIdentity::new(gateway_a, SessionId::new(), 1),
-        "echo.b",
-        SessionId::new(),
-        BindingId::new(),
-    )?;
-    let failure = handle_a.open(request).await.err();
-    assert!(failure.is_some());
-    let failure = failure.ok_or("expected handshake failure")?;
-    assert_eq!(failure.code(), ErrorCode::Unauthenticated);
-    assert_eq!(failure.observation(), PeerObservation::NotObserved);
-    assert_eq!(handle_a.counts().ready, 0);
-    assert_eq!(handle_a.counts().streams, 0);
-
-    shutdown_a.cancel();
-    shutdown_b.cancel();
-    tokio::time::timeout(Duration::from_secs(2), serve_a).await???;
-    tokio::time::timeout(Duration::from_secs(2), serve_b).await???;
-    Ok(())
+async fn plaintext_peer_accepts_without_a_key_allowlist() -> TestResult {
+    let mut pair = RuntimePair::start().await?;
+    let request = pair.request_a_to_b(1)?;
+    let handle = pair.handle_a.clone();
+    let opened = tokio::spawn(async move { handle.open(request).await });
+    accept_one(&mut pair.events_b, &pair.handle_b).await?;
+    opened.await??;
+    pair.shutdown().await
 }
 
 #[tokio::test]
@@ -636,7 +570,7 @@ async fn handshake_timeout_fails_before_open_commit_and_leaves_no_transport_stat
     let gateway_b = GatewayId::new();
     let locator_b = GatewayLocator::new(blackhole.local_addr()?.to_string())?;
     let shutdown_a = CancellationToken::new();
-    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?.with_timeouts(
+    let config_a = test_config("gateway-a")?.with_timeouts(
         Duration::from_millis(500),
         Duration::from_millis(40),
         Duration::from_secs(1),
@@ -674,14 +608,14 @@ async fn handshake_timeout_fails_before_open_commit_and_leaves_no_transport_stat
 #[tokio::test]
 async fn cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate() -> TestResult {
     let gate = ConnectGate::new();
-    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
+    let config_a = test_config("gateway-a")?
         .with_connect_gate(gate.clone())
         .with_liveness(
             Duration::from_secs(1),
             Duration::from_secs(1),
             Duration::from_millis(200),
         );
-    let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?.with_liveness(
+    let config_b = test_config("gateway-b")?.with_liveness(
         Duration::from_secs(1),
         Duration::from_secs(1),
         Duration::from_millis(200),
@@ -738,14 +672,14 @@ async fn cancel_before_tcp_connect_never_flushes_open_and_retires_idle_candidate
 #[tokio::test]
 async fn tcp_connect_deadline_releases_candidate_and_open_identity_for_retry() -> TestResult {
     let gate = ConnectGate::new();
-    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
+    let config_a = test_config("gateway-a")?
         .with_timeouts(
             Duration::from_millis(75),
             Duration::from_millis(500),
             Duration::from_secs(1),
         )
         .with_connect_gate(gate.clone());
-    let config_b = test_config("gateway-b", "key-b", "gateway-a", "key-a")?;
+    let config_b = test_config("gateway-b")?;
     let mut pair = RuntimePair::start_with_configs(config_a, config_b).await?;
     let request = pair.request_a_to_b(1)?;
     let retry = request.clone();
@@ -793,7 +727,7 @@ async fn cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_t
     let gateway_b = GatewayId::new();
     let locator_b = GatewayLocator::new(delayed_peer.local_addr()?.to_string())?;
     let shutdown_a = CancellationToken::new();
-    let config_a = test_config("gateway-a", "key-a", "gateway-b", "key-b")?
+    let config_a = test_config("gateway-a")?
         .with_timeouts(
             Duration::from_millis(500),
             Duration::from_secs(1),
@@ -826,7 +760,6 @@ async fn cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_t
         framed
             .send(PeerFrame::Welcome(PeerHandshake {
                 gateway_name: PeerGatewayName::new("gateway-b")?,
-                internal_gateway_key: PeerGatewayKey::new("key-b")?,
                 gateway_id: gateway_b,
                 expected_peer_gateway_id: gateway_a,
                 dialer_gateway_id: gateway_a,
@@ -905,21 +838,14 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
     let gateway_a = GatewayId::new();
     let gateway_b = GatewayId::new();
     let shutdown = CancellationToken::new();
-    let peer_config = GatewayPeerConfig::new(
-        "gateway-b",
-        "key-b",
-        [
-            TrustedPeerConfig::new("gateway-a", "key-a")?,
-            TrustedPeerConfig::new("gateway-c", "key-c")?,
-        ],
-    )?
-    .with_queue_bounds(64, 64, 64, 64, 8)
-    .with_resource_limits(64, 64, 16, 64 * 1024)
-    .with_timeouts(
-        Duration::from_millis(500),
-        Duration::from_millis(500),
-        Duration::from_secs(1),
-    );
+    let peer_config = GatewayPeerConfig::new("gateway-b")?
+        .with_queue_bounds(64, 64, 64, 64, 8)
+        .with_resource_limits(64, 64, 16, 64 * 1024)
+        .with_timeouts(
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+        );
     let (handle_b, mut events_b, runtime_b) =
         PeerRuntime::start(peer_config, gateway_b, shutdown.clone())?;
     let serve = tokio::spawn(runtime_b.serve(listener));
@@ -930,7 +856,6 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
     invalid_framed
         .send(PeerFrame::Hello(PeerHandshake {
             gateway_name: PeerGatewayName::new("gateway-a")?,
-            internal_gateway_key: PeerGatewayKey::new("key-c")?,
             gateway_id: old_gateway_a,
             expected_peer_gateway_id: gateway_b,
             dialer_gateway_id: old_gateway_a,
@@ -957,7 +882,6 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
     old_framed
         .send(PeerFrame::Hello(PeerHandshake {
             gateway_name: PeerGatewayName::new("gateway-a")?,
-            internal_gateway_key: PeerGatewayKey::new("key-a")?,
             gateway_id: old_gateway_a,
             expected_peer_gateway_id: gateway_b,
             dialer_gateway_id: old_gateway_a,
@@ -998,7 +922,6 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
     framed
         .send(PeerFrame::Hello(PeerHandshake {
             gateway_name: PeerGatewayName::new("gateway-a")?,
-            internal_gateway_key: PeerGatewayKey::new("key-a")?,
             gateway_id: gateway_a,
             expected_peer_gateway_id: gateway_b,
             dialer_gateway_id: gateway_a,
@@ -1288,7 +1211,7 @@ async fn open_identity_is_unique_only_while_current_stream_is_active() -> TestRe
 
 #[test]
 fn config_debug_redacts_all_peer_keys() -> TestResult {
-    let config = test_config("gateway-a", "top-secret-a", "gateway-b", "top-secret-b")?;
+    let config = test_config("gateway-a")?;
     let rendered = format!("{config:?}");
     assert!(!rendered.contains("top-secret-a"));
     assert!(!rendered.contains("top-secret-b"));

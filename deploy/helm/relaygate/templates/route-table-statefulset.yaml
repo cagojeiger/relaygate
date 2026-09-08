@@ -23,7 +23,6 @@ spec:
     metadata:
       annotations:
         checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
-        relaygate.io/credentials-reload: {{ .Values.credentials.reloadToken | quote }}
         relaygate.io/internal-tls-reload: {{ .Values.tls.internal.reloadToken | quote }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
@@ -79,14 +78,11 @@ spec:
               value: "rt-$(POD_INDEX)"
             - name: RELAYGATE_RT_LEASE_TTL_MS
               value: {{ .Values.routeTable.leaseTtlMs | quote }}
-            - name: RELAYGATE_INTERNAL_GATEWAY_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.credentials.existingSecret | quote }}
-                  key: {{ .Values.credentials.internalGatewayKeysKey | quote }}
             - name: RELAYGATE_INTERNAL_TRANSPORT
               value: {{ .Values.tls.internal.mode | quote }}
             {{- if eq .Values.tls.internal.mode "mtls" }}
+            - name: RELAYGATE_PEER_TLS_SERVER_NAME
+              value: {{ .Values.tls.internal.gatewayServerName | quote }}
             - name: RELAYGATE_INTERNAL_TLS_CA_PATH
               value: /etc/relaygate/tls/internal/ca.crt
             - name: RELAYGATE_INTERNAL_TLS_CERT_PATH

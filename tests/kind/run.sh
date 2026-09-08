@@ -226,7 +226,6 @@ create_secrets() {
   local certificate_dir=$1
   kubectl create namespace "$NAMESPACE"
   kubectl -n "$NAMESPACE" create secret generic relaygate-credentials \
-    --from-literal=internal-gateway-keys="relaygate-gateway-0=$GATEWAY_KEY_0,relaygate-gateway-1=$GATEWAY_KEY_1,relaygate-gateway-2=$GATEWAY_KEY_2" \
     --from-literal=cluster-token="$CLUSTER_TOKEN"
   kubectl -n "$NAMESPACE" create secret generic relaygate-edge-tls \
     --from-file=ca.crt="$certificate_dir/ca.crt" \
@@ -523,7 +522,7 @@ assert_no_secret_or_payload_leak() {
   capture_evidence
   local marker
   for marker in \
-    "$CLUSTER_TOKEN" "$GATEWAY_KEY_0" "$GATEWAY_KEY_1" "$GATEWAY_KEY_2" \
+    "$CLUSTER_TOKEN" \
     'BEGIN PRIVATE KEY' 'hello relaygate' 'relaygate matrix entry='; do
     if grep -R -F -n -- "$marker" "$ARTIFACTS/logs" "$ARTIFACTS/metrics" >/dev/null; then
       echo "server evidence contains a protected marker" >&2
@@ -558,10 +557,7 @@ main() {
   CERTIFICATES=$TEMP_DIR/certificates
   mkdir -p "$CERTIFICATES"
   CLUSTER_TOKEN=kind-cluster-$(openssl rand -hex 16)
-  GATEWAY_KEY_0=kind-gateway-0-$(openssl rand -hex 16)
-  GATEWAY_KEY_1=kind-gateway-1-$(openssl rand -hex 16)
-  GATEWAY_KEY_2=kind-gateway-2-$(openssl rand -hex 16)
-  export CLUSTER_TOKEN GATEWAY_KEY_0 GATEWAY_KEY_1 GATEWAY_KEY_2 CERTIFICATES
+  export CLUSTER_TOKEN CERTIFICATES
 
   generate_certificates "$CERTIFICATES"
   write_kind_config "$TEMP_DIR/kind.yaml"

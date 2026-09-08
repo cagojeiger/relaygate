@@ -9,8 +9,7 @@ use relaygate_route_table::{
     ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
-    ErrorCode, GatewayName, InternalGatewayKey, RouteTableClientConfig, RouteTableService,
-    RouteTableServiceConfig, TrustedGatewayKeys,
+    ErrorCode, GatewayName, RouteTableClientConfig, RouteTableService, RouteTableServiceConfig,
 };
 use tokio::{net::TcpListener, time::Instant};
 use tokio_util::sync::CancellationToken;
@@ -405,7 +404,6 @@ fn routing_config_rejects_runtime_panics_before_start() -> TestResult {
     let config = GatewayRoutingConfig::new(
         one_shard_directory("127.0.0.1:27430")?,
         GatewayName::new("gw-a")?,
-        InternalGatewayKey::new("key")?,
         GatewayLocator::new("gw-a.internal:27431")?,
         RouteTableClientConfig::new(
             1,
@@ -453,7 +451,6 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
     let generation = directory.generation();
     let gateway_id = gateway(100);
     let gateway_name = GatewayName::new("gw-live")?;
-    let gateway_key = InternalGatewayKey::new("test-key")?;
     let shard = RouteTableShard::new(
         directory.clone(),
         ShardId::new("rt-0")?,
@@ -461,7 +458,6 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
     )?;
     let service = RouteTableService::new(
         shard,
-        TrustedGatewayKeys::new([(gateway_name.clone(), gateway_key.clone())])?,
         RouteTableServiceConfig::new(32, 32, 8, 256 * 1024, Duration::from_secs(1))?,
     );
     let client_config = RouteTableClientConfig::new(
@@ -476,7 +472,6 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
         GatewayRoutingConfig::new(
             directory.clone(),
             gateway_name.clone(),
-            gateway_key.clone(),
             GatewayLocator::new("gw-live.internal:27431")?,
             client_config,
         )
@@ -542,7 +537,6 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
     assert_eq!(restarted_shard.stats().mapping_count, 0);
     let restarted_service = RouteTableService::new(
         restarted_shard,
-        TrustedGatewayKeys::new([(gateway_name, gateway_key)])?,
         RouteTableServiceConfig::new(32, 32, 8, 256 * 1024, Duration::from_secs(1))?,
     );
     let restarted_shutdown = CancellationToken::new();
