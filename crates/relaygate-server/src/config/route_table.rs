@@ -1,6 +1,6 @@
 use std::{env, fs, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use relaygate_route_table::{RouteTableConfig, RouteTableShard, ShardDirectory, ShardId};
 use relaygate_route_table_transport::{
     GatewayName, InternalGatewayKey, RouteTableServiceConfig, TrustedGatewayKeys,
@@ -8,8 +8,8 @@ use relaygate_route_table_transport::{
 use relaygate_transport::ServerTlsConfig;
 
 use super::{
-    insecure_test_transport, load_internal_tls, optional_duration_millis, optional_usize,
-    parse_gateway_credentials,
+    InternalTransport, internal_transport, load_internal_tls, optional_duration_millis,
+    optional_usize, parse_gateway_credentials,
 };
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:27430";
@@ -32,11 +32,7 @@ pub(crate) struct RouteTableRuntimeConfig {
 
 impl RouteTableRuntimeConfig {
     pub(crate) fn from_env() -> Result<Self> {
-        let insecure = insecure_test_transport();
-        require_trusted_local_opt_in(
-            insecure,
-            env::var("RELAYGATE_RT_TRUSTED_LOCAL").ok().as_deref(),
-        )?;
+        let insecure = internal_transport()? == InternalTransport::Plaintext;
         let bind_address =
             env::var("RELAYGATE_RT_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned());
         let directory_path = env::var("RELAYGATE_RT_SHARD_DIRECTORY_PATH")
@@ -95,34 +91,5 @@ impl RouteTableRuntimeConfig {
             configured_gateways,
             tls,
         })
-    }
-}
-
-fn require_trusted_local_opt_in(insecure: bool, value: Option<&str>) -> Result<()> {
-    if insecure && value != Some("true") {
-        bail!(
-            "RELAYGATE_RT_TRUSTED_LOCAL must be `true` to enable the local/CI plain-TCP key adapter"
-        );
-    }
-    if !insecure && value.is_some() {
-        bail!(
-            "RELAYGATE_RT_TRUSTED_LOCAL is only valid with RELAYGATE_INSECURE_TEST_TRANSPORT=true"
-        );
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::require_trusted_local_opt_in;
-
-    #[test]
-    fn trusted_local_adapter_requires_exact_opt_in() {
-        assert!(require_trusted_local_opt_in(true, None).is_err());
-        assert!(require_trusted_local_opt_in(true, Some("false")).is_err());
-        assert!(require_trusted_local_opt_in(true, Some("TRUE")).is_err());
-        assert!(require_trusted_local_opt_in(true, Some("true")).is_ok());
-        assert!(require_trusted_local_opt_in(false, None).is_ok());
-        assert!(require_trusted_local_opt_in(false, Some("true")).is_err());
     }
 }

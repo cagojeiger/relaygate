@@ -35,6 +35,17 @@ kubectl -n relaygate create secret generic relaygate-credentials \
 
 ## TLS source
 
+SDK edge TLS와 내부 전송은 독립 설정이다. 기본 `tls.internal.mode=mtls`는 내부 인증서를 요구한다.
+격리된 테스트 환경에서는 다음 설정으로 내부 인증서 없이 설치한다. SDK edge Secret과 credential Secret은 유지한다.
+
+```yaml
+tls:
+  internal:
+    mode: plaintext
+```
+
+plain TCP에서는 내부 키와 payload가 암호화되지 않는다. 모드 전환은 GW/RT를 함께 변경하는 maintenance 작업이다.
+
 | 구간 | mode | 공급 방식 |
 | --- | --- | --- |
 | SDK edge | `customCa` | edge Secret의 CA/certificate/key |
@@ -48,6 +59,7 @@ cert-manager mode는 platform-owned Issuer와 CA trust Secret을 사용합니다
 tls:
   internal:
     source: certManager
+    autoReload: true
     gatewayServerName: relaygate-gateway.internal
     routeTableServerName: relaygate-route-table.internal
     certManager:
@@ -62,6 +74,13 @@ tls:
 
 cert-manager는 leaf를 갱신하고 `tls.internal.reloadToken` 또는 platform reloader가 renewed Secret을
 Gateway/RT rollout으로 적용합니다. CA rotation은 old/new trust overlap과 leaf 재발급 순서로 진행합니다.
+
+`autoReload`는 설치된 Stakater Reloader를 사용하며 내부 trust와 해당 role leaf Secret만 watch한다.
+GitOps 환경의 Reloader는 `--reload-strategy=annotations`와
+`/spec/template/metadata/annotations/reloader.stakater.com~1last-reloaded-from`의 ArgoCD ignoreDifferences를
+함께 설정한다. `RespectIgnoreDifferences=true`로 controller annotation을 sync에서도 보존한다.
+갱신 rollout은 graceful drain을 사용하며 deadline 뒤 기존 Pipe가 끊길 수 있다.
+CA 키는 Issuer에만 제공하고 GW/RT에는 공개 trust bundle과 해당 role leaf만 mount한다.
 
 ## 설치
 

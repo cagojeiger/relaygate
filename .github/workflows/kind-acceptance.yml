@@ -31,9 +31,22 @@ env:
 
 jobs:
   acceptance:
-    name: RT2/GW3 Kind acceptance
+    name: RT2/GW3 Kind (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mtls
+            internal-transport: mtls
+            internal-source: existingSecret
+          - name: plaintext
+            internal-transport: plaintext
+            internal-source: existingSecret
+          - name: cert-manager
+            internal-transport: mtls
+            internal-source: certManager
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -60,17 +73,21 @@ jobs:
       - name: Validate acceptance harness
         run: |
           bash -n tests/kind/run.sh
-          docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 \
-            /mnt/tests/kind/run.sh
+          bash -n tests/kind/certificates.sh
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.10.0 \
+            -x tests/kind/run.sh tests/kind/certificates.sh
 
       - name: Run Kind acceptance
+        env:
+          RELAYGATE_KIND_INTERNAL_TRANSPORT: ${{ matrix.internal-transport }}
+          RELAYGATE_KIND_INTERNAL_SOURCE: ${{ matrix.internal-source }}
         run: tests/kind/run.sh
 
       - name: Upload acceptance evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: relaygate-kind-acceptance
+          name: relaygate-kind-acceptance-${{ matrix.name }}
           path: target/kind-acceptance
           if-no-files-found: error
           retention-days: 14

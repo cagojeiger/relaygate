@@ -70,6 +70,7 @@ jobs:
 
       - name: Validate Helm chart
         run: |
+          python3 .github/scripts/helm_transport_test.py -v
           mkdir -p target/helm
           helm lint --strict deploy/helm/relaygate \
             --kube-version 1.32.0

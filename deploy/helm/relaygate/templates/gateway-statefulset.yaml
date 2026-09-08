@@ -4,6 +4,10 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: {{ include "relaygate.gatewayName" . | quote }}
+  {{- if .Values.tls.internal.autoReload }}
+  annotations:
+    secret.reloader.stakater.com/reload: {{ include "relaygate.internalReloadSecrets" (dict "root" . "component" "gateway") | quote }}
+  {{- end }}
   labels:
     {{- include "relaygate.labels" (dict "root" . "component" "gateway") | nindent 4 }}
 spec:
@@ -111,6 +115,9 @@ spec:
               value: /etc/relaygate/tls/edge/tls.key
             - name: RELAYGATE_SDK_TLS_SERVER_NAME
               value: {{ .Values.tls.edge.serverName | quote }}
+            - name: RELAYGATE_INTERNAL_TRANSPORT
+              value: {{ .Values.tls.internal.mode | quote }}
+            {{- if eq .Values.tls.internal.mode "mtls" }}
             - name: RELAYGATE_INTERNAL_TLS_CA_PATH
               value: /etc/relaygate/tls/internal/ca.crt
             - name: RELAYGATE_INTERNAL_TLS_CERT_PATH
@@ -121,6 +128,7 @@ spec:
               value: {{ .Values.tls.internal.gatewayServerName | quote }}
             - name: RELAYGATE_RT_TLS_SERVER_NAME
               value: {{ .Values.tls.internal.routeTableServerName | quote }}
+            {{- end }}
             - name: RELAYGATE_LOG
               value: {{ .Values.gateway.log | quote }}
             - name: RELAYGATE_LOG_FORMAT
@@ -173,9 +181,11 @@ spec:
             - name: edge-tls
               mountPath: /etc/relaygate/tls/edge
               readOnly: true
+            {{- if eq .Values.tls.internal.mode "mtls" }}
             - name: internal-tls
               mountPath: /etc/relaygate/tls/internal
               readOnly: true
+            {{- end }}
       volumes:
         - name: shard-directory
           configMap:
@@ -194,6 +204,7 @@ spec:
                 path: tls.crt
               - key: {{ .Values.tls.edge.privateKeyKey | quote }}
                 path: tls.key
+        {{- if eq .Values.tls.internal.mode "mtls" }}
         - name: internal-tls
           {{ if eq .Values.tls.internal.source "certManager" }}
           projected:
@@ -223,6 +234,7 @@ spec:
               - key: {{ .Values.tls.internal.gatewayPrivateKeyKey | quote }}
                 path: tls.key
           {{ end }}
+        {{- end }}
       {{- with .Values.gateway.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

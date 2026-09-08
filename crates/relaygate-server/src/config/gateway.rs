@@ -1,6 +1,6 @@
 use std::{env, fs, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use relaygate_gateway::{
     GatewayConfig, GatewayPeerConfig, GatewayRoutingConfig, TrustedPeerConfig,
 };
@@ -9,8 +9,8 @@ use relaygate_route_table_transport::{GatewayName, InternalGatewayKey, RouteTabl
 use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
 
 use super::{
-    insecure_test_transport, load_internal_tls, optional_duration_millis, optional_usize,
-    parse_gateway_credentials,
+    InternalTransport, insecure_test_transport, internal_transport, load_internal_tls,
+    optional_duration_millis, optional_usize, parse_gateway_credentials,
 };
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:27420";
@@ -124,17 +124,7 @@ fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
     {
         return Ok(None);
     }
-    let insecure = insecure_test_transport();
-    if insecure && env::var("RELAYGATE_RT_TRUSTED_LOCAL").ok().as_deref() != Some("true") {
-        bail!(
-            "RELAYGATE_RT_TRUSTED_LOCAL must be `true` to enable distributed Gateway routing over the local/CI plain-TCP key adapter"
-        );
-    }
-    if !insecure && env::var_os("RELAYGATE_RT_TRUSTED_LOCAL").is_some() {
-        bail!(
-            "RELAYGATE_RT_TRUSTED_LOCAL is only valid with RELAYGATE_INSECURE_TEST_TRANSPORT=true"
-        );
-    }
+    let insecure = internal_transport()? == InternalTransport::Plaintext;
 
     let directory_path = env::var("RELAYGATE_RT_SHARD_DIRECTORY_PATH")
         .context("RELAYGATE_RT_SHARD_DIRECTORY_PATH is required for distributed Gateway mode")?;

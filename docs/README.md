@@ -9,6 +9,8 @@ RFC   외부 표준의 개념 색인
 
 ## 구조
 
+아래 그림은 기본 보안 모드다. 내부 plaintext 선택은 [ADR 014](adr/014-explicit-internal-transport-mode.md)를 따른다.
+
 ```mermaid
 flowchart LR
     RA[Relay A<br/>listen · dial<br/>Listener::accept] -->|TLS + ClusterToken| GWA[Gateway A]
@@ -43,7 +45,7 @@ dial 1회 ──► eligible Binding 1개 ──► Pipe 1개
 | SDK·주소·접근 | [ADR 002](adr/002-symmetric-relay-session.md), [ADR 003](adr/003-application-owned-destination.md), [ADR 004](adr/004-cluster-token-session-admission.md) |
 | control·data plane | [ADR 005](adr/005-current-state-routing-topology.md), [ADR 006](adr/006-soft-state-registration-lifecycle.md), [ADR 007](adr/007-one-hop-peer-multiplexing.md) |
 | 생존·운영 | [ADR 008](adr/008-transport-liveness-and-idle-retirement.md), [ADR 009](adr/009-operational-health-boundaries.md), [ADR 010](adr/010-bounded-gateway-drain-and-reconnect-jitter.md) |
-| transport·certificate | [ADR 011](adr/011-sdk-transport-and-l4-boundary.md), [ADR 012](adr/012-public-edge-webpki-trust.md), [ADR 013](adr/013-cert-manager-internal-leaf-certificates.md) |
+| transport·certificate | [ADR 011](adr/011-sdk-transport-and-l4-boundary.md), [ADR 012](adr/012-public-edge-webpki-trust.md), [ADR 013](adr/013-cert-manager-internal-leaf-certificates.md), [ADR 014](adr/014-explicit-internal-transport-mode.md) |
 | current contract | [SPEC](spec/) |
 | executable evidence | [TEST 001](test/001-requirement-test-matrix.md) |
 | standards background | [RFC](rfc/) |

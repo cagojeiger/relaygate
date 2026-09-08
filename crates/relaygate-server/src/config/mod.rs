@@ -1,5 +1,6 @@
 mod gateway;
 mod route_table;
+mod transport;
 
 use std::{env, fs, time::Duration};
 
@@ -9,6 +10,7 @@ use tokio::time::Instant;
 
 pub(crate) use gateway::GatewayRuntimeConfig;
 pub(crate) use route_table::RouteTableRuntimeConfig;
+use transport::{InternalTransport, internal_transport};
 
 pub(super) struct InternalTlsMaterial {
     pub(super) ca: Vec<u8>,

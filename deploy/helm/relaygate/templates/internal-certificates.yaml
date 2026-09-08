@@ -1,5 +1,5 @@
 {{- include "relaygate.validateValues" . }}
-{{- if eq .Values.tls.internal.source "certManager" }}
+{{- if and (eq .Values.tls.internal.mode "mtls") (eq .Values.tls.internal.source "certManager") }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

@@ -24,11 +24,11 @@ pub(crate) async fn serve(
     if insecure {
         tracing::warn!(
             component = "route_table",
-            event = "route_table.trusted_local_enabled",
+            event = "route_table.transport.plaintext_enabled",
             role = "route_table",
             transport = "plain_tcp",
             authentication = "reusable_key",
-            "trusted-local RouteTable adapter is enabled; plain TCP is for tests only"
+            "internal plaintext transport selected; keys and payload are not encrypted"
         );
     }
 

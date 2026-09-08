@@ -2,11 +2,15 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=tests/kind/certificates.sh
+source "$ROOT/tests/kind/certificates.sh"
 CLUSTER_NAME=${RELAYGATE_KIND_CLUSTER_NAME:-relaygate-v02-${GITHUB_RUN_ID:-$$}}
 NODE_IMAGE=${RELAYGATE_KIND_NODE_IMAGE:-kindest/node:v1.32.2}
 ENVOY_IMAGE=${RELAYGATE_ENVOY_IMAGE:-envoyproxy/envoy:v1.33.4}
 ARTIFACTS=${RELAYGATE_KIND_ARTIFACTS:-$ROOT/target/kind-acceptance}
 KEEP_CLUSTER=${RELAYGATE_KIND_KEEP_CLUSTER:-false}
+INTERNAL_TRANSPORT=${RELAYGATE_KIND_INTERNAL_TRANSPORT:-mtls}
+INTERNAL_SOURCE=${RELAYGATE_KIND_INTERNAL_SOURCE:-existingSecret}
 NAMESPACE=relaygate
 RELEASE=relaygate
 IMAGE_TAG=kind-${GITHUB_SHA:-local}
@@ -157,7 +161,7 @@ cleanup() {
 
 generate_certificates() {
   local directory=$1
-  openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
     -subj '/CN=relaygate-kind-ca' \
     -keyout "$directory/ca.key" -out "$directory/ca.crt" >/dev/null 2>&1
 
@@ -228,6 +232,9 @@ create_secrets() {
     --from-file=ca.crt="$certificate_dir/ca.crt" \
     --from-file=tls.crt="$certificate_dir/edge.crt" \
     --from-file=tls.key="$certificate_dir/edge.key"
+  if [[ "$INTERNAL_TRANSPORT" == plaintext || "$INTERNAL_SOURCE" == certManager ]]; then
+    return
+  fi
   kubectl -n "$NAMESPACE" create secret generic relaygate-internal-tls \
     --from-file=ca.crt="$certificate_dir/ca.crt" \
     --from-file=gateway.crt="$certificate_dir/internal-gateway.crt" \
@@ -528,6 +535,15 @@ assert_no_secret_or_payload_leak() {
 main() {
   require_commands
   cd "$ROOT"
+  case "$INTERNAL_TRANSPORT" in
+    mtls|plaintext) ;;
+    *) echo "RELAYGATE_KIND_INTERNAL_TRANSPORT must be mtls or plaintext" >&2; return 1 ;;
+  esac
+  case "$INTERNAL_SOURCE" in
+    existingSecret) ;;
+    certManager) [[ "$INTERNAL_TRANSPORT" == mtls ]] || return 1 ;;
+    *) echo "RELAYGATE_KIND_INTERNAL_SOURCE must be existingSecret or certManager" >&2; return 1 ;;
+  esac
   case "$ARTIFACTS" in
     "$ROOT"/target/*) ;;
     *)
@@ -566,8 +582,20 @@ main() {
   kind load docker-image --name "$CLUSTER_NAME" "$GATEWAY_IMAGE" "$ROUTE_TABLE_IMAGE"
 
   create_secrets "$CERTIFICATES"
+  local -a certificate_args=()
+  if [[ "$INTERNAL_SOURCE" == certManager ]]; then
+    install_certificate_controllers
+    certificate_args=(
+      --set tls.internal.source=certManager
+      --set tls.internal.autoReload=true
+      --set tls.internal.certManager.issuerRef.name=relaygate-internal
+      --set tls.internal.certManager.issuerRef.kind=Issuer
+      --set tls.internal.certManager.trustSecret.name=internal-public-trust
+    )
+  fi
   helm upgrade --install "$RELEASE" deploy/helm/relaygate \
     --namespace "$NAMESPACE" \
+    --set-string tls.internal.mode="$INTERNAL_TRANSPORT" \
     --set-string gateway.image.repository=relaygate-gateway \
     --set-string gateway.image.tag="$IMAGE_TAG" \
     --set gateway.image.pullPolicy=IfNotPresent \
@@ -580,6 +608,7 @@ main() {
     --set metrics.intervalMs=1000 \
     --set gateway.drainTimeoutMs=10000 \
     --set gateway.terminationGracePeriodSeconds=20 \
+    "${certificate_args[@]}" \
     --wait --timeout 180s
   apply_host_access
   apply_envoy_passthrough
@@ -671,6 +700,10 @@ main() {
   wait_for_destination "$DESTINATION_C"
   run_probe gateway-rolling matrix
   record_pass KIND-11 'Gateway rolling restart reconnect and republish'
+
+  if [[ "$INTERNAL_SOURCE" == certManager ]]; then
+    verify_certificate_reissue_rollout
+  fi
 
   RELAYGATE_ADDR=127.0.0.1:28420 \
     RELAYGATE_DESTINATION_ID="$DESTINATION_A" \

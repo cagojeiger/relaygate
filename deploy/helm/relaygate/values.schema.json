@@ -110,6 +110,8 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "mode",
+            "autoReload",
             "source",
             "existingSecret",
             "caKey",
@@ -123,6 +125,8 @@
             "certManager"
           ],
           "properties": {
+            "mode": { "type": "string", "enum": ["mtls", "plaintext"] },
+            "autoReload": { "type": "boolean" },
             "source": {
               "type": "string",
               "enum": ["existingSecret", "certManager"]

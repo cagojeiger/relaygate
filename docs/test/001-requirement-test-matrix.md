@@ -11,7 +11,7 @@
 | `T-DIAL-01` | `DIAL-001`, `DIAL-002`, `DIAL-003`, `DIAL-004`, `DIAL-005`, `DIAL-006`, `DIAL-007`, `DIAL-008`, `DIAL-009`, `DIAL-010`, `DIAL-011`, `DIAL-012` | local/remote dial, self exclusion, 단일 선택, timeout/cancel/observation과 bounded admission |
 | `T-PEER-01` | `PEER-001`, `PEER-002`, `PEER-003`, `PEER-004`, `PEER-005`, `PEER-006`, `PEER-007`, `PEER-008`, `PEER-009`, `PEER-010`, `PEER-011`, `PEER-012` | one-hop multiplexing, direction arbitration, heartbeat/idle/terminal cleanup |
 | `T-STATE-01` | `STATE-001`, `STATE-002`, `STATE-003`, `STATE-004`, `STATE-005`, `STATE-006`, `STATE-007`, `STATE-008` | terminal no-resurrection, owner-scoped cleanup, RT 독립, admission 격리와 idempotent convergence |
-| `T-SEC-01` | `SEC-001`, `SEC-002`, `SEC-003`, `SEC-004`, `SEC-005`, `SEC-006`, `SEC-007`, `SEC-008`, `SEC-009`, `SEC-010`, `SEC-011` | 명시적 TLS/TCP, server name/ALPN, mTLS, token, Secret 분리와 L4 passthrough |
+| `T-SEC-01` | `SEC-001`, `SEC-002`, `SEC-003`, `SEC-004`, `SEC-005`, `SEC-006`, `SEC-007`, `SEC-008`, `SEC-009`, `SEC-010`, `SEC-011` | SDK TLS/TCP, server name/ALPN, 내부 mtls/plaintext 선택, token, Secret 분리, L4 passthrough, unknown/혼용 mode startup rejection |
 | `T-OBS-01` | `OBS-001`, `OBS-002`, `OBS-003`, `OBS-004`, `OBS-005`, `OBS-006`, `OBS-007`, `OBS-008`, `OBS-009`, `OBS-010`, `OBS-011`, `OBS-012`, `OBS-013` | health·RED/USE·latency·cleanup·redaction; PromQL과 DATA probe 증거는 [TEST 006](006-local-observability-test-plan.md) |
 
 모든 requirement는 위 표의 그룹 하나와 [실행 증거 인덱스](001-executable-coverage.toml)에 연결됩니다.

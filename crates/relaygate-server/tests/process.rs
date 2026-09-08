@@ -34,6 +34,9 @@ use relaygate_route_table_transport::{
 
 const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
 const TEST_CLUSTER_TOKEN: &str = "relaygate-process-test-token";
+
+#[path = "process/transport_modes.rs"]
+mod transport_modes;
 const DESTINATION_A: &str = "11111111-1111-4111-8111-111111111111";
 const DESTINATION_MISSING: &str = "99999999-9999-4999-8999-999999999999";
 #[cfg(unix)]
@@ -232,7 +235,7 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
     assert_eq!(started["configured_gateways"], 1);
     let trusted_local_warning = records
         .iter()
-        .find(|record| record["event"] == "route_table.trusted_local_enabled")
+        .find(|record| record["event"] == "route_table.transport.plaintext_enabled")
         .ok_or("missing RouteTable trusted-local warning event")?;
     assert_eq!(trusted_local_warning["component"], "route_table");
     assert_eq!(trusted_local_warning["transport"], "plain_tcp");
@@ -335,7 +338,7 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
     assert_eq!(started["distributed_enabled"], true);
     let warning = records
         .iter()
-        .find(|record| record["event"] == "gateway.route_table.trusted_local_enabled")
+        .find(|record| record["event"] == "gateway.internal_transport.plaintext_enabled")
         .ok_or("missing distributed Gateway trusted-local warning")?;
     assert_eq!(warning["transport"], "plain_tcp");
     Ok(())
@@ -1065,6 +1068,12 @@ fn clean_server_command(mut command: Command) -> Command {
     for name in [
         "RELAYGATE_BIND_ADDR",
         "RELAYGATE_INSECURE_TEST_TRANSPORT",
+        "RELAYGATE_INTERNAL_TRANSPORT",
+        "RELAYGATE_INTERNAL_TLS_CA_PATH",
+        "RELAYGATE_INTERNAL_TLS_CERT_PATH",
+        "RELAYGATE_INTERNAL_TLS_KEY_PATH",
+        "RELAYGATE_PEER_TLS_SERVER_NAME",
+        "RELAYGATE_RT_TLS_SERVER_NAME",
         "RELAYGATE_CLUSTER_TOKEN",
         "RELAYGATE_NEXT_CLUSTER_TOKEN",
         "RELAYGATE_GATEWAY_LOCATOR",

@@ -4,6 +4,9 @@ State와 event 의미의 기준 문서입니다.
 
 ## 오류
 
+process startup에서 unknown transport mode·legacy test flag 혼용·mTLS material 누락은 listener를
+열기 전에 실패한다. 연결 후 TLS/mTLS 실패는 terminal connection failure이며 plaintext로 전환하지 않는다.
+
 | code | 대표 조건 | 새 operation 조건 |
 | --- | --- | --- |
 | `INVALID_ARGUMENT` | UUID/config/frame 오류 | 입력 변경 |
