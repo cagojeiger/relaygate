@@ -1,4 +1,4 @@
-# ADR 005: Route mapping은 active lease에 연결된 soft state다
+# ADR 002: Route mapping은 active lease에 연결된 soft state다
 
 | 항목 | 결정 |
 | --- | --- |

@@ -1,4 +1,4 @@
-# ADR 016: cert-manager는 내부 leaf certificate를 자동화한다
+# ADR 012: cert-manager는 내부 leaf certificate를 자동화한다
 
 | 항목 | 결정 |
 | --- | --- |

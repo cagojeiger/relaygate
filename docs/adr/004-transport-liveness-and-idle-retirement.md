@@ -1,4 +1,4 @@
-# ADR 007: Transport liveness와 idle retirement를 분리한다
+# ADR 004: Transport liveness와 idle retirement를 분리한다
 
 | 항목 | 결정 |
 | --- | --- |
