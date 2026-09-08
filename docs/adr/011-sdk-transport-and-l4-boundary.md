@@ -26,7 +26,7 @@ public L4
 | TLS verification | certificate chain, server name, `relaygate/2` ALPN |
 | edge termination | RelayGate Gateway process |
 | internal identity | mTLS certificate와 logical handshake의 일치 |
-| certificate load | process startup, reload token 또는 platform reloader가 rollout |
+| certificate load | process startup, platform이 갱신 적용을 위한 rollout 관리 |
 | Helm ownership | Gateway/RT Service와 Secret wiring |
 | platform ownership | public GatewayClass, L4 route, load balancer, Issuer·CA |
 

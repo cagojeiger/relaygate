@@ -1,45 +1,26 @@
-# ADR 013: cert-manager는 내부 leaf certificate를 자동화한다
+# ADR 013: 인증서 생명주기는 배포자가 소유한다
 
-| 항목 | 결정 |
+| 소유자 | 책임 |
 | --- | --- |
-| 상태 | Accepted, implemented |
-| 기본 source | operator-managed `existingSecret` |
-| 선택 source | cert-manager role별 leaf Certificate |
+| 배포자 / GitOps | Certificate·Issuer·CA·Secret 공급, 갱신과 rollout 정책 |
+| Helm chart | 기존 Secret 참조·mount, 범용 workload annotation 전달 |
+| runtime | startup 시 인증서 load, TLS·mTLS 검증 |
 
-## 결정
-
-```mermaid
-flowchart LR
-    I[Platform Issuer / ClusterIssuer] --> GC[Gateway Certificate]
-    I --> RC[RouteTable Certificate]
-    CA[Platform CA trust Secret] --> GW[Gateway]
-    CA --> RT[RouteTable]
-    GC -->|Gateway leaf Secret| GW
-    RC -->|RT leaf Secret| RT
+```text
+사용자 선택: 수동 발급 / cert-manager / 기타 공급 도구
+                         ↓
+               trust · GW leaf · RT leaf Secret
+                         ↓
+                   Gateway / RouteTable
 ```
 
-| 소유자 | 자산·동작 |
-| --- | --- |
-| platform | Issuer, CA private key, public trust bundle, CA rotation |
-| cert-manager | role별 leaf 발급과 만료 전 갱신 |
-| Helm | Certificate resource와 trust/leaf Secret mount |
-| Gateway | Gateway leaf로 peer server 및 peer/RT client auth |
-| RouteTable | RT leaf로 server auth |
-| runtime | startup 시 certificate file load |
-| rollout controller | reload token 또는 reloader로 renewed Secret 적용 |
+Gateway leaf는 Gateway 역할 SAN과 clientAuth/serverAuth를, RT leaf는 RT 역할 SAN과 serverAuth를 가진다.
+runtime은 공개 trust와 자기 역할 leaf만 사용하며 CA private key를 소유하지 않는다.
 
-`tls.internal.autoReload=true`는 StatefulSet metadata에 role별 leaf·공개 trust Secret의 Reloader
-watch를 설정한다. cert-manager와 Reloader controller는 platform에 설치되어 있어야 한다.
-Vault에는 admission credential과 CA 서명 자산을 보관하고, leaf는 cert-manager가 Kubernetes Secret으로 관리한다.
-
-CA rotation은 old/new trust overlap 후 leaf 재발급 순서로 수행합니다. logical Gateway/shard handshake는
-mTLS identity 위에서 기존 protocol 검증을 계속 담당합니다.
+갱신 Secret은 배포자의 rollout 정책으로 적용한다. CA rotation은 old/new trust overlap 후 leaf를 교체한다.
+전송·논리적 handshake·SDK 재연결 계약은 인증서 공급 방식과 독립적이다.
 
 ## 참고
 
 - [cert-manager Certificate](https://cert-manager.io/docs/usage/certificate/)
-- [cert-manager trust](https://cert-manager.io/docs/trust/)
 - [cert-manager CA Issuer](https://cert-manager.io/docs/configuration/ca/)
-
-Gateway leaf는 Gateway 역할 DNS SAN과 clientAuth/serverAuth를, RT leaf는 RT DNS SAN과 serverAuth를 가진다.
-Vault 최소 구성은 SDK `cluster_token`과 내부 CA의 `ca_crt`·`ca_key`이며 leaf private key는 cert-manager가 관리한다.

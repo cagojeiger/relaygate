@@ -4,13 +4,10 @@ RelayGate 구성:
   RouteTable shard:   {{ .Values.routeTable.shardCount }}
   credential Secret:  {{ .Values.credentials.existingSecret }}
   edge TLS Secret:    {{ .Values.tls.edge.existingSecret }}
-{{ if eq .Values.tls.internal.source "certManager" }}
-  internal TLS source: cert-manager
-  Gateway leaf Secret: {{ include "relaygate.internalGatewayCertificateSecretName" . }}
-  RouteTable leaf Secret: {{ include "relaygate.internalRouteTableCertificateSecretName" . }}
-  CA trust Secret: {{ .Values.tls.internal.certManager.trustSecret.name }}
-{{ else }}
-  internal TLS Secret: {{ .Values.tls.internal.existingSecret }}
+{{ if eq .Values.tls.internal.mode "mtls" }}
+  Gateway leaf Secret: {{ .Values.tls.internal.gatewaySecret }}
+  RouteTable leaf Secret: {{ .Values.tls.internal.routeTableSecret }}
+  CA trust Secret: {{ .Values.tls.internal.trustSecret }}
 {{ end }}
   SDK Service type:   {{ .Values.gateway.service.type }}
 
@@ -23,16 +20,15 @@ workload 확인:
   kubectl -n {{ .Release.Namespace }} get statefulset,pod,service \
     -l app.kubernetes.io/instance={{ .Release.Name }}
 
-차트는 credential Secret, Issuer, CA나 persistent volume을 만들지 않는다. cert-manager mode에서만
-Gateway와 RouteTable leaf Certificate를 만든다. 내부 인증은 mTLS Gateway 역할 인증서로 수행한다.
+배포자가 credential·인증서 Secret을 공급한다. 차트는 runtime과 Secret mount만 구성한다.
+내부 인증은 mTLS Gateway 역할 인증서로 수행한다.
 plaintext 모드는 무인증·무암호화 테스트 모드다.
 SDK는 {{ .Values.tls.edge.serverName }} 이름으로 Gateway certificate를 검증하고 ClusterToken을
 제시해야 한다. Secret data 변경 뒤에는 workload를 재시작해야 한다. routeTable.shardCount 변경은 exact
 ShardDirectory generation을 바꾸므로 maintenance window에서 `helm uninstall --wait`와
 pod 삭제 완료를 확인한 뒤 새 구성으로 다시 설치해야 하며 zero-downtime shard resize가 아니다.
 
-Secret의 startup credential을 다시 읽게 하려면 credentials.reloadToken을 이전과 다른
-문자열로 바꾼다. 이 token은 Gateway만 재시작한다. Gateway 확장은 replicaCount로 설정한다.
-
-edge certificate를 다시 읽게 하려면 tls.edge.reloadToken을, internal certificate를 다시 읽게 하려면
-tls.internal.reloadToken을 이전과 다른 문자열로 바꾼다.
+Secret 갱신 적용은 platform이 관리한다. 수동 적용은 해당 StatefulSet의 rollout restart를 사용한다.
+gateway.annotations와 routeTable.annotations는 StatefulSet metadata로 전달한다.
+GitOps는 여기에 운영 controller 설정을 지정하고 controller 변경을 ignoreDifferences로 보존한다.
+Gateway 확장은 replicaCount로 설정한다.

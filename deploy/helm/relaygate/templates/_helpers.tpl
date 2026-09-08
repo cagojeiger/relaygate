@@ -32,29 +32,8 @@
 {{- printf "%s-rt" (include "relaygate.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{- define "relaygate.internalGatewayCertificateSecretName" -}}
-{{- printf "%s-gw-internal-tls" (include "relaygate.fullname" .) | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{- define "relaygate.internalRouteTableCertificateSecretName" -}}
-{{- printf "%s-rt-internal-tls" (include "relaygate.fullname" .) | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
 {{- define "relaygate.routeTablePodName" -}}
 {{- printf "%s-%d" (include "relaygate.routeTableName" .root) .index }}
-{{- end }}
-
-{{- define "relaygate.internalReloadSecrets" -}}
-{{- $root := .root -}}
-{{- if eq $root.Values.tls.internal.source "certManager" -}}
-{{- $leaf := include "relaygate.internalGatewayCertificateSecretName" $root -}}
-{{- if eq .component "route-table" -}}
-{{- $leaf = include "relaygate.internalRouteTableCertificateSecretName" $root -}}
-{{- end -}}
-{{- printf "%s,%s" $root.Values.tls.internal.certManager.trustSecret.name $leaf -}}
-{{- else -}}
-{{- $root.Values.tls.internal.existingSecret -}}
-{{- end -}}
 {{- end }}
 
 {{- define "relaygate.shardDirectoryName" -}}
@@ -107,22 +86,11 @@ app.kubernetes.io/part-of: "relaygate"
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "credentials.existingSecret" "value" .Values.credentials.existingSecret) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.edge.existingSecret" "value" .Values.tls.edge.existingSecret) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.edge.serverName" "value" .Values.tls.edge.serverName) }}
-{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.existingSecret" "value" .Values.tls.internal.existingSecret) }}
+{{- range $name := list "trustSecret" "gatewaySecret" "routeTableSecret" }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" (printf "tls.internal.%s" $name) "value" (index $.Values.tls.internal $name)) }}
+{{- end }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.gatewayServerName" "value" .Values.tls.internal.gatewayServerName) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.routeTableServerName" "value" .Values.tls.internal.routeTableServerName) }}
-{{- if and (eq .Values.tls.internal.mode "plaintext") (or .Values.tls.internal.autoReload (eq .Values.tls.internal.source "certManager")) }}
-{{- fail "tls.internal.mode=plaintext cannot enable certManager or autoReload" }}
-{{- end }}
-{{- if eq .Values.tls.internal.source "certManager" }}
-{{- if not .Values.tls.internal.certManager.issuerRef.name }}
-{{- fail "tls.internal.certManager.issuerRef.name is required when tls.internal.source=certManager" }}
-{{- end }}
-{{- if not .Values.tls.internal.certManager.trustSecret.name }}
-{{- fail "tls.internal.certManager.trustSecret.name is required when tls.internal.source=certManager" }}
-{{- end }}
-{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.certManager.issuerRef.name" "value" .Values.tls.internal.certManager.issuerRef.name) }}
-{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.certManager.trustSecret.name" "value" .Values.tls.internal.certManager.trustSecret.name) }}
-{{- end }}
 {{- $gatewayLastIndex := sub (int .Values.gateway.replicaCount) 1 -}}
 {{- $gatewayPodName := printf "%s-%d" (include "relaygate.gatewayName" .) $gatewayLastIndex -}}
 {{- $gatewayHostname := printf "%s.%s.%s.svc.%s" $gatewayPodName (include "relaygate.gatewayPeerServiceName" .) .Release.Namespace .Values.clusterDomain -}}
@@ -191,7 +159,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail (printf "gateway.podLabels cannot override chart-managed label %s" $key) }}
 {{- end }}
 {{- end }}
-{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/edge-tls-reload" "relaygate.io/internal-tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
+{{- $reservedAnnotations := list "checksum/shard-directory" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
 {{- range $key, $_ := .Values.gateway.podAnnotations }}
 {{- if has $key $reservedAnnotations }}
 {{- fail (printf "gateway.podAnnotations cannot override chart-managed annotation %s" $key) }}
@@ -215,7 +183,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail (printf "routeTable.podLabels cannot override chart-managed label %s" $key) }}
 {{- end }}
 {{- end }}
-{{- $reservedAnnotations := list "checksum/shard-directory" "relaygate.io/credentials-reload" "relaygate.io/internal-tls-reload" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
+{{- $reservedAnnotations := list "checksum/shard-directory" "prometheus.io/scrape" "prometheus.io/path" "prometheus.io/port" -}}
 {{- range $key, $_ := .Values.routeTable.podAnnotations }}
 {{- if has $key $reservedAnnotations }}
 {{- fail (printf "routeTable.podAnnotations cannot override chart-managed annotation %s" $key) }}

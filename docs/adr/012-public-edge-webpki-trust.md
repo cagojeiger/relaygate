@@ -21,9 +21,14 @@ server chain과 private key를 사용하고 trust anchor는 SDK/runtime의 bundl
 | 운영 축 | 적용 |
 | --- | --- |
 | ACME edge Secret | Web PKI mode로 직접 사용 |
+| edge leaf 갱신 적용 | platform이 Secret 갱신과 Gateway 교체 정책을 관리 |
 | private deployment | custom CA mode 사용 |
 | public root 갱신 | SDK/runtime release |
 | internal CA 갱신 | internal mTLS trust domain 절차 |
+
+Gateway는 startup 시 certificate를 읽는다. chart는 범용 workload annotation을 전달하고,
+GitOps가 자동 교체 controller를 설정한다. 수동 교체는 rollout restart를 사용한다.
+rolling replacement는 기존 Pipe 연속성을 보장하지 않는다.
 
 ## 참고
 

@@ -1,0 +1,11 @@
+tls:
+  internal:
+    trustSecret: internal-public-trust
+
+gateway:
+  annotations:
+    secret.reloader.stakater.com/reload: relaygate-edge-tls,internal-public-trust,relaygate-gw-internal-tls
+
+routeTable:
+  annotations:
+    secret.reloader.stakater.com/reload: internal-public-trust,relaygate-rt-internal-tls

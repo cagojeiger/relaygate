@@ -35,7 +35,7 @@ dial 1회 ──► eligible Binding 1개 ──► Pipe 1개
 | Transport | SDK TLS와 내부 mTLS handshake |
 | Server | process config, dependency wiring, readiness, metric, shutdown |
 | Application | Destination 보관, Pipe 상대 인증·인가, payload 의미·재시도, 필요한 E2E 보호 |
-| Helm | RT/GW resource, 외부 Secret 배선, 선택적 내부 leaf Certificate |
+| Helm | RT/GW resource, 기존 Secret 배선, 범용 운영 annotation |
 
 ## 문서 지도
 

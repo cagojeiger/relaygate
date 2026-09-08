@@ -42,8 +42,7 @@
       "required": [
         "existingSecret",
         "clusterTokenKey",
-        "nextClusterTokenKey",
-        "reloadToken"
+        "nextClusterTokenKey"
       ],
       "properties": {
         "existingSecret": {
@@ -63,9 +62,6 @@
           "minLength": 1,
           "maxLength": 253,
           "pattern": "^[-._a-zA-Z0-9]+$"
-        },
-        "reloadToken": {
-          "type": "string"
         }
       }
     },
@@ -80,11 +76,7 @@
           "required": [
             "existingSecret",
             "trustMode",
-            "caKey",
-            "certificateKey",
-            "privateKeyKey",
-            "serverName",
-            "reloadToken"
+            "serverName"
           ],
           "properties": {
             "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
@@ -92,83 +84,20 @@
               "type": "string",
               "enum": ["customCa", "webPkiRoots"]
             },
-            "caKey": { "$ref": "#/definitions/secretKey" },
-            "certificateKey": { "$ref": "#/definitions/secretKey" },
-            "privateKeyKey": { "$ref": "#/definitions/secretKey" },
-            "serverName": { "$ref": "#/definitions/dnsSubdomain" },
-            "reloadToken": { "type": "string" }
+            "serverName": { "$ref": "#/definitions/dnsSubdomain" }
           }
         },
         "internal": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "mode",
-            "autoReload",
-            "source",
-            "existingSecret",
-            "caKey",
-            "gatewayCertificateKey",
-            "gatewayPrivateKeyKey",
-            "routeTableCertificateKey",
-            "routeTablePrivateKeyKey",
-            "gatewayServerName",
-            "routeTableServerName",
-            "reloadToken",
-            "certManager"
-          ],
+          "required": ["mode", "trustSecret", "gatewaySecret", "routeTableSecret", "gatewayServerName", "routeTableServerName"],
           "properties": {
             "mode": { "type": "string", "enum": ["mtls", "plaintext"] },
-            "autoReload": { "type": "boolean" },
-            "source": {
-              "type": "string",
-              "enum": ["existingSecret", "certManager"]
-            },
-            "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
-            "caKey": { "$ref": "#/definitions/secretKey" },
-            "gatewayCertificateKey": { "$ref": "#/definitions/secretKey" },
-            "gatewayPrivateKeyKey": { "$ref": "#/definitions/secretKey" },
-            "routeTableCertificateKey": { "$ref": "#/definitions/secretKey" },
-            "routeTablePrivateKeyKey": { "$ref": "#/definitions/secretKey" },
+            "trustSecret": { "$ref": "#/definitions/dnsSubdomain" },
+            "gatewaySecret": { "$ref": "#/definitions/dnsSubdomain" },
+            "routeTableSecret": { "$ref": "#/definitions/dnsSubdomain" },
             "gatewayServerName": { "$ref": "#/definitions/dnsSubdomain" },
-            "routeTableServerName": { "$ref": "#/definitions/dnsSubdomain" },
-            "reloadToken": { "type": "string" },
-            "certManager": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["issuerRef", "trustSecret"],
-              "properties": {
-                "issuerRef": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["name", "kind", "group"],
-                  "properties": {
-                    "name": { "$ref": "#/definitions/optionalDnsSubdomain" },
-                    "kind": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 63,
-                      "pattern": "^[A-Za-z][A-Za-z0-9]*$"
-                    },
-                    "group": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 253,
-                      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
-                    }
-                  }
-                },
-                "trustSecret": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["name", "key"],
-                  "properties": {
-                    "name": { "$ref": "#/definitions/optionalDnsSubdomain" },
-                    "key": { "$ref": "#/definitions/secretKey" }
-                  }
-                }
-              }
-            }
+            "routeTableServerName": { "$ref": "#/definitions/dnsSubdomain" }
           }
         }
       }
@@ -243,6 +172,7 @@
         "extraEnv"
       ],
       "properties": {
+        "annotations": { "$ref": "#/definitions/stringMap" },
         "replicaCount": {
           "type": "integer",
           "minimum": 1
@@ -364,6 +294,7 @@
         "extraEnv"
       ],
       "properties": {
+        "annotations": { "$ref": "#/definitions/stringMap" },
         "shardCount": {
           "type": "integer",
           "minimum": 1,
@@ -430,17 +361,6 @@
       "minLength": 1,
       "maxLength": 253,
       "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
-    },
-    "optionalDnsSubdomain": {
-      "type": "string",
-      "maxLength": 253,
-      "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
-    },
-    "secretKey": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 253,
-      "pattern": "^[-._a-zA-Z0-9]+$"
     },
     "image": {
       "type": "object",

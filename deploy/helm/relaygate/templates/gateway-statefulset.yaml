@@ -4,9 +4,9 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: {{ include "relaygate.gatewayName" . | quote }}
-  {{- if .Values.tls.internal.autoReload }}
+  {{- with .Values.gateway.annotations }}
   annotations:
-    secret.reloader.stakater.com/reload: {{ include "relaygate.internalReloadSecrets" (dict "root" . "component" "gateway") | quote }}
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   labels:
     {{- include "relaygate.labels" (dict "root" . "component" "gateway") | nindent 4 }}
@@ -23,9 +23,6 @@ spec:
     metadata:
       annotations:
         checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
-        relaygate.io/credentials-reload: {{ .Values.credentials.reloadToken | quote }}
-        relaygate.io/edge-tls-reload: {{ .Values.tls.edge.reloadToken | quote }}
-        relaygate.io/internal-tls-reload: {{ .Values.tls.internal.reloadToken | quote }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"
@@ -192,43 +189,30 @@ spec:
             defaultMode: 0440
             items:
               {{- if eq .Values.tls.edge.trustMode "customCa" }}
-              - key: {{ .Values.tls.edge.caKey | quote }}
+              - key: ca.crt
                 path: ca.crt
               {{- end }}
-              - key: {{ .Values.tls.edge.certificateKey | quote }}
+              - key: tls.crt
                 path: tls.crt
-              - key: {{ .Values.tls.edge.privateKeyKey | quote }}
+              - key: tls.key
                 path: tls.key
         {{- if eq .Values.tls.internal.mode "mtls" }}
         - name: internal-tls
-          {{ if eq .Values.tls.internal.source "certManager" }}
           projected:
             defaultMode: 0440
             sources:
               - secret:
-                  name: {{ .Values.tls.internal.certManager.trustSecret.name | quote }}
+                  name: {{ .Values.tls.internal.trustSecret | quote }}
                   items:
-                    - key: {{ .Values.tls.internal.certManager.trustSecret.key | quote }}
+                    - key: ca.crt
                       path: ca.crt
               - secret:
-                  name: {{ include "relaygate.internalGatewayCertificateSecretName" . | quote }}
+                  name: {{ .Values.tls.internal.gatewaySecret | quote }}
                   items:
                     - key: tls.crt
                       path: tls.crt
                     - key: tls.key
                       path: tls.key
-          {{ else }}
-          secret:
-            secretName: {{ .Values.tls.internal.existingSecret | quote }}
-            defaultMode: 0440
-            items:
-              - key: {{ .Values.tls.internal.caKey | quote }}
-                path: ca.crt
-              - key: {{ .Values.tls.internal.gatewayCertificateKey | quote }}
-                path: tls.crt
-              - key: {{ .Values.tls.internal.gatewayPrivateKeyKey | quote }}
-                path: tls.key
-          {{ end }}
         {{- end }}
       {{- with .Values.gateway.nodeSelector }}
       nodeSelector:
