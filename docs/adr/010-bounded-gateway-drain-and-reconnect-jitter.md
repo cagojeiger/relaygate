@@ -1,4 +1,4 @@
-# ADR 006: Gateway는 bounded drain하고 재연결은 jitter로 분산한다
+# ADR 010: Gateway는 bounded drain하고 재연결은 jitter로 분산한다
 
 | 항목 | 결정 |
 | --- | --- |

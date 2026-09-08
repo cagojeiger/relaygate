@@ -1,4 +1,4 @@
-# ADR 009: DestinationId는 application-owned UUIDv4다
+# ADR 003: DestinationId는 application-owned UUIDv4다
 
 | 항목 | 결정 |
 | --- | --- |
@@ -33,6 +33,6 @@ UUID는 routing address의 충돌 가능성을 낮춥니다. peer identity와 au
 
 ## 참고
 
-- [ADR 001](001-current-state-routing-topology.md)
-- [ADR 002](002-soft-state-registration-lifecycle.md)
+- [ADR 005](005-current-state-routing-topology.md)
+- [ADR 006](006-soft-state-registration-lifecycle.md)
 - [SPEC 003](../spec/003-destination-binding-contract.md)

@@ -1,4 +1,4 @@
-# ADR 001: RouteTable은 hash-sharded mapping authority다
+# ADR 005: RouteTable은 hash-sharded mapping authority다
 
 | 항목 | 결정 |
 | --- | --- |

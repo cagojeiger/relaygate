@@ -1,4 +1,4 @@
-# ADR 003: Gateway data plane은 one-hop multiplexed relay다
+# ADR 007: Gateway data plane은 one-hop multiplexed relay다
 
 | 항목 | 결정 |
 | --- | --- |

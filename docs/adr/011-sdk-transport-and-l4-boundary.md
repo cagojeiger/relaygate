@@ -1,4 +1,4 @@
-# ADR 010: protocol transport와 외부 L4 진입점을 분리한다
+# ADR 011: protocol transport와 외부 L4 진입점을 분리한다
 
 | 항목 | 결정 |
 | --- | --- |

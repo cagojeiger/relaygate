@@ -1,4 +1,4 @@
-# ADR 011: 공개 edge 인증서는 Web PKI roots로 검증한다
+# ADR 012: 공개 edge 인증서는 Web PKI roots로 검증한다
 
 | 항목 | 결정 |
 | --- | --- |

@@ -39,11 +39,11 @@ dial 1회 ──► eligible Binding 1개 ──► Pipe 1개
 
 | 영역 | 문서 |
 | --- | --- |
-| topology·state | [ADR 001](adr/001-current-state-routing-topology.md), [ADR 002](adr/002-soft-state-registration-lifecycle.md) |
-| data plane·liveness | [ADR 003](adr/003-one-hop-peer-multiplexing.md), [ADR 004](adr/004-transport-liveness-and-idle-retirement.md) |
-| 운영·배포 | [ADR 005](adr/005-operational-health-boundaries.md), [ADR 006](adr/006-bounded-gateway-drain-and-reconnect-jitter.md) |
-| SDK·access | [ADR 007](adr/007-symmetric-relay-session.md), [ADR 008](adr/008-public-destination-access.md), [ADR 009](adr/009-application-owned-destination.md) |
-| transport·certificate | [ADR 010](adr/010-sdk-transport-and-l4-boundary.md), [ADR 011](adr/011-public-edge-webpki-trust.md), [ADR 012](adr/012-cert-manager-internal-leaf-certificates.md) |
+| 책임 경계 | [ADR 001](adr/001-relaygate-responsibility-boundary.md) |
+| SDK·주소·접근 | [ADR 002](adr/002-symmetric-relay-session.md), [ADR 003](adr/003-application-owned-destination.md), [ADR 004](adr/004-cluster-token-session-admission.md) |
+| control·data plane | [ADR 005](adr/005-current-state-routing-topology.md), [ADR 006](adr/006-soft-state-registration-lifecycle.md), [ADR 007](adr/007-one-hop-peer-multiplexing.md) |
+| 생존·운영 | [ADR 008](adr/008-transport-liveness-and-idle-retirement.md), [ADR 009](adr/009-operational-health-boundaries.md), [ADR 010](adr/010-bounded-gateway-drain-and-reconnect-jitter.md) |
+| transport·certificate | [ADR 011](adr/011-sdk-transport-and-l4-boundary.md), [ADR 012](adr/012-public-edge-webpki-trust.md), [ADR 013](adr/013-cert-manager-internal-leaf-certificates.md) |
 | current contract | [SPEC](spec/) |
 | executable evidence | [TEST 001](test/001-requirement-test-matrix.md) |
 | standards background | [RFC](rfc/) |

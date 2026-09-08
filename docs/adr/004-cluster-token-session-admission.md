@@ -1,4 +1,4 @@
-# ADR 008: ClusterToken은 SDK session admission을 제한한다
+# ADR 004: ClusterToken은 SDK session admission을 제한한다
 
 | 항목 | 결정 |
 | --- | --- |
