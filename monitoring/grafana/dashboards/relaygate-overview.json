@@ -307,7 +307,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (class) (rate(relaygate_gateway_dial_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])) / on() group_left (sum(rate(relaygate_gateway_dial_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])) > 0)",
+          "expr": "sum by (class) (rate(relaygate_gateway_dial_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])) / on() group_left() (sum(rate(relaygate_gateway_dial_results_total{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$gateway\"}[$__rate_interval])) > 0)",
           "legendFormat": "{{class}}",
           "range": true,
           "refId": "A"

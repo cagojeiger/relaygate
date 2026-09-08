@@ -10,10 +10,10 @@ fn active(snapshotter: &Snapshotter) -> f64 {
         .into_vec()
         .into_iter()
         .find_map(|(key, _, _, value)| {
-            if key.key().name() == "relaygate_sdk_reconnect_in_progress" {
-                if let DebugValue::Gauge(value) = value {
-                    return Some(value.into_inner());
-                }
+            if key.key().name() == "relaygate_sdk_reconnect_in_progress"
+                && let DebugValue::Gauge(value) = value
+            {
+                return Some(value.into_inner());
             }
             None
         })
