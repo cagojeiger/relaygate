@@ -14,7 +14,6 @@
 | `T-SEC-01` | `SEC-001`, `SEC-002`, `SEC-003`, `SEC-004`, `SEC-005`, `SEC-006`, `SEC-007`, `SEC-008`, `SEC-009`, `SEC-010`, `SEC-011` | 명시적 TLS/TCP, server name/ALPN, mTLS, token, Secret 분리와 L4 passthrough |
 | `T-OBS-01` | `OBS-001`, `OBS-002`, `OBS-003`, `OBS-004`, `OBS-005`, `OBS-006`, `OBS-007`, `OBS-008`, `OBS-009` | health 경계, RED/USE/latency metric, cleanup baseline과 secret 비노출 |
 
-모든 in-scope requirement는 위 표와 [실행 증거 인덱스](001-executable-coverage.toml)에 정확히 한
-그룹으로 연결됩니다. 실행 증거 인덱스는 Rust test의 존재를 검증하지만 Helm/kind runtime 성공을
-대신하지 않습니다. 특히 `SEC-011`의 L4 passthrough와 rolling/fault acceptance는
-[TEST 004](004-rt2-gw3-closed-loop-test-plan.md)의 외부 실행 증거로 별도로 닫습니다.
+모든 requirement는 위 표의 그룹 하나와 [실행 증거 인덱스](001-executable-coverage.toml)에 연결됩니다.
+인덱스는 Rust test 존재를, [TEST 004](004-rt2-gw3-closed-loop-test-plan.md)는 L4 passthrough와
+rolling/fault runtime acceptance를 검증합니다.

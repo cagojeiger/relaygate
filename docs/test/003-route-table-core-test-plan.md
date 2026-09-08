@@ -10,4 +10,5 @@
 | restart | empty start 후 새 Gateway snapshot만으로 복구 |
 | transport | 인증, frame/queue/connection 상한, shutdown deadline |
 
-RT shard는 서로를 복제하지 않으므로 shard 하나의 중단은 그 shard의 remote Resolve만 실패해야 합니다.
+Shard 하나의 중단 범위는 해당 authority shard의 remote Resolve입니다. 다른 shard와 Gateway local
+Binding은 독립적으로 유지됩니다.
