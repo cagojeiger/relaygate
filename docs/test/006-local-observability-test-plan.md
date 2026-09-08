@@ -35,6 +35,10 @@ CI의 `grafana_ui.cjs`는 실제 Grafana에서 세 화면 provisioning, 시간·
 | redaction | payload와 secret marker 0건 |
 | logging | component/event/outcome/code lifecycle event |
 
+SDK reconnect 테스트는 process-global tracing callsite 등록을 공유하므로 같은 helper를 호출하는
+두 테스트를 test-only lock으로 격리합니다. CI는 SDK lib 전체를 8개 test thread로 20회 반복하고
+각 실행에서 recovered/closed 로그와 중첩 reconnect gauge assertion을 유지합니다.
+
 ## Pipe latency probe
 
 | 조건 | 기록 |
