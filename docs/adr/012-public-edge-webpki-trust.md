@@ -21,9 +21,13 @@ server chain과 private key를 사용하고 trust anchor는 SDK/runtime의 bundl
 | 운영 축 | 적용 |
 | --- | --- |
 | ACME edge Secret | Web PKI mode로 직접 사용 |
+| edge leaf 갱신 적용 | platform이 Secret 갱신, `tls.edge.autoReload`의 Reloader가 Gateway만 교체 |
 | private deployment | custom CA mode 사용 |
 | public root 갱신 | SDK/runtime release |
 | internal CA 갱신 | internal mTLS trust domain 절차 |
+
+Gateway는 startup 시 certificate를 읽는다. 자동 적용은 platform Reloader 설치를 전제로 하며,
+수동 운영은 `tls.edge.reloadToken`으로 교체한다. rolling replacement는 기존 Pipe 연속성을 보장하지 않는다.
 
 ## 참고
 

@@ -74,10 +74,32 @@ tls:
 cert-manager는 leaf를 갱신하고 `tls.internal.reloadToken` 또는 platform reloader가 renewed Secret을
 Gateway/RT rollout으로 적용합니다. CA rotation은 old/new trust overlap과 leaf 재발급 순서로 진행합니다.
 
-`autoReload`는 설치된 Stakater Reloader를 사용하며 내부 trust와 해당 role leaf Secret만 watch한다.
-GitOps 환경의 Reloader는 `--reload-strategy=annotations`와
-`/spec/template/metadata/annotations/reloader.stakater.com~1last-reloaded-from`의 ArgoCD ignoreDifferences를
-함께 설정한다. `RespectIgnoreDifferences=true`로 controller annotation을 sync에서도 보존한다.
+인증서 자동 적용은 설치된 Stakater Reloader를 사용하며 각 옵션의 기본값은 `false`다.
+
+| 옵션 | Gateway watch | RouteTable watch |
+| --- | --- | --- |
+| `tls.edge.autoReload=true` | `tls.edge.existingSecret` | 없음 |
+| `tls.internal.autoReload=true` | internal trust + Gateway leaf | internal trust + RT leaf |
+
+internal `existingSecret` source에서는 두 역할이 지정된 internal Secret을 watch한다.
+edge 자동 적용은 internal plaintext에서도 독립적으로 설정한다.
+
+```yaml
+tls:
+  edge:
+    existingSecret: relaygate-edge-public-tls
+    trustMode: webPkiRoots
+    serverName: relaygate.example.com
+    autoReload: true
+```
+
+cert-manager는 외부 인증서 Secret을 갱신하고 Reloader는 Gateway만 rolling replacement한다.
+Gateway는 시작 시 인증서를 읽는다. 자동 적용 없이 운영할 때는 Secret 갱신 후 `tls.edge.reloadToken`을 변경한다.
+
+GitOps는 Reloader 전략에 맞는 ArgoCD `ignoreDifferences`와 `RespectIgnoreDifferences=true`를 설정한다.
+`annotations` 전략은 `/spec/template/metadata/annotations/reloader.stakater.com~1last-reloaded-from`을,
+기본 `env-vars` 전략은 감시 Secret별 `STAKATER_<SECRET_NAME>_SECRET` env를 해당 container에서만 보존한다.
+Secret 이름은 대문자로 변환하고 구분 문자는 `_`로 정규화한다. edge Secret도 Gateway의 보존 대상에 포함한다.
 갱신 rollout은 graceful drain을 사용하며 deadline 뒤 기존 Pipe가 끊길 수 있다.
 CA 키는 Issuer에만 제공하고 GW/RT에는 공개 trust bundle과 해당 role leaf만 mount한다.
 
@@ -118,7 +140,7 @@ SDK endpoint 기본값은 `relaygate.relaygate.svc.cluster.local:27420`입니다
 | RT image | RT StatefulSet rolling replacement |
 | chart package version | runtime Pod template 유지 |
 | ClusterToken | current+next → SDK 이동 → next를 current로 승격 |
-| edge certificate | Secret 갱신 → `tls.edge.reloadToken` 변경 |
+| edge certificate | Secret 갱신 → `tls.edge.autoReload` 또는 `tls.edge.reloadToken`으로 GW만 rollout |
 | internal certificate | Secret/leaf 갱신 → `tls.internal.reloadToken` 또는 reloader |
 | Gateway 증가 | replica 증가 → mTLS Gateway 역할 인증 → 현재 상태 등록 |
 | RT shard directory | maintenance window의 coordinated restart |

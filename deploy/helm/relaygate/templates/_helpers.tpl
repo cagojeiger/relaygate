@@ -57,6 +57,18 @@
 {{- end -}}
 {{- end }}
 
+{{- define "relaygate.gatewayReloadSecrets" -}}
+{{- $secrets := list -}}
+{{- if .Values.tls.edge.autoReload -}}
+{{- $secrets = append $secrets .Values.tls.edge.existingSecret -}}
+{{- end -}}
+{{- if .Values.tls.internal.autoReload -}}
+{{- $internal := include "relaygate.internalReloadSecrets" (dict "root" . "component" "gateway") -}}
+{{- $secrets = concat $secrets (splitList "," $internal) -}}
+{{- end -}}
+{{- $secrets | uniq | join "," -}}
+{{- end }}
+
 {{- define "relaygate.shardDirectoryName" -}}
 {{- printf "%s-shard-directory" (include "relaygate.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}

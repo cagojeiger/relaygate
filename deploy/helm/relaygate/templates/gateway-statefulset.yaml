@@ -4,9 +4,9 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: {{ include "relaygate.gatewayName" . | quote }}
-  {{- if .Values.tls.internal.autoReload }}
+  {{- if or .Values.tls.edge.autoReload .Values.tls.internal.autoReload }}
   annotations:
-    secret.reloader.stakater.com/reload: {{ include "relaygate.internalReloadSecrets" (dict "root" . "component" "gateway") | quote }}
+    secret.reloader.stakater.com/reload: {{ include "relaygate.gatewayReloadSecrets" . | quote }}
   {{- end }}
   labels:
     {{- include "relaygate.labels" (dict "root" . "component" "gateway") | nindent 4 }}

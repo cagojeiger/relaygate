@@ -79,6 +79,7 @@
           "additionalProperties": false,
           "required": [
             "existingSecret",
+            "autoReload",
             "trustMode",
             "caKey",
             "certificateKey",
@@ -88,6 +89,7 @@
           ],
           "properties": {
             "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
+            "autoReload": { "type": "boolean" },
             "trustMode": {
               "type": "string",
               "enum": ["customCa", "webPkiRoots"]

@@ -1,4 +1,4 @@
-"""Internal transport and certificate reload rendering contract (run after Helm setup)."""
+"""Transport and certificate reload rendering contract (run after Helm setup)."""
 
 from pathlib import Path
 import subprocess
@@ -80,6 +80,46 @@ class InternalTransportTests(unittest.TestCase):
         ):
             with self.subTest(settings=settings):
                 self.assertNotEqual(render(*settings).returncode, 0)
+
+    def test_edge_reload_is_independent_and_does_not_change_pod_templates(self):
+        for mode in ("mtls", "plaintext"):
+            for trust in ("customCa", "webPkiRoots"):
+                with self.subTest(mode=mode, trust=trust):
+                    settings = (f"tls.internal.mode={mode}", f"tls.edge.trustMode={trust}")
+                    baseline = self.successful(*settings)
+                    output = self.successful(*settings, "tls.edge.autoReload=true")
+                    gateway = workload(output, "gateway")
+                    metadata, spec = gateway.split("\nspec:", 1)
+                    self.assertIn(
+                        'secret.reloader.stakater.com/reload: "relaygate-edge-tls"', metadata,
+                    )
+                    self.assertEqual(spec, workload(baseline, "gateway").split("\nspec:", 1)[1])
+                    self.assertEqual(workload(output, "route-table"), workload(baseline, "route-table"))
+
+    def test_combined_reload_keeps_role_watch_isolated(self):
+        for source in ("existingSecret", "certManager"):
+            with self.subTest(source=source):
+                settings = (
+                    f"tls.internal.source={source}", "tls.internal.autoReload=true",
+                    "tls.internal.certManager.issuerRef.name=internal-ca",
+                    "tls.internal.certManager.trustSecret.name=public-trust",
+                    "tls.edge.existingSecret=public-edge",
+                )
+                baseline = self.successful(*settings)
+                output = self.successful(*settings, "tls.edge.autoReload=true")
+                internal = "relaygate-internal-tls" if source == "existingSecret" else "public-trust,relaygate-gw-internal-tls"
+                metadata, spec = workload(output, "gateway").split("\nspec:", 1)
+                self.assertIn(f'secret.reloader.stakater.com/reload: "public-edge,{internal}"', metadata)
+                self.assertEqual(spec, workload(baseline, "gateway").split("\nspec:", 1)[1])
+                self.assertEqual(workload(output, "route-table"), workload(baseline, "route-table"))
+
+    def test_reload_deduplicates_shared_secret_and_rejects_invalid_edge_flag(self):
+        output = self.successful(
+            "tls.edge.autoReload=true", "tls.internal.autoReload=true",
+            "tls.edge.existingSecret=shared-tls", "tls.internal.existingSecret=shared-tls",
+        )
+        self.assertEqual(output.count('secret.reloader.stakater.com/reload: "shared-tls"'), 2)
+        self.assertNotEqual(render("tls.edge.autoReload=invalid").returncode, 0)
 
     def test_extra_env_cannot_bypass_transport_selection(self):
         for component in ("gateway", "routeTable"):

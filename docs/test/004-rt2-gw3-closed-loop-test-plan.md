@@ -40,7 +40,7 @@ host Rust SDK ── TLS/TCP ──┤
 | `KIND-11` | Gateway rolling restart | Gateway를 하나씩 교체할 때 SDK가 jitter로 재연결·republish하고 fresh dial이 복구 |
 | `KIND-12` | reconnect storm | 100개 RelaySession의 동시 단절 뒤 재연결이 bounded하며 최종 Listener와 dial이 복구 |
 | `KIND-13` | bounded soak | 최소 60초·64 worker Pipe 왕복에 오류가 없고 종료 뒤 current gauge가 baseline 복귀 |
-| `KIND-14` | cert-manager 재발급 | role별 leaf 재발급 → Reloader Pod 교체 → Listener 재등록·fresh dial 복구 |
+| `KIND-14` | cert-manager 재발급 | edge·internal leaf 재발급 → 해당 role만 Pod 교체 → Listener 재등록·fresh dial 복구; edge 제공 serial 일치 |
 
 ## stop condition
 

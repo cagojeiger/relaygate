@@ -29,7 +29,7 @@ ORIGINAL_CONTEXT=
 
 require_commands() {
   local command
-  for command in bash cargo curl docker helm jq kind kubectl openssl; do
+  for command in bash cargo curl docker helm jq kind kubectl openssl timeout; do
     if ! command -v "$command" >/dev/null 2>&1; then
       echo "required command is missing: $command" >&2
       return 1
@@ -582,6 +582,7 @@ main() {
   if [[ "$INTERNAL_SOURCE" == certManager ]]; then
     install_certificate_controllers
     certificate_args=(
+      --set tls.edge.autoReload=true
       --set tls.internal.source=certManager
       --set tls.internal.autoReload=true
       --set tls.internal.certManager.issuerRef.name=relaygate-internal

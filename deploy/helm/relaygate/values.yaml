@@ -14,6 +14,8 @@ tls:
   # SDK edge와 internal mTLS는 별도 trust domain이며 platform이 Issuer/CA를 소유한다.
   edge:
     existingSecret: relaygate-edge-tls
+    # 설치된 Reloader가 edge Secret 변경을 Gateway에만 적용한다.
+    autoReload: false
     # customCa는 caKey를 mount하고, webPkiRoots는 공개 root set을 사용한다.
     trustMode: customCa
     caKey: ca.crt

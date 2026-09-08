@@ -34,5 +34,7 @@ pod 삭제 완료를 확인한 뒤 새 구성으로 다시 설치해야 하며 z
 Secret의 startup credential을 다시 읽게 하려면 credentials.reloadToken을 이전과 다른
 문자열로 바꾼다. 이 token은 Gateway만 재시작한다. Gateway 확장은 replicaCount로 설정한다.
 
-edge certificate를 다시 읽게 하려면 tls.edge.reloadToken을, internal certificate를 다시 읽게 하려면
-tls.internal.reloadToken을 이전과 다른 문자열로 바꾼다.
+설치된 Reloader와 tls.edge.autoReload=true는 edge Secret 갱신을 Gateway에만 적용한다.
+tls.internal.autoReload=true는 internal trust와 해당 role leaf 갱신을 적용한다.
+자동 적용을 사용하지 않으면 tls.edge.reloadToken 또는 tls.internal.reloadToken을 변경한다.
+GitOps는 Reloader가 변경하는 annotation 또는 Secret별 env를 ignoreDifferences로 보존한다.
