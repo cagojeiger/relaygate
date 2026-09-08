@@ -441,7 +441,7 @@ fn handshake(name: &str) -> Result<PeerHandshake, Box<dyn std::error::Error>> {
 fn raw_frame(kind: u8, payload: &[u8]) -> BytesMut {
     let mut bytes = BytesMut::new();
     bytes.extend_from_slice(b"GP");
-    bytes.extend_from_slice(&[1, kind]);
+    bytes.extend_from_slice(&[2, kind]);
     bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     bytes.extend_from_slice(payload);
     bytes
