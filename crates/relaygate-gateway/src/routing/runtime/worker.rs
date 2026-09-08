@@ -12,7 +12,7 @@ use relaygate_route_table::{
     GatewayId, RegistrationKey, RelaySessionId, ShardDirectoryGeneration, ShardEndpoint, ShardId,
 };
 use relaygate_route_table_transport::{
-    GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig, TransportError,
+    GatewayName, RouteTableClient, RouteTableClientConfig, TransportError,
 };
 use relaygate_transport::ClientTlsConfig;
 use tokio::{
@@ -97,7 +97,6 @@ pub(super) struct ShardWorkerConfig {
     pub(super) generation: ShardDirectoryGeneration,
     pub(super) gateway_id: GatewayId,
     pub(super) gateway_name: GatewayName,
-    pub(super) internal_gateway_key: InternalGatewayKey,
     pub(super) client_config: RouteTableClientConfig,
     pub(super) tls: Option<ClientTlsConfig>,
     pub(super) reconnect_initial: Duration,
@@ -431,25 +430,15 @@ fn connect_once(config: &ShardWorkerConfig) -> BoxFuture<Result<RouteTableClient
     let endpoint = config.endpoint.as_str().to_owned();
     let gateway_name = config.gateway_name.clone();
     let gateway_id = config.gateway_id;
-    let key = config.internal_gateway_key.clone();
     let client = config.client_config;
     let tls = config.tls.clone();
     Box::pin(async move {
         match tls {
             Some(tls) => {
-                RouteTableClient::connect_secure(
-                    endpoint,
-                    gateway_name,
-                    gateway_id,
-                    key,
-                    client,
-                    tls,
-                )
-                .await
+                RouteTableClient::connect_secure(endpoint, gateway_name, gateway_id, client, tls)
+                    .await
             }
-            None => {
-                RouteTableClient::connect(endpoint, gateway_name, gateway_id, key, client).await
-            }
+            None => RouteTableClient::connect(endpoint, gateway_name, gateway_id, client).await,
         }
     })
 }

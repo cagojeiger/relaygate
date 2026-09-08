@@ -32,7 +32,7 @@ async fn competing_local_cancel_and_peer_eof_emit_exactly_one_transport_loss() -
     let (peer_stream, _) = listener.accept().await?;
     let actor_stream = connect.await??;
 
-    let config = GatewayPeerConfig::new("gateway-a", "key-a", [])?.with_queue_bounds(8, 8, 8, 8, 2);
+    let config = GatewayPeerConfig::new("gateway-a")?.with_queue_bounds(8, 8, 8, 8, 2);
     let peer_gateway_id = GatewayId::new();
     let peer_transport_id = PeerTransportId::new();
     let established = EstablishedPeer {

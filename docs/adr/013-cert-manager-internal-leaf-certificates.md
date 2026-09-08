@@ -28,6 +28,10 @@ flowchart LR
 | runtime | startup 시 certificate file load |
 | rollout controller | reload token 또는 reloader로 renewed Secret 적용 |
 
+`tls.internal.autoReload=true`는 StatefulSet metadata에 role별 leaf·공개 trust Secret의 Reloader
+watch를 설정한다. cert-manager와 Reloader controller는 platform에 설치되어 있어야 한다.
+Vault에는 admission credential과 CA 서명 자산을 보관하고, leaf는 cert-manager가 Kubernetes Secret으로 관리한다.
+
 CA rotation은 old/new trust overlap 후 leaf 재발급 순서로 수행합니다. logical Gateway/shard handshake는
 mTLS identity 위에서 기존 protocol 검증을 계속 담당합니다.
 
@@ -36,3 +40,6 @@ mTLS identity 위에서 기존 protocol 검증을 계속 담당합니다.
 - [cert-manager Certificate](https://cert-manager.io/docs/usage/certificate/)
 - [cert-manager trust](https://cert-manager.io/docs/trust/)
 - [cert-manager CA Issuer](https://cert-manager.io/docs/configuration/ca/)
+
+Gateway leaf는 Gateway 역할 DNS SAN과 clientAuth/serverAuth를, RT leaf는 RT DNS SAN과 serverAuth를 가진다.
+Vault 최소 구성은 SDK `cluster_token`과 내부 CA의 `ca_crt`·`ca_key`이며 leaf private key는 cert-manager가 관리한다.

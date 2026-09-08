@@ -14,7 +14,7 @@ use tokio::{
 use tokio_util::codec::Framed;
 
 use crate::{
-    ErrorCode, GatewayName, InternalGatewayKey, TransportError,
+    ErrorCode, GatewayName, TransportError,
     codec::{CodecError, FrameCodec},
     dto::{
         WireRequest, WireResponse, response_bindings, response_deregistered,
@@ -80,44 +80,25 @@ impl RouteTableClient {
         endpoint: impl ToSocketAddrs,
         gateway_name: GatewayName,
         gateway_id: GatewayId,
-        internal_gateway_key: InternalGatewayKey,
         config: RouteTableClientConfig,
     ) -> Result<Self, TransportError> {
-        Self::connect_with_transport(
-            endpoint,
-            gateway_name,
-            gateway_id,
-            internal_gateway_key,
-            config,
-            None,
-        )
-        .await
+        Self::connect_with_transport(endpoint, gateway_name, gateway_id, config, None).await
     }
 
     pub async fn connect_secure(
         endpoint: impl ToSocketAddrs,
         gateway_name: GatewayName,
         gateway_id: GatewayId,
-        internal_gateway_key: InternalGatewayKey,
         config: RouteTableClientConfig,
         tls: ClientTlsConfig,
     ) -> Result<Self, TransportError> {
-        Self::connect_with_transport(
-            endpoint,
-            gateway_name,
-            gateway_id,
-            internal_gateway_key,
-            config,
-            Some(tls),
-        )
-        .await
+        Self::connect_with_transport(endpoint, gateway_name, gateway_id, config, Some(tls)).await
     }
 
     async fn connect_with_transport(
         endpoint: impl ToSocketAddrs,
         gateway_name: GatewayName,
         gateway_id: GatewayId,
-        internal_gateway_key: InternalGatewayKey,
         config: RouteTableClientConfig,
         tls: Option<ClientTlsConfig>,
     ) -> Result<Self, TransportError> {
@@ -145,7 +126,6 @@ impl RouteTableClient {
                     role: GATEWAY_ROLE.to_owned(),
                     gateway_name: gateway_name.as_str().to_owned(),
                     gateway_id: gateway_id.to_string(),
-                    internal_gateway_key: internal_gateway_key.expose_secret().to_owned(),
                 })
                 .await
                 .map_err(map_send_codec_error)?;

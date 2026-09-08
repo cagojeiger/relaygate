@@ -5,7 +5,6 @@ imagePullSecrets: []
 credentials:
   # Workload가 release namespace의 operator-managed credential을 읽는다.
   existingSecret: relaygate-credentials
-  internalGatewayKeysKey: internal-gateway-keys
   clusterTokenKey: cluster-token
   nextClusterTokenKey: next-cluster-token
   # Credential 변경과 함께 값을 바꾸면 Gateway/RT가 startup config를 다시 읽는다.
@@ -23,6 +22,9 @@ tls:
     serverName: relaygate-gateway.internal
     reloadToken: ""
   internal:
+    mode: mtls
+    # 설치된 Reloader가 인증서·trust Secret 변경을 StatefulSet에 적용한다.
+    autoReload: false
     # existingSecret 또는 platform Issuer가 발급하는 role별 leaf를 사용한다.
     source: existingSecret
     existingSecret: relaygate-internal-tls

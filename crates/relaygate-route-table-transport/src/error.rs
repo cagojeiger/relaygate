@@ -84,13 +84,6 @@ impl TransportError {
         Self::new(ErrorCode::InvalidArgument, message)
     }
 
-    pub(crate) fn unauthenticated() -> Self {
-        Self::new(
-            ErrorCode::Unauthenticated,
-            "internal Gateway authentication failed",
-        )
-    }
-
     pub(crate) fn unavailable(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Unavailable, message)
     }

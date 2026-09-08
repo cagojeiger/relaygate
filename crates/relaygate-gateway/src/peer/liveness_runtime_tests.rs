@@ -12,11 +12,11 @@ use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use super::{
     GatewayPeerConfig, OpenIdentity, PeerEvent, PeerHandle, PeerOpenRequest, PeerRuntime,
-    PeerTarget, TrustedPeerConfig,
+    PeerTarget,
     codec::PeerFrameCodec,
     event::PeerCounts,
     frame::PeerFrame,
-    identity::{PeerGatewayKey, PeerGatewayName, PeerHandshake, PeerTransportId},
+    identity::{PeerGatewayName, PeerHandshake, PeerTransportId},
 };
 use observation::{PAYLOAD_SENTINEL, assert_transport_lifecycle_event, captured_dispatch};
 
@@ -29,23 +29,19 @@ fn test_config_with_liveness(
     heartbeat_response_timeout: Duration,
     idle_retirement_timeout: Duration,
 ) -> Result<GatewayPeerConfig, crate::GatewayError> {
-    Ok(GatewayPeerConfig::new(
-        "gateway-a",
-        "key-a",
-        [TrustedPeerConfig::new("gateway-b", "key-b")?],
-    )?
-    .with_queue_bounds(64, 64, 64, 64, 8)
-    .with_resource_limits(64, 64, 16, 64 * 1024)
-    .with_timeouts(
-        Duration::from_millis(500),
-        Duration::from_millis(500),
-        Duration::from_secs(1),
-    )
-    .with_liveness(
-        heartbeat_idle_interval,
-        heartbeat_response_timeout,
-        idle_retirement_timeout,
-    ))
+    Ok(GatewayPeerConfig::new("gateway-a")?
+        .with_queue_bounds(64, 64, 64, 64, 8)
+        .with_resource_limits(64, 64, 16, 64 * 1024)
+        .with_timeouts(
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+        )
+        .with_liveness(
+            heartbeat_idle_interval,
+            heartbeat_response_timeout,
+            idle_retirement_timeout,
+        ))
 }
 
 async fn next_event(events: &mut super::PeerEvents) -> TestResult<PeerEvent> {
@@ -81,7 +77,6 @@ async fn accept_fake_peer(
     framed
         .send(PeerFrame::Welcome(PeerHandshake {
             gateway_name: PeerGatewayName::new("gateway-b")?,
-            internal_gateway_key: PeerGatewayKey::new("key-b")?,
             gateway_id: gateway_b,
             expected_peer_gateway_id: gateway_a,
             dialer_gateway_id: gateway_a,

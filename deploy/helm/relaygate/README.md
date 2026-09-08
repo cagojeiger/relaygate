@@ -18,7 +18,6 @@ Kubernetes 1.32 이상과 release namespace의 다음 Secret이 필요합니다.
 
 | Secret | key | 용도 |
 | --- | --- | --- |
-| credential | `internal-gateway-keys` | `GatewayName=InternalGatewayKey,...` |
 | credential | `cluster-token`, 선택적 `next-cluster-token` | SDK trust-domain admission과 rotation |
 | edge TLS | `tls.crt`, `tls.key` | SDK-facing Gateway identity |
 | edge TLS | `ca.crt` | custom CA mode의 trust anchor |
@@ -29,11 +28,22 @@ Kubernetes 1.32 이상과 release namespace의 다음 Secret이 필요합니다.
 ```bash
 kubectl create namespace relaygate
 kubectl -n relaygate create secret generic relaygate-credentials \
-  --from-literal=internal-gateway-keys='relaygate-gateway-0=replace-a,relaygate-gateway-1=replace-b,relaygate-gateway-2=replace-c' \
   --from-literal=cluster-token='replace-cluster-token'
 ```
 
 ## TLS source
+
+SDK edge TLS와 내부 전송은 독립 설정이다. 기본 `tls.internal.mode=mtls`는 내부 인증서를 요구한다.
+격리된 테스트 환경에서는 다음 설정으로 내부 인증서 없이 설치한다. SDK edge Secret과 credential Secret은 유지한다.
+
+```yaml
+tls:
+  internal:
+    mode: plaintext
+```
+
+plain TCP는 내부 인증과 암호화를 제공하지 않는다. mTLS는 신뢰 CA와 Gateway 역할 SAN을 검증하며 별도 내부 키를 사용하지 않는다. 모드 전환과 내부 wire 변경은 GW/RT를 함께 변경하는 maintenance 작업이다.
+GW–GW와 GW–RT는 내부 wire v2를 사용하며 다른 wire 버전의 연결을 거절한다.
 
 | 구간 | mode | 공급 방식 |
 | --- | --- | --- |
@@ -48,6 +58,7 @@ cert-manager mode는 platform-owned Issuer와 CA trust Secret을 사용합니다
 tls:
   internal:
     source: certManager
+    autoReload: true
     gatewayServerName: relaygate-gateway.internal
     routeTableServerName: relaygate-route-table.internal
     certManager:
@@ -62,6 +73,13 @@ tls:
 
 cert-manager는 leaf를 갱신하고 `tls.internal.reloadToken` 또는 platform reloader가 renewed Secret을
 Gateway/RT rollout으로 적용합니다. CA rotation은 old/new trust overlap과 leaf 재발급 순서로 진행합니다.
+
+`autoReload`는 설치된 Stakater Reloader를 사용하며 내부 trust와 해당 role leaf Secret만 watch한다.
+GitOps 환경의 Reloader는 `--reload-strategy=annotations`와
+`/spec/template/metadata/annotations/reloader.stakater.com~1last-reloaded-from`의 ArgoCD ignoreDifferences를
+함께 설정한다. `RespectIgnoreDifferences=true`로 controller annotation을 sync에서도 보존한다.
+갱신 rollout은 graceful drain을 사용하며 deadline 뒤 기존 Pipe가 끊길 수 있다.
+CA 키는 Issuer에만 제공하고 GW/RT에는 공개 trust bundle과 해당 role leaf만 mount한다.
 
 ## 설치
 
@@ -102,7 +120,7 @@ SDK endpoint 기본값은 `relaygate.relaygate.svc.cluster.local:27420`입니다
 | ClusterToken | current+next → SDK 이동 → next를 current로 승격 |
 | edge certificate | Secret 갱신 → `tls.edge.reloadToken` 변경 |
 | internal certificate | Secret/leaf 갱신 → `tls.internal.reloadToken` 또는 reloader |
-| Gateway 증가 | GatewayName/key 허용 → rollout → replica 증가 |
+| Gateway 증가 | replica 증가 → mTLS Gateway 역할 인증 → 현재 상태 등록 |
 | RT shard directory | maintenance window의 coordinated restart |
 
 ## 주요 values

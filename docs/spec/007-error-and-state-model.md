@@ -4,10 +4,13 @@ State와 event 의미의 기준 문서입니다.
 
 ## 오류
 
+process startup에서 unknown transport mode·legacy test flag 혼용·mTLS material 누락은 listener를
+열기 전에 실패한다. 연결 후 TLS/mTLS 실패는 terminal connection failure이며 plaintext로 전환하지 않는다.
+
 | code | 대표 조건 | 새 operation 조건 |
 | --- | --- | --- |
 | `INVALID_ARGUMENT` | UUID/config/frame 오류 | 입력 변경 |
-| `UNAUTHENTICATED` | TLS/ClusterToken/component credential 실패 | credential/config 변경 |
+| `UNAUTHENTICATED` | TLS 인증서/ClusterToken 검증 실패 | credential/config 변경 |
 | `PERMISSION_DENIED` | authenticated component owner/operation 불일치 | identity/config 변경 |
 | `NOT_FOUND` | current Binding 없음 | 상태 변경 |
 | `FAILED_PRECONDITION` | self Binding만 존재, closed object | 전제 변경 |

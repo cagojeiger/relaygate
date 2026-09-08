@@ -2,8 +2,7 @@ use std::time::Duration;
 
 use relaygate_route_table::{DestinationId, GatewayLocator, ShardDirectoryGeneration};
 use relaygate_route_table_transport::{
-    ErrorCode, GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig,
-    RouteTableServiceConfig,
+    ErrorCode, GatewayName, RouteTableClient, RouteTableClientConfig, RouteTableServiceConfig,
 };
 use tokio::{net::TcpListener, time::timeout};
 use tokio_util::sync::CancellationToken;
@@ -39,7 +38,6 @@ async fn keep_alive_partition_case() -> TestResult {
     let directory = two_live_shard_directory(proxy.endpoint(), endpoint_1)?;
     let gateway_id = gateway(4_000);
     let gateway_name = GatewayName::new("gw-keep-alive-partition")?;
-    let gateway_key = InternalGatewayKey::new("keep-alive-partition-key")?;
     let service_config =
         RouteTableServiceConfig::new(32, 32, 8, 256 * 1024, Duration::from_secs(1))?;
     let lease_ttl = Duration::from_secs(1);
@@ -51,8 +49,6 @@ async fn keep_alive_partition_case() -> TestResult {
         directory.clone(),
         "rt-0",
         lease_ttl,
-        gateway_name.clone(),
-        gateway_key.clone(),
         service_config,
         shutdown_0.clone(),
     )?;
@@ -61,8 +57,6 @@ async fn keep_alive_partition_case() -> TestResult {
         directory.clone(),
         "rt-1",
         lease_ttl,
-        gateway_name.clone(),
-        gateway_key.clone(),
         service_config,
         shutdown_1.clone(),
     )?;
@@ -79,7 +73,6 @@ async fn keep_alive_partition_case() -> TestResult {
         GatewayRoutingConfig::new(
             directory.clone(),
             gateway_name.clone(),
-            gateway_key.clone(),
             GatewayLocator::new("gw-keep-alive-partition.internal:27431")?,
             client_config,
         )
@@ -130,14 +123,8 @@ async fn keep_alive_partition_case() -> TestResult {
     wait_for_counts(&handle, 1, 2).await?;
     wait_for_resolve(&handle, client_1.clone()).await?;
 
-    let direct_rt_0 = connect_lease_client(
-        target_0,
-        gateway_name,
-        gateway_id,
-        gateway_key,
-        client_config,
-    )
-    .await?;
+    let direct_rt_0 =
+        connect_lease_client(target_0, gateway_name, gateway_id, client_config).await?;
     assert_eq!(
         direct_rt_0
             .resolve(directory.generation(), client_0)

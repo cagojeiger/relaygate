@@ -3,7 +3,6 @@
 //! This module keeps the deterministic peer state separate from async network
 //! I/O so the one-hop relay contract can be tested without timing-sensitive
 //! sockets.
-mod auth;
 mod codec;
 mod config;
 mod error;
@@ -16,7 +15,7 @@ mod runtime;
 mod stream;
 mod transport;
 
-pub use config::{GatewayPeerConfig, TrustedPeerConfig};
+pub use config::GatewayPeerConfig;
 pub(crate) use event::{PeerEvent, PeerFailure, PeerOpenRequest, PeerStreamKey, PeerTarget};
 pub(crate) use identity::OpenIdentity;
 pub(crate) use runtime::{PeerEvents, PeerHandle, PeerRuntime};

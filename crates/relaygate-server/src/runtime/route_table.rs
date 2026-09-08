@@ -12,7 +12,7 @@ pub(crate) async fn serve(
     let shard_id = config.shard.shard_id().to_string();
     let generation = config.shard.generation().to_string();
     let insecure = config.tls.is_none();
-    let mut service = RouteTableService::new(config.shard, config.trusted_gateways, config.service);
+    let mut service = RouteTableService::new(config.shard, config.service);
     if let Some(tls) = config.tls {
         service = service.with_tls(tls);
     }
@@ -24,11 +24,11 @@ pub(crate) async fn serve(
     if insecure {
         tracing::warn!(
             component = "route_table",
-            event = "route_table.trusted_local_enabled",
+            event = "route_table.transport.plaintext_enabled",
             role = "route_table",
             transport = "plain_tcp",
-            authentication = "reusable_key",
-            "trusted-local RouteTable adapter is enabled; plain TCP is for tests only"
+            authentication = "none",
+            "internal plaintext transport selected; traffic is unauthenticated and unencrypted"
         );
     }
 
@@ -39,7 +39,6 @@ pub(crate) async fn serve(
         address = %local_address,
         shard_id,
         directory_generation = generation,
-        configured_gateways = config.configured_gateways,
         "RelayGate RouteTable started"
     );
     service.serve(listener, shutdown).await?;

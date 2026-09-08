@@ -97,6 +97,7 @@ async fn mutual_tls_requires_a_client_certificate() -> Result<(), Box<dyn std::e
     let certificate = cert.pem();
     let private_key = signing_key.serialize_pem();
     let server = ServerTlsConfig::mutually_authenticated(
+        "relaygate.internal",
         certificate.as_bytes(),
         certificate.as_bytes(),
         private_key.as_bytes(),
@@ -123,6 +124,7 @@ async fn mutual_tls_requires_a_client_certificate() -> Result<(), Box<dyn std::e
     accepted.await??;
 
     let server = ServerTlsConfig::mutually_authenticated(
+        "relaygate.internal",
         certificate.as_bytes(),
         certificate.as_bytes(),
         private_key.as_bytes(),
@@ -143,6 +145,69 @@ async fn mutual_tls_requires_a_client_certificate() -> Result<(), Box<dyn std::e
     let client_result = timeout(Duration::from_secs(1), anonymous.read(&mut byte)).await?;
     assert!(client_result.is_err() || matches!(client_result, Ok(0)));
     accepted.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn mutual_tls_rejects_a_trusted_certificate_with_the_wrong_gateway_role()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_client_certificate_rejected(false).await
+}
+
+#[tokio::test]
+async fn mutual_tls_rejects_an_untrusted_gateway_certificate()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_client_certificate_rejected(true).await
+}
+
+async fn assert_client_certificate_rejected(
+    untrusted: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let CertifiedKey { cert, signing_key } =
+        generate_simple_self_signed(vec!["route-table.internal".to_owned()])?;
+    let certificate = cert.pem();
+    let private_key = signing_key.serialize_pem();
+    let server = ServerTlsConfig::mutually_authenticated(
+        "gateway.internal",
+        certificate.as_bytes(),
+        certificate.as_bytes(),
+        private_key.as_bytes(),
+    )?;
+    let other = generate_simple_self_signed(vec!["gateway.internal".to_owned()])?;
+    let (client_cert, client_key) = if untrusted {
+        (other.cert.pem(), other.signing_key.serialize_pem())
+    } else {
+        (certificate.clone(), private_key)
+    };
+    let client = ClientTlsConfig::mutually_authenticated(
+        "route-table.internal",
+        certificate.as_bytes(),
+        client_cert.as_bytes(),
+        client_key.as_bytes(),
+    )?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let accepted = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        match server.accept(stream).await {
+            Ok(_) => Err(io::Error::other(
+                "unauthorized certificate reached the application",
+            )),
+            Err(error) => {
+                if !untrusted {
+                    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                }
+                Ok(())
+            }
+        }
+    });
+    // TLS 1.3 can complete on the client before the server rejects its certificate.
+    if let Ok(mut stream) = client.connect(TcpStream::connect(address).await?).await {
+        let mut byte = [0_u8; 1];
+        let result = timeout(Duration::from_secs(1), stream.read(&mut byte)).await?;
+        assert!(result.is_err() || matches!(result, Ok(0)));
+    }
+    timeout(Duration::from_secs(1), accepted).await???;
     Ok(())
 }
 

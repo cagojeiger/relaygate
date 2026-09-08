@@ -4,6 +4,10 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: {{ include "relaygate.routeTableName" . | quote }}
+  {{- if .Values.tls.internal.autoReload }}
+  annotations:
+    secret.reloader.stakater.com/reload: {{ include "relaygate.internalReloadSecrets" (dict "root" . "component" "route-table") | quote }}
+  {{- end }}
   labels:
     {{- include "relaygate.labels" (dict "root" . "component" "route-table") | nindent 4 }}
 spec:
@@ -19,7 +23,6 @@ spec:
     metadata:
       annotations:
         checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
-        relaygate.io/credentials-reload: {{ .Values.credentials.reloadToken | quote }}
         relaygate.io/internal-tls-reload: {{ .Values.tls.internal.reloadToken | quote }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
@@ -75,17 +78,18 @@ spec:
               value: "rt-$(POD_INDEX)"
             - name: RELAYGATE_RT_LEASE_TTL_MS
               value: {{ .Values.routeTable.leaseTtlMs | quote }}
-            - name: RELAYGATE_INTERNAL_GATEWAY_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.credentials.existingSecret | quote }}
-                  key: {{ .Values.credentials.internalGatewayKeysKey | quote }}
+            - name: RELAYGATE_INTERNAL_TRANSPORT
+              value: {{ .Values.tls.internal.mode | quote }}
+            {{- if eq .Values.tls.internal.mode "mtls" }}
+            - name: RELAYGATE_PEER_TLS_SERVER_NAME
+              value: {{ .Values.tls.internal.gatewayServerName | quote }}
             - name: RELAYGATE_INTERNAL_TLS_CA_PATH
               value: /etc/relaygate/tls/internal/ca.crt
             - name: RELAYGATE_INTERNAL_TLS_CERT_PATH
               value: /etc/relaygate/tls/internal/tls.crt
             - name: RELAYGATE_INTERNAL_TLS_KEY_PATH
               value: /etc/relaygate/tls/internal/tls.key
+            {{- end }}
             - name: RELAYGATE_LOG
               value: {{ .Values.routeTable.log | quote }}
             - name: RELAYGATE_LOG_FORMAT
@@ -123,14 +127,17 @@ spec:
             - name: shard-directory
               mountPath: /etc/relaygate
               readOnly: true
+            {{- if eq .Values.tls.internal.mode "mtls" }}
             - name: internal-tls
               mountPath: /etc/relaygate/tls/internal
               readOnly: true
+            {{- end }}
       volumes:
         - name: shard-directory
           configMap:
             name: {{ include "relaygate.shardDirectoryName" . | quote }}
             defaultMode: 0444
+        {{- if eq .Values.tls.internal.mode "mtls" }}
         - name: internal-tls
           {{ if eq .Values.tls.internal.source "certManager" }}
           projected:
@@ -160,6 +167,7 @@ spec:
               - key: {{ .Values.tls.internal.routeTablePrivateKeyKey | quote }}
                 path: tls.key
           {{ end }}
+        {{- end }}
       {{- with .Values.routeTable.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

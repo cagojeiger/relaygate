@@ -28,12 +28,14 @@ use relaygate_route_table::{
 };
 #[cfg(unix)]
 use relaygate_route_table_transport::{
-    ErrorCode as RouteTableErrorCode, GatewayName, InternalGatewayKey, RouteTableClient,
-    RouteTableClientConfig,
+    ErrorCode as RouteTableErrorCode, GatewayName, RouteTableClient, RouteTableClientConfig,
 };
 
 const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
 const TEST_CLUSTER_TOKEN: &str = "relaygate-process-test-token";
+
+#[path = "process/transport_modes.rs"]
+mod transport_modes;
 const DESTINATION_A: &str = "11111111-1111-4111-8111-111111111111";
 const DESTINATION_MISSING: &str = "99999999-9999-4999-8999-999999999999";
 #[cfg(unix)]
@@ -78,13 +80,11 @@ fn server_boots_health_checks_and_exits_on_sigterm() -> Result<(), Box<dyn Error
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
--> Result<(), Box<dyn Error>> {
+async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
     let artifact = ShardDirectoryArtifact::create()?;
     let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
-    let secret = "must-not-appear-route-table-key";
     let gateway_id = GatewayId::new();
     let mut server = ChildGuard::spawn_captured(
         server_command()
@@ -93,32 +93,12 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
             .env("RELAYGATE_RT_BIND_ADDR", &address)
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_RT_SHARD_ID", "rt-0")
-            .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", format!("gw-a={secret}"))
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
             .env("RELAYGATE_LOG", "info")
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
-    let client = wait_until_route_table_ready(&address, gateway_id, secret, &mut server).await?;
-    let rejected = match RouteTableClient::connect(
-        address.as_str(),
-        GatewayName::new("gw-a")?,
-        GatewayId::new(),
-        InternalGatewayKey::new("wrong-key")?,
-        RouteTableClientConfig::new(
-            8,
-            1024 * 1024,
-            Duration::from_millis(100),
-            Duration::from_millis(100),
-            Duration::from_secs(1),
-        )?,
-    )
-    .await
-    {
-        Ok(_) => return Err(io::Error::other("wrong internal key was accepted").into()),
-        Err(error) => error,
-    };
-    assert_eq!(rejected.code(), RouteTableErrorCode::Unauthenticated);
+    let client = wait_until_route_table_ready(&address, gateway_id, &mut server).await?;
     let error = match client
         .resolve(
             directory.generation(),
@@ -199,7 +179,6 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
     ));
     assert!(metrics.contains("relaygate_route_table_request_duration_seconds_bucket"));
     assert!(!metrics.contains("quantile="));
-    assert!(!metrics.contains(secret));
 
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
@@ -216,9 +195,7 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
         "RouteTable server exited unsuccessfully after SIGTERM: {exit_status}"
     );
 
-    let (stdout, stderr) = server.read_captured()?;
-    assert!(!stdout.contains(secret));
-    assert!(!stderr.contains(secret));
+    let (stdout, _) = server.read_captured()?;
     let records = stdout
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)
@@ -229,10 +206,9 @@ async fn route_table_role_starts_ready_empty_hides_key_and_exits_on_sigterm()
         .ok_or("missing RouteTable server.started JSON event")?;
     assert_eq!(started["component"], "server");
     assert_eq!(started["shard_id"], "rt-0");
-    assert_eq!(started["configured_gateways"], 1);
     let trusted_local_warning = records
         .iter()
-        .find(|record| record["event"] == "route_table.trusted_local_enabled")
+        .find(|record| record["event"] == "route_table.transport.plaintext_enabled")
         .ok_or("missing RouteTable trusted-local warning event")?;
     assert_eq!(trusted_local_warning["component"], "route_table");
     assert_eq!(trusted_local_warning["transport"], "plain_tcp");
@@ -247,7 +223,6 @@ async fn route_table_expiry_metric_counts_removed_soft_state_once() -> Result<()
     let artifact = ShardDirectoryArtifact::create()?;
     let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
     let gateway_id = GatewayId::new();
-    let secret = "expiry-test-key";
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .arg("route-table")
@@ -256,11 +231,10 @@ async fn route_table_expiry_metric_counts_removed_soft_state_once() -> Result<()
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_RT_SHARD_ID", "rt-0")
             .env("RELAYGATE_RT_LEASE_TTL_MS", "100")
-            .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", format!("gw-a={secret}"))
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address),
     )?;
 
-    let client = wait_until_route_table_ready(&address, gateway_id, secret, &mut server).await?;
+    let client = wait_until_route_table_ready(&address, gateway_id, &mut server).await?;
     let key = RegistrationKey::new(gateway_id, RelaySessionId::new(), ShardId::new("rt-0")?);
     client.register(directory.generation(), &key).await?;
 
@@ -293,7 +267,6 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
     let address = unused_loopback_address()?;
     let peer_address = unused_loopback_address()?;
     let artifact = ShardDirectoryArtifact::create()?;
-    let secret = "must-not-appear-gateway-route-table-key";
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .env("RELAYGATE_BIND_ADDR", &address)
@@ -303,7 +276,6 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
             .env("RELAYGATE_GATEWAY_NAME", "gw-a")
             .env("RELAYGATE_GATEWAY_LOCATOR", &peer_address)
             .env("RELAYGATE_PEER_BIND_ADDR", &peer_address)
-            .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", format!("gw-a={secret}"))
             .env("RELAYGATE_LOG", "info")
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
@@ -321,9 +293,7 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
     })?;
     assert!(exit_status.success(), "distributed Gateway shutdown failed");
 
-    let (stdout, stderr) = server.read_captured()?;
-    assert!(!stdout.contains(secret));
-    assert!(!stderr.contains(secret));
+    let (stdout, _) = server.read_captured()?;
     let records = stdout
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)
@@ -335,7 +305,7 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
     assert_eq!(started["distributed_enabled"], true);
     let warning = records
         .iter()
-        .find(|record| record["event"] == "gateway.route_table.trusted_local_enabled")
+        .find(|record| record["event"] == "gateway.internal_transport.plaintext_enabled")
         .ok_or("missing distributed Gateway trusted-local warning")?;
     assert_eq!(warning["transport"], "plain_tcp");
     Ok(())
@@ -349,7 +319,6 @@ fn distributed_peer_accept_failure_exits_process_nonzero_within_bound() -> Resul
     let peer_address = unused_loopback_address()?;
     let peer_socket = peer_address.parse()?;
     let artifact = ShardDirectoryArtifact::create()?;
-    let secret = "must-not-appear-peer-failure-key";
     let mut server = ChildGuard::spawn_captured(
         server_command_with_open_file_limit(PROCESS_NOFILE_LIMIT)
             .env("RELAYGATE_BIND_ADDR", &address)
@@ -359,7 +328,6 @@ fn distributed_peer_accept_failure_exits_process_nonzero_within_bound() -> Resul
             .env("RELAYGATE_GATEWAY_NAME", "gw-a")
             .env("RELAYGATE_GATEWAY_LOCATOR", &peer_address)
             .env("RELAYGATE_PEER_BIND_ADDR", &peer_address)
-            .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", format!("gw-a={secret}"))
             .env("RELAYGATE_LOG", "info")
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
@@ -390,8 +358,6 @@ fn distributed_peer_accept_failure_exits_process_nonzero_within_bound() -> Resul
 
     drop(idle_peers);
     let (stdout, stderr) = server.read_captured()?;
-    assert!(!stdout.contains(secret));
-    assert!(!stderr.contains(secret));
     assert!(
         stderr.contains(
             "Gateway peer relay failed: Unavailable/NotObserved: peer listener accept failed"
@@ -456,7 +422,6 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
         .env("RELAYGATE_GATEWAY_NAME", "gw-a")
         .env("RELAYGATE_GATEWAY_LOCATOR", "gw-a.internal:27431")
-        .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=secret")
         .output()?;
     assert_unsuccessful_output(
         &missing_gateway_directory,
@@ -552,7 +517,6 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
         .env("RELAYGATE_GATEWAY_NAME", "gw-a")
         .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
-        .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=secret")
         .env("RELAYGATE_PEER_HEARTBEAT_IDLE_MS", "0")
         .output()?;
     assert_unsuccessful_output(
@@ -566,7 +530,6 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
         .env("RELAYGATE_GATEWAY_NAME", "gw-a")
         .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
-        .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=secret")
         .env("RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS", "0")
         .output()?;
     assert_unsuccessful_output(
@@ -580,7 +543,6 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
         .env("RELAYGATE_GATEWAY_NAME", "gw-a")
         .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
-        .env("RELAYGATE_INTERNAL_GATEWAY_KEYS", "gw-a=secret")
         .env("RELAYGATE_PEER_IDLE_TIMEOUT_MS", "0")
         .output()?;
     assert_unsuccessful_output(
@@ -1065,6 +1027,12 @@ fn clean_server_command(mut command: Command) -> Command {
     for name in [
         "RELAYGATE_BIND_ADDR",
         "RELAYGATE_INSECURE_TEST_TRANSPORT",
+        "RELAYGATE_INTERNAL_TRANSPORT",
+        "RELAYGATE_INTERNAL_TLS_CA_PATH",
+        "RELAYGATE_INTERNAL_TLS_CERT_PATH",
+        "RELAYGATE_INTERNAL_TLS_KEY_PATH",
+        "RELAYGATE_PEER_TLS_SERVER_NAME",
+        "RELAYGATE_RT_TLS_SERVER_NAME",
         "RELAYGATE_CLUSTER_TOKEN",
         "RELAYGATE_NEXT_CLUSTER_TOKEN",
         "RELAYGATE_GATEWAY_LOCATOR",
@@ -1245,7 +1213,6 @@ fn metric_has_labels(body: &str, metric: &str, labels: &[&str]) -> bool {
 async fn wait_until_route_table_ready(
     address: &str,
     gateway_id: GatewayId,
-    secret: &str,
     server: &mut ChildGuard,
 ) -> Result<RouteTableClient, Box<dyn Error>> {
     let endpoint: std::net::SocketAddr = address.parse()?;
@@ -1264,14 +1231,9 @@ async fn wait_until_route_table_ready(
             Duration::from_millis(100),
             Duration::from_secs(1),
         )?;
-        let connected = RouteTableClient::connect(
-            endpoint,
-            GatewayName::new("gw-a")?,
-            gateway_id,
-            InternalGatewayKey::new(secret)?,
-            config,
-        )
-        .await;
+        let connected =
+            RouteTableClient::connect(endpoint, GatewayName::new("gw-a")?, gateway_id, config)
+                .await;
         if let Ok(client) = connected {
             return Ok(client);
         }

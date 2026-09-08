@@ -204,7 +204,6 @@ impl RoutingRuntime {
                 generation: config.directory.generation(),
                 gateway_id,
                 gateway_name: config.gateway_name.clone(),
-                internal_gateway_key: config.internal_gateway_key.clone(),
                 client_config: config.client,
                 tls: config.tls.clone(),
                 reconnect_initial: config.reconnect_initial_backoff,

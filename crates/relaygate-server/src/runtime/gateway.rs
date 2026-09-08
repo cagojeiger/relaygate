@@ -36,9 +36,9 @@ pub(crate) async fn serve(
             if distributed.insecure_transport {
                 tracing::warn!(
                     component = "gateway",
-                    event = "gateway.route_table.trusted_local_enabled",
+                    event = "gateway.internal_transport.plaintext_enabled",
                     transport = "plain_tcp",
-                    "local/CI RouteTable and peer adapter is running without TLS"
+                    "internal plaintext transport selected; traffic is unauthenticated and unencrypted"
                 );
             }
             (

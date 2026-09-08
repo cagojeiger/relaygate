@@ -11,7 +11,6 @@ use tokio_util::codec::Framed;
 use uuid::Uuid;
 
 use crate::{
-    GatewayName, InternalGatewayKey,
     dto::{WireRequest, WireResponse},
     frame::{GATEWAY_ROLE, ROUTE_TABLE_ROLE, WireFrame},
 };
@@ -71,8 +70,6 @@ async fn unexpected_actor_exit_terminates_service_and_live_connection() -> Resul
         ShardId::new("rt-0")?,
         RouteTableConfig::new(Duration::from_secs(10))?,
     )?;
-    let trusted =
-        TrustedGatewayKeys::new([(GatewayName::new("gw-a")?, InternalGatewayKey::new("key-a")?)])?;
     let config = RouteTableServiceConfig::new(4, 2, 2, 64 * 1024, Duration::from_secs(1))?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -82,19 +79,17 @@ async fn unexpected_actor_exit_terminates_service_and_live_connection() -> Resul
         .map_err(|error| TransportError::unavailable(error.to_string()))?;
     let shutdown = CancellationToken::new();
     let (stop_actor, actor_stopped) = oneshot::channel();
-    let service_task = tokio::spawn(
-        RouteTableService::new(shard, trusted, config).serve_with_actor(
-            listener,
-            shutdown.clone(),
-            move |shard, requests, _actor_shutdown| {
-                tokio::spawn(async move {
-                    let _requests = requests;
-                    let _ = actor_stopped.await;
-                    shard
-                })
-            },
-        ),
-    );
+    let service_task = tokio::spawn(RouteTableService::new(shard, config).serve_with_actor(
+        listener,
+        shutdown.clone(),
+        move |shard, requests, _actor_shutdown| {
+            tokio::spawn(async move {
+                let _requests = requests;
+                let _ = actor_stopped.await;
+                shard
+            })
+        },
+    ));
 
     let stream = TcpStream::connect(endpoint)
         .await
@@ -105,7 +100,6 @@ async fn unexpected_actor_exit_terminates_service_and_live_connection() -> Resul
             role: GATEWAY_ROLE.to_owned(),
             gateway_name: "gw-a".to_owned(),
             gateway_id: Uuid::from_u128(1).to_string(),
-            internal_gateway_key: "key-a".to_owned(),
         })
         .await
         .map_err(map_send_codec_error)?;
@@ -234,8 +228,6 @@ async fn terminal_protocol_fault_is_flushed_before_connection_close() -> Result<
         ShardId::new("rt-0")?,
         RouteTableConfig::new(Duration::from_secs(10))?,
     )?;
-    let trusted =
-        TrustedGatewayKeys::new([(GatewayName::new("gw-a")?, InternalGatewayKey::new("key-a")?)])?;
     let config = RouteTableServiceConfig::new(4, 2, 2, 64 * 1024, Duration::from_secs(1))?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -244,9 +236,8 @@ async fn terminal_protocol_fault_is_flushed_before_connection_close() -> Result<
         .local_addr()
         .map_err(|error| TransportError::unavailable(error.to_string()))?;
     let shutdown = CancellationToken::new();
-    let service_task = tokio::spawn(
-        RouteTableService::new(shard, trusted, config).serve(listener, shutdown.clone()),
-    );
+    let service_task =
+        tokio::spawn(RouteTableService::new(shard, config).serve(listener, shutdown.clone()));
 
     let stream = TcpStream::connect(endpoint)
         .await
@@ -257,7 +248,6 @@ async fn terminal_protocol_fault_is_flushed_before_connection_close() -> Result<
             role: GATEWAY_ROLE.to_owned(),
             gateway_name: "gw-a".to_owned(),
             gateway_id: Uuid::from_u128(1).to_string(),
-            internal_gateway_key: "key-a".to_owned(),
         })
         .await
         .map_err(map_send_codec_error)?;

@@ -7,8 +7,8 @@ use relaygate_route_table::{
     RegistrationKey, RelaySessionId, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
-    GatewayName, InternalGatewayKey, RouteTableClient, RouteTableClientConfig, RouteTableService,
-    RouteTableServiceConfig, TransportError, TrustedGatewayKeys,
+    GatewayName, RouteTableClient, RouteTableClientConfig, RouteTableService,
+    RouteTableServiceConfig, TransportError,
 };
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -26,24 +26,19 @@ pub struct RunningService {
 }
 
 impl RunningService {
-    pub async fn start(
-        ttl: Duration,
-        keys: impl IntoIterator<Item = (&'static str, &'static str)>,
-    ) -> TestResult<Self> {
-        Self::start_with_max_connections(ttl, keys, 8).await
+    pub async fn start(ttl: Duration) -> TestResult<Self> {
+        Self::start_with_max_connections(ttl, 8).await
     }
 
     pub async fn start_with_max_connections(
         ttl: Duration,
-        keys: impl IntoIterator<Item = (&'static str, &'static str)>,
         max_connections: usize,
     ) -> TestResult<Self> {
-        Self::start_with_limits(ttl, keys, max_connections, 256 * 1024).await
+        Self::start_with_limits(ttl, max_connections, 256 * 1024).await
     }
 
     pub async fn start_with_limits(
         ttl: Duration,
-        keys: impl IntoIterator<Item = (&'static str, &'static str)>,
         max_connections: usize,
         max_frame_len: usize,
     ) -> TestResult<Self> {
@@ -54,14 +49,8 @@ impl RunningService {
             ShardId::new("rt-0")?,
             RouteTableConfig::new(ttl)?,
         )?;
-        let trusted = TrustedGatewayKeys::new(
-            keys.into_iter()
-                .map(|(name, key)| Ok((GatewayName::new(name)?, InternalGatewayKey::new(key)?)))
-                .collect::<Result<Vec<_>, TransportError>>()?,
-        )?;
         let service = RouteTableService::new(
             shard,
-            trusted,
             RouteTableServiceConfig::new(
                 16,
                 8,
@@ -86,13 +75,11 @@ impl RunningService {
         &self,
         name: &str,
         gateway_id: GatewayId,
-        key: &str,
     ) -> Result<RouteTableClient, TransportError> {
         RouteTableClient::connect(
             self.endpoint,
             GatewayName::new(name)?,
             gateway_id,
-            InternalGatewayKey::new(key)?,
             RouteTableClientConfig::new(
                 16,
                 256 * 1024,

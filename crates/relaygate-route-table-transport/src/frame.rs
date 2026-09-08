@@ -19,7 +19,6 @@ pub(crate) enum WireFrame {
         role: String,
         gateway_name: String,
         gateway_id: String,
-        internal_gateway_key: String,
     },
     Welcome {
         role: String,

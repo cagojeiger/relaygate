@@ -21,7 +21,6 @@ use tokio_util::sync::CancellationToken;
 
 use super::{ManagerCommand, PeerRuntime, SharedCounts, TransportRegistry};
 use crate::peer::{
-    auth::TrustedPeers,
     config::GatewayPeerConfig,
     event::{PeerEvent, PeerFailure, PeerOpenRequest, PeerStreamKey},
     handshake::{EstablishedPeer, InboundHello},
@@ -52,7 +51,6 @@ struct PendingOpen {
 
 pub(super) struct Manager {
     config: GatewayPeerConfig,
-    trusted: TrustedPeers,
     local_gateway_id: GatewayId,
     commands: mpsc::Receiver<ManagerCommand>,
     transport_notices: mpsc::Receiver<TransportNotice>,
@@ -75,7 +73,6 @@ pub(super) struct Manager {
 impl Manager {
     pub(super) fn new(runtime: PeerRuntime) -> Self {
         Self {
-            trusted: TrustedPeers::from_config(&runtime.config),
             config: runtime.config,
             local_gateway_id: runtime.local_gateway_id,
             commands: runtime.commands,

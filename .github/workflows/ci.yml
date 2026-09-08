@@ -70,6 +70,7 @@ jobs:
 
       - name: Validate Helm chart
         run: |
+          python3 .github/scripts/helm_transport_test.py -v
           mkdir -p target/helm
           helm lint --strict deploy/helm/relaygate \
             --kube-version 1.32.0
@@ -216,10 +217,13 @@ jobs:
           directory_checksum=$(printf '%s' "$directory_json" | sha256sum | cut -d ' ' -f1)
           rendered_checksum=$(grep 'checksum/shard-directory:' target/helm/default.yaml | head -n1 | tr -d '"' | awk '{print $2}')
           test "$directory_checksum" = "$rendered_checksum"
-          test "$(grep -c 'key: "internal-gateway-keys"' target/helm/default.yaml)" -eq 2
+          if grep -Fq 'RELAYGATE_INTERNAL_GATEWAY_KEYS' target/helm/default.yaml; then
+            echo "Helm chart still rendered removed internal credentials"
+            exit 1
+          fi
           test "$(grep -c 'key: "cluster-token"' target/helm/default.yaml)" -eq 1
           test "$(grep -c 'key: "next-cluster-token"' target/helm/default.yaml)" -eq 1
-          test "$(grep -c '^        relaygate.io/credentials-reload: ""$' target/helm/default.yaml)" -eq 2
+          test "$(grep -c '^        relaygate.io/credentials-reload: ""$' target/helm/default.yaml)" -eq 1
           test "$(grep -c '^        relaygate.io/edge-tls-reload: ""$' target/helm/default.yaml)" -eq 1
           test "$(grep -c '^        relaygate.io/internal-tls-reload: ""$' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^              mountPath: /etc/relaygate$' target/helm/default.yaml)" -eq 2

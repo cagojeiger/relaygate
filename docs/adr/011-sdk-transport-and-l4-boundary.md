@@ -4,7 +4,7 @@
 | --- | --- |
 | 상태 | Accepted, implemented |
 | SDK transport | RelayGate framing over TLS/TCP |
-| internal transport | mTLS/TCP |
+| internal transport | mTLS/TCP 기본값, [ADR 014](014-explicit-internal-transport-mode.md)의 명시적 plaintext |
 | public entry | platform-owned L4 passthrough |
 
 ## 결정

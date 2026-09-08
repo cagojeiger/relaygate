@@ -111,6 +111,7 @@ impl fmt::Debug for ClientTlsConfig {
 #[derive(Clone)]
 pub struct ServerTlsConfig {
     acceptor: TlsAcceptor,
+    client_name: Option<ServerName<'static>>,
 }
 
 impl ServerTlsConfig {
@@ -129,6 +130,7 @@ impl ServerTlsConfig {
     }
 
     pub fn mutually_authenticated(
+        client_name: impl Into<String>,
         ca_pem: &[u8],
         certificate_pem: &[u8],
         private_key_pem: &[u8],
@@ -143,13 +145,19 @@ impl ServerTlsConfig {
                 private_key(private_key_pem)?,
             )
             .map_err(|error| TlsConfigError::InvalidIdentity(error.to_string()))?;
-        Ok(Self::new(config))
+        let mut config = Self::new(config);
+        config.client_name = Some(
+            ServerName::try_from(client_name.into())
+                .map_err(|error| TlsConfigError::InvalidServerName(error.to_string()))?,
+        );
+        Ok(config)
     }
 
     fn new(mut config: ServerConfig) -> Self {
         config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
         Self {
             acceptor: TlsAcceptor::from(Arc::new(config)),
+            client_name: None,
         }
     }
 
@@ -158,6 +166,23 @@ impl ServerTlsConfig {
         stream: TcpStream,
     ) -> Result<server::TlsStream<TcpStream>, io::Error> {
         let stream = self.acceptor.accept(stream).await?;
+        if let Some(name) = &self.client_name {
+            let certificate = stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "missing client certificate",
+                    )
+                })?;
+            let certificate = rustls::server::ParsedCertificate::try_from(certificate)
+                .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))?;
+            rustls::client::verify_server_name(&certificate, name)
+                .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))?;
+        }
         require_relaygate_alpn(stream.get_ref().1.alpn_protocol())?;
         Ok(stream)
     }

@@ -57,8 +57,7 @@ type RemoteActor = (
 );
 
 fn actor_for_remote_open() -> Result<RemoteActor, Box<dyn Error>> {
-    let config =
-        GatewayPeerConfig::new("gateway-b", "key-b", [])?.with_queue_bounds(16, 16, 16, 16, 8);
+    let config = GatewayPeerConfig::new("gateway-b")?.with_queue_bounds(16, 16, 16, 16, 8);
     let peer_gateway_id = GatewayId::new();
     let peer_transport_id = PeerTransportId::new();
     let (aggregate_writer, aggregate_receiver) = mpsc::channel(16);

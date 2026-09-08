@@ -44,6 +44,19 @@
 {{- printf "%s-%d" (include "relaygate.routeTableName" .root) .index }}
 {{- end }}
 
+{{- define "relaygate.internalReloadSecrets" -}}
+{{- $root := .root -}}
+{{- if eq $root.Values.tls.internal.source "certManager" -}}
+{{- $leaf := include "relaygate.internalGatewayCertificateSecretName" $root -}}
+{{- if eq .component "route-table" -}}
+{{- $leaf = include "relaygate.internalRouteTableCertificateSecretName" $root -}}
+{{- end -}}
+{{- printf "%s,%s" $root.Values.tls.internal.certManager.trustSecret.name $leaf -}}
+{{- else -}}
+{{- $root.Values.tls.internal.existingSecret -}}
+{{- end -}}
+{{- end }}
+
 {{- define "relaygate.shardDirectoryName" -}}
 {{- printf "%s-shard-directory" (include "relaygate.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
@@ -97,6 +110,9 @@ app.kubernetes.io/part-of: "relaygate"
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.existingSecret" "value" .Values.tls.internal.existingSecret) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.gatewayServerName" "value" .Values.tls.internal.gatewayServerName) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.internal.routeTableServerName" "value" .Values.tls.internal.routeTableServerName) }}
+{{- if and (eq .Values.tls.internal.mode "plaintext") (or .Values.tls.internal.autoReload (eq .Values.tls.internal.source "certManager")) }}
+{{- fail "tls.internal.mode=plaintext cannot enable certManager or autoReload" }}
+{{- end }}
 {{- if eq .Values.tls.internal.source "certManager" }}
 {{- if not .Values.tls.internal.certManager.issuerRef.name }}
 {{- fail "tls.internal.certManager.issuerRef.name is required when tls.internal.source=certManager" }}
@@ -162,7 +178,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- define "relaygate.validateGatewayExtraEnv" -}}
 {{- $managed := list "POD_NAME" "POD_NAMESPACE" "RELAYGATE_BIND_ADDR" "RELAYGATE_PEER_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_GATEWAY_NAME" "RELAYGATE_GATEWAY_LOCATOR" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_CLUSTER_TOKEN" "RELAYGATE_NEXT_CLUSTER_TOKEN" "RELAYGATE_SDK_TLS_CA_PATH" "RELAYGATE_SDK_TLS_CERT_PATH" "RELAYGATE_SDK_TLS_KEY_PATH" "RELAYGATE_SDK_TLS_SERVER_NAME" "RELAYGATE_INTERNAL_TLS_CA_PATH" "RELAYGATE_INTERNAL_TLS_CERT_PATH" "RELAYGATE_INTERNAL_TLS_KEY_PATH" "RELAYGATE_PEER_TLS_SERVER_NAME" "RELAYGATE_RT_TLS_SERVER_NAME" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_DRAIN_TIMEOUT_MS" "RELAYGATE_STATS_INTERVAL_MS" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
 {{- range .Values.gateway.extraEnv }}
-{{- if has .name $managed }}
+{{- if or (has .name $managed) (has .name (list "RELAYGATE_INTERNAL_TRANSPORT" "RELAYGATE_INSECURE_TEST_TRANSPORT" "RELAYGATE_RT_TRUSTED_LOCAL")) }}
 {{- fail (printf "gateway.extraEnv cannot override chart-managed variable %s" .name) }}
 {{- end }}
 {{- end }}
@@ -184,9 +200,9 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateRouteTableExtraEnv" -}}
-{{- $managed := list "POD_INDEX" "RELAYGATE_RT_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_RT_SHARD_ID" "RELAYGATE_RT_LEASE_TTL_MS" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_INTERNAL_TLS_CA_PATH" "RELAYGATE_INTERNAL_TLS_CERT_PATH" "RELAYGATE_INTERNAL_TLS_KEY_PATH" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
+{{- $managed := list "POD_INDEX" "RELAYGATE_RT_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_RT_SHARD_ID" "RELAYGATE_RT_LEASE_TTL_MS" "RELAYGATE_PEER_TLS_SERVER_NAME" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_INTERNAL_TLS_CA_PATH" "RELAYGATE_INTERNAL_TLS_CERT_PATH" "RELAYGATE_INTERNAL_TLS_KEY_PATH" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
 {{- range .Values.routeTable.extraEnv }}
-{{- if has .name $managed }}
+{{- if or (has .name $managed) (has .name (list "RELAYGATE_INTERNAL_TRANSPORT" "RELAYGATE_INSECURE_TEST_TRANSPORT" "RELAYGATE_RT_TRUSTED_LOCAL")) }}
 {{- fail (printf "routeTable.extraEnv cannot override chart-managed variable %s" .name) }}
 {{- end }}
 {{- end }}

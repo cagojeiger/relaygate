@@ -1,5 +1,3 @@
-use std::fmt;
-
 use relaygate_protocol::{PeerObservation, SessionId};
 use relaygate_route_table::GatewayId;
 use uuid::Uuid;
@@ -27,44 +25,14 @@ impl PeerGatewayName {
     }
 }
 
-/// Local/CI credential carried only during peer handshake.
-///
-/// The cleartext value is deliberately absent from `Debug`. It must not be
-/// retained in stream state after the handshake completes.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct PeerGatewayKey(String);
-
-impl PeerGatewayKey {
-    pub(crate) fn new(value: impl Into<String>) -> Result<Self, PeerError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(PeerError::InvalidArgument(
-                "peer internal Gateway key must not be empty",
-            ));
-        }
-        Ok(Self(value))
-    }
-
-    pub(super) fn expose_secret(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for PeerGatewayKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("PeerGatewayKey([REDACTED])")
-    }
-}
-
 /// Identity claims exchanged by both sides of a peer handshake.
 ///
 /// Carrying the same tuple in `HELLO` and `WELCOME` lets each endpoint verify
-/// the configured peer name/key, the expected runtime incarnation, and the
+/// the expected runtime incarnation and the
 /// direction-specific transport identity before admitting any stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PeerHandshake {
     pub(crate) gateway_name: PeerGatewayName,
-    pub(crate) internal_gateway_key: PeerGatewayKey,
     pub(crate) gateway_id: GatewayId,
     pub(crate) expected_peer_gateway_id: GatewayId,
     pub(crate) dialer_gateway_id: GatewayId,
