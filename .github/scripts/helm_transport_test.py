@@ -1,5 +1,6 @@
-"""Transport and certificate reload rendering contract (run after Helm setup)."""
+"""Transport and platform annotation rendering contracts (run after Helm setup)."""
 
+import json
 from pathlib import Path
 import subprocess
 import unittest
@@ -8,13 +9,12 @@ import unittest
 CHART = Path(__file__).resolve().parents[2] / "deploy/helm/relaygate"
 
 
-def render(*settings):
-    command = [
-        "helm", "template", "relaygate", str(CHART), "--namespace", "relaygate",
-        "--kube-version", "1.32.0",
-    ]
+def render(*settings, annotations=None):
+    command = ["helm", "template", "relaygate", str(CHART), "--namespace", "relaygate", "--kube-version", "1.32.0"]
     for setting in settings:
         command.extend(["--set", setting])
+    for component, values in (annotations or {}).items():
+        command.extend(["--set-json", f"{component}.annotations={json.dumps(values)}"])
     return subprocess.run(command, capture_output=True, text=True, check=False)
 
 
@@ -23,13 +23,13 @@ def workload(output, component):
     return output.split(marker, 1)[1].split("\n---", 1)[0]
 
 
-class InternalTransportTests(unittest.TestCase):
-    def successful(self, *settings):
-        result = render(*settings)
+class TransportTests(unittest.TestCase):
+    def successful(self, *settings, **kwargs):
+        result = render(*settings, **kwargs)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
-    def test_default_requires_tls_and_has_no_automatic_restart_opt_in(self):
+    def test_default_requires_tls_without_platform_restart_policy(self):
         output = self.successful()
         for component in ("gateway", "route-table"):
             item = workload(output, component)
@@ -37,6 +37,8 @@ class InternalTransportTests(unittest.TestCase):
             self.assertIn("name: RELAYGATE_INTERNAL_TLS_CERT_PATH", item)
             self.assertIn("mountPath: /etc/relaygate/tls/internal", item)
             self.assertNotIn("secret.reloader.stakater.com/reload:", item)
+            for annotation in ("credentials-reload", "edge-tls-reload", "internal-tls-reload"):
+                self.assertNotIn(f"relaygate.io/{annotation}:", item)
 
     def test_plaintext_keeps_edge_tls_and_token_but_removes_internal_certificates(self):
         output = self.successful("tls.internal.mode=plaintext")
@@ -51,9 +53,9 @@ class InternalTransportTests(unittest.TestCase):
         self.assertIn("RELAYGATE_CLUSTER_TOKEN", workload(output, "gateway"))
         self.assertNotIn("kind: Certificate", output)
 
-    def test_cert_manager_reload_watches_only_role_leaf_and_public_trust(self):
+    def test_cert_manager_mounts_only_role_leaf_and_public_trust(self):
         output = self.successful(
-            "tls.internal.source=certManager", "tls.internal.autoReload=true",
+            "tls.internal.source=certManager",
             "tls.internal.certManager.issuerRef.name=internal-ca",
             "tls.internal.certManager.issuerRef.kind=Issuer",
             "tls.internal.certManager.trustSecret.name=public-trust",
@@ -61,65 +63,40 @@ class InternalTransportTests(unittest.TestCase):
         self.assertEqual(output.count("kind: Certificate\n"), 2)
         for component, leaf in (("gateway", "gw"), ("route-table", "rt")):
             item = workload(output, component)
-            metadata = item.split("\nspec:", 1)[0]
-            self.assertIn(
-                f'secret.reloader.stakater.com/reload: "public-trust,relaygate-{leaf}-internal-tls"',
-                metadata,
-            )
-            self.assertNotIn("secretName: \"relaygate-internal-tls\"", item)
+            self.assertNotIn('secretName: "relaygate-internal-tls"', item)
             self.assertIn('name: "public-trust"', item)
+            self.assertIn(f'name: "relaygate-{leaf}-internal-tls"', item)
         self.assertEqual(output.count("rotationPolicy: Always"), 2)
 
-    def test_existing_secret_reload_and_invalid_combinations(self):
-        output = self.successful("tls.internal.autoReload=true")
-        self.assertEqual(output.count('secret.reloader.stakater.com/reload: "relaygate-internal-tls"'), 2)
-        for settings in (
-            ("tls.internal.mode=tcp",),
-            ("tls.internal.mode=plaintext", "tls.internal.autoReload=true"),
-            ("tls.internal.mode=plaintext", "tls.internal.source=certManager"),
-        ):
-            with self.subTest(settings=settings):
-                self.assertNotEqual(render(*settings).returncode, 0)
-
-    def test_edge_reload_is_independent_and_does_not_change_pod_templates(self):
+    def test_workload_annotations_are_independent_of_pod_templates_and_transport(self):
         for mode in ("mtls", "plaintext"):
-            for trust in ("customCa", "webPkiRoots"):
-                with self.subTest(mode=mode, trust=trust):
-                    settings = (f"tls.internal.mode={mode}", f"tls.edge.trustMode={trust}")
-                    baseline = self.successful(*settings)
-                    output = self.successful(*settings, "tls.edge.autoReload=true")
-                    gateway = workload(output, "gateway")
-                    metadata, spec = gateway.split("\nspec:", 1)
-                    self.assertIn(
-                        'secret.reloader.stakater.com/reload: "relaygate-edge-tls"', metadata,
+            baseline = self.successful(f"tls.internal.mode={mode}")
+            for values_key, component, other in (("gateway", "gateway", "route-table"), ("routeTable", "route-table", "gateway")):
+                with self.subTest(mode=mode, component=component):
+                    output = self.successful(
+                        f"tls.internal.mode={mode}",
+                        annotations={values_key: {
+                            "secret.reloader.stakater.com/reload": "edge,trust,leaf",
+                            "example.com/operator": "external",
+                        }},
                     )
-                    self.assertEqual(spec, workload(baseline, "gateway").split("\nspec:", 1)[1])
-                    self.assertEqual(workload(output, "route-table"), workload(baseline, "route-table"))
+                    metadata, spec = workload(output, component).split("\nspec:", 1)
+                    self.assertIn("secret.reloader.stakater.com/reload: edge,trust,leaf", metadata)
+                    self.assertIn("example.com/operator: external", metadata)
+                    self.assertEqual(spec, workload(baseline, component).split("\nspec:", 1)[1])
+                    self.assertEqual(workload(output, other), workload(baseline, other))
 
-    def test_combined_reload_keeps_role_watch_isolated(self):
-        for source in ("existingSecret", "certManager"):
-            with self.subTest(source=source):
-                settings = (
-                    f"tls.internal.source={source}", "tls.internal.autoReload=true",
-                    "tls.internal.certManager.issuerRef.name=internal-ca",
-                    "tls.internal.certManager.trustSecret.name=public-trust",
-                    "tls.edge.existingSecret=public-edge",
-                )
-                baseline = self.successful(*settings)
-                output = self.successful(*settings, "tls.edge.autoReload=true")
-                internal = "relaygate-internal-tls" if source == "existingSecret" else "public-trust,relaygate-gw-internal-tls"
-                metadata, spec = workload(output, "gateway").split("\nspec:", 1)
-                self.assertIn(f'secret.reloader.stakater.com/reload: "public-edge,{internal}"', metadata)
-                self.assertEqual(spec, workload(baseline, "gateway").split("\nspec:", 1)[1])
-                self.assertEqual(workload(output, "route-table"), workload(baseline, "route-table"))
-
-    def test_reload_deduplicates_shared_secret_and_rejects_invalid_edge_flag(self):
-        output = self.successful(
-            "tls.edge.autoReload=true", "tls.internal.autoReload=true",
-            "tls.edge.existingSecret=shared-tls", "tls.internal.existingSecret=shared-tls",
-        )
-        self.assertEqual(output.count('secret.reloader.stakater.com/reload: "shared-tls"'), 2)
-        self.assertNotEqual(render("tls.edge.autoReload=invalid").returncode, 0)
+    def test_removed_options_and_invalid_annotations_are_rejected(self):
+        for setting in (
+            "tls.internal.mode=tcp", "tls.edge.autoReload=true", "tls.internal.autoReload=true",
+            "credentials.reloadToken=old", "tls.edge.reloadToken=old", "tls.internal.reloadToken=old",
+        ):
+            with self.subTest(setting=setting):
+                self.assertNotEqual(render(setting).returncode, 0)
+        for component in ("gateway", "routeTable"):
+            with self.subTest(component=component):
+                self.assertNotEqual(render(annotations={component: {"example.com/invalid": True}}).returncode, 0)
+        self.assertNotEqual(render("tls.internal.mode=plaintext", "tls.internal.source=certManager").returncode, 0)
 
     def test_extra_env_cannot_bypass_transport_selection(self):
         for component in ("gateway", "routeTable"):

@@ -4,9 +4,9 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: {{ include "relaygate.routeTableName" . | quote }}
-  {{- if .Values.tls.internal.autoReload }}
+  {{- with .Values.routeTable.annotations }}
   annotations:
-    secret.reloader.stakater.com/reload: {{ include "relaygate.internalReloadSecrets" (dict "root" . "component" "route-table") | quote }}
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   labels:
     {{- include "relaygate.labels" (dict "root" . "component" "route-table") | nindent 4 }}
@@ -23,7 +23,6 @@ spec:
     metadata:
       annotations:
         checksum/shard-directory: {{ include "relaygate.shardDirectory" . | sha256sum | quote }}
-        relaygate.io/internal-tls-reload: {{ .Values.tls.internal.reloadToken | quote }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"

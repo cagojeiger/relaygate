@@ -21,7 +21,7 @@
 - RelayGate는 payload를 opaque bytes로 취급하고 application 인증·인가, message 의미, delivery acknowledgement와 업무 retry를 소유하지 않는다.
 - `DestinationId`는 application이 생성·보관하는 UUIDv4 라우팅 주소이며 RelayGate는 중앙 발급·소유권 registry를 제공하지 않는다.
 - `ClusterToken`은 SDK session을 하나의 trust domain으로 admission하는 배포 credential일 뿐 Destination별 권한이나 peer identity가 아니다. RelayGate는 credential 값을 영속화하지 않는다.
-- SDK–Gateway TLS와 내부 mTLS가 기본값이다. 내부 plaintext는 명시적으로 선택하며 TLS 실패 시 평문 fallback을 제공하지 않는다. 인증서·trust 갱신은 platform과 chart가 소유한다.
+- SDK–Gateway TLS와 내부 mTLS가 기본값이다. 내부 plaintext는 명시적으로 선택하며 TLS 실패 시 평문 fallback을 제공하지 않는다. 인증서·trust 갱신 적용 정책은 platform이 소유하고 chart는 Secret mount와 범용 annotation을 전달한다.
 
 ## 문서
 

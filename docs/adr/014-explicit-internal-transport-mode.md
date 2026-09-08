@@ -22,6 +22,6 @@ GatewayName·GatewayId는 논리적 식별과 incarnation fencing에 사용한�
 Gateway와 RouteTable은 같은 내부 전송 모드를 사용한다. 모드 전환은 maintenance window에서
 coordination하며 existing Pipe 연속성 대신 SDK reconnect·republish로 회복한다.
 
-Helm은 모드별 env·Secret mount를 소유한다. `autoReload`는 mTLS에서만 사용할 수 있고,
-설치된 Reloader가 role별 leaf·공개 trust Secret 변경을 StatefulSet rollout으로 적용한다.
+Helm은 모드별 env·Secret mount와 범용 workload annotation 전달을 소유한다.
+GitOps가 실제 공급한 Secret에 맞춰 갱신·rollout 정책을 설정한다.
 CA 서명키는 Issuer가 사용하며 GW/RT에는 전달하지 않는다.

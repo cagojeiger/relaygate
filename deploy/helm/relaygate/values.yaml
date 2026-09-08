@@ -7,26 +7,19 @@ credentials:
   existingSecret: relaygate-credentials
   clusterTokenKey: cluster-token
   nextClusterTokenKey: next-cluster-token
-  # Credential 변경과 함께 값을 바꾸면 Gateway/RT가 startup config를 다시 읽는다.
-  reloadToken: ""
 
 tls:
   # SDK edge와 internal mTLS는 별도 trust domain이며 platform이 Issuer/CA를 소유한다.
   edge:
     existingSecret: relaygate-edge-tls
-    # 설치된 Reloader가 edge Secret 변경을 Gateway에만 적용한다.
-    autoReload: false
     # customCa는 caKey를 mount하고, webPkiRoots는 공개 root set을 사용한다.
     trustMode: customCa
     caKey: ca.crt
     certificateKey: tls.crt
     privateKeyKey: tls.key
     serverName: relaygate-gateway.internal
-    reloadToken: ""
   internal:
     mode: mtls
-    # 설치된 Reloader가 인증서·trust Secret 변경을 StatefulSet에 적용한다.
-    autoReload: false
     # existingSecret 또는 platform Issuer가 발급하는 role별 leaf를 사용한다.
     source: existingSecret
     existingSecret: relaygate-internal-tls
@@ -37,7 +30,6 @@ tls:
     routeTablePrivateKeyKey: route-table.key
     gatewayServerName: relaygate-gateway.internal
     routeTableServerName: relaygate-route-table.internal
-    reloadToken: ""
     certManager:
       issuerRef:
         name: ""
@@ -77,6 +69,7 @@ metrics:
   routeTablePort: 27431
 
 gateway:
+  annotations: {}
   replicaCount: 3
 
   image:
@@ -112,6 +105,7 @@ gateway:
   extraEnv: []
 
 routeTable:
+  annotations: {}
   # StatefulSet ordinal별 logical shard 수. 허용 범위 1..2048.
   shardCount: 2
 

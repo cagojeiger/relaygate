@@ -223,9 +223,10 @@ jobs:
           fi
           test "$(grep -c 'key: "cluster-token"' target/helm/default.yaml)" -eq 1
           test "$(grep -c 'key: "next-cluster-token"' target/helm/default.yaml)" -eq 1
-          test "$(grep -c '^        relaygate.io/credentials-reload: ""$' target/helm/default.yaml)" -eq 1
-          test "$(grep -c '^        relaygate.io/edge-tls-reload: ""$' target/helm/default.yaml)" -eq 1
-          test "$(grep -c '^        relaygate.io/internal-tls-reload: ""$' target/helm/default.yaml)" -eq 2
+          if grep -Eq 'relaygate.io/.*-reload:|reloader.stakater.com/' target/helm/default.yaml; then
+            echo "Helm defaults contain platform restart policy"
+            exit 1
+          fi
           test "$(grep -c '^              mountPath: /etc/relaygate$' target/helm/default.yaml)" -eq 2
           test "$(grep -c '^              mountPath: /etc/relaygate/tls/edge$' target/helm/default.yaml)" -eq 1
           test "$(grep -c '^              mountPath: /etc/relaygate/tls/internal$' target/helm/default.yaml)" -eq 2
@@ -396,14 +397,14 @@ jobs:
             exit 1
           fi
           for override in \
-            'gateway.podAnnotations={"relaygate.io/edge-tls-reload":"override"}' \
-            'gateway.podAnnotations={"relaygate.io/internal-tls-reload":"override"}' \
-            'routeTable.podAnnotations={"relaygate.io/internal-tls-reload":"override"}'
+            'gateway.podAnnotations={"checksum/shard-directory":"override"}' \
+            'gateway.podAnnotations={"prometheus.io/port":"override"}' \
+            'routeTable.podAnnotations={"checksum/shard-directory":"override"}'
           do
             if helm template invalid deploy/helm/relaygate \
               --kube-version 1.32.0 \
               --set-json "$override" >/dev/null 2>&1; then
-              echo "Helm chart accepted an override of a managed TLS reload annotation"
+              echo "Helm chart accepted an override of a managed runtime annotation"
               exit 1
             fi
           done

@@ -581,14 +581,7 @@ main() {
   local -a certificate_args=()
   if [[ "$INTERNAL_SOURCE" == certManager ]]; then
     install_certificate_controllers
-    certificate_args=(
-      --set tls.edge.autoReload=true
-      --set tls.internal.source=certManager
-      --set tls.internal.autoReload=true
-      --set tls.internal.certManager.issuerRef.name=relaygate-internal
-      --set tls.internal.certManager.issuerRef.kind=Issuer
-      --set tls.internal.certManager.trustSecret.name=internal-public-trust
-    )
+    certificate_args=(-f "$ROOT/tests/kind/cert-manager-values.yaml")
   fi
   helm upgrade --install "$RELEASE" deploy/helm/relaygate \
     --namespace "$NAMESPACE" \

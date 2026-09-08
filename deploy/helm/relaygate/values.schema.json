@@ -42,8 +42,7 @@
       "required": [
         "existingSecret",
         "clusterTokenKey",
-        "nextClusterTokenKey",
-        "reloadToken"
+        "nextClusterTokenKey"
       ],
       "properties": {
         "existingSecret": {
@@ -63,9 +62,6 @@
           "minLength": 1,
           "maxLength": 253,
           "pattern": "^[-._a-zA-Z0-9]+$"
-        },
-        "reloadToken": {
-          "type": "string"
         }
       }
     },
@@ -79,17 +75,14 @@
           "additionalProperties": false,
           "required": [
             "existingSecret",
-            "autoReload",
             "trustMode",
             "caKey",
             "certificateKey",
             "privateKeyKey",
-            "serverName",
-            "reloadToken"
+            "serverName"
           ],
           "properties": {
             "existingSecret": { "$ref": "#/definitions/dnsSubdomain" },
-            "autoReload": { "type": "boolean" },
             "trustMode": {
               "type": "string",
               "enum": ["customCa", "webPkiRoots"]
@@ -97,8 +90,7 @@
             "caKey": { "$ref": "#/definitions/secretKey" },
             "certificateKey": { "$ref": "#/definitions/secretKey" },
             "privateKeyKey": { "$ref": "#/definitions/secretKey" },
-            "serverName": { "$ref": "#/definitions/dnsSubdomain" },
-            "reloadToken": { "type": "string" }
+            "serverName": { "$ref": "#/definitions/dnsSubdomain" }
           }
         },
         "internal": {
@@ -106,7 +98,6 @@
           "additionalProperties": false,
           "required": [
             "mode",
-            "autoReload",
             "source",
             "existingSecret",
             "caKey",
@@ -116,12 +107,10 @@
             "routeTablePrivateKeyKey",
             "gatewayServerName",
             "routeTableServerName",
-            "reloadToken",
             "certManager"
           ],
           "properties": {
             "mode": { "type": "string", "enum": ["mtls", "plaintext"] },
-            "autoReload": { "type": "boolean" },
             "source": {
               "type": "string",
               "enum": ["existingSecret", "certManager"]
@@ -134,7 +123,6 @@
             "routeTablePrivateKeyKey": { "$ref": "#/definitions/secretKey" },
             "gatewayServerName": { "$ref": "#/definitions/dnsSubdomain" },
             "routeTableServerName": { "$ref": "#/definitions/dnsSubdomain" },
-            "reloadToken": { "type": "string" },
             "certManager": {
               "type": "object",
               "additionalProperties": false,
@@ -245,6 +233,7 @@
         "extraEnv"
       ],
       "properties": {
+        "annotations": { "$ref": "#/definitions/stringMap" },
         "replicaCount": {
           "type": "integer",
           "minimum": 1
@@ -366,6 +355,7 @@
         "extraEnv"
       ],
       "properties": {
+        "annotations": { "$ref": "#/definitions/stringMap" },
         "shardCount": {
           "type": "integer",
           "minimum": 1,

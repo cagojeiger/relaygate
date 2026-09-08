@@ -2,6 +2,18 @@
 
 RouteTable shard와 Gateway runtime을 StatefulSet으로 배포합니다.
 
+## 설정 경계
+
+| Helm chart 기본 책임 | GitOps / 배포자 책임 |
+| --- | --- |
+| GW·RT, Service, ShardDirectory, probe | replica 수, 자원 상한, Pod 배치 정책 |
+| TLS 기본값과 Secret 참조·mount | 도메인, Secret 공급, Issuer·CA·인증서 갱신 정책 |
+| `annotations`, `podAnnotations`, `extraEnv` 전달 | Reloader watch, ArgoCD diff 보존, 운영 확장 설정 |
+| metrics endpoint | ServiceMonitor, 대시보드, 경보 |
+
+기본 실행은 credential·TLS Secret 공급을 전제로 한다. 기본 chart는 Reloader 설치·annotation이나
+수동 reload token을 생성하지 않는다. 보안 기본값은 SDK TLS와 internal mTLS다.
+
 ```mermaid
 flowchart LR
     SDK[외부 SDK] -->|TLS/TCP| L4[Platform L4 passthrough]
@@ -58,7 +70,6 @@ cert-manager mode는 platform-owned Issuer와 CA trust Secret을 사용합니다
 tls:
   internal:
     source: certManager
-    autoReload: true
     gatewayServerName: relaygate-gateway.internal
     routeTableServerName: relaygate-route-table.internal
     certManager:
@@ -71,30 +82,26 @@ tls:
         key: ca.crt
 ```
 
-cert-manager는 leaf를 갱신하고 `tls.internal.reloadToken` 또는 platform reloader가 renewed Secret을
-Gateway/RT rollout으로 적용합니다. CA rotation은 old/new trust overlap과 leaf 재발급 순서로 진행합니다.
+cert-manager는 leaf를 갱신하고 platform이 workload 교체를 관리한다.
+CA rotation은 old/new trust overlap과 leaf 재발급 순서로 진행한다.
 
-인증서 자동 적용은 설치된 Stakater Reloader를 사용하며 각 옵션의 기본값은 `false`다.
+## GitOps override 예시
 
-| 옵션 | Gateway watch | RouteTable watch |
-| --- | --- | --- |
-| `tls.edge.autoReload=true` | `tls.edge.existingSecret` | 없음 |
-| `tls.internal.autoReload=true` | internal trust + Gateway leaf | internal trust + RT leaf |
-
-internal `existingSecret` source에서는 두 역할이 지정된 internal Secret을 watch한다.
-edge 자동 적용은 internal plaintext에서도 독립적으로 설정한다.
+아래 Secret 이름은 배포자가 실제 mount한 Secret에 맞춘다. chart는 annotation을 해석하지 않고
+StatefulSet `metadata.annotations`에 전달한다. `podAnnotations`는 Pod template용으로 별도다.
 
 ```yaml
-tls:
-  edge:
-    existingSecret: relaygate-edge-public-tls
-    trustMode: webPkiRoots
-    serverName: relaygate.example.com
-    autoReload: true
+gateway:
+  annotations:
+    secret.reloader.stakater.com/reload: edge-tls,internal-trust,gw-leaf
+routeTable:
+  annotations:
+    secret.reloader.stakater.com/reload: internal-trust,rt-leaf
 ```
 
-cert-manager는 외부 인증서 Secret을 갱신하고 Reloader는 Gateway만 rolling replacement한다.
-Gateway는 시작 시 인증서를 읽는다. 자동 적용 없이 운영할 때는 Secret 갱신 후 `tls.edge.reloadToken`을 변경한다.
+Reloader는 platform에 설치한다. 이 예시에서 edge·GW leaf 변경은 GW만, RT leaf 변경은 RT만,
+공통 trust 변경은 두 역할을 교체한다. 인증서 발급과 재시작 정책은 별도 책임이다.
+Gateway/RT는 시작 시 인증서를 읽는다. 자동 적용을 사용하지 않으면 해당 StatefulSet을 `kubectl rollout restart`한다.
 
 GitOps는 Reloader 전략에 맞는 ArgoCD `ignoreDifferences`와 `RespectIgnoreDifferences=true`를 설정한다.
 `annotations` 전략은 `/spec/template/metadata/annotations/reloader.stakater.com~1last-reloaded-from`을,
@@ -140,8 +147,8 @@ SDK endpoint 기본값은 `relaygate.relaygate.svc.cluster.local:27420`입니다
 | RT image | RT StatefulSet rolling replacement |
 | chart package version | runtime Pod template 유지 |
 | ClusterToken | current+next → SDK 이동 → next를 current로 승격 |
-| edge certificate | Secret 갱신 → `tls.edge.autoReload` 또는 `tls.edge.reloadToken`으로 GW만 rollout |
-| internal certificate | Secret/leaf 갱신 → `tls.internal.reloadToken` 또는 reloader |
+| edge certificate | Secret 갱신 → platform 정책으로 GW만 rollout |
+| internal certificate | Secret/leaf 갱신 → platform 정책으로 해당 role rollout |
 | Gateway 증가 | replica 증가 → mTLS Gateway 역할 인증 → 현재 상태 등록 |
 | RT shard directory | maintenance window의 coordinated restart |
 
@@ -150,7 +157,6 @@ SDK endpoint 기본값은 `relaygate.relaygate.svc.cluster.local:27420`입니다
 ```yaml
 credentials:
   existingSecret: relaygate-credentials
-  reloadToken: ""
 
 tls:
   edge:
