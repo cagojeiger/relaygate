@@ -7,7 +7,7 @@ use relaygate_transport::ServerTlsConfig;
 
 use super::{
     InternalTransport, internal_transport, load_internal_tls, optional_duration_millis,
-    optional_usize, parse_gateway_credentials,
+    optional_usize,
 };
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:27430";

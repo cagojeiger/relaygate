@@ -1,5 +1,3 @@
-use std::fmt;
-
 use relaygate_protocol::{PeerObservation, SessionId};
 use relaygate_route_table::GatewayId;
 use uuid::Uuid;

@@ -195,7 +195,7 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
         "RouteTable server exited unsuccessfully after SIGTERM: {exit_status}"
     );
 
-    let (stdout, stderr) = server.read_captured()?;
+    let (stdout, _) = server.read_captured()?;
     let records = stdout
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)
@@ -293,7 +293,7 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
     })?;
     assert!(exit_status.success(), "distributed Gateway shutdown failed");
 
-    let (stdout, stderr) = server.read_captured()?;
+    let (stdout, _) = server.read_captured()?;
     let records = stdout
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)

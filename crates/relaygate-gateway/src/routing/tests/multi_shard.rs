@@ -265,7 +265,6 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_service(
     listener: TcpListener,
     directory: ShardDirectory,

@@ -11,7 +11,6 @@ use tokio_util::codec::Framed;
 use uuid::Uuid;
 
 use crate::{
-    GatewayName,
     dto::{WireRequest, WireResponse},
     frame::{GATEWAY_ROLE, ROUTE_TABLE_ROLE, WireFrame},
 };
