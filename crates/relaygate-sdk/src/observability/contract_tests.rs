@@ -6,6 +6,9 @@ use crate::{Error, ErrorCode, PeerObservation};
 
 #[test]
 fn reconnect_gauge_tracks_overlapping_episodes_and_all_exit_paths() {
+    let _guard = RECONNECT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     let mut snapshots = Vec::new();
