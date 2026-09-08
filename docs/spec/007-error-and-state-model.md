@@ -49,7 +49,15 @@ stateDiagram-v2
         SUSPENDED --> CLOSED
         BLOCKED --> CLOSED
     }
+    state Binding {
+        [*] --> ABSENT
+        ABSENT --> ACTIVE: PUBLISHED
+        ACTIVE --> REMOVED: Listener/session close
+    }
 ```
+
+Session reconnect는 Listener identity를 유지하고 새 SessionId와 BindingId를 만듭니다. 늦은 old-session
+`PUBLISHED/OFFER`는 current state를 유지하며 `REMOVED` Binding은 terminal입니다.
 
 ```mermaid
 stateDiagram-v2

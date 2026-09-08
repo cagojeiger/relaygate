@@ -44,7 +44,7 @@ DATA hot path는 aggregate metric으로 관측합니다. Lifecycle log field는 
 | SDK admission | `relaygate_gateway_sdk_admission_ready`, `relaygate_gateway_draining` | non-draining + session capacity |
 | RT dependency | `relaygate_gateway_route_dependency{state}` | `DISABLED/READY/DEGRADED/TERMINAL` one-hot |
 | RT convergence | `relaygate_gateway_route_registrations_unsynced` | pending registration 수 |
-| peer state | `relaygate_gateway_peer_transports_connecting/ready` | connecting·reusable transport 수 |
+| peer state | `relaygate_gateway_peer_transports_connecting`, `relaygate_gateway_peer_transports_ready` | connecting·reusable transport 수 |
 | liveness failure | `relaygate_gateway_heartbeat_timeouts_total{transport}` | SDK/peer timeout 누계 |
 
 ### RED와 latency

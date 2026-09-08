@@ -35,8 +35,9 @@ RouteTable은 memory-only current state를 유지합니다. 새 연결은 새 `d
 use relaygate_sdk::{ClientTlsConfig, Config, DestinationId, GatewayTransportConfig, Relay};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let tls = ClientTlsConfig::with_webpki_roots("relaygate.project-jelly.io")?;
-let transport = GatewayTransportConfig::tls_tcp("relaygate.project-jelly.io:443", tls);
+let gateway_host = std::env::var("RELAYGATE_GATEWAY_HOST")?;
+let tls = ClientTlsConfig::with_webpki_roots(gateway_host.clone())?;
+let transport = GatewayTransportConfig::tls_tcp(format!("{gateway_host}:443"), tls);
 let relay = Relay::connect(Config::new(
     std::env::var("RELAYGATE_CLUSTER_TOKEN")?,
     transport,
