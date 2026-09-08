@@ -43,6 +43,9 @@ pub(crate) struct GatewayRuntimeConfig {
 
 impl GatewayRuntimeConfig {
     pub(crate) fn from_env() -> Result<Self> {
+        if env::var_os("RELAYGATE_INTERNAL_TRANSPORT").is_some() {
+            internal_transport()?;
+        }
         let bind_address =
             env::var("RELAYGATE_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned());
         let cluster_token = env::var("RELAYGATE_CLUSTER_TOKEN")

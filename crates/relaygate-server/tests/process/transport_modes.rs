@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn local_gateway_validates_explicit_transport_before_sdk_setup() -> Result<(), Box<dyn Error>> {
+    for mode in ["", "tcp", "MTLS"] {
+        let output = server_command()
+            .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
+            .env("RELAYGATE_INTERNAL_TRANSPORT", mode)
+            .output()?;
+        assert_unsuccessful_output(&output, "must be `mtls` or `plaintext`");
+    }
+    for mode in ["mtls", "plaintext"] {
+        let output = server_command()
+            .env("RELAYGATE_INTERNAL_TRANSPORT", mode)
+            .output()?;
+        assert_unsuccessful_output(
+            &output,
+            "cannot be combined with legacy test transport flags",
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn internal_plaintext_does_not_disable_sdk_tls() -> Result<(), Box<dyn Error>> {
     let output = server_command()
         .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
