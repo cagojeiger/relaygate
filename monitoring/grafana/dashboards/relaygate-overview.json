@@ -1063,7 +1063,7 @@
         "x": 0,
         "y": 57
       },
-      "description": "sessions는 handshake 점유 포함. pending_opens는 OFFER+remote attempt. 상한은 설정값이며 지속 가능한 사용자 용량은 부하 실험으로 검증한다.",
+      "description": "sessions는 handshake 점유 포함. pending_opens는 OFFER+remote attempt의 공통 예산이고 remote_dials는 그 안의 remote 하위 예산이다. 자원별 제약을 독립 판정하며 비율을 합산하지 않는다. 상한은 설정값이며 지속 가능한 사용자 용량은 부하 실험으로 검증한다.",
       "id": 22,
       "options": {
         "legend": {

@@ -1,57 +1,52 @@
 use futures_util::FutureExt;
-use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
 use super::*;
 use crate::{Error, ErrorCode, PeerObservation};
-
-fn active(snapshotter: &Snapshotter) -> f64 {
-    snapshotter
-        .snapshot()
-        .into_vec()
-        .into_iter()
-        .find_map(|(key, _, _, value)| {
-            if key.key().name() == "relaygate_sdk_reconnect_in_progress"
-                && let DebugValue::Gauge(value) = value
-            {
-                return Some(value.into_inner());
-            }
-            None
-        })
-        .unwrap_or(-1.0)
-}
 
 #[test]
 fn reconnect_gauge_tracks_overlapping_episodes_and_all_exit_paths() {
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
+    let mut snapshots = Vec::new();
     metrics::with_local_recorder(&recorder, || {
         let first = ReconnectEpisode::start();
         let second = ReconnectEpisode::start();
-        assert_eq!(active(&snapshotter), 2.0);
+        snapshots.push(snapshotter.snapshot().into_vec());
         first.recover();
-        assert_eq!(active(&snapshotter), 1.0);
+        snapshots.push(snapshotter.snapshot().into_vec());
         second.close();
-        assert_eq!(active(&snapshotter), 0.0);
+        snapshots.push(snapshotter.snapshot().into_vec());
         let abandoned = ReconnectEpisode::start();
-        assert_eq!(active(&snapshotter), 1.0);
+        snapshots.push(snapshotter.snapshot().into_vec());
         drop(abandoned);
-        assert_eq!(active(&snapshotter), 0.0);
+        snapshots.push(snapshotter.snapshot().into_vec());
     });
+    // DebuggingRecorder drains even gauges on snapshot; reconstruct the sampled increments.
+    let mut active = 0.0;
+    for (snapshot, expected) in snapshots.iter().zip([2.0, 1.0, 0.0, 1.0, 0.0]) {
+        let delta = snapshot.iter().find_map(|(key, _, _, value)| {
+            if key.key().name() == "relaygate_sdk_reconnect_in_progress"
+                && let DebugValue::Gauge(value) = value
+            {
+                Some(value.into_inner())
+            } else {
+                None
+            }
+        });
+        assert!(delta.is_some());
+        active += delta.unwrap_or_default();
+        assert_eq!(active, expected);
+    }
     for outcome in ["recovered", "closed", "aborted"] {
-        assert!(
-            snapshotter
-                .snapshot()
-                .into_vec()
-                .iter()
-                .any(|(key, _, _, value)| {
-                    key.key().name() == "relaygate_sdk_reconnect_episodes_total"
-                        && key
-                            .key()
-                            .labels()
-                            .any(|l| l.key() == "outcome" && l.value() == outcome)
-                        && matches!(value, DebugValue::Counter(1))
-                })
-        );
+        assert!(snapshots.iter().flatten().any(|(key, _, _, value)| {
+            key.key().name() == "relaygate_sdk_reconnect_episodes_total"
+                && key
+                    .key()
+                    .labels()
+                    .any(|l| l.key() == "outcome" && l.value() == outcome)
+                && matches!(value, DebugValue::Counter(1))
+        }));
     }
 }
 

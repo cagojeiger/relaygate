@@ -103,6 +103,8 @@ SDK dial 시간은 session·queue 대기를 포함하고 application의 여러 �
 | `pipes` | GW-local open Pipe states | max live Pipes |
 
 설정 상한은 지속 가능한 처리량과 다릅니다. SDK session·Pipe 수의 사용자 수 환산은 application 모델이 정합니다.
+`pending_opens`는 OFFER와 remote attempt의 공통 예산이고 `remote_dials`는 그 안의 remote 하위 예산입니다.
+각 자원의 사용률은 해당 제약을 독립 판정하며 자원 간 사용률 합산으로 전체 여유를 계산하지 않습니다.
 snapshot은 GW별 순간 관측이며 cluster 합계는 전역 원자적 값이 아닙니다.
 
 Metric label set은 `operation`, `outcome`, `code`, `class`, `reason`, `resource`, `state`, `direction`, `transport`처럼 bounded
