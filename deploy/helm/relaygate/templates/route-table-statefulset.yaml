@@ -138,34 +138,21 @@ spec:
             defaultMode: 0444
         {{- if eq .Values.tls.internal.mode "mtls" }}
         - name: internal-tls
-          {{ if eq .Values.tls.internal.source "certManager" }}
           projected:
             defaultMode: 0440
             sources:
               - secret:
-                  name: {{ .Values.tls.internal.certManager.trustSecret.name | quote }}
+                  name: {{ .Values.tls.internal.trustSecret | quote }}
                   items:
-                    - key: {{ .Values.tls.internal.certManager.trustSecret.key | quote }}
+                    - key: ca.crt
                       path: ca.crt
               - secret:
-                  name: {{ include "relaygate.internalRouteTableCertificateSecretName" . | quote }}
+                  name: {{ .Values.tls.internal.routeTableSecret | quote }}
                   items:
                     - key: tls.crt
                       path: tls.crt
                     - key: tls.key
                       path: tls.key
-          {{ else }}
-          secret:
-            secretName: {{ .Values.tls.internal.existingSecret | quote }}
-            defaultMode: 0440
-            items:
-              - key: {{ .Values.tls.internal.caKey | quote }}
-                path: ca.crt
-              - key: {{ .Values.tls.internal.routeTableCertificateKey | quote }}
-                path: tls.crt
-              - key: {{ .Values.tls.internal.routeTablePrivateKeyKey | quote }}
-                path: tls.key
-          {{ end }}
         {{- end }}
       {{- with .Values.routeTable.nodeSelector }}
       nodeSelector:

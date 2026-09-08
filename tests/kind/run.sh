@@ -234,12 +234,12 @@ create_secrets() {
   if [[ "$INTERNAL_TRANSPORT" == plaintext || "$INTERNAL_SOURCE" == certManager ]]; then
     return
   fi
-  kubectl -n "$NAMESPACE" create secret generic relaygate-internal-tls \
-    --from-file=ca.crt="$certificate_dir/ca.crt" \
-    --from-file=gateway.crt="$certificate_dir/internal-gateway.crt" \
-    --from-file=gateway.key="$certificate_dir/internal-gateway.key" \
-    --from-file=route-table.crt="$certificate_dir/internal-rt.crt" \
-    --from-file=route-table.key="$certificate_dir/internal-rt.key"
+  kubectl -n "$NAMESPACE" create secret generic relaygate-internal-trust \
+    --from-file=ca.crt="$certificate_dir/ca.crt"
+  kubectl -n "$NAMESPACE" create secret tls relaygate-gw-internal-tls \
+    --cert="$certificate_dir/internal-gateway.crt" --key="$certificate_dir/internal-gateway.key"
+  kubectl -n "$NAMESPACE" create secret tls relaygate-rt-internal-tls \
+    --cert="$certificate_dir/internal-rt.crt" --key="$certificate_dir/internal-rt.key"
 }
 
 apply_host_access() {
@@ -585,6 +585,7 @@ main() {
   fi
   helm upgrade --install "$RELEASE" deploy/helm/relaygate \
     --namespace "$NAMESPACE" \
+    --set gateway.replicaCount=3 --set routeTable.shardCount=2 \
     --set-string tls.internal.mode="$INTERNAL_TRANSPORT" \
     --set-string gateway.image.repository=relaygate-gateway \
     --set-string gateway.image.tag="$IMAGE_TAG" \

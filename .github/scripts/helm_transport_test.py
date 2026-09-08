@@ -31,6 +31,9 @@ class TransportTests(unittest.TestCase):
 
     def test_default_requires_tls_without_platform_restart_policy(self):
         output = self.successful()
+        self.assertEqual(output.count("  replicas: 1\n"), 2)
+        self.assertNotIn("kind: Certificate", output)
+        self.assertNotIn("kind: Issuer", output)
         for component in ("gateway", "route-table"):
             item = workload(output, component)
             self.assertIn('name: RELAYGATE_INTERNAL_TRANSPORT\n              value: "mtls"', item)
@@ -53,20 +56,18 @@ class TransportTests(unittest.TestCase):
         self.assertIn("RELAYGATE_CLUSTER_TOKEN", workload(output, "gateway"))
         self.assertNotIn("kind: Certificate", output)
 
-    def test_cert_manager_mounts_only_role_leaf_and_public_trust(self):
+    def test_existing_secrets_mount_only_role_leaf_and_public_trust(self):
         output = self.successful(
-            "tls.internal.source=certManager",
-            "tls.internal.certManager.issuerRef.name=internal-ca",
-            "tls.internal.certManager.issuerRef.kind=Issuer",
-            "tls.internal.certManager.trustSecret.name=public-trust",
+            "tls.internal.trustSecret=public-trust",
+            "tls.internal.gatewaySecret=gw-leaf",
+            "tls.internal.routeTableSecret=rt-leaf",
         )
-        self.assertEqual(output.count("kind: Certificate\n"), 2)
-        for component, leaf in (("gateway", "gw"), ("route-table", "rt")):
+        self.assertNotIn("cert-manager.io/", output)
+        for component, leaf, other in (("gateway", "gw-leaf", "rt-leaf"), ("route-table", "rt-leaf", "gw-leaf")):
             item = workload(output, component)
-            self.assertNotIn('secretName: "relaygate-internal-tls"', item)
             self.assertIn('name: "public-trust"', item)
-            self.assertIn(f'name: "relaygate-{leaf}-internal-tls"', item)
-        self.assertEqual(output.count("rotationPolicy: Always"), 2)
+            self.assertIn(f'name: "{leaf}"', item)
+            self.assertNotIn(f'name: "{other}"', item)
 
     def test_workload_annotations_are_independent_of_pod_templates_and_transport(self):
         for mode in ("mtls", "plaintext"):
@@ -90,13 +91,16 @@ class TransportTests(unittest.TestCase):
         for setting in (
             "tls.internal.mode=tcp", "tls.edge.autoReload=true", "tls.internal.autoReload=true",
             "credentials.reloadToken=old", "tls.edge.reloadToken=old", "tls.internal.reloadToken=old",
+            "tls.internal.source=certManager", "tls.internal.certManager.issuerRef.name=old",
+            "tls.internal.existingSecret=old", "tls.edge.certificateKey=old",
+            "tls.internal.gatewayPrivateKeyKey=old", "tls.internal.trustSecret=",
+            "tls.internal.gatewaySecret=", "tls.internal.routeTableSecret=",
         ):
             with self.subTest(setting=setting):
                 self.assertNotEqual(render(setting).returncode, 0)
         for component in ("gateway", "routeTable"):
             with self.subTest(component=component):
                 self.assertNotEqual(render(annotations={component: {"example.com/invalid": True}}).returncode, 0)
-        self.assertNotEqual(render("tls.internal.mode=plaintext", "tls.internal.source=certManager").returncode, 0)
 
     def test_extra_env_cannot_bypass_transport_selection(self):
         for component in ("gateway", "routeTable"):

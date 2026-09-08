@@ -12,33 +12,16 @@ tls:
   # SDK edge와 internal mTLS는 별도 trust domain이며 platform이 Issuer/CA를 소유한다.
   edge:
     existingSecret: relaygate-edge-tls
-    # customCa는 caKey를 mount하고, webPkiRoots는 공개 root set을 사용한다.
+    # customCa는 ca.crt를 mount하고, webPkiRoots는 공개 root set을 사용한다.
     trustMode: customCa
-    caKey: ca.crt
-    certificateKey: tls.crt
-    privateKeyKey: tls.key
     serverName: relaygate-gateway.internal
   internal:
     mode: mtls
-    # existingSecret 또는 platform Issuer가 발급하는 role별 leaf를 사용한다.
-    source: existingSecret
-    existingSecret: relaygate-internal-tls
-    caKey: ca.crt
-    gatewayCertificateKey: gateway.crt
-    gatewayPrivateKeyKey: gateway.key
-    routeTableCertificateKey: route-table.crt
-    routeTablePrivateKeyKey: route-table.key
+    trustSecret: relaygate-internal-trust
+    gatewaySecret: relaygate-gw-internal-tls
+    routeTableSecret: relaygate-rt-internal-tls
     gatewayServerName: relaygate-gateway.internal
     routeTableServerName: relaygate-route-table.internal
-    certManager:
-      issuerRef:
-        name: ""
-        kind: ClusterIssuer
-        group: cert-manager.io
-      # Issuer CA의 public trust bundle. Leaf private key Secret과 분리한다.
-      trustSecret:
-        name: ""
-        key: ca.crt
 
 serviceAccount:
   create: true
@@ -70,7 +53,7 @@ metrics:
 
 gateway:
   annotations: {}
-  replicaCount: 3
+  replicaCount: 1
 
   image:
     repository: ghcr.io/cagojeiger/relaygate-gateway
@@ -107,7 +90,7 @@ gateway:
 routeTable:
   annotations: {}
   # StatefulSet ordinal별 logical shard 수. 허용 범위 1..2048.
-  shardCount: 2
+  shardCount: 1
 
   image:
     repository: ghcr.io/cagojeiger/relaygate-route-table

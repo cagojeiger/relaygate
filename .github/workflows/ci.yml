@@ -77,6 +77,7 @@ jobs:
           helm template relaygate deploy/helm/relaygate \
             --namespace relaygate \
             --kube-version 1.32.0 \
+            --set gateway.replicaCount=3 --set routeTable.shardCount=2 \
             > target/helm/default.yaml
           helm template minimal deploy/helm/relaygate \
             --namespace relaygate-test \
@@ -98,13 +99,6 @@ jobs:
             --kube-version 1.32.0 \
             --set tls.edge.trustMode=webPkiRoots \
             > target/helm/webpki.yaml
-          helm template cert-manager deploy/helm/relaygate \
-            --namespace relaygate-test \
-            --kube-version 1.32.0 \
-            --set tls.internal.source=certManager \
-            --set tls.internal.certManager.issuerRef.name=relaygate-internal \
-            --set tls.internal.certManager.trustSecret.name=relaygate-internal-ca \
-            > target/helm/cert-manager.yaml
           helm template true deploy/helm/relaygate \
             --namespace relaygate-test \
             --kube-version 1.32.0 \
@@ -236,33 +230,18 @@ jobs:
             echo "Helm chart mounted a custom edge CA in public Web PKI mode"
             exit 1
           fi
-          test "$(grep -c 'key: "ca.crt"' target/helm/default.yaml)" -eq 3
-          test "$(grep -c 'key: "ca.crt"' target/helm/webpki.yaml)" -eq 2
+          test "$(grep -c 'key: ca.crt' target/helm/default.yaml)" -eq 3
+          test "$(grep -c 'key: ca.crt' target/helm/webpki.yaml)" -eq 2
           grep -Fq 'name: RELAYGATE_INTERNAL_TLS_CA_PATH' target/helm/default.yaml
           grep -Fq 'name: RELAYGATE_PEER_TLS_SERVER_NAME' target/helm/default.yaml
           grep -Fq 'name: RELAYGATE_RT_TLS_SERVER_NAME' target/helm/default.yaml
-          grep -Fq 'key: "gateway.crt"' target/helm/default.yaml
-          grep -Fq 'key: "route-table.crt"' target/helm/default.yaml
+          test "$(grep -c 'key: tls.crt' target/helm/default.yaml)" -eq 3
           test "$(grep -c 'secretName: "relaygate-edge-tls"' target/helm/default.yaml)" -eq 1
-          test "$(grep -c 'secretName: "relaygate-internal-tls"' target/helm/default.yaml)" -eq 2
-          test "$(grep -c '^apiVersion: cert-manager.io/v1$' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c '^kind: Certificate$' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c 'name: "cert-manager-gw-internal-tls"' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c 'name: "cert-manager-rt-internal-tls"' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c 'name: "relaygate-internal-ca"' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c 'name: "relaygate-internal"' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c 'kind: "ClusterIssuer"' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c 'group: "cert-manager.io"' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c -- '- "relaygate-gateway.internal"' target/helm/cert-manager.yaml)" -eq 1
-          test "$(grep -c -- '- "relaygate-route-table.internal"' target/helm/cert-manager.yaml)" -eq 1
-          test "$(grep -c -- '- server auth' target/helm/cert-manager.yaml)" -eq 2
-          test "$(grep -c -- '- client auth' target/helm/cert-manager.yaml)" -eq 1
-          if grep -Fq 'name: "relaygate-internal-tls"' target/helm/cert-manager.yaml; then
-            echo "cert-manager mode still mounted the shared internal TLS Secret"
-            exit 1
-          fi
-          if grep -Fq 'kind: Certificate' target/helm/default.yaml; then
-            echo "default existingSecret mode rendered cert-manager resources"
+          test "$(grep -c 'name: "relaygate-internal-trust"' target/helm/default.yaml)" -eq 2
+          grep -Fq 'name: "relaygate-gw-internal-tls"' target/helm/default.yaml
+          grep -Fq 'name: "relaygate-rt-internal-tls"' target/helm/default.yaml
+          if grep -Eq '^kind: (Certificate|Issuer|ClusterIssuer|Secret)$' target/helm/default.yaml; then
+            echo "Helm chart rendered platform credential/certificate resources"
             exit 1
           fi
           grep -Fq 'type: LoadBalancer' target/helm/load-balancer.yaml
@@ -339,13 +318,13 @@ jobs:
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
             --set tls.internal.source=unknown >/dev/null 2>&1; then
-            echo "Helm schema accepted an unknown internal TLS source"
+            echo "Helm schema accepted removed internal TLS source"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
             --set tls.internal.source=certManager >/dev/null 2>&1; then
-            echo "Helm chart accepted cert-manager mode without issuer and trust Secret"
+            echo "Helm chart accepted removed cert-manager configuration"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \

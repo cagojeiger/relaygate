@@ -1,12 +1,6 @@
 tls:
   internal:
-    source: certManager
-    certManager:
-      issuerRef:
-        name: relaygate-internal
-        kind: Issuer
-      trustSecret:
-        name: internal-public-trust
+    trustSecret: internal-public-trust
 
 gateway:
   annotations:

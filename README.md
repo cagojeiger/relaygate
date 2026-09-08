@@ -76,11 +76,11 @@ docker compose --profile observability down --volumes --remove-orphans
 ## Helm
 
 차트는 RouteTable과 Gateway를 배포하며 credential과 certificate는 release namespace의 Secret을
-사용합니다. 기본 topology는 RT shard 2개와 Gateway 3개입니다.
+사용합니다. 기본 topology는 RT shard 1개와 Gateway 1개입니다.
 
 SDK edge는 TLS를 사용합니다. 내부 전송은 기본 mTLS이며, 격리된 테스트 환경은
-`tls.internal.mode=plaintext`로 내부 인증서 없이 설치합니다. 운영에서는 `source=certManager`와
-`autoReload=true`로 platform Issuer·Reloader에 내부 인증서 발급과 갱신 적용을 연결합니다.
+`tls.internal.mode=plaintext`로 내부 인증서 없이 설치합니다.
+인증서 발급·갱신·재시작은 배포자가 관리하며 차트에는 기존 Secret 이름과 운영 annotation을 전달합니다.
 
 ```bash
 helm lint deploy/helm/relaygate

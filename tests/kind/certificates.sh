@@ -44,6 +44,9 @@ spec:
     rotationPolicy: Always
 YAML
   kubectl -n "$NAMESPACE" wait --for=condition=Ready certificate/relaygate-edge-tls --timeout=120s
+  kubectl -n "$NAMESPACE" apply -f "$ROOT/tests/kind/internal-certificates.yaml"
+  kubectl -n "$NAMESPACE" wait --for=condition=Ready \
+    certificate/relaygate-gw-internal-tls certificate/relaygate-rt-internal-tls --timeout=120s
 }
 
 certificate_serial() {
