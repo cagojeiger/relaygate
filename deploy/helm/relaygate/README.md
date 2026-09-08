@@ -42,7 +42,8 @@ tls:
     mode: plaintext
 ```
 
-plain TCP는 내부 인증과 암호화를 제공하지 않는다. mTLS는 신뢰 CA와 Gateway 역할 SAN을 검증하며 별도 내부 키를 사용하지 않는다. 모드 전환은 GW/RT를 함께 변경하는 maintenance 작업이다.
+plain TCP는 내부 인증과 암호화를 제공하지 않는다. mTLS는 신뢰 CA와 Gateway 역할 SAN을 검증하며 별도 내부 키를 사용하지 않는다. 모드 전환과 내부 wire 변경은 GW/RT를 함께 변경하는 maintenance 작업이다.
+GW–GW와 GW–RT는 내부 wire v2를 사용하며 다른 wire 버전의 연결을 거절한다.
 
 | 구간 | mode | 공급 방식 |
 | --- | --- | --- |
