@@ -13,11 +13,11 @@ GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 | `SEC-001` | SDK는 CA trust source, server name과 `relaygate/2` ALPN 검증 뒤 ClusterToken을 전송한다. |
 | `SEC-002` | Gateway token set은 current 하나와 optional next 하나다. |
 | `SEC-003` | token mismatch는 state 생성 전 `UNAUTHENTICATED`로 끝난다. |
-| `SEC-004` | internal transport는 certificate, ALPN과 logical identity를 함께 검증한다. |
-| `SEC-005` | TLS failure는 terminal connection failure이며 새 retry는 새 TLS connection으로 시작한다. |
+| `SEC-004` | internal transport는 certificate, `relaygate/2` ALPN과 logical identity를 함께 검증한다. |
+| `SEC-005` | TLS failure는 평문 fallback 없는 terminal connection failure이며 새 retry는 새 TLS connection으로 시작한다. |
 | `SEC-006` | production server config는 certificate/key path를 필수로 가진다. |
 | `SEC-007` | insecure transport의 scope는 explicit test-only config다. |
-| `SEC-008` | hop TLS는 transport peer를 보호하고 application E2E/peer auth는 Pipe protocol이 담당한다. |
+| `SEC-008` | hop TLS는 transport peer를 보호하고 application E2E/peer auth는 Pipe 위 application protocol이 담당한다. |
 | `SEC-009` | public Relay API는 transport-independent이고 current adapter는 TLS/TCP다. |
 | `SEC-010` | SDK edge와 internal mTLS는 독립 Secret·trust domain이다. |
 | `SEC-011` | external L4는 byte stream passthrough, Gateway는 SDK TLS termination을 담당한다. |
@@ -49,15 +49,15 @@ DATA hot path는 aggregate metric으로 관측합니다. Lifecycle log field는 
 
 ### RED와 latency
 
-| 구간 | request/result | latency 경계 |
+| 구간 | metric | 측정 경계 |
 | --- | --- | --- |
-| SDK DIAL | `relaygate_gateway_dial_requests_total`, `relaygate_gateway_dial_results_total` | DIAL admission → OPENED/failure/cancel |
+| SDK DIAL | `relaygate_gateway_dial_requests_total`, `relaygate_gateway_dial_results_total`, `relaygate_gateway_dial_duration_seconds` | DIAL admission → OPENED/failure/cancel |
 | publish | `relaygate_gateway_publish_results_total` | terminal result counter |
 | heartbeat | timeout counter + `relaygate_gateway_heartbeat_duration_seconds{transport}` | committed PING → matching PONG |
-| Gateway→RT | request/result + `relaygate_gateway_route_table_request_duration_seconds` | client queue admission → response/failure |
-| RT actor | request/result + `relaygate_route_table_request_duration_seconds` | actor service start → result |
-| peer | handshake/close counters | transport lifecycle outcome |
-| SDK reconnect | attempts + `relaygate_sdk_reconnect_duration_seconds` | episode start → active session |
+| Gateway→RT | `relaygate_gateway_route_table_requests_total`, `relaygate_gateway_route_table_request_duration_seconds` | client queue admission → response/failure |
+| RT actor | `relaygate_route_table_requests_total`, `relaygate_route_table_request_duration_seconds` | actor service start → result |
+| peer | `relaygate_gateway_peer_handshakes_total`, `relaygate_gateway_peer_transport_closed_total` | transport lifecycle outcome |
+| SDK reconnect | `relaygate_sdk_reconnect_attempts_total`, `relaygate_sdk_reconnect_duration_seconds` | episode start → active session |
 
 Gateway→RT와 RT actor latency의 차이는 client queue, socket과 network 비용입니다. Heartbeat는 liveness RTT,
 Pipe latency probe는 고정 payload·concurrency의 application DATA RTT를 측정합니다.

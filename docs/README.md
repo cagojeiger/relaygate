@@ -11,9 +11,9 @@ RFC   외부 표준의 개념 색인
 
 ```mermaid
 flowchart LR
-    RA[Relay A<br/>listen · dial · accept] -->|TLS + ClusterToken| GWA[Gateway A]
+    RA[Relay A<br/>listen · dial<br/>Listener::accept] -->|TLS + ClusterToken| GWA[Gateway A]
     GWA <-->|mTLS · 최대 one hop| GWB[Gateway B]
-    GWB <-->|TLS + ClusterToken| RB[Relay B<br/>listen · dial · accept]
+    GWB <-->|TLS + ClusterToken| RB[Relay B<br/>listen · dial<br/>Listener::accept]
     GWA -->|register · resolve / mTLS| RT[RouteTable shards]
     GWB -->|register · resolve / mTLS| RT
 ```
