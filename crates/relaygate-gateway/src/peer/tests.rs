@@ -288,10 +288,10 @@ fn peer_frame_codec_rejects_invalid_magic_and_version() -> Result<(), PeerCodecE
     ));
 
     let mut invalid_version = bytes;
-    invalid_version[2] = 2;
+    invalid_version[2] = 1;
     assert!(matches!(
         codec.decode(&mut invalid_version),
-        Err(PeerCodecError::UnsupportedVersion(2))
+        Err(PeerCodecError::UnsupportedVersion(1))
     ));
     Ok(())
 }
@@ -355,7 +355,7 @@ fn peer_frame_codec_rejects_truncated_fields_and_invalid_utf8() {
 #[test]
 fn peer_frame_codec_rejects_oversized_declared_frame_without_waiting_for_payload() {
     let mut codec = PeerFrameCodec::new(8);
-    let mut bytes = BytesMut::from(&[b'G', b'P', 1, 8, 0, 0, 0, 9][..]);
+    let mut bytes = BytesMut::from(&[b'G', b'P', 2, 8, 0, 0, 0, 9][..]);
 
     assert!(matches!(
         codec.decode(&mut bytes),

@@ -857,18 +857,18 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
         .send(PeerFrame::Hello(PeerHandshake {
             gateway_name: PeerGatewayName::new("gateway-a")?,
             gateway_id: old_gateway_a,
-            expected_peer_gateway_id: gateway_b,
+            expected_peer_gateway_id: GatewayId::new(),
             dialer_gateway_id: old_gateway_a,
             peer_transport_id: PeerTransportId::new(),
         }))
         .await?;
     let rejected_handshake = tokio::time::timeout(Duration::from_secs(1), invalid_framed.next())
         .await?
-        .ok_or("peer closed before rejecting invalid credentials")??;
+        .ok_or("peer closed before rejecting invalid peer incarnation")??;
     assert!(matches!(
         rejected_handshake,
         PeerFrame::HandshakeRejected {
-            code: ErrorCode::Unauthenticated,
+            code: ErrorCode::PermissionDenied,
             ..
         }
     ));
