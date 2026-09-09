@@ -12,9 +12,13 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     GatewaySnapshot,
     peer::{OpenIdentity, PeerStreamKey},
+    rate_limit::TokenBucket,
     registry::{Binding, LocalRegistry},
 };
 
+mod control_admission;
+#[cfg(test)]
+mod control_admission_tests;
 #[cfg(test)]
 mod observation_tests;
 mod opening;
@@ -159,6 +163,7 @@ struct SessionEntry {
     sender: mpsc::Sender<Frame>,
     cancellation: CancellationToken,
     highest_connection_id: Option<u64>,
+    control_rate: TokenBucket,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +255,10 @@ enum RemoteOpenPhase {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GatewayLimits {
+    pub(crate) control_rate_per_second: usize,
+    pub(crate) control_burst: usize,
+    pub(crate) session_control_rate_per_second: usize,
+    pub(crate) session_control_burst: usize,
     pub(crate) max_sessions: usize,
     pub(crate) max_bindings: usize,
     pub(crate) max_pending_offers: usize,
@@ -267,6 +276,10 @@ impl Default for GatewayLimits {
             max_remote_dial_attempts: crate::config::DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS,
             max_live_pipes: crate::config::DEFAULT_MAX_LIVE_PIPES,
             offer_timeout: crate::config::DEFAULT_OFFER_TIMEOUT,
+            control_rate_per_second: crate::config::DEFAULT_CONTROL_RATE_PER_SECOND,
+            control_burst: crate::config::DEFAULT_CONTROL_BURST,
+            session_control_rate_per_second: crate::config::DEFAULT_SESSION_CONTROL_RATE_PER_SECOND,
+            session_control_burst: crate::config::DEFAULT_SESSION_CONTROL_BURST,
         }
     }
 }
@@ -285,6 +298,7 @@ pub(crate) struct GatewayState {
     draining: bool,
     gateway_id: Option<GatewayId>,
     limits: GatewayLimits,
+    control_rate: TokenBucket,
 }
 
 impl GatewayState {
@@ -310,6 +324,11 @@ impl GatewayState {
             draining: false,
             gateway_id,
             limits,
+            control_rate: TokenBucket::new(
+                limits.control_rate_per_second,
+                limits.control_burst,
+                Instant::now(),
+            ),
         }
     }
 
@@ -335,7 +354,7 @@ impl GatewayState {
             Frame::Publish {
                 request_id,
                 destination_id,
-            } => self.publish(session_id, request_id, destination_id),
+            } => self.publish(session_id, request_id, destination_id, now),
             Frame::Unpublish {
                 request_id,
                 binding_id,

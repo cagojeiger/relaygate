@@ -1,13 +1,29 @@
 schema_version = 1
 
 [[case]]
+id = "T-SEC-04"
+status = "executable"
+rust = [
+  "config::tests::zero_control_rate_or_burst_is_rejected",
+  "state::control_admission_tests::session_budget_is_shared_by_publish_and_dial_and_preserves_siblings",
+  "state::control_admission_tests::gateway_rate_rejection_precedes_resolve_and_fences_replayed_dial",
+  "state::control_admission_tests::exhausted_control_budget_preserves_pipe_data_and_cleanup",
+  "state::control_admission_tests::session_recreation_does_not_reset_gateway_budget",
+  "state::control_admission_tests::control_rejection_metrics_separate_gateway_and_session_scopes",
+  "control_admission::control_throttle_returns_request_errors_preserves_pipe_and_recovers",
+  "control_admission::returned_listeners_republish_after_rate_limited_reconnect",
+  "soak_dial::tests::soak_retries_only_known_unobserved_transient_failures",
+  "admission::invalid_control_rate_environment_fails_before_serving",
+]
+
+[[case]]
 id = "T-SEC-03"
 status = "executable"
 rust = [
   "config::tests::zero_connection_rate_or_burst_is_rejected",
-  "gateway::connection_rate::tests::burst_and_fractional_refill_bound_admitted_attempts",
-  "gateway::connection_rate::tests::idle_refill_never_accumulates_more_than_burst",
-  "gateway::connection_rate::tests::extreme_refill_arithmetic_saturates_at_capacity",
+  "rate_limit::tests::burst_and_fractional_refill_bound_admitted_attempts",
+  "rate_limit::tests::idle_refill_never_accumulates_more_than_burst",
+  "rate_limit::tests::extreme_refill_arithmetic_saturates_at_capacity",
   "gateway::connection_rate::tests::gateway_clones_share_rate_budget_and_readiness_does_not_consume_it",
   "gateway::connection_rate_tests::connection_rate_rejects_before_tls_preserves_sessions_and_recovers",
   "admission::invalid_connection_rate_environment_fails_before_serving",

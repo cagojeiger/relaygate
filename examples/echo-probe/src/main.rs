@@ -4,6 +4,7 @@ mod continuity;
 mod latency;
 mod overload;
 mod probe;
+mod soak_dial;
 
 use std::env;
 

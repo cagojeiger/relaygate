@@ -27,6 +27,7 @@ GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 | `SEC-012` | SDK accept는 전체 transport slot과 별도 handshake slot을 TLS 전에 확보한다. handshake 상한 도달 시 새 socket을 닫고 기존 session을 유지한다. |
 | `SEC-013` | 인증 전 frame payload 상한은 `min(max_frame_len, 65537)` bytes다. HELLO 교환은 읽기와 WELCOME/거절 쓰기를 합쳐 5초 이내 끝내고, 성공 뒤 일반 frame 한도로 전환하며 이미 읽은 다음 frame을 보존한다. |
 | `SEC-014` | SDK 신규 socket은 slot·TLS 처리 전 GW-local token bucket을 통과한다. 초기 burst와 초당 refill을 제한하고 token 부족은 새 socket만 종료한다. clone은 같은 예산을 공유한다. |
+| `SEC-015` | SDK `PUBLISH/DIAL`은 session별·GW 전체의 공유 제어 예산을 통과한 뒤 Binding 생성·조회·OFFER를 수행한다. 초과 요청은 `RESOURCE_EXHAUSTED`로 끝나며 DIAL observation은 `NOT_OBSERVED`다. |
 
 ### SDK handshake 보호
 
@@ -52,9 +53,31 @@ Token은 TLS 실패·인증 실패·slot 부족·연결 종료에도 반환하�
 임의의 t초 구간에서 rate gate 통과 수는 `burst + rate × t` 이하이며 gate 뒤의 실제 admission은 더 적을 수 있다.
 기본값은 초기 보호 정책이며 처리량 보장이 아니다. 재접속 burst와 정상 접속 지연을 측정해 조정한다.
 이 제한은 GW-local이다. GW 재시작은 burst를 초기화하고 replica 증가는 총 예산을 늘린다.
-인증 후 제어 메시지 속도·사용자별 quota·분산 DDoS 방어는 별도 경계다. TCP accept 자체의 CPU와 상위 회선 포화도 별도 보호가 필요하다.
+인증 후 제어 메시지는 아래의 별도 예산을 사용한다. 사용자별 quota·분산 DDoS, TCP accept 자체의 CPU와 상위 회선 포화는 별도 보호 경계다.
 rate 거절은 `reason="rate_limit"` counter로 집계한다. 고빈도 거절마다 로그를 만들지 않는다.
 인증 후 Pipe 전송 크기와 ClusterToken 계약은 유지한다.
+
+### SDK 제어 요청 보호
+
+```text
+PUBLISH / DIAL → session token → Gateway token → 기존 처리
+                     └─ 부족 ─────┴─ 부족 → 요청 실패
+DATA / PING / OFFER 응답 / UNPUBLISH / CANCEL / FIN / CLOSE / RESET → 기존 처리
+```
+
+| 설정 | 기본값 |
+| --- | --- |
+| `RELAYGATE_CONTROL_RATE_PER_SECOND` / `RELAYGATE_CONTROL_BURST` | GW 전체 4,096/s · burst 4,096 |
+| `RELAYGATE_SESSION_CONTROL_RATE_PER_SECOND` / `RELAYGATE_SESSION_CONTROL_BURST` | session별 256/s · burst 256 |
+
+두 operation은 같은 bucket을 공유한다. session token부터 소비하므로 session 예산이 없는 요청은 GW token을 소비하지 않는다.
+소비한 token은 요청 결과·연결 종료와 무관하게 시간으로만 보충한다. 0·잘못된 설정은 시작 실패다.
+session 종료는 해당 bucket을 제거하고 재연결은 새 session bucket을 만든다. GW bucket은 다른 session과 함께 유지한다.
+거절은 registry 변경·RT Resolve·peer OPEN 전에 결정한다. DIAL의 ConnectionId fence는 거절 후에도 유지한다.
+기존 Binding·Pipe와 정리 메시지는 이 제한 때문에 종료되거나 차단되지 않는다. 응답 writer 포화·transport loss는 기존 session cleanup 계약을 따른다.
+초기 listen과 dial 실패의 새 시도는 application이 판단한다. 이미 반환된 Listener의 republish 실패는 SDK의 기존 transient 복구 경로를 따른다.
+기본값은 보호 정책이며 운영 용량 보장이 아니다. 여러 session을 가진 사용자의 공정성, 거절·정리 frame 처리 CPU와 payload 대역폭 제한은 이 예산의 범위 밖이다.
+SDK admission readiness는 새 transport 가능성을 유지해서 표현하고, 제어 예산 거절은 아래 counter로 별도 관측한다.
 
 ## 로그
 
@@ -78,6 +101,7 @@ DATA RTT와 payload goodput은 명시적으로 실행한 SDK probe로 측정합�
 | SDK admission | `relaygate_gateway_sdk_admission_ready`, `relaygate_gateway_draining` | non-draining + transport·handshake capacity + rate token 여유 |
 | SDK handshake 포화 | `relaygate_gateway_resource_used{resource="sdk_handshakes"}`, `relaygate_gateway_resource_limit{resource="sdk_handshakes"}` | TLS/HELLO 진행 수·상한 |
 | SDK admission 거절 | `relaygate_gateway_sdk_transport_rejections_total{reason}` | `rate_limit` / `session_limit` / `handshake_limit` / `cluster_token`; rate 거절은 counter, 나머지 요청별 로그는 debug |
+| SDK 제어 요청 거절 | `relaygate_gateway_control_rejections_total{operation,scope}` | `publish` / `dial` × `session` / `gateway`; 기존 operation RED에도 실패 집계 |
 | RT dependency | `relaygate_gateway_route_dependency{state}` | `DISABLED/READY/DEGRADED/TERMINAL` one-hot |
 | RT convergence | `relaygate_gateway_route_registrations_unsynced` | pending registration 수 |
 | peer state | `relaygate_gateway_peer_transports_connecting`, `relaygate_gateway_peer_transports_ready` | connecting·reusable transport 수 |
@@ -143,7 +167,7 @@ SDK dial 시간은 session·queue 대기를 포함하고 application의 여러 �
 각 자원의 사용률은 해당 제약을 독립 판정하며 자원 간 사용률 합산으로 전체 여유를 계산하지 않습니다.
 snapshot은 GW별 순간 관측이며 cluster 합계는 전역 원자적 값이 아닙니다.
 
-Metric label set은 `operation`, `outcome`, `code`, `class`, `reason`, `resource`, `state`, `direction`, `transport`처럼 bounded
+Metric label set은 `operation`, `outcome`, `code`, `class`, `reason`, `scope`, `resource`, `state`, `direction`, `transport`처럼 bounded
 enumeration으로 구성합니다. Instance identity는 Prometheus target metadata, request identity는 lifecycle log가
 담당합니다.
 

@@ -24,3 +24,6 @@ Destination A
 
 Gateway는 session별 current Binding을 shard별 full snapshot으로 투영합니다. 빈 snapshot은 active lease를
 종료하고 RT dependency failure 동안 local Binding을 유지합니다.
+
+PUBLISH는 [제어 요청 예산](008-runtime-observability-contract.md#sdk-제어-요청-보호)을 먼저 통과한다.
+rate 거절은 current Binding을 변경하지 않는다. UNPUBLISH와 session cleanup은 이 예산을 소비하지 않는다.

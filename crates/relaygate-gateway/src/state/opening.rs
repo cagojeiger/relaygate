@@ -44,6 +44,16 @@ impl GatewayState {
             );
         }
 
+        if !self.admit_control(connector, "dial", now) {
+            return self.new_open_failed(
+                connector,
+                connection_id,
+                ErrorCode::ResourceExhausted,
+                PeerObservation::NotObserved,
+                "Gateway PUBLISH/DIAL rate limit reached",
+                now,
+            );
+        }
         if self.live_pipe_count() >= self.limits.max_live_pipes {
             return self.new_open_failed(
                 connector,

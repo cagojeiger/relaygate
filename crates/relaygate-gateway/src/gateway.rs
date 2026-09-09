@@ -121,6 +121,10 @@ impl Gateway {
             max_remote_dial_attempts: config.max_remote_dial_attempts,
             max_live_pipes: config.max_live_pipes,
             offer_timeout: config.offer_timeout,
+            control_rate_per_second: config.control_rate_per_second,
+            control_burst: config.control_burst,
+            session_control_rate_per_second: config.session_control_rate_per_second,
+            session_control_burst: config.session_control_burst,
         };
         let gateway_id = distributed.as_ref().map(DistributedRuntime::gateway_id);
         let routing = distributed.as_ref().map(DistributedRuntime::routing);

@@ -25,6 +25,11 @@ impl GatewayState {
                     sender,
                     cancellation,
                     highest_connection_id: None,
+                    control_rate: crate::rate_limit::TokenBucket::new(
+                        self.limits.session_control_rate_per_second,
+                        self.limits.session_control_burst,
+                        std::time::Instant::now(),
+                    ),
                 });
                 return Some(session_id);
             }

@@ -11,6 +11,7 @@ mod gateway;
 mod metrics;
 mod observation;
 mod peer;
+mod rate_limit;
 mod registry;
 mod routing;
 mod state;
