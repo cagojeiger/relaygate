@@ -15,6 +15,7 @@ rust = [
   "gateway::admission_tests::tls_handshake_saturation_rejects_before_tls_and_recovers",
   "session_frame_buffers_grow_beyond_their_initial_capacity",
   "gateway_metrics_expose_current_state_and_red_signals_without_secrets",
+  "admission::sdk_admission_rejection_metrics_distinguish_capacity_and_credentials",
 ]
 
 [[case]]

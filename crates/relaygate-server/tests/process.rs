@@ -34,6 +34,9 @@ use relaygate_route_table_transport::{
 const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
 const TEST_CLUSTER_TOKEN: &str = "relaygate-process-test-token";
 
+#[cfg(unix)]
+#[path = "process/admission.rs"]
+mod admission;
 #[path = "process/transport_modes.rs"]
 mod transport_modes;
 const DESTINATION_A: &str = "11111111-1111-4111-8111-111111111111";

@@ -88,6 +88,13 @@ impl Gateway {
                             "relaygate_gateway_sdk_transport_rejections_total",
                             "reason" => "handshake_limit"
                         ).increment(1);
+                        tracing::debug!(
+                            component = "gateway",
+                            event = "gateway.session.rejected",
+                            %peer_addr,
+                            reason = "handshake_limit",
+                            "rejecting SDK connection because the handshake limit is reached"
+                        );
                         drop(stream);
                         continue;
                     };
