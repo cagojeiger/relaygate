@@ -9,6 +9,7 @@ rust = [
   "gateway::session::admission::tests::stalled_queue_is_bounded_by_existing_liveness_deadline",
   "gateway::session::admission::tests::cancellation_and_closed_queue_stop_wait_without_detached_send",
   "gateway::session::admission::tests::blocked_session_does_not_block_sibling_response",
+  "gateway::session::admission::tests::pending_wait_stops_on_cancellation_or_receiver_drop",
   "gateway::admission_tests::backpressure::rejection_burst_with_slow_reader_preserves_session_and_sibling",
   "config::tests::zero_control_rate_or_burst_is_rejected",
   "state::control_admission_tests::session_budget_is_shared_by_publish_and_dial_and_preserves_siblings",

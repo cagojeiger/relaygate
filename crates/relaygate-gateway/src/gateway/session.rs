@@ -161,18 +161,15 @@ impl Inner {
                         );
                         break;
                     }
-                    let actions = {
+                    let mut actions = {
                         let mut state = self.lock_state();
                         let actions = state.handle(session_id, frame)?;
                         self.commit_registration_actions(&actions);
                         actions
                     };
-                    if admission::is_local_rejection(&actions, session_id) {
-                        let crate::state::GatewayAction::SendSdkFrame(delivery) =
-                            actions.into_iter().next().expect("one rejection action")
-                        else {
-                            unreachable!("local rejection is an SDK frame")
-                        };
+                    if admission::is_local_rejection(&actions, session_id)
+                        && let Some(crate::state::GatewayAction::SendSdkFrame(delivery)) = actions.pop()
+                    {
                         admission::send_rejection(
                             &sender,
                             delivery.frame,

@@ -67,11 +67,12 @@ async fn rejection_burst_with_slow_reader_preserves_session_and_sibling() -> Tes
                     ));
                     rejected += usize::from(code == ErrorCode::ResourceExhausted);
                 }
-                other => panic!("lost rejection response: {other:?}"),
+                other => return Err(format!("lost rejection response: {other:?}").into()),
             }
         }
+        TestResult::Ok(())
     })
-    .await?;
+    .await??;
     assert!(rejected > 0);
     let mut writer = producer.await??;
     writer.send(Frame::Ping { nonce: 99 }).await?;
