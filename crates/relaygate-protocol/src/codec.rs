@@ -11,6 +11,8 @@ const MAGIC: [u8; 2] = *b"RG";
 const VERSION: u8 = 2;
 const HEADER_LEN: usize = 8;
 const MAX_STRING_LEN: usize = u16::MAX as usize;
+/// HELLO contains one u16-length-prefixed ClusterToken string.
+pub const MAX_HELLO_FRAME_LEN: usize = 2 + MAX_STRING_LEN;
 pub const DEFAULT_MAX_FRAME_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]

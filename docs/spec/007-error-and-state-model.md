@@ -96,6 +96,10 @@ stateDiagram-v2
 
 ## 장애 전파
 
+SDK session 생성 전 handshake capacity 초과는 새 socket을 닫는다. 이 시점에는 wire 오류 응답을 보장하지 않는다.
+TLS는 5초, HELLO 수신·응답은 합쳐 5초 이내 종료한다. WELCOME 쓰기 실패·만료는 이미 예약된 session을 정리하고
+handshake/transport slot을 반환한다. 다른 admitted session은 유지한다.
+
 | 장애 | 종료 범위 | 유지 범위 | 복구 |
 | --- | --- | --- | --- |
 | SDK–GW loss | session 소유 Pipe/dial/Binding | 다른 session·Binding | reconnect + Listener republish |

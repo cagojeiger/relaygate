@@ -8,6 +8,7 @@ use crate::GatewayError;
 
 pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_SESSIONS: usize = 10_000;
+pub const DEFAULT_MAX_PENDING_HANDSHAKES: usize = 256;
 pub const DEFAULT_MAX_BINDINGS: usize = 100_000;
 pub const DEFAULT_MAX_PENDING_OFFERS: usize = 10_000;
 pub const DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS: usize = 128;
@@ -26,6 +27,7 @@ pub struct GatewayConfig {
     pub(crate) writer_queue_capacity: usize,
     pub(crate) max_frame_len: usize,
     pub(crate) max_sessions: usize,
+    pub(crate) max_pending_handshakes: usize,
     pub(crate) max_bindings: usize,
     pub(crate) max_pending_offers: usize,
     pub(crate) max_remote_dial_attempts: usize,
@@ -48,6 +50,7 @@ impl std::fmt::Debug for GatewayConfig {
             .field("writer_queue_capacity", &self.writer_queue_capacity)
             .field("max_frame_len", &self.max_frame_len)
             .field("max_sessions", &self.max_sessions)
+            .field("max_pending_handshakes", &self.max_pending_handshakes)
             .field("max_bindings", &self.max_bindings)
             .field("max_pending_offers", &self.max_pending_offers)
             .field("max_remote_dial_attempts", &self.max_remote_dial_attempts)
@@ -73,6 +76,7 @@ impl GatewayConfig {
             writer_queue_capacity: DEFAULT_WRITER_QUEUE_CAPACITY,
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
             max_sessions: DEFAULT_MAX_SESSIONS,
+            max_pending_handshakes: DEFAULT_MAX_PENDING_HANDSHAKES,
             max_bindings: DEFAULT_MAX_BINDINGS,
             max_pending_offers: DEFAULT_MAX_PENDING_OFFERS,
             max_remote_dial_attempts: DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS,
@@ -111,6 +115,13 @@ impl GatewayConfig {
     #[must_use]
     pub const fn with_max_sessions(mut self, maximum: usize) -> Self {
         self.max_sessions = maximum;
+        self
+    }
+
+    /// Limits concurrent SDK TLS/HELLO handshakes within the total session limit.
+    #[must_use]
+    pub const fn with_max_pending_handshakes(mut self, maximum: usize) -> Self {
+        self.max_pending_handshakes = maximum;
         self
     }
 
@@ -183,6 +194,7 @@ impl GatewayConfig {
             ));
         }
         if self.max_sessions == 0
+            || self.max_pending_handshakes == 0
             || self.max_bindings == 0
             || self.max_pending_offers == 0
             || self.max_remote_dial_attempts == 0
@@ -274,6 +286,16 @@ mod tests {
         ] {
             assert!(config.validate().is_err());
         }
+    }
+
+    #[test]
+    fn zero_handshake_limit_is_rejected() {
+        assert!(
+            GatewayConfig::new("test-token")
+                .with_max_pending_handshakes(0)
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

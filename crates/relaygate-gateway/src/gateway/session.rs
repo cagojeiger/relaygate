@@ -8,11 +8,11 @@ use std::{
 };
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use relaygate_protocol::{ErrorCode, Frame, FrameCodec};
+use relaygate_protocol::{ErrorCode, Frame, FrameCodec, MAX_HELLO_FRAME_LEN};
 use relaygate_transport::BoxedIo;
 use tokio::{
-    sync::mpsc,
-    time::{sleep_until, timeout},
+    sync::{OwnedSemaphorePermit, mpsc},
+    time::{Instant, sleep_until, timeout_at},
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
@@ -30,16 +30,18 @@ impl Inner {
         self: Arc<Self>,
         stream: BoxedIo,
         cancellation: CancellationToken,
+        handshake_slot: OwnedSemaphorePermit,
     ) -> Result<(), SessionError> {
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
         let mut framed = Framed::with_capacity(
             stream,
-            FrameCodec::new(self.max_frame_len),
+            FrameCodec::new(self.max_frame_len.min(MAX_HELLO_FRAME_LEN)),
             SDK_FRAME_INITIAL_CAPACITY,
         );
         framed.set_backpressure_boundary(SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY);
         let first = tokio::select! {
             _ = cancellation.cancelled() => return Ok(()),
-            result = timeout(HANDSHAKE_TIMEOUT, framed.next()) => {
+            result = timeout_at(deadline, framed.next()) => {
                 result
                     .map_err(|_| SessionError::HandshakeTimeout)?
                     .ok_or(SessionError::HandshakeClosed)??
@@ -49,13 +51,19 @@ impl Inner {
             return Err(SessionError::ExpectedHello);
         };
         if !self.cluster_tokens.authorizes(&cluster_token) {
-            framed
-                .send(Frame::SessionRejected {
+            metrics::counter!(
+                "relaygate_gateway_sdk_transport_rejections_total",
+                "reason" => "cluster_token"
+            )
+            .increment(1);
+            tokio::select! {
+                _ = cancellation.cancelled() => return Ok(()),
+                result = timeout_at(deadline, framed.send(Frame::SessionRejected {
                     code: ErrorCode::Unauthenticated,
                     message: "ClusterToken was not accepted".to_owned(),
-                })
-                .await?;
-            tracing::warn!(
+                })) => result.map_err(|_| SessionError::HandshakeTimeout)??,
+            }
+            tracing::debug!(
                 component = "gateway",
                 event = "gateway.session.rejected",
                 error_code = ?ErrorCode::Unauthenticated,
@@ -63,6 +71,7 @@ impl Inner {
             );
             return Err(SessionError::Unauthenticated);
         }
+        *framed.codec_mut() = FrameCodec::new(self.max_frame_len);
 
         let (sender, receiver) = mpsc::channel(self.writer_queue_capacity);
         let heartbeat_sender = sender.clone();
@@ -76,7 +85,13 @@ impl Inner {
             async move {
                 #[cfg(test)]
                 run_inner.panic_after_admission_if_armed();
-                framed.send(Frame::Welcome { session_id }).await?;
+                tokio::select! {
+                    _ = run_cancellation.cancelled() => return Ok(()),
+                    result = timeout_at(deadline, framed.send(Frame::Welcome { session_id })) => {
+                        result.map_err(|_| SessionError::HandshakeTimeout)??;
+                    }
+                }
+                drop(handshake_slot);
                 let (sink, source) = framed.split();
                 let read =
                     run_inner.read_frames(session_id, heartbeat_sender, source, read_cancellation);
@@ -209,7 +224,7 @@ async fn write_frames(
 pub(super) enum SessionError {
     #[error("SDK session closed before HELLO")]
     HandshakeClosed,
-    #[error("SDK session did not send HELLO before the handshake deadline")]
+    #[error("SDK HELLO exchange did not finish before the handshake deadline")]
     HandshakeTimeout,
     #[error("first SDK frame was not HELLO")]
     ExpectedHello,

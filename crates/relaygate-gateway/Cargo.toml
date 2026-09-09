@@ -24,6 +24,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 metrics-util.workspace = true
 rcgen = "0.14"
 relaygate-sdk = { workspace = true, features = ["insecure-test-transport"] }
