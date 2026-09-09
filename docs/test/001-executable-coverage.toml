@@ -1,6 +1,20 @@
 schema_version = 1
 
 [[case]]
+id = "T-SEC-03"
+status = "executable"
+rust = [
+  "config::tests::zero_connection_rate_or_burst_is_rejected",
+  "gateway::connection_rate::tests::burst_and_fractional_refill_bound_admitted_attempts",
+  "gateway::connection_rate::tests::idle_refill_never_accumulates_more_than_burst",
+  "gateway::connection_rate::tests::extreme_refill_arithmetic_saturates_at_capacity",
+  "gateway::connection_rate::tests::gateway_clones_share_rate_budget_and_readiness_does_not_consume_it",
+  "gateway::connection_rate_tests::connection_rate_rejects_before_tls_preserves_sessions_and_recovers",
+  "admission::invalid_connection_rate_environment_fails_before_serving",
+  "admission::connection_rate_environment_rejects_and_reports_without_session_state",
+]
+
+[[case]]
 id = "T-SEC-02"
 status = "executable"
 rust = [

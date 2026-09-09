@@ -96,7 +96,8 @@ stateDiagram-v2
 
 ## 장애 전파
 
-SDK session 생성 전 handshake capacity 초과는 새 socket을 닫는다. 이 시점에는 wire 오류 응답을 보장하지 않는다.
+SDK session 생성 전 rate token 부족 또는 transport·handshake capacity 초과는 새 socket을 닫는다.
+이 시점에는 wire 오류 응답을 보장하지 않는다. rate token은 시간 경과로 보충되고 새 접속은 새 token을 소비한다.
 TLS는 5초, HELLO 수신·응답은 합쳐 5초 이내 종료한다. WELCOME 쓰기 실패·만료는 이미 예약된 session을 정리하고
 handshake/transport slot을 반환한다. 다른 admitted session은 유지한다.
 
