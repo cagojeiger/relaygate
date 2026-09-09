@@ -54,8 +54,31 @@ certificate_serial() {
     base64 -d | openssl x509 -noout -serial
 }
 
+wait_for_served_certificate() {
+  local address=$1 expected=$2 attempts=${3:-10}
+  local attempt served_serial
+  local diagnostics="$ARTIFACTS/certificate-edge-probe.log"
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    printf 'address=%s attempt=%s expected=%s\n' "$address" "$attempt" "$expected" >"$diagnostics"
+    if served_serial=$(timeout 3 openssl s_client -connect "$address" \
+      -servername relaygate-gateway.internal -alpn relaygate/2 \
+      -CAfile "$CERTIFICATES/ca.crt" -verify_return_error </dev/null 2>>"$diagnostics" |
+      openssl x509 -noout -serial 2>>"$diagnostics"); then
+      if [[ "$served_serial" == "$expected" ]]; then
+        printf '%s %s\n' "$address" "$served_serial" >>"$ARTIFACTS/certificate-edge-served.txt"
+        return 0
+      fi
+    fi
+    printf 'observed=%s\n' "$served_serial" >>"$diagnostics"
+    if ((attempt < attempts)); then sleep 1; fi
+  done
+  echo "Gateway did not serve the expected verified edge certificate at $address" >&2
+  cat "$diagnostics" >&2
+  return 1
+}
+
 verify_certificate_reissue_rollout() {
-  local role certificate old_serial attempt new_serial pod address served_serial
+  local role certificate old_serial attempt new_serial pod address
   local -a pods uids unchanged_pods unchanged_uids addresses
   for role in edge gw rt; do
     if [[ "$role" == edge ]]; then
@@ -110,15 +133,7 @@ verify_certificate_reissue_rollout() {
       IFS=, read -r -a addresses <<<"$GATEWAYS"
       addresses+=(127.0.0.1:28423)
       for address in "${addresses[@]}"; do
-        served_serial=$(timeout 15 openssl s_client -connect "$address" \
-          -servername relaygate-gateway.internal -alpn relaygate/2 \
-          -CAfile "$CERTIFICATES/ca.crt" -verify_return_error </dev/null 2>/dev/null |
-          openssl x509 -noout -serial)
-        if [[ "$served_serial" != "$new_serial" ]]; then
-          echo "Gateway still serves a different edge certificate at $address" >&2
-          return 1
-        fi
-        printf '%s %s\n' "$address" "$served_serial" >>"$ARTIFACTS/certificate-edge-served.txt"
+        wait_for_served_certificate "$address" "$new_serial"
       done
     fi
     kubectl -n "$NAMESPACE" get certificate "$certificate" -o json \
