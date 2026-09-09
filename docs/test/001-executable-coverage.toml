@@ -3,7 +3,19 @@ schema_version = 1
 [[case]]
 id = "T-SEC-02"
 status = "executable"
-rust = ["config::tests::zero_handshake_limit_is_rejected", "gateway::admission_tests::handshake_capacity_is_separate_and_released_after_welcome", "gateway::admission_tests::oversized_pre_auth_header_is_rejected_without_waiting_for_payload", "gateway::admission_tests::stalled_hello_and_blocked_handshake_responses_release_all_capacity", "gateway::admission_tests::admission_preserves_pipelined_frames_and_maximum_legal_hello", "gateway::admission_tests::malformed_first_frame_and_cancellation_release_handshake_capacity", "gateway::admission_tests::handshake_limit_is_capped_by_total_session_limit", "gateway::admission_tests::tls_handshake_saturation_rejects_before_tls_and_recovers", "session_frame_buffers_grow_beyond_their_initial_capacity", "gateway_metrics_expose_current_state_and_red_signals_without_secrets"]
+rust = [
+  "config::tests::zero_handshake_limit_is_rejected",
+  "gateway::admission_tests::handshake_capacity_is_separate_and_released_after_welcome",
+  "gateway::admission_tests::oversized_pre_auth_header_is_rejected_without_waiting_for_payload",
+  "gateway::admission_tests::stalled_hello_and_blocked_handshake_responses_release_all_capacity",
+  "gateway::admission_tests::late_hello_response_uses_only_the_remaining_handshake_budget",
+  "gateway::admission_tests::admission_preserves_pipelined_frames_and_maximum_legal_hello",
+  "gateway::admission_tests::malformed_first_frame_and_cancellation_release_handshake_capacity",
+  "gateway::admission_tests::handshake_limit_is_capped_by_total_session_limit",
+  "gateway::admission_tests::tls_handshake_saturation_rejects_before_tls_and_recovers",
+  "session_frame_buffers_grow_beyond_their_initial_capacity",
+  "gateway_metrics_expose_current_state_and_red_signals_without_secrets",
+]
 
 [[case]]
 id = "T-MODEL-01"

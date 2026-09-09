@@ -174,6 +174,28 @@ async fn admission_preserves_pipelined_frames_and_maximum_legal_hello() -> TestR
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn late_hello_response_uses_only_the_remaining_handshake_budget() -> TestResult {
+    let gateway = Gateway::new(GatewayConfig::new(TOKEN))?;
+    let (mut client, _cancel, task) = start_session(&gateway, 8)?;
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(4)).await;
+    let mut hello = BytesMut::new();
+    FrameCodec::default().encode(
+        Frame::Hello {
+            cluster_token: ClusterToken::new(TOKEN),
+        },
+        &mut hello,
+    )?;
+    client.write_all(&hello).await?;
+    assert!(matches!(
+        timeout(Duration::from_secs(2), task).await??,
+        Err(SessionError::HandshakeTimeout)
+    ));
+    assert_empty(&gateway);
+    Ok(())
+}
+
 #[tokio::test]
 async fn malformed_first_frame_and_cancellation_release_handshake_capacity() -> TestResult {
     for input in [Some(Frame::Ping { nonce: 1 }), None] {
@@ -253,7 +275,7 @@ async fn tls_handshake_saturation_rejects_before_tls_and_recovers() -> TestResul
         };
         let mut admitted = timeout(Duration::from_secs(2), connect()).await??;
         wait_handshakes(&gateway, 0).await?;
-        let stalled = TcpStream::connect(address).await?;
+        let mut stalled = TcpStream::connect(address).await?;
         wait_handshakes(&gateway, 1).await?;
         assert_eq!(gateway.snapshot().sessions, 1);
         assert!(!gateway.snapshot().sdk_admission_ready);
@@ -270,6 +292,11 @@ async fn tls_handshake_saturation_rejects_before_tls_and_recovers() -> TestResul
             timeout(Duration::from_secs(2), admitted.next()).await?,
             Some(Ok(Frame::Pong { nonce: 9 }))
         ));
+        // With no ClientHello, the actual TLS timeout must free both permits.
+        assert_eq!(
+            timeout(Duration::from_secs(7), stalled.read(&mut byte)).await??,
+            0
+        );
         drop(stalled);
         wait_handshakes(&gateway, 0).await?;
         let recovered = timeout(Duration::from_secs(2), connect()).await??;

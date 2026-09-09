@@ -41,8 +41,10 @@ accept → transport + handshake slot → TLS(5s) → HELLO/응답(5s)
 | `RELAYGATE_MAX_SESSIONS` | 10,000; handshake와 admitted session을 포함한 전체 transport 수 |
 | HELLO payload | u16 token 길이 2 bytes + 최대 65,535 bytes; 기존 wire 범위 유지 |
 
-256은 초기 동시 handshake 보호 상한이며 처리량 보장 수치가 아니다. 정상 재접속 burst는 SDK backoff로 분산하고
-운영 부하에 맞춰 상한을 조정한다. 이 제한은 GW-local 동시 수 제한이며 요청 속도·사용자별 quota·분산 DDoS 방어를 대체하지 않는다.
+256은 초기 동시 handshake 보호 상한이며 처리량 보장 수치가 아니다. 기존 Relay의 managed reconnect는 SDK backoff로 분산한다.
+초기 `Relay::connect`는 단일 시도이므로 admission 거절 뒤 재시도는 application이 결정한다. 운영 부하에 맞춰 상한을 조정한다.
+포화 중에는 SDK readiness도 저하되며 readiness probe가 같은 한도를 사용한다. 기존 session과 process liveness는 유지한다.
+이 제한은 GW-local 동시 수 제한이며 요청 속도·사용자별 quota·분산 DDoS 방어를 대체하지 않는다.
 인증 후 Pipe 전송 크기와 ClusterToken 계약은 유지한다.
 
 ## 로그
