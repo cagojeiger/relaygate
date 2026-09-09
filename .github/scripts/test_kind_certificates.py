@@ -12,10 +12,10 @@ export ARTIFACTS=$2 CERTIFICATES=$2
 sequence=$3
 printf '0' >"$ARTIFACTS/calls"
 timeout() {
-  [[ "$1" == 3 && "$2" == openssl && "$3" == s_client ]]
-  [[ "$*" == *"-verify_return_error"* && "$*" == *"-CAfile"* ]]
-  [[ "$*" == *"-servername relaygate-gateway.internal"* ]]
-  [[ "$*" == *"-alpn relaygate/2"* ]]
+  [[ "$1" == 3 && "$2" == openssl && "$3" == s_client ]] || return 95
+  [[ "$*" == *"-verify_return_error"* && "$*" == *"-CAfile"* ]] || return 95
+  [[ "$*" == *"-servername relaygate-gateway.internal"* ]] || return 95
+  [[ "$*" == *"-alpn relaygate/2"* ]] || return 95
   local count outcome
   count=$(<"$ARTIFACTS/calls")
   count=$((count + 1))
@@ -29,7 +29,7 @@ timeout() {
   esac
 }
 openssl() {
-  [[ "$*" == 'x509 -noout -serial' ]]
+  [[ "$*" == 'x509 -noout -serial' ]] || return 95
   local certificate
   IFS= read -r certificate || return 1
   printf '%s\n' "$certificate"
@@ -78,5 +78,5 @@ class ServedCertificateTests(unittest.TestCase):
     def test_matching_serial_does_not_hide_tls_validation_failure(self):
         self.assertIn("certificate verify failed", self.check_sequence("vvv", 3, False))
 
-    def test_failure_after_old_serial_does_not_reuse_old_output(self):
-        self.check_sequence("ofn", 3, True)
+    def test_failed_attempt_does_not_reuse_matching_output(self):
+        self.assertIn("observed=\n", self.check_sequence("vff", 3, False))

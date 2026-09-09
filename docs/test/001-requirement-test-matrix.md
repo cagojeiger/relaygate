@@ -32,6 +32,7 @@ PromQL fixture와 Compose DATA probe의 성공 증거를 함께 확인합니다.
 | Metric unit | PUBLISH/DIAL × session/GW 거절 counter와 결과 code | 4개 저 cardinality series의 정확한 증가량 |
 | Probe unit | 재시도 분류, 단일 deadline, 대기·진행 중 작업의 취소와 해제 | 가상 시간, background retry 없음; public SDK 자동 retry 계약과 구분 |
 | SDK–GW integration | 실제 오류 반환·Pipe 보존·refill 회복·재연결 후 republish | 소켓을 사용하는 기존 통합 테스트 |
+| Kind 인증서 probe | 재발급 후 새 serial 제공까지 제한 횟수로 확인, TLS 검증 실패·이전 serial·연결 실패의 최종 거절 | Hygiene의 mock 회귀 테스트 6개와 cert-manager Kind 실검증 |
 
 사건 순서 검증은 위 네 사건의 직렬 조합을 대상으로 합니다. 네트워크·executor 전체의 모든
 스케줄이나 무제한 공격 트래픽에 대한 증명 범위와는 구분합니다.
