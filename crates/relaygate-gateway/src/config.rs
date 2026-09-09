@@ -11,6 +11,10 @@ pub const DEFAULT_MAX_SESSIONS: usize = 10_000;
 pub const DEFAULT_MAX_PENDING_HANDSHAKES: usize = 256;
 pub const DEFAULT_SDK_CONNECTION_RATE_PER_SECOND: usize = 256;
 pub const DEFAULT_SDK_CONNECTION_BURST: usize = 256;
+pub const DEFAULT_CONTROL_RATE_PER_SECOND: usize = 4096;
+pub const DEFAULT_CONTROL_BURST: usize = 4096;
+pub const DEFAULT_SESSION_CONTROL_RATE_PER_SECOND: usize = 256;
+pub const DEFAULT_SESSION_CONTROL_BURST: usize = 256;
 pub const DEFAULT_MAX_BINDINGS: usize = 100_000;
 pub const DEFAULT_MAX_PENDING_OFFERS: usize = 10_000;
 pub const DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS: usize = 128;
@@ -32,6 +36,10 @@ pub struct GatewayConfig {
     pub(crate) max_pending_handshakes: usize,
     pub(crate) sdk_connection_rate_per_second: usize,
     pub(crate) sdk_connection_burst: usize,
+    pub(crate) control_rate_per_second: usize,
+    pub(crate) control_burst: usize,
+    pub(crate) session_control_rate_per_second: usize,
+    pub(crate) session_control_burst: usize,
     pub(crate) max_bindings: usize,
     pub(crate) max_pending_offers: usize,
     pub(crate) max_remote_dial_attempts: usize,
@@ -60,6 +68,13 @@ impl std::fmt::Debug for GatewayConfig {
                 &self.sdk_connection_rate_per_second,
             )
             .field("sdk_connection_burst", &self.sdk_connection_burst)
+            .field("control_rate_per_second", &self.control_rate_per_second)
+            .field("control_burst", &self.control_burst)
+            .field(
+                "session_control_rate_per_second",
+                &self.session_control_rate_per_second,
+            )
+            .field("session_control_burst", &self.session_control_burst)
             .field("max_bindings", &self.max_bindings)
             .field("max_pending_offers", &self.max_pending_offers)
             .field("max_remote_dial_attempts", &self.max_remote_dial_attempts)
@@ -88,6 +103,10 @@ impl GatewayConfig {
             max_pending_handshakes: DEFAULT_MAX_PENDING_HANDSHAKES,
             sdk_connection_rate_per_second: DEFAULT_SDK_CONNECTION_RATE_PER_SECOND,
             sdk_connection_burst: DEFAULT_SDK_CONNECTION_BURST,
+            control_rate_per_second: DEFAULT_CONTROL_RATE_PER_SECOND,
+            control_burst: DEFAULT_CONTROL_BURST,
+            session_control_rate_per_second: DEFAULT_SESSION_CONTROL_RATE_PER_SECOND,
+            session_control_burst: DEFAULT_SESSION_CONTROL_BURST,
             max_bindings: DEFAULT_MAX_BINDINGS,
             max_pending_offers: DEFAULT_MAX_PENDING_OFFERS,
             max_remote_dial_attempts: DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS,
@@ -149,6 +168,39 @@ impl GatewayConfig {
         (
             self.sdk_connection_rate_per_second,
             self.sdk_connection_burst,
+        )
+    }
+
+    /// Shared PUBLISH/DIAL budget across SDK sessions on this Gateway.
+    #[must_use]
+    pub const fn with_control_rate_limit(mut self, per_second: usize, burst: usize) -> Self {
+        self.control_rate_per_second = per_second;
+        self.control_burst = burst;
+        self
+    }
+
+    #[must_use]
+    pub const fn control_rate_limit(&self) -> (usize, usize) {
+        (self.control_rate_per_second, self.control_burst)
+    }
+
+    /// PUBLISH/DIAL budget for each SDK session, within the Gateway budget.
+    #[must_use]
+    pub const fn with_session_control_rate_limit(
+        mut self,
+        per_second: usize,
+        burst: usize,
+    ) -> Self {
+        self.session_control_rate_per_second = per_second;
+        self.session_control_burst = burst;
+        self
+    }
+
+    #[must_use]
+    pub const fn session_control_rate_limit(&self) -> (usize, usize) {
+        (
+            self.session_control_rate_per_second,
+            self.session_control_burst,
         )
     }
 
@@ -224,6 +276,10 @@ impl GatewayConfig {
             || self.max_pending_handshakes == 0
             || self.sdk_connection_rate_per_second == 0
             || self.sdk_connection_burst == 0
+            || self.control_rate_per_second == 0
+            || self.control_burst == 0
+            || self.session_control_rate_per_second == 0
+            || self.session_control_burst == 0
             || self.max_bindings == 0
             || self.max_pending_offers == 0
             || self.max_remote_dial_attempts == 0
@@ -333,6 +389,24 @@ mod tests {
             assert!(
                 GatewayConfig::new("test-token")
                     .with_sdk_connection_rate_limit(rate, burst)
+                    .validate()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn zero_control_rate_or_burst_is_rejected() {
+        for (rate, burst) in [(0, 1), (1, 0)] {
+            assert!(
+                GatewayConfig::new("test-token")
+                    .with_control_rate_limit(rate, burst)
+                    .validate()
+                    .is_err()
+            );
+            assert!(
+                GatewayConfig::new("test-token")
+                    .with_session_control_rate_limit(rate, burst)
                     .validate()
                     .is_err()
             );

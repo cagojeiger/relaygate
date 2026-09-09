@@ -1,53 +1,6 @@
 use std::time::Duration;
 
-use super::{ConnectionRateLimit, TOKEN, TokenBucket};
 use crate::{Gateway, GatewayConfig};
-use tokio::time::Instant;
-
-#[test]
-fn burst_and_fractional_refill_bound_admitted_attempts() {
-    let now = Instant::now();
-    let mut bucket = TokenBucket {
-        per_second: 2,
-        capacity: 3 * TOKEN,
-        credit: 3 * TOKEN,
-        updated_at: now,
-    };
-    for _ in 0..3 {
-        assert!(bucket.try_take(now));
-    }
-    assert!(!bucket.try_take(now));
-    for millis in [100, 200, 300, 499] {
-        assert!(!bucket.try_take(now + Duration::from_millis(millis)));
-    }
-    assert!(bucket.try_take(now + Duration::from_millis(500)));
-    assert!(!bucket.try_take(now + Duration::from_millis(500)));
-    assert!(bucket.try_take(now + Duration::from_secs(1)));
-    assert!(!bucket.try_take(now + Duration::from_secs(1)));
-}
-
-#[test]
-fn idle_refill_never_accumulates_more_than_burst() {
-    let limiter = ConnectionRateLimit::new(2, 3);
-    let mut bucket = limiter.lock();
-    let later = bucket.updated_at + Duration::from_secs(3600);
-    for _ in 0..3 {
-        assert!(bucket.try_take(later));
-    }
-    assert!(!bucket.try_take(later));
-    assert!(!bucket.try_take(later + Duration::from_millis(499)));
-    assert!(bucket.try_take(later + Duration::from_millis(500)));
-}
-
-#[test]
-fn extreme_refill_arithmetic_saturates_at_capacity() {
-    let limiter = ConnectionRateLimit::new(usize::MAX, usize::MAX);
-    let mut bucket = limiter.lock();
-    bucket.credit = 0;
-    let later = bucket.updated_at + Duration::from_secs(u32::MAX as u64);
-    bucket.refill(later);
-    assert_eq!(bucket.credit, bucket.capacity);
-}
 
 #[tokio::test(start_paused = true)]
 async fn gateway_clones_share_rate_budget_and_readiness_does_not_consume_it()

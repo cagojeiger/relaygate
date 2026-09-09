@@ -84,6 +84,26 @@ fn invalid_connection_rate_environment_fails_before_serving() -> Result<(), Box<
     Ok(())
 }
 
+#[test]
+fn invalid_control_rate_environment_fails_before_serving() -> Result<(), Box<dyn Error>> {
+    for name in [
+        "RELAYGATE_CONTROL_RATE_PER_SECOND",
+        "RELAYGATE_CONTROL_BURST",
+        "RELAYGATE_SESSION_CONTROL_RATE_PER_SECOND",
+        "RELAYGATE_SESSION_CONTROL_BURST",
+    ] {
+        for value in ["0", "invalid", "-1"] {
+            let output = server_command()
+                .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+                .env(name, value)
+                .output()?;
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains(name));
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connection_rate_environment_rejects_and_reports_without_session_state()
 -> Result<(), Box<dyn Error>> {

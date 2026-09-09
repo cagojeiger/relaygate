@@ -90,6 +90,16 @@ impl GatewayRuntimeConfig {
         if let Some(maximum) = optional_usize("RELAYGATE_MAX_BINDINGS")? {
             gateway = gateway.with_max_bindings(maximum);
         }
+        let (rate, burst) = gateway.control_rate_limit();
+        gateway = gateway.with_control_rate_limit(
+            optional_usize("RELAYGATE_CONTROL_RATE_PER_SECOND")?.unwrap_or(rate),
+            optional_usize("RELAYGATE_CONTROL_BURST")?.unwrap_or(burst),
+        );
+        let (rate, burst) = gateway.session_control_rate_limit();
+        gateway = gateway.with_session_control_rate_limit(
+            optional_usize("RELAYGATE_SESSION_CONTROL_RATE_PER_SECOND")?.unwrap_or(rate),
+            optional_usize("RELAYGATE_SESSION_CONTROL_BURST")?.unwrap_or(burst),
+        );
         if let Some(maximum) = optional_usize("RELAYGATE_MAX_PENDING_OFFERS")? {
             gateway = gateway.with_max_pending_offers(maximum);
         }

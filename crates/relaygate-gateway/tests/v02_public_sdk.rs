@@ -17,6 +17,9 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 const CLUSTER_TOKEN: &str = "v02-test-cluster-token";
 
+#[path = "public_sdk/control_admission.rs"]
+mod control_admission;
+
 #[tokio::test]
 async fn sdk_gateway_path_uses_tls_before_cluster_admission() -> TestResult {
     let CertifiedKey { cert, signing_key } =

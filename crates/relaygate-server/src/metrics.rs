@@ -177,6 +177,10 @@ fn describe_metrics() {
         "relaygate_gateway_sdk_transport_rejections_total",
         "SDK transports rejected by connection rate, session capacity, handshake capacity or ClusterToken."
     );
+    describe_counter!(
+        "relaygate_gateway_control_rejections_total",
+        "PUBLISH/DIAL requests rejected by session or Gateway rate budget."
+    );
     describe_gauge!(
         "relaygate_gateway_resource_limit",
         "Configured resource slot limit, not a measured sustainable capacity."

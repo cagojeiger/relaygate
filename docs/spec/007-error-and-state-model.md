@@ -16,7 +16,7 @@ process startup에서 unknown transport mode·legacy test flag 혼용·mTLS mate
 | `FAILED_PRECONDITION` | self Binding만 존재, closed object | 전제 변경 |
 | `UNAVAILABLE` | drain, dependency/transport loss | backoff |
 | `DEADLINE_EXCEEDED` | bounded deadline 만료 | observation 확인 |
-| `RESOURCE_EXHAUSTED` | session/binding/Pipe/dial/queue/frame 상한 | 부하 감소 |
+| `RESOURCE_EXHAUSTED` | session/binding/Pipe/dial/queue/frame 상한, PUBLISH/DIAL rate 예산 | 부하 감소·token 보충 후 새 operation |
 | `CANCELLED` | owner operation/session 종료 | caller 결정 |
 | `PROTOCOL_ERROR` | version, frame order·ownership 위반 | 구현/config 수정 |
 | `INTERNAL` | internal invariant/lock failure | terminal |
@@ -106,6 +106,7 @@ handshake/transport slot을 반환한다. 다른 admitted session은 유지한�
 | SDK–GW loss | session 소유 Pipe/dial/Binding | 다른 session·Binding | reconnect + Listener republish |
 | OFFER uncertain | selected RelaySession | sibling session·Binding | reconnect; caller 새 dial |
 | OFFER pre-commit full | 해당 dial | selected session·Binding·Pipe | 부하 감소 뒤 새 dial |
+| PUBLISH/DIAL rate 초과 | 해당 요청, DIAL은 `NOT_OBSERVED` | session·기존 Binding·Pipe, 정리 메시지 | token 보충 후 새 operation; DIAL은 새 ConnectionId |
 | GW–GW loss | 해당 transport의 stream/Pipe | local Binding·다른 transport | 다음 dial이 transport 생성 |
 | GW–RT loss | remote resolve·sync | local Binding·established Pipe | worker reconnect + snapshot |
 | RT restart | 해당 shard lease/mapping | Gateway local Binding·Pipe | Gateway 재등록 |

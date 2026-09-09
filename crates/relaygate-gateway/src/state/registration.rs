@@ -10,6 +10,7 @@ impl GatewayState {
         session_id: SessionId,
         request_id: u64,
         destination_id: DestinationId,
+        now: std::time::Instant,
     ) -> Vec<GatewayAction> {
         let (response, publish) = if self.draining {
             (
@@ -17,6 +18,15 @@ impl GatewayState {
                     request_id,
                     code: ErrorCode::Unavailable,
                     message: "Gateway is draining".to_owned(),
+                },
+                false,
+            )
+        } else if !self.admit_control(session_id, "publish", now) {
+            (
+                Frame::PublishFailed {
+                    request_id,
+                    code: ErrorCode::ResourceExhausted,
+                    message: "Gateway PUBLISH/DIAL rate limit reached".to_owned(),
                 },
                 false,
             )

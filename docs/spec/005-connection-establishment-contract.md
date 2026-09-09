@@ -37,6 +37,9 @@ sequenceDiagram
 
 ## observation
 
+새 DIAL은 ConnectionId fence를 갱신한 뒤 [제어 요청 예산](008-runtime-observability-contract.md#sdk-제어-요청-보호)을 검사한다.
+rate 거절은 local lookup·RT Resolve·OFFER 전의 실패이며, token 보충 뒤에도 같은 ID를 재사용하지 않는다.
+
 | 값 | 증명 범위 | application 행동 |
 | --- | --- | --- |
 | `NOT_OBSERVED` | selected Listener queue admission 전 실패 | 새 operation 판단 가능 |
