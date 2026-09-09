@@ -101,7 +101,19 @@ async fn connection_rate_environment_rejects_and_reports_without_session_state()
     // Probe admission already spent the initial burst; recover between attempts.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let mut active = connect_sdk_session(&address, TEST_CLUSTER_TOKEN).await?;
-    assert_socket_rejected(&address).await?;
+    // A refill may admit one of these sockets. Verify rejection over the burst,
+    // rather than assuming a specific socket arrives before the next refill.
+    futures_util::future::try_join_all((0..16).map(|_| async {
+        let mut stream = tokio::net::TcpStream::connect(&address).await?;
+        let mut byte = [0];
+        match tokio::time::timeout(Duration::from_millis(200), stream.read(&mut byte)).await {
+            Ok(Ok(0)) | Err(_) => Ok(()),
+            Ok(Err(error)) if error.kind() == io::ErrorKind::ConnectionReset => Ok(()),
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(_)) => Err(io::Error::other("unexpected data before HELLO")),
+        }
+    }))
+    .await?;
     let body = wait_for_metrics(&metrics_address, &mut server, "reason=\"rate_limit\"")?;
     assert!(body.lines().any(|line| {
         line.starts_with("relaygate_gateway_sdk_transport_rejections_total{")
