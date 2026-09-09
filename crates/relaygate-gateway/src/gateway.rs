@@ -21,6 +21,9 @@ use crate::{
 
 #[cfg(test)]
 mod admission_tests;
+mod connection_rate;
+#[cfg(test)]
+mod connection_rate_tests;
 mod distributed;
 mod effects;
 mod heartbeat;
@@ -31,6 +34,7 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 
+use connection_rate::ConnectionRateLimit;
 use distributed::DistributedRuntime;
 use effects::ControlEffects;
 pub use sdk_server::{check, check_insecure_for_tests};
@@ -53,6 +57,7 @@ struct Inner {
     session_slots: Arc<Semaphore>,
     handshake_slots: Arc<Semaphore>,
     max_pending_handshakes: usize,
+    connection_rate: ConnectionRateLimit,
     routing: Option<RoutingHandle>,
     peer: Option<PeerHandle>,
     control_effects: Option<ControlEffects>,
@@ -150,6 +155,10 @@ impl Gateway {
                     config.max_pending_handshakes.min(config.max_sessions),
                 )),
                 max_pending_handshakes: config.max_pending_handshakes.min(config.max_sessions),
+                connection_rate: ConnectionRateLimit::new(
+                    config.sdk_connection_rate_per_second,
+                    config.sdk_connection_burst,
+                ),
                 routing,
                 peer,
                 control_effects,

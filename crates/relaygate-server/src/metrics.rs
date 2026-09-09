@@ -175,7 +175,7 @@ fn describe_metrics() {
     );
     describe_counter!(
         "relaygate_gateway_sdk_transport_rejections_total",
-        "SDK transports rejected by session capacity, handshake capacity or ClusterToken."
+        "SDK transports rejected by connection rate, session capacity, handshake capacity or ClusterToken."
     );
     describe_gauge!(
         "relaygate_gateway_resource_limit",

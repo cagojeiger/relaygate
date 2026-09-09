@@ -9,6 +9,8 @@ use crate::GatewayError;
 pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_SESSIONS: usize = 10_000;
 pub const DEFAULT_MAX_PENDING_HANDSHAKES: usize = 256;
+pub const DEFAULT_SDK_CONNECTION_RATE_PER_SECOND: usize = 256;
+pub const DEFAULT_SDK_CONNECTION_BURST: usize = 256;
 pub const DEFAULT_MAX_BINDINGS: usize = 100_000;
 pub const DEFAULT_MAX_PENDING_OFFERS: usize = 10_000;
 pub const DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS: usize = 128;
@@ -28,6 +30,8 @@ pub struct GatewayConfig {
     pub(crate) max_frame_len: usize,
     pub(crate) max_sessions: usize,
     pub(crate) max_pending_handshakes: usize,
+    pub(crate) sdk_connection_rate_per_second: usize,
+    pub(crate) sdk_connection_burst: usize,
     pub(crate) max_bindings: usize,
     pub(crate) max_pending_offers: usize,
     pub(crate) max_remote_dial_attempts: usize,
@@ -51,6 +55,11 @@ impl std::fmt::Debug for GatewayConfig {
             .field("max_frame_len", &self.max_frame_len)
             .field("max_sessions", &self.max_sessions)
             .field("max_pending_handshakes", &self.max_pending_handshakes)
+            .field(
+                "sdk_connection_rate_per_second",
+                &self.sdk_connection_rate_per_second,
+            )
+            .field("sdk_connection_burst", &self.sdk_connection_burst)
             .field("max_bindings", &self.max_bindings)
             .field("max_pending_offers", &self.max_pending_offers)
             .field("max_remote_dial_attempts", &self.max_remote_dial_attempts)
@@ -77,6 +86,8 @@ impl GatewayConfig {
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
             max_sessions: DEFAULT_MAX_SESSIONS,
             max_pending_handshakes: DEFAULT_MAX_PENDING_HANDSHAKES,
+            sdk_connection_rate_per_second: DEFAULT_SDK_CONNECTION_RATE_PER_SECOND,
+            sdk_connection_burst: DEFAULT_SDK_CONNECTION_BURST,
             max_bindings: DEFAULT_MAX_BINDINGS,
             max_pending_offers: DEFAULT_MAX_PENDING_OFFERS,
             max_remote_dial_attempts: DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS,
@@ -123,6 +134,22 @@ impl GatewayConfig {
     pub const fn with_max_pending_handshakes(mut self, maximum: usize) -> Self {
         self.max_pending_handshakes = maximum;
         self
+    }
+
+    /// Limits SDK connection attempts before TLS; shared by clones of this Gateway.
+    #[must_use]
+    pub const fn with_sdk_connection_rate_limit(mut self, per_second: usize, burst: usize) -> Self {
+        self.sdk_connection_rate_per_second = per_second;
+        self.sdk_connection_burst = burst;
+        self
+    }
+
+    #[must_use]
+    pub const fn sdk_connection_rate_limit(&self) -> (usize, usize) {
+        (
+            self.sdk_connection_rate_per_second,
+            self.sdk_connection_burst,
+        )
     }
 
     #[must_use]
@@ -195,6 +222,8 @@ impl GatewayConfig {
         }
         if self.max_sessions == 0
             || self.max_pending_handshakes == 0
+            || self.sdk_connection_rate_per_second == 0
+            || self.sdk_connection_burst == 0
             || self.max_bindings == 0
             || self.max_pending_offers == 0
             || self.max_remote_dial_attempts == 0
@@ -296,6 +325,18 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn zero_connection_rate_or_burst_is_rejected() {
+        for (rate, burst) in [(0, 1), (1, 0)] {
+            assert!(
+                GatewayConfig::new("test-token")
+                    .with_sdk_connection_rate_limit(rate, burst)
+                    .validate()
+                    .is_err()
+            );
+        }
     }
 
     #[test]

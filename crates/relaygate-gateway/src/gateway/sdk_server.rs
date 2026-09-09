@@ -51,6 +51,19 @@ impl Gateway {
                     break;
                 },
                 _ = offer_sweep.tick() => self.inner.expire_offers().await,
+                completed = sessions.join_next(), if !sessions.is_empty() => {
+                    if let Some(Err(error)) = completed {
+                        tracing::error!(
+                            component = "gateway",
+                            event = "gateway.session.task_failed",
+                            %error,
+                            "SDK session task failed; stopping Gateway runtime"
+                        );
+                        first_error.get_or_insert(session_task_failure(error));
+                        session_lifecycle.cancel();
+                        break;
+                    }
+                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = match accepted {
                         Ok(accepted) => accepted,
@@ -66,6 +79,14 @@ impl Gateway {
                             break;
                         }
                     };
+                    if !self.inner.connection_rate.try_acquire() {
+                        metrics::counter!(
+                            "relaygate_gateway_sdk_transport_rejections_total",
+                            "reason" => "rate_limit"
+                        ).increment(1);
+                        drop(stream);
+                        continue;
+                    }
                     let Ok(session_slot) = Arc::clone(&self.inner.session_slots).try_acquire_owned()
                     else {
                         metrics::counter!(
@@ -146,19 +167,6 @@ impl Gateway {
                             );
                         }
                     });
-                }
-                completed = sessions.join_next(), if !sessions.is_empty() => {
-                    if let Some(Err(error)) = completed {
-                        tracing::error!(
-                            component = "gateway",
-                            event = "gateway.session.task_failed",
-                            %error,
-                            "SDK session task failed; stopping Gateway runtime"
-                        );
-                        first_error.get_or_insert(session_task_failure(error));
-                        session_lifecycle.cancel();
-                        break;
-                    }
                 }
             }
         }

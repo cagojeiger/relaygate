@@ -19,7 +19,8 @@ impl Gateway {
             .saturating_sub(self.inner.handshake_slots.available_permits());
         snapshot.sdk_admission_ready = !snapshot.draining
             && self.inner.session_slots.available_permits() > 0
-            && self.inner.handshake_slots.available_permits() > 0;
+            && self.inner.handshake_slots.available_permits() > 0
+            && self.inner.connection_rate.has_capacity();
         if let Some(routing) = &self.inner.routing {
             let counts = routing.current_counts();
             snapshot.route_dependency_health = counts.dependency_health;

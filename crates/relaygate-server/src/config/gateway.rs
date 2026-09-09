@@ -82,6 +82,11 @@ impl GatewayRuntimeConfig {
         if let Some(maximum) = optional_usize("RELAYGATE_MAX_PENDING_HANDSHAKES")? {
             gateway = gateway.with_max_pending_handshakes(maximum);
         }
+        let (default_rate, default_burst) = gateway.sdk_connection_rate_limit();
+        gateway = gateway.with_sdk_connection_rate_limit(
+            optional_usize("RELAYGATE_SDK_CONNECTION_RATE_PER_SECOND")?.unwrap_or(default_rate),
+            optional_usize("RELAYGATE_SDK_CONNECTION_BURST")?.unwrap_or(default_burst),
+        );
         if let Some(maximum) = optional_usize("RELAYGATE_MAX_BINDINGS")? {
             gateway = gateway.with_max_bindings(maximum);
         }
