@@ -79,6 +79,9 @@ impl GatewayRuntimeConfig {
         if let Some(maximum) = optional_usize("RELAYGATE_MAX_SESSIONS")? {
             gateway = gateway.with_max_sessions(maximum);
         }
+        if let Some(maximum) = optional_usize("RELAYGATE_MAX_PENDING_HANDSHAKES")? {
+            gateway = gateway.with_max_pending_handshakes(maximum);
+        }
         if let Some(maximum) = optional_usize("RELAYGATE_MAX_BINDINGS")? {
             gateway = gateway.with_max_bindings(maximum);
         }

@@ -19,6 +19,8 @@ use crate::{
     state::{GatewayAction, GatewayLimits},
 };
 
+#[cfg(test)]
+mod admission_tests;
 mod distributed;
 mod effects;
 mod heartbeat;
@@ -49,6 +51,8 @@ struct Inner {
     heartbeat_response_timeout: Duration,
     drain_timeout: Duration,
     session_slots: Arc<Semaphore>,
+    handshake_slots: Arc<Semaphore>,
+    max_pending_handshakes: usize,
     routing: Option<RoutingHandle>,
     peer: Option<PeerHandle>,
     control_effects: Option<ControlEffects>,
@@ -142,6 +146,10 @@ impl Gateway {
                 heartbeat_response_timeout: config.heartbeat_response_timeout,
                 drain_timeout: config.drain_timeout,
                 session_slots: Arc::new(Semaphore::new(config.max_sessions)),
+                handshake_slots: Arc::new(Semaphore::new(
+                    config.max_pending_handshakes.min(config.max_sessions),
+                )),
+                max_pending_handshakes: config.max_pending_handshakes.min(config.max_sessions),
                 routing,
                 peer,
                 control_effects,

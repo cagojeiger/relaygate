@@ -9,7 +9,7 @@ mod frame;
 mod identity;
 mod secret;
 
-pub use codec::{DEFAULT_MAX_FRAME_LEN, FrameCodec};
+pub use codec::{DEFAULT_MAX_FRAME_LEN, FrameCodec, MAX_HELLO_FRAME_LEN};
 pub use error::ProtocolError;
 pub use frame::{ErrorCode, Frame, PeerObservation};
 pub use identity::{BindingId, DestinationId, PipeId, SessionId};

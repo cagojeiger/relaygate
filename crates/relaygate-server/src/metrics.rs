@@ -73,6 +73,11 @@ pub(crate) fn observe_gateway(snapshot: GatewaySnapshot) {
         ),
         ("bindings", snapshot.bindings, snapshot.max_bindings),
         (
+            "sdk_handshakes",
+            snapshot.pending_handshakes,
+            snapshot.max_pending_handshakes,
+        ),
+        (
             "pending_opens",
             snapshot.pending_offers + snapshot.remote_open_attempts,
             snapshot.max_pending_offers,
@@ -167,6 +172,10 @@ fn describe_metrics() {
     describe_gauge!(
         "relaygate_gateway_resource_used",
         "Current occupied resource slots; sessions include in-progress handshakes."
+    );
+    describe_counter!(
+        "relaygate_gateway_sdk_transport_rejections_total",
+        "SDK transports rejected by session capacity, handshake capacity or ClusterToken."
     );
     describe_gauge!(
         "relaygate_gateway_resource_limit",

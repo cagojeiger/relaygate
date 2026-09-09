@@ -24,6 +24,26 @@ GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 | `SEC-009` | public Relay API는 transport-independent이고 current adapter는 TLS/TCP다. |
 | `SEC-010` | SDK edge와 internal mTLS는 독립 Secret·trust domain이다. |
 | `SEC-011` | external L4는 byte stream passthrough, Gateway는 SDK TLS termination을 담당한다. |
+| `SEC-012` | SDK accept는 전체 transport slot과 별도 handshake slot을 TLS 전에 확보한다. handshake 상한 도달 시 새 socket을 닫고 기존 session을 유지한다. |
+| `SEC-013` | 인증 전 frame payload 상한은 `min(max_frame_len, 65537)` bytes다. HELLO 교환은 읽기와 WELCOME/거절 쓰기를 합쳐 5초 이내 끝내고, 성공 뒤 일반 frame 한도로 전환하며 이미 읽은 다음 frame을 보존한다. |
+
+### SDK handshake 보호
+
+```text
+accept → transport + handshake slot → TLS(5s) → HELLO/응답(5s)
+                                                 ├─ 성공 → handshake slot 반환 → session
+                                                 └─ 실패 → owned state + 모든 slot 반환
+```
+
+| 설정 | 기본값·의미 |
+| --- | --- |
+| `RELAYGATE_MAX_PENDING_HANDSHAKES` | 256; 실제 한도는 `min(설정값, MAX_SESSIONS)`. 0은 시작 실패 |
+| `RELAYGATE_MAX_SESSIONS` | 10,000; handshake와 admitted session을 포함한 전체 transport 수 |
+| HELLO payload | u16 token 길이 2 bytes + 최대 65,535 bytes; 기존 wire 범위 유지 |
+
+256은 초기 동시 handshake 보호 상한이며 처리량 보장 수치가 아니다. 정상 재접속 burst는 SDK backoff로 분산하고
+운영 부하에 맞춰 상한을 조정한다. 이 제한은 GW-local 동시 수 제한이며 요청 속도·사용자별 quota·분산 DDoS 방어를 대체하지 않는다.
+인증 후 Pipe 전송 크기와 ClusterToken 계약은 유지한다.
 
 ## 로그
 
@@ -44,7 +64,9 @@ DATA RTT와 payload goodput은 명시적으로 실행한 SDK probe로 측정합�
 | 운영 질문 | metric | 판정 |
 | --- | --- | --- |
 | process scrape | Prometheus `up` | process/endpoint reachability |
-| SDK admission | `relaygate_gateway_sdk_admission_ready`, `relaygate_gateway_draining` | non-draining + session capacity |
+| SDK admission | `relaygate_gateway_sdk_admission_ready`, `relaygate_gateway_draining` | non-draining + transport·handshake capacity |
+| SDK handshake 포화 | `relaygate_gateway_resource_used{resource="sdk_handshakes"}`, `relaygate_gateway_resource_limit{resource="sdk_handshakes"}` | TLS/HELLO 진행 수·상한 |
+| SDK admission 거절 | `relaygate_gateway_sdk_transport_rejections_total{reason}` | `session_limit` / `handshake_limit` / `cluster_token`; 요청별 로그는 debug |
 | RT dependency | `relaygate_gateway_route_dependency{state}` | `DISABLED/READY/DEGRADED/TERMINAL` one-hot |
 | RT convergence | `relaygate_gateway_route_registrations_unsynced` | pending registration 수 |
 | peer state | `relaygate_gateway_peer_transports_connecting`, `relaygate_gateway_peer_transports_ready` | connecting·reusable transport 수 |

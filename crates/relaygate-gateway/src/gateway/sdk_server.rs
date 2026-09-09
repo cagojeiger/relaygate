@@ -68,13 +68,26 @@ impl Gateway {
                     };
                     let Ok(session_slot) = Arc::clone(&self.inner.session_slots).try_acquire_owned()
                     else {
-                        tracing::warn!(
+                        metrics::counter!(
+                            "relaygate_gateway_sdk_transport_rejections_total",
+                            "reason" => "session_limit"
+                        ).increment(1);
+                        tracing::debug!(
                             component = "gateway",
                             event = "gateway.session.rejected",
                             %peer_addr,
                             reason = "session_limit",
                             "rejecting SDK connection because the session limit is reached"
                         );
+                        drop(stream);
+                        continue;
+                    };
+                    let Ok(handshake_slot) = Arc::clone(&self.inner.handshake_slots).try_acquire_owned()
+                    else {
+                        metrics::counter!(
+                            "relaygate_gateway_sdk_transport_rejections_total",
+                            "reason" => "handshake_limit"
+                        ).increment(1);
                         drop(stream);
                         continue;
                     };
@@ -116,7 +129,7 @@ impl Gateway {
                             },
                             None => insecure_boxed(stream),
                         };
-                        if let Err(error) = inner.run_session(stream, session_shutdown).await {
+                        if let Err(error) = inner.run_session(stream, session_shutdown, handshake_slot).await {
                             tracing::debug!(
                                 component = "gateway",
                                 event = "gateway.session.task_ended",

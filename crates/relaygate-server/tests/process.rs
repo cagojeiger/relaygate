@@ -691,6 +691,7 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
             .env("RELAYGATE_CLUSTER_TOKEN", secret)
             .env("RELAYGATE_MAX_BINDINGS", "1")
             .env("RELAYGATE_MAX_SESSIONS", "17")
+            .env("RELAYGATE_MAX_PENDING_HANDSHAKES", "7")
             .env("RELAYGATE_MAX_PENDING_OFFERS", "13")
             .env("RELAYGATE_MAX_REMOTE_DIAL_ATTEMPTS", "3")
             .env("RELAYGATE_MAX_LIVE_PIPES", "11")
@@ -779,6 +780,7 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     assert!(body.contains("relaygate_gateway_originated_pipes"));
     for (resource, limit, used) in [
         ("sessions", 17, None),
+        ("sdk_handshakes", 7, Some(0.0)),
         ("bindings", 1, Some(1.0)),
         ("pending_opens", 13, Some(0.0)),
         ("remote_dials", 3, Some(0.0)),
@@ -1054,6 +1056,7 @@ fn clean_server_command(mut command: Command) -> Command {
         "RELAYGATE_MAX_FRAME_LEN",
         "RELAYGATE_MAX_LIVE_PIPES",
         "RELAYGATE_MAX_PENDING_OFFERS",
+        "RELAYGATE_MAX_PENDING_HANDSHAKES",
         "RELAYGATE_MAX_SESSIONS",
         "RELAYGATE_OFFER_TIMEOUT_MS",
         "RELAYGATE_SDK_HEARTBEAT_IDLE_MS",

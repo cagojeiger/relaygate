@@ -50,6 +50,9 @@ pub struct GatewaySnapshot {
     /// Occupied SDK transport slots, including handshakes before session admission.
     pub session_slots_used: usize,
     pub max_sessions: usize,
+    /// SDK transports still completing TLS/HELLO, also included in session_slots_used.
+    pub pending_handshakes: usize,
+    pub max_pending_handshakes: usize,
     pub max_bindings: usize,
     pub max_pending_offers: usize,
     pub max_remote_dial_attempts: usize,
