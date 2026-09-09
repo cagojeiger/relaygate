@@ -21,6 +21,8 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 type SessionTask = JoinHandle<Result<(), SessionError>>;
 const TOKEN: &str = "admission-test-token";
 
+mod backpressure;
+
 fn start_session(
     gateway: &Gateway,
     capacity: usize,

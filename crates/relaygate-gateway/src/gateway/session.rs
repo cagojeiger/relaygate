@@ -25,6 +25,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const SDK_FRAME_INITIAL_CAPACITY: usize = 2 * 1024;
 const SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY: usize = 8 * 1024;
 
+mod admission;
+
 impl Inner {
     pub(super) async fn run_session(
         self: Arc<Self>,
@@ -159,13 +161,24 @@ impl Inner {
                         );
                         break;
                     }
-                    let actions = {
+                    let mut actions = {
                         let mut state = self.lock_state();
                         let actions = state.handle(session_id, frame)?;
                         self.commit_registration_actions(&actions);
                         actions
                     };
-                    self.execute_all(actions).await;
+                    if admission::is_local_rejection(&actions, session_id)
+                        && let Some(crate::state::GatewayAction::SendSdkFrame(delivery)) = actions.pop()
+                    {
+                        admission::send_rejection(
+                            &sender,
+                            delivery.frame,
+                            &cancellation,
+                            heartbeat.next_deadline(),
+                        ).await?;
+                    } else {
+                        self.execute_all(actions).await;
+                    }
                 }
             }
         }
@@ -230,6 +243,8 @@ pub(super) enum SessionError {
     ExpectedHello,
     #[error("Gateway SDK session limit reached")]
     ResourceExhausted,
+    #[error("SDK admission response could not be queued before the liveness deadline")]
+    AdmissionResponseUnavailable,
     #[error("SDK session ClusterToken was not accepted")]
     Unauthenticated,
     #[error(transparent)]
