@@ -15,7 +15,7 @@
 | `T-OBS-01` | `OBS-001`, `OBS-002`, `OBS-003`, `OBS-004`, `OBS-005`, `OBS-006`, `OBS-007`, `OBS-008`, `OBS-009`, `OBS-010`, `OBS-011`, `OBS-012`, `OBS-013` | health·RED/USE·latency·cleanup·redaction; PromQL과 DATA probe 증거는 [TEST 006](006-local-observability-test-plan.md) |
 | `T-SEC-02` | `SEC-012`, `SEC-013` | TLS 전 handshake 상한, HELLO buffer 한도, stalled read/write deadline, slot 회수, pipelined frame 보존, 기존 session 격리 |
 | `T-SEC-03` | `SEC-014` | burst·fractional refill·유휴 상한, 혼합 시간 간격의 구간별 rate 상한, clone 간 예산 공유, TLS 전 rate 거절·기존 session 유지·회복, env 검증과 거절 metric |
-| `T-SEC-04` | `SEC-015` | PUBLISH/DIAL 예산 소비·비환급, session 격리·GW 한도, RT 전 거절·ID fence, 종료·취소·늦은 ACCEPT 순서, operation×scope metric, SDK 회복과 probe 재시도 deadline·취소 |
+| `T-SEC-04` | `SEC-015`, `STATE-008` | PUBLISH/DIAL 예산 소비·비환급, session 격리·GW 한도, RT 전 거절·ID fence, 종료·취소·늦은 ACCEPT 순서, 거절 응답 bounded 대기·deadline·취소·closed·sibling 격리, 작은 transport/queue의 512 DIAL burst 회수, SDK 회복과 probe 재시도 |
 
 모든 requirement는 위 표의 그룹 하나와 [실행 증거 인덱스](001-executable-coverage.toml)에 연결됩니다.
 인덱스는 Rust test 존재를, [TEST 004](004-rt2-gw3-closed-loop-test-plan.md)는 L4 passthrough와

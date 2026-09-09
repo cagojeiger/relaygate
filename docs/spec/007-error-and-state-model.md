@@ -123,4 +123,11 @@ handshake/transport slot을 반환한다. 다른 admitted session은 유지한�
 | `STATE-005` | RT loss/restart 동안 local Binding과 established Pipe를 유지한다. |
 | `STATE-006` | cleanup 반복 적용은 같은 empty/current-state 결과로 수렴한다. |
 | `STATE-007` | remote DIAL rejection은 request scope이며 모든 terminal path가 admission을 반환한다. |
-| `STATE-008` | OFFER pre-commit failure는 request scope, 그 밖의 writer uncertainty는 session scope다. |
+| `STATE-008` | OFFER pre-commit failure는 request scope다. 직접 반환하는 단일 admission 거절은 요청 session의 읽기 루프에서 bounded writer 대기를 적용한다. 전달 deadline·closed 및 그 밖의 writer uncertainty는 session scope다. |
+
+PUBLISH의 `RESOURCE_EXHAUSTED`, DIAL의 `RESOURCE_EXHAUSTED/NOT_OBSERVED`가
+요청자에게 보내는 단일 action이면 기존 writer queue의 공간을 기다린다.
+대기 상한은 현재 heartbeat의 다음 deadline이며 cancellation은 즉시 대기를 종료한다.
+대기 중 해당 session의 추가 frame 읽기를 멈추고, socket writer와 다른 session은 계속 실행한다.
+state lock·공유 effects loop·별도 대기 task를 점유하지 않는다. 큐 수용은 SDK 수신 확인이 아니다.
+대기 실패는 session cleanup으로 수렴하고 SDK의 observation 판정은 기존 계약을 유지한다.
