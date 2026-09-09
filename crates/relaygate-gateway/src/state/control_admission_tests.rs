@@ -13,6 +13,9 @@ use super::{GatewayAction, GatewayLimits, GatewayState};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+mod budget;
+mod lifecycle;
+
 fn session(state: &mut GatewayState) -> Result<SessionId, Box<dyn Error>> {
     let (sender, _receiver) = mpsc::channel(16);
     state
@@ -268,41 +271,78 @@ fn control_rejection_metrics_separate_gateway_and_session_scopes() -> TestResult
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     metrics::with_local_recorder(&recorder, || -> TestResult {
-        for limits in [
-            GatewayLimits {
-                control_burst: 1,
-                control_rate_per_second: 1,
-                ..GatewayLimits::default()
-            },
-            GatewayLimits {
-                session_control_burst: 1,
-                session_control_rate_per_second: 1,
-                ..GatewayLimits::default()
-            },
-        ] {
-            let mut state = GatewayState::new(limits);
-            let caller = session(&mut state)?;
-            let now = Instant::now();
-            state.handle_at(caller, publish(1, DestinationId::new()), now)?;
-            state.handle_at(caller, publish(2, DestinationId::new()), now)?;
+        for operation in ["publish", "dial"] {
+            for limits in [
+                GatewayLimits {
+                    control_burst: 1,
+                    control_rate_per_second: 1,
+                    ..GatewayLimits::default()
+                },
+                GatewayLimits {
+                    session_control_burst: 1,
+                    session_control_rate_per_second: 1,
+                    ..GatewayLimits::default()
+                },
+            ] {
+                let mut state = GatewayState::new(limits);
+                let caller = session(&mut state)?;
+                let now = Instant::now();
+                state.handle_at(caller, publish(1, DestinationId::new()), now)?;
+                let rejected = if operation == "publish" {
+                    publish(2, DestinationId::new())
+                } else {
+                    Frame::Dial {
+                        connection_id: 1,
+                        destination_id: DestinationId::new(),
+                    }
+                };
+                state.handle_at(caller, rejected, now)?;
+            }
         }
         Ok(())
     })?;
     let snapshot = snapshotter.snapshot().into_vec();
-    for scope in ["session", "gateway"] {
-        assert!(snapshot.iter().any(|(key, _, _, value)| {
-            key.key().name() == "relaygate_gateway_control_rejections_total"
-                && key.key().labels().count() == 2
-                && key
-                    .key()
-                    .labels()
-                    .any(|label| label.key() == "scope" && label.value() == scope)
-                && key
-                    .key()
-                    .labels()
-                    .any(|label| label.key() == "operation" && label.value() == "publish")
-                && matches!(value, DebugValue::Counter(1))
-        }));
+    assert_eq!(
+        snapshot
+            .iter()
+            .filter(
+                |(key, _, _, _)| key.key().name() == "relaygate_gateway_control_rejections_total"
+            )
+            .count(),
+        4
+    );
+    for operation in ["publish", "dial"] {
+        for scope in ["session", "gateway"] {
+            assert!(snapshot.iter().any(|(key, _, _, value)| {
+                key.key().name() == "relaygate_gateway_control_rejections_total"
+                    && key.key().labels().count() == 2
+                    && key
+                        .key()
+                        .labels()
+                        .any(|label| label.key() == "scope" && label.value() == scope)
+                    && key
+                        .key()
+                        .labels()
+                        .any(|label| label.key() == "operation" && label.value() == operation)
+                    && matches!(value, DebugValue::Counter(1))
+            }));
+        }
+    }
+    for name in [
+        "relaygate_gateway_publish_results_total",
+        "relaygate_gateway_dial_results_total",
+    ] {
+        assert!(
+            snapshot.iter().any(|(key, _, _, value)| {
+                key.key().name() == name
+                    && key
+                        .key()
+                        .labels()
+                        .any(|label| label.key() == "code" && label.value() == "resource_exhausted")
+                    && matches!(value, DebugValue::Counter(2))
+            }),
+            "missing RED failure accounting for {name}"
+        );
     }
     Ok(())
 }
