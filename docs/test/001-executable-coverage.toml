@@ -11,6 +11,7 @@ rust = [
   "state::control_admission_tests::session_recreation_does_not_reset_gateway_budget",
   "state::control_admission_tests::control_rejection_metrics_separate_gateway_and_session_scopes",
   "control_admission::control_throttle_returns_request_errors_preserves_pipe_and_recovers",
+  "control_admission::returned_listeners_republish_after_rate_limited_reconnect",
   "admission::invalid_control_rate_environment_fails_before_serving",
 ]
 
