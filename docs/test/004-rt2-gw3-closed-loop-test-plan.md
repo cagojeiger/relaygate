@@ -39,7 +39,7 @@ host Rust SDK ── TLS/TCP ──┤
 | `KIND-10` | RT rolling restart | shard를 하나씩 교체하는 동안 established Pipe가 진행되고 재등록 뒤 모든 route가 복구 |
 | `KIND-11` | Gateway rolling restart | Gateway를 하나씩 교체할 때 SDK가 jitter로 재연결·republish하고 fresh dial이 복구 |
 | `KIND-12` | reconnect storm | 100개 RelaySession의 동시 단절 뒤 재연결이 bounded하며 최종 Listener와 dial이 복구 |
-| `KIND-13` | bounded soak | 최소 60초·64 worker Pipe 왕복에 오류가 없고 종료 뒤 current gauge가 baseline 복귀 |
+| `KIND-13` | bounded soak | 최소 60초·64 worker 모두 Pipe 왕복 성공. `NOT_OBSERVED` transient dial만 deadline 내 재시도하며 admission 거절은 별도 집계. DATA 오류·불확실 실패·회복 timeout은 실패, 종료 뒤 current gauge는 baseline 복귀 |
 | `KIND-14` | cert-manager 재발급 | edge·internal leaf 재발급 → 해당 role만 Pod 교체 → Listener 재등록·fresh dial 복구; edge 제공 serial 일치 |
 
 ## stop condition

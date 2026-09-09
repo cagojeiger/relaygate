@@ -138,11 +138,13 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
     let concurrency = soak_concurrency()?;
     let deadline = Instant::now() + duration;
     let completed = Arc::new(AtomicU64::new(0));
+    let admission_rejections = Arc::new(AtomicU64::new(0));
     let mut workers = JoinSet::new();
 
     for worker in 0..concurrency {
         let connector = connectors[worker % connectors.len()].clone();
         let completed = Arc::clone(&completed);
+        let admission_rejections = Arc::clone(&admission_rejections);
         workers.spawn(async move {
             let mut sequence = 0_u64;
             while Instant::now() < deadline {
@@ -157,7 +159,7 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
                 )
                 .into_bytes();
                 assert_echo(
-                    dial_when_available(&connector, destination_id, ROUTE_WAIT)
+                    crate::soak_dial::dial(&connector, destination_id, ROUTE_WAIT, &admission_rejections)
                         .await
                         .with_context(|| {
                             format!(
@@ -175,6 +177,7 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
                 completed.fetch_add(1, Ordering::Relaxed);
                 sequence += 1;
             }
+            ensure!(sequence > 0, "soak worker={worker} made no progress");
             Ok::<_, anyhow::Error>(sequence)
         });
     }
@@ -217,6 +220,10 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
     for connector in connectors {
         connector.close();
     }
+    println!(
+        "relaygate soak admission_rejections={}",
+        admission_rejections.load(Ordering::Relaxed)
+    );
     if let Some(error) = failure {
         return Err(error);
     }
