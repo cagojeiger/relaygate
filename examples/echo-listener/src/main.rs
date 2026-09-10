@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
         &std::fs::read(&ca_path)
             .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?,
     )?;
-    let relay = Relay::connect(Config::new(
+    let relay = Relay::connect(Config::with_transport(
         cluster_token,
         GatewayTransportConfig::tls_tcp(address, tls),
     ))

@@ -9,7 +9,7 @@
 ## 결정
 
 ```text
-TLS success
+Configured transport ready (TLS by default)
    └── HELLO(ClusterToken)
          ├── current | next ──► SessionId ──► listen · dial
          └── mismatch       ──► UNAUTHENTICATED
@@ -24,7 +24,8 @@ TLS success
 | token 공급 | application config와 Kubernetes Secret |
 | token 보관 | operator의 external secret system |
 
-SDK는 application이 전달한 token을 TLS 성립 뒤 제시합니다. Gateway는 timing-safe 비교를 사용하고 token을
+SDK는 application이 전달한 token을 지정 transport(TLS 기본) 성립 뒤 제시합니다.
+명시적 TCP endpoint에서는 token도 평문이며 제공자가 전송 보호를 책임집니다. Gateway는 timing-safe 비교를 사용하고 token을
 Debug, log, metric, error, RT, Binding과 Pipe state에서 redaction합니다.
 
 ## 회전

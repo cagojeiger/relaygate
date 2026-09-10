@@ -7,8 +7,8 @@ use relaygate_route_table_transport::{GatewayName, RouteTableClientConfig};
 use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
 
 use super::{
-    InternalTransport, insecure_test_transport, internal_transport, load_internal_tls,
-    optional_duration_millis, optional_usize,
+    InternalTransport, internal_transport, load_internal_tls, optional_duration_millis,
+    optional_usize,
 };
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:27420";
@@ -51,7 +51,7 @@ impl GatewayRuntimeConfig {
         let cluster_token = env::var("RELAYGATE_CLUSTER_TOKEN")
             .context("RELAYGATE_CLUSTER_TOKEN is required for Gateway mode")?;
         let mut gateway = GatewayConfig::new(cluster_token);
-        if !insecure_test_transport() {
+        if super::transport::sdk_tls_enabled()? {
             let certificate_path = env::var("RELAYGATE_SDK_TLS_CERT_PATH")
                 .context("RELAYGATE_SDK_TLS_CERT_PATH is required for Gateway mode")?;
             let private_key_path = env::var("RELAYGATE_SDK_TLS_KEY_PATH")

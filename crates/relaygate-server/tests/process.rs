@@ -1032,6 +1032,7 @@ fn clean_server_command(mut command: Command) -> Command {
     for name in [
         "RELAYGATE_BIND_ADDR",
         "RELAYGATE_INSECURE_TEST_TRANSPORT",
+        "RELAYGATE_SDK_TRANSPORT",
         "RELAYGATE_INTERNAL_TRANSPORT",
         "RELAYGATE_INTERNAL_TLS_CA_PATH",
         "RELAYGATE_INTERNAL_TLS_CERT_PATH",
