@@ -31,11 +31,7 @@ async fn main() -> Result<()> {
         Command::CheckGateway { address } => {
             let cluster_token = env::var("RELAYGATE_CLUSTER_TOKEN")
                 .context("RELAYGATE_CLUSTER_TOKEN is required for Gateway readiness checks")?;
-            if env::var("RELAYGATE_INSECURE_TEST_TRANSPORT")
-                .ok()
-                .as_deref()
-                == Some("true")
-            {
+            if !config::sdk_tls_enabled()? {
                 check_insecure_for_tests(address, cluster_token, DEFAULT_CHECK_DEADLINE)
                     .await
                     .context("Gateway SDK admission readiness check failed")

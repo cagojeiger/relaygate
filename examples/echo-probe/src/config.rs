@@ -57,7 +57,7 @@ pub(crate) fn sdk_config(address: impl Into<String>) -> anyhow::Result<Config> {
     let ca = std::fs::read(&ca_path)
         .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?;
     let tls = ClientTlsConfig::server_authenticated(server_name, &ca)?;
-    Ok(Config::new(
+    Ok(Config::with_transport(
         cluster_token(),
         GatewayTransportConfig::tls_tcp(address, tls),
     ))

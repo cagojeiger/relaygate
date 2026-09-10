@@ -9,6 +9,9 @@
 
 ## 결정
 
+SDK의 일반 TLS endpoint는 도메인에서 검증 이름을 추출하고 bundled roots를 자동 사용합니다.
+SDK 사용자는 공인 CA 파일을 공급하지 않습니다. 사설 CA만 선택 설정합니다.
+
 ```text
 custom CA    -> ca.crt + tls.crt + tls.key
 Web PKI      -> bundled roots + tls.crt + tls.key

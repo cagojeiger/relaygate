@@ -3,7 +3,7 @@
 | 항목 | 결정 |
 | --- | --- |
 | 상태 | Accepted, implemented |
-| SDK transport | RelayGate framing over TLS/TCP |
+| SDK transport | TLS/TCP 기본값, 제공자가 명시한 TCP endpoint 지원 |
 | internal transport | mTLS/TCP 기본값, [ADR 014](014-explicit-internal-transport-mode.md)의 명시적 plaintext |
 | public entry | platform-owned L4 passthrough |
 
@@ -22,7 +22,7 @@ public L4
 | 경계 | 현재 계약 |
 | --- | --- |
 | public SDK API | `Relay.listen/dial`, `Listener.accept`, `Pipe` |
-| transport config | `GatewayTransportConfig::tls_tcp` |
+| transport config | `Config::new(endpoint)`, 특수 환경은 `Config::with_transport` |
 | TLS verification | certificate chain, server name, `relaygate/2` ALPN |
 | edge termination | RelayGate Gateway process |
 | internal identity | mTLS certificate와 logical handshake의 일치 |
@@ -34,6 +34,11 @@ TLS validation failure는 terminal connection failure입니다. 공개 API는 tr
 새 transport 결정이 SDK의 Relay·Listener·Pipe 사용법을 유지할 수 있습니다.
 
 ## 효과
+
+제공자는 `host:port`/`tls://host:port` 또는 `tcp://host:port`를 안내합니다. SDK는 TLS endpoint의
+도메인과 기본 공인 CA로 자동 검증합니다. Gateway의 `RELAYGATE_SDK_TRANSPORT`는 `tls` 기본값이며
+`plaintext`는 인증서 없는 TCP listener입니다. 평문에서는 token과 payload가 노출되므로 제공자가
+격리·전송 보호를 책임집니다. TLS 실패 후 자동 평문 fallback은 없습니다. 내부 transport는 독립 설정입니다.
 
 - SDK-facing TLS와 internal mTLS trust domain을 독립 운영합니다.
 - L4는 byte stream을 passthrough하고 Gateway가 protocol 보안을 종단합니다.

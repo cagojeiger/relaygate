@@ -9,6 +9,7 @@ use tokio::time::Instant;
 
 pub(crate) use gateway::GatewayRuntimeConfig;
 pub(crate) use route_table::RouteTableRuntimeConfig;
+pub(crate) use transport::sdk_tls_enabled;
 use transport::{InternalTransport, internal_transport};
 
 pub(super) struct InternalTlsMaterial {

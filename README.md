@@ -32,16 +32,13 @@ RouteTable은 memory-only current state를 유지합니다. 새 연결은 새 `d
 ## Rust SDK
 
 ```rust,no_run
-use relaygate_sdk::{ClientTlsConfig, Config, DestinationId, GatewayTransportConfig, Relay};
+use relaygate_sdk::{Config, DestinationId, Relay};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let gateway_host = std::env::var("RELAYGATE_GATEWAY_HOST")?;
-let tls = ClientTlsConfig::with_webpki_roots(gateway_host.clone())?;
-let transport = GatewayTransportConfig::tls_tcp(format!("{gateway_host}:443"), tls);
-let relay = Relay::connect(Config::new(
-    std::env::var("RELAYGATE_CLUSTER_TOKEN")?,
-    transport,
-)).await?;
+let config = Config::new(format!("{gateway_host}:443"))?
+    .cluster_token(std::env::var("RELAYGATE_CLUSTER_TOKEN")?);
+let relay = Relay::connect(config).await?;
 
 let destination = DestinationId::new();
 let listener = relay.listen(destination).await?;
@@ -53,8 +50,16 @@ let mut incoming = listener.accept().await?;
 # }
 ```
 
-private CA 환경은 `ClientTlsConfig::server_authenticated(server_name, ca)`를 사용합니다. session loss 뒤
+공인 인증서는 endpoint의 도메인과 기본 CA 목록으로 자동 검증합니다. 사설 CA는
+`Config::with_ca_certificate(pem)`으로 지정합니다. `tcp://host:port`는 제공자가 명시적으로
+노출한 평문 endpoint이며 token과 payload도 암호화되지 않습니다. Gateway는
+`RELAYGATE_SDK_TRANSPORT=plaintext`로 선택하며 기본값은 `tls`입니다. TLS 실패 시 평문으로 전환하지 않습니다.
+session loss 뒤
 SDK는 jitter가 포함된 bounded backoff로 재연결하고 live Listener를 새 Binding으로 등록합니다.
+
+기존 `Config::new(token, transport)` 호출은 `Config::with_transport(token, transport)`로 변경합니다.
+일반 접속은 위 주소 기반 API를 사용합니다. 고급 transport의 CA·인증서 검증 이름·클라이언트 인증은
+`ClientTlsConfig`에서 함께 설정하며 `with_ca_certificate`로 덮어쓰지 않습니다.
 
 ## 검증
 

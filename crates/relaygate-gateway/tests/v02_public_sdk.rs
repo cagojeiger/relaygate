@@ -20,6 +20,9 @@ const CLUSTER_TOKEN: &str = "v02-test-cluster-token";
 #[path = "public_sdk/control_admission.rs"]
 mod control_admission;
 
+#[path = "public_sdk/endpoint.rs"]
+mod endpoint;
+
 #[tokio::test]
 async fn sdk_gateway_path_uses_tls_before_cluster_admission() -> TestResult {
     let CertifiedKey { cert, signing_key } =
@@ -33,13 +36,13 @@ async fn sdk_gateway_path_uses_tls_before_cluster_admission() -> TestResult {
     let config = GatewayConfig::new(CLUSTER_TOKEN).with_sdk_tls(gateway_tls);
     let (address, shutdown, server) = start_gateway_with_config(config).await?;
 
-    let relay = Relay::connect(Config::new(
+    let relay = Relay::connect(Config::with_transport(
         CLUSTER_TOKEN,
         GatewayTransportConfig::tls_tcp(address.to_string(), client_tls.clone()),
     ))
     .await?;
     let rejected = Relay::connect(
-        Config::new(
+        Config::with_transport(
             "wrong-token",
             GatewayTransportConfig::tls_tcp(address.to_string(), client_tls),
         )

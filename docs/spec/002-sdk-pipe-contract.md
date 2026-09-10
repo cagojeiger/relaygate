@@ -14,6 +14,12 @@
 `Config`는 Gateway transport, ClusterToken, timeout, heartbeat, reconnect와 bounded queue 값을 가집니다.
 Application이 config source를 읽고 SDK에 전달합니다.
 
+`Config::new(endpoint)?.cluster_token(token)`으로 구성합니다. `host:port`와
+`tls://host:port`는 기본 공인 CA, endpoint 이름 검증, SNI와 ALPN을 자동 적용합니다.
+`tcp://host:port`는 제공자가 명시한 평문 연결입니다. IPv6는 `[::1]:port` 형식을 사용합니다.
+사설 CA는 `with_ca_certificate`로 지정하며 평문 endpoint에는 CA 설정을 허용하지 않습니다.
+TLS 검증 실패 후 평문 재접속은 없습니다. Agent 풀과 작업 분배 정책은 application이 소유합니다.
+
 ## RelaySession
 
 ```mermaid
@@ -33,7 +39,7 @@ stateDiagram-v2
 
 | ID | 계약 |
 | --- | --- |
-| `SDK-001` | `Relay::connect`는 TCP, TLS와 `HELLO/WELCOME` 완료 뒤 반환한다. |
+| `SDK-001` | `Relay::connect`는 지정 transport(TLS 기본)와 `HELLO/WELCOME` 완료 뒤 반환한다. |
 | `SDK-002` | network loss, heartbeat timeout과 bounded writer failure는 current session을 끝낸다. |
 | `SDK-003` | retryable session loss는 bounded exponential backoff와 runtime별 jitter로 재연결한다. |
 | `SDK-004` | 새 session은 이미 반환된 live Listener를 자동 publish한다. |

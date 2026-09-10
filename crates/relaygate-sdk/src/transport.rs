@@ -1,6 +1,5 @@
 use std::{fmt, time::Duration};
 
-#[cfg(any(test, feature = "insecure-test-transport"))]
 use relaygate_transport::insecure_boxed;
 use relaygate_transport::{BoxedIo, ClientTlsConfig};
 use tokio::{net::TcpStream, time::timeout};
@@ -10,8 +9,8 @@ use crate::{Error, ErrorCode, PeerObservation, Result};
 /// Connection settings for the SDK-facing Gateway transport.
 ///
 /// Relay's public `listen`, `dial`, `accept`, and `Pipe` API is independent of
-/// this choice. RelayGate 0.2 provides TLS over TCP; future transports can be
-/// added through constructors without changing the Relay API.
+/// this choice. Endpoint configuration defaults to TLS over TCP and accepts
+/// explicitly selected plaintext TCP. Neither mode falls back to the other.
 #[derive(Clone)]
 pub struct GatewayTransportConfig {
     kind: GatewayTransport,
@@ -22,12 +21,69 @@ enum GatewayTransport {
     TlsTcp {
         gateway_addr: String,
         tls: ClientTlsConfig,
+        endpoint_name: Option<String>,
     },
-    #[cfg(any(test, feature = "insecure-test-transport"))]
-    InsecureTcp { gateway_addr: String },
+    InsecureTcp {
+        gateway_addr: String,
+    },
 }
 
 impl GatewayTransportConfig {
+    pub(crate) fn from_endpoint(endpoint: &str) -> Result<Self> {
+        let (address, name, plaintext) = endpoint_parts(endpoint)?;
+        if plaintext {
+            return Ok(Self::insecure_tcp(address));
+        }
+        let tls =
+            ClientTlsConfig::with_webpki_roots(name.clone()).map_err(|_| invalid_endpoint())?;
+        Ok(Self {
+            kind: GatewayTransport::TlsTcp {
+                gateway_addr: address,
+                tls,
+                endpoint_name: Some(name),
+            },
+        })
+    }
+
+    pub(crate) fn with_ca_certificate(self, pem: &[u8]) -> Result<Self> {
+        match self.kind {
+            GatewayTransport::TlsTcp {
+                gateway_addr,
+                endpoint_name: Some(name),
+                ..
+            } => {
+                let tls =
+                    ClientTlsConfig::server_authenticated(name.clone(), pem).map_err(|_| {
+                        Error::new(
+                            ErrorCode::InvalidArgument,
+                            PeerObservation::NotObserved,
+                            "invalid private CA configuration",
+                        )
+                    })?;
+                Ok(Self {
+                    kind: GatewayTransport::TlsTcp {
+                        gateway_addr,
+                        tls,
+                        endpoint_name: Some(name),
+                    },
+                })
+            }
+            GatewayTransport::TlsTcp {
+                endpoint_name: None,
+                ..
+            } => Err(Error::new(
+                ErrorCode::InvalidArgument,
+                PeerObservation::NotObserved,
+                "configure custom transport CA through ClientTlsConfig to preserve its identity",
+            )),
+            GatewayTransport::InsecureTcp { .. } => Err(Error::new(
+                ErrorCode::InvalidArgument,
+                PeerObservation::NotObserved,
+                "a CA certificate requires a TLS endpoint",
+            )),
+        }
+    }
+
     /// Uses RelayGate framing over a server-authenticated TLS/TCP connection.
     #[must_use]
     pub fn tls_tcp(gateway_addr: impl Into<String>, tls: ClientTlsConfig) -> Self {
@@ -35,11 +91,11 @@ impl GatewayTransportConfig {
             kind: GatewayTransport::TlsTcp {
                 gateway_addr: gateway_addr.into(),
                 tls,
+                endpoint_name: None,
             },
         }
     }
 
-    #[cfg(any(test, feature = "insecure-test-transport"))]
     pub(crate) fn insecure_tcp(gateway_addr: impl Into<String>) -> Self {
         Self {
             kind: GatewayTransport::InsecureTcp {
@@ -69,7 +125,6 @@ impl GatewayTransportConfig {
         timeout(connect_timeout, async {
             match &self.kind {
                 GatewayTransport::TlsTcp { tls, .. } => tls.connect_boxed(stream).await,
-                #[cfg(any(test, feature = "insecure-test-transport"))]
                 GatewayTransport::InsecureTcp { .. } => Ok(insecure_boxed(stream)),
             }
         })
@@ -81,7 +136,6 @@ impl GatewayTransportConfig {
     fn gateway_addr(&self) -> &str {
         match &self.kind {
             GatewayTransport::TlsTcp { gateway_addr, .. } => gateway_addr,
-            #[cfg(any(test, feature = "insecure-test-transport"))]
             GatewayTransport::InsecureTcp { gateway_addr } => gateway_addr,
         }
     }
@@ -94,7 +148,6 @@ impl fmt::Debug for GatewayTransportConfig {
                 .debug_struct("TlsTcp")
                 .field("gateway_addr", gateway_addr)
                 .finish(),
-            #[cfg(any(test, feature = "insecure-test-transport"))]
             GatewayTransport::InsecureTcp { gateway_addr } => formatter
                 .debug_struct("InsecureTcp")
                 .field("gateway_addr", gateway_addr)
@@ -102,3 +155,51 @@ impl fmt::Debug for GatewayTransportConfig {
         }
     }
 }
+
+fn invalid_endpoint() -> Error {
+    Error::new(
+        ErrorCode::InvalidArgument,
+        PeerObservation::NotObserved,
+        "expected host:port, tls://host:port or tcp://host:port (IPv6 requires brackets)",
+    )
+}
+
+fn endpoint_parts(endpoint: &str) -> Result<(String, String, bool)> {
+    let (address, plaintext) = if let Some(value) = endpoint.strip_prefix("tls://") {
+        (value, false)
+    } else if let Some(value) = endpoint.strip_prefix("tcp://") {
+        (value, true)
+    } else {
+        (endpoint, false)
+    };
+    if address
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '@'))
+    {
+        return Err(invalid_endpoint());
+    }
+    let (host, port) = address.rsplit_once(':').ok_or_else(invalid_endpoint)?;
+    if port.is_empty()
+        || !port.bytes().all(|c| c.is_ascii_digit())
+        || port.parse::<u16>().map_or(true, |value| value == 0)
+    {
+        return Err(invalid_endpoint());
+    }
+    let name = if let Some(host) = host.strip_prefix('[') {
+        let host = host.strip_suffix(']').ok_or_else(invalid_endpoint)?;
+        host.parse::<std::net::Ipv6Addr>()
+            .map_err(|_| invalid_endpoint())?;
+        host
+    } else {
+        if host.is_empty() || host.contains(':') {
+            return Err(invalid_endpoint());
+        }
+        host
+    };
+    // Validate DNS/IP identity even for plaintext, keeping one address grammar.
+    ClientTlsConfig::with_webpki_roots(name).map_err(|_| invalid_endpoint())?;
+    Ok((address.to_owned(), name.to_owned(), plaintext))
+}
+
+#[cfg(test)]
+mod endpoint_tests;

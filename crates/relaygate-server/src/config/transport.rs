@@ -2,6 +2,28 @@ use std::env;
 
 use anyhow::{Result, bail};
 
+pub(crate) fn sdk_tls_enabled() -> Result<bool> {
+    let mode = env::var("RELAYGATE_SDK_TRANSPORT")
+        .map(Some)
+        .or_else(|error| match error {
+            env::VarError::NotPresent => Ok(None),
+            other => Err(other),
+        })?;
+    parse_sdk_tls(mode.as_deref(), super::insecure_test_transport())
+}
+
+fn parse_sdk_tls(mode: Option<&str>, insecure_test: bool) -> Result<bool> {
+    if mode.is_some() && insecure_test {
+        bail!("RELAYGATE_SDK_TRANSPORT cannot be combined with legacy test transport flags");
+    }
+    match mode {
+        None => Ok(!insecure_test),
+        Some("tls") => Ok(true),
+        Some("plaintext") => Ok(false),
+        _ => bail!("RELAYGATE_SDK_TRANSPORT must be `tls` or `plaintext`"),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum InternalTransport {
     Mtls,
@@ -58,6 +80,19 @@ fn parse_internal_transport(
 #[cfg(test)]
 mod tests {
     use super::{InternalTransport, parse_internal_transport};
+
+    #[test]
+    fn sdk_transport_is_secure_by_default() -> anyhow::Result<()> {
+        assert!(super::parse_sdk_tls(None, false)?);
+        assert!(super::parse_sdk_tls(Some("tls"), false)?);
+        assert!(!super::parse_sdk_tls(Some("plaintext"), false)?);
+        assert!(!super::parse_sdk_tls(None, true)?);
+        for mode in ["", "tcp", "auto", "TLS"] {
+            assert!(super::parse_sdk_tls(Some(mode), false).is_err());
+        }
+        assert!(super::parse_sdk_tls(Some("plaintext"), true).is_err());
+        Ok(())
+    }
 
     #[test]
     fn internal_transport_defaults_secure_and_plaintext_requires_explicit_choice()

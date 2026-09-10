@@ -24,9 +24,38 @@ pub struct Config {
 }
 
 impl Config {
+    /// Connects to `host:port` or `tls://host:port` using public CA trust.
+    /// `tcp://host:port` explicitly selects unencrypted transport, including
+    /// the ClusterToken. TLS failures never fall back to plaintext.
+    pub fn new(endpoint: impl AsRef<str>) -> Result<Self> {
+        Ok(Self::new_with_transport(
+            "",
+            GatewayTransportConfig::from_endpoint(endpoint.as_ref())?,
+        ))
+    }
+
+    /// Sets the deployment admission credential, independently of TLS trust.
+    #[must_use]
+    pub fn cluster_token(mut self, token: impl Into<String>) -> Self {
+        self.cluster_token = token.into();
+        self
+    }
+
+    /// Replaces public trust with a private CA; the endpoint still supplies
+    /// the server name. Requires [`Config::new`]; explicit transports configure
+    /// their CA through `ClientTlsConfig` to preserve custom identity settings.
+    /// Not applicable to plaintext endpoints.
+    pub fn with_ca_certificate(mut self, pem: &[u8]) -> Result<Self> {
+        self.transport = self.transport.with_ca_certificate(pem)?;
+        Ok(self)
+    }
+
     /// Creates a Relay configuration with an explicit Gateway transport.
     #[must_use]
-    pub fn new(cluster_token: impl Into<String>, transport: GatewayTransportConfig) -> Self {
+    pub fn with_transport(
+        cluster_token: impl Into<String>,
+        transport: GatewayTransportConfig,
+    ) -> Self {
         Self::new_with_transport(cluster_token, transport)
     }
 

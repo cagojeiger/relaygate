@@ -1,5 +1,11 @@
 # TEST 001: requirement와 실행 증거 대응표
 
+SDK endpoint 추가 회귀: `addresses_select_transport_and_identity`,
+`ca_helper_rejects_explicit_transport_instead_of_replacing_identity`,
+`invalid_endpoints_are_rejected_without_echoing_input`, `endpoint_config_requires_token_and_redacts_it`,
+`sdk_endpoint_private_ca_and_explicit_plaintext_connect`, `sdk_transport_is_secure_by_default`.
+주소 grammar, TLS 기본값, 명시적 평문, private CA, 불신 인증서·이름 불일치 거절과 token redaction을 검증합니다.
+
 | Test ID | Requirement | 검증 |
 | --- | --- | --- |
 | `T-MODEL-01` | `TERM-001`, `TERM-002`, `TERM-003`, `TERM-004`, `TERM-005`, `TERM-006`, `TERM-007`, `TERM-008`, `TERM-009`, `TERM-010` | 대칭 Relay, UUID identity, N:M Binding과 1:1 Pipe cardinality |
