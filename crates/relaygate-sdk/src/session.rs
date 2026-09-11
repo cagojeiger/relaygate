@@ -668,9 +668,10 @@ mod tests {
             "fresh-grant"
         );
         assert_eq!(supplies.load(Ordering::SeqCst), 1);
-        let error = timeout(Duration::from_secs(1), dial)
-            .await??
-            .expect_err("fake Gateway rejects the test DIAL");
+        let error = match timeout(Duration::from_secs(1), dial).await?? {
+            Ok(_) => return Err("fake Gateway unexpectedly accepted the test DIAL".into()),
+            Err(error) => error,
+        };
         assert_eq!(error.code(), ErrorCode::Unavailable);
 
         relay.close();
