@@ -1,16 +1,10 @@
-use std::collections::HashSet;
-
-use anyhow::{Context, bail};
+use anyhow::Context;
 use relaygate_sdk::{
-    ClientTlsConfig, Config, DestinationId, GatewayTransportConfig, Listener, Pipe, Relay,
+    AccessToken, AccessTokenSource, ClientTlsConfig, Config, GatewayTransportConfig, Listener,
+    Pipe, Relay, RouteAddress,
 };
-use tokio::{
-    io::{AsyncWriteExt, copy},
-    task::JoinSet,
-};
+use tokio::io::{AsyncWriteExt, copy};
 
-const DEFAULT_DESTINATION: &str = "11111111-1111-4111-8111-111111111111";
-const DEFAULT_CLUSTER_TOKEN: &str = "relaygate-local-cluster-token";
 const DEFAULT_TLS_CA_PATH: &str = "/etc/relaygate/tls/ca.crt";
 const DEFAULT_TLS_SERVER_NAME: &str = "relaygate-gateway.internal";
 
@@ -18,8 +12,8 @@ const DEFAULT_TLS_SERVER_NAME: &str = "relaygate-gateway.internal";
 async fn main() -> anyhow::Result<()> {
     init_tracing()?;
     let address = environment("RELAYGATE_ADDR", "gateway:27420");
-    let cluster_token = environment("RELAYGATE_CLUSTER_TOKEN", DEFAULT_CLUSTER_TOKEN);
-    let destinations = destinations_from_env()?;
+    let route_address = route_address_from_env()?;
+    let access_token = AccessToken::new(required_environment("RELAYGATE_ACCESS_TOKEN")?)?;
     let ca_path = environment("RELAYGATE_SDK_TLS_CA_PATH", DEFAULT_TLS_CA_PATH);
     let server_name = environment("RELAYGATE_SDK_TLS_SERVER_NAME", DEFAULT_TLS_SERVER_NAME);
     let tls = ClientTlsConfig::server_authenticated(
@@ -27,26 +21,18 @@ async fn main() -> anyhow::Result<()> {
         &std::fs::read(&ca_path)
             .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?,
     )?;
-    let relay = Relay::connect(Config::with_transport(
-        cluster_token,
-        GatewayTransportConfig::tls_tcp(address, tls),
-    ))
+    let relay = Relay::connect(Config::with_transport(GatewayTransportConfig::tls_tcp(
+        address, tls,
+    )))
     .await?;
-    let mut tasks = JoinSet::new();
-
-    for destination in destinations {
-        let listener = relay
-            .listen(destination)
-            .await
-            .with_context(|| format!("failed to listen on Destination {destination}"))?;
-        tasks.spawn(serve_listener(destination, listener));
-    }
-
-    let result = tasks
-        .join_next()
+    let listener = relay
+        .listen(
+            route_address.clone(),
+            AccessTokenSource::static_token(access_token),
+        )
         .await
-        .context("all Listener tasks exited unexpectedly")?;
-    result.context("Listener task panicked")?
+        .with_context(|| format!("failed to listen on RouteAddress {route_address}"))?;
+    serve_listener(route_address, listener).await
 }
 
 fn init_tracing() -> anyhow::Result<()> {
@@ -67,12 +53,12 @@ async fn echo(pipe: Pipe) -> std::io::Result<()> {
     writer.shutdown().await
 }
 
-async fn serve_listener(destination: DestinationId, listener: Listener) -> anyhow::Result<()> {
+async fn serve_listener(address: RouteAddress, listener: Listener) -> anyhow::Result<()> {
     loop {
         let pipe = listener
             .accept()
             .await
-            .with_context(|| format!("Destination {destination} accept loop stopped"))?;
+            .with_context(|| format!("RouteAddress {address} accept loop stopped"))?;
         tokio::spawn(async move {
             if let Err(error) = echo(pipe).await {
                 eprintln!("echo Pipe failed: {error}");
@@ -85,35 +71,31 @@ fn environment(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
 }
 
-fn destinations_from_env() -> anyhow::Result<Vec<DestinationId>> {
-    let value = environment("RELAYGATE_DESTINATIONS", DEFAULT_DESTINATION);
-    let mut seen = HashSet::new();
-    let mut destinations = Vec::new();
-    for entry in value.split(',') {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            bail!("RELAYGATE_DESTINATIONS contains an empty entry");
-        }
-        let destination: DestinationId = entry
-            .parse()
-            .with_context(|| format!("invalid UUIDv4 DestinationId {entry:?}"))?;
-        if !seen.insert(destination) {
-            bail!("RELAYGATE_DESTINATIONS contains duplicate DestinationId {entry:?}");
-        }
-        destinations.push(destination);
-    }
-    Ok(destinations)
+fn required_environment(name: &str) -> anyhow::Result<String> {
+    std::env::var(name).with_context(|| format!("{name} is required"))
+}
+
+fn route_address_from_env() -> anyhow::Result<RouteAddress> {
+    parse_route_address(&required_environment("RELAYGATE_ROUTE_ADDRESS")?)
+}
+
+fn parse_route_address(value: &str) -> anyhow::Result<RouteAddress> {
+    value
+        .parse()
+        .with_context(|| format!("invalid RouteAddress {value:?}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::destinations_from_env;
+    use super::parse_route_address;
 
     #[test]
-    fn default_destination_is_valid() -> anyhow::Result<()> {
-        // SAFETY: this test does not mutate the process environment.
-        let destinations = destinations_from_env()?;
-        anyhow::ensure!(!destinations.is_empty());
+    fn route_address_requires_namespace_and_destination() -> anyhow::Result<()> {
+        assert_eq!(
+            parse_route_address("examples/echo")?.to_string(),
+            "examples/echo"
+        );
+        assert!(parse_route_address("echo").is_err());
         Ok(())
     }
 }

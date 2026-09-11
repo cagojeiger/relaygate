@@ -5,16 +5,15 @@ use relaygate_gateway::{
     check_insecure_for_tests,
 };
 use relaygate_route_table::{
-    DestinationId as RouteDestinationId, GatewayId, GatewayLocator, RouteTableConfig,
-    RouteTableShard, ShardDirectory, ShardId,
+    GatewayId, GatewayLocator, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
     GatewayName, RouteTableClient, RouteTableClientConfig, RouteTableService,
     RouteTableServiceConfig, TransportError,
 };
 use relaygate_sdk::{
-    Config as SdkConfig, DestinationId, ErrorCode as SdkErrorCode, Listener,
-    PeerObservation as SdkPeerObservation, Pipe, Relay,
+    AccessAction, Config as SdkConfig, ErrorCode as SdkErrorCode, Listener,
+    PeerObservation as SdkPeerObservation, Pipe, Relay, RouteAddress,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -26,7 +25,9 @@ use tokio_util::sync::CancellationToken;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
-const CLUSTER_TOKEN: &str = "v02-three-gateway-cluster-token";
+mod support;
+
+use support::{address as test_address, authorization_config, token_source};
 const CLIENT_A: &str = "11111111-1111-4111-8111-111111111111";
 const CLIENT_B: &str = "22222222-2222-4222-8222-222222222222";
 const CLIENT_C: &str = "33333333-3333-4333-8333-333333333333";
@@ -57,21 +58,11 @@ async fn three_gateway_case() -> TestResult {
     let listener_runtime_a = Relay::connect(sdk_config(gateway_a.sdk_address)).await?;
     let listener_runtime_b = Relay::connect(sdk_config(gateway_b.sdk_address)).await?;
     let listener_runtime_c = Relay::connect(sdk_config(gateway_c.sdk_address)).await?;
-    let listener_a = listener_runtime_a
-        .listen(sdk_destination(CLIENT_A)?)
-        .await?;
-    let listener_b = listener_runtime_b
-        .listen(sdk_destination(CLIENT_B)?)
-        .await?;
-    let listener_c = listener_runtime_c
-        .listen(sdk_destination(CLIENT_C)?)
-        .await?;
-    let shared_b = listener_runtime_b
-        .listen(sdk_destination(CLIENT_SHARED)?)
-        .await?;
-    let shared_c = listener_runtime_c
-        .listen(sdk_destination(CLIENT_SHARED)?)
-        .await?;
+    let listener_a = listen(&listener_runtime_a, CLIENT_A).await?;
+    let listener_b = listen(&listener_runtime_b, CLIENT_B).await?;
+    let listener_c = listen(&listener_runtime_c, CLIENT_C).await?;
+    let shared_b = listen(&listener_runtime_b, CLIENT_SHARED).await?;
+    let shared_c = listen(&listener_runtime_c, CLIENT_SHARED).await?;
 
     wait_until("all registrations synced", Duration::from_secs(2), || {
         [&gateway_a, &gateway_b, &gateway_c]
@@ -245,8 +236,10 @@ async fn three_gateway_case() -> TestResult {
 
     drop(route_observer);
     route_table.stop().await?;
+    let failed_address = sdk_destination(CLIENT_C)?;
+    let failed_token = token_source(&failed_address, AccessAction::Dial)?;
     let failed_open = connector_a
-        .dial(sdk_destination(CLIENT_C)?)
+        .dial(failed_address, failed_token)
         .await
         .err()
         .ok_or("remote open unexpectedly succeeded while RouteTable was unavailable")?;
@@ -313,11 +306,13 @@ async fn exercise_repeated_failure_recovery(
     gateways: [&RunningGateway; 3],
 ) -> TestResult {
     for cycle in 0..100 {
+        let missing_address = sdk_destination(CLIENT_MISSING)?;
+        let missing_token = token_source(&missing_address, AccessAction::Dial)?;
         let failure = connector
-            .dial(sdk_destination(CLIENT_MISSING)?)
+            .dial(missing_address, missing_token)
             .await
             .err()
-            .ok_or("missing Destination unexpectedly opened a Pipe")?;
+            .ok_or("missing RouteAddress unexpectedly opened a Pipe")?;
         assert_eq!(failure.code(), SdkErrorCode::NotFound);
         assert_eq!(failure.observation(), SdkPeerObservation::NotObserved);
 
@@ -349,13 +344,26 @@ async fn exercise_repeated_failure_recovery(
     .await
 }
 
+async fn listen(relay: &Relay, destination: &str) -> TestResult<Listener> {
+    let address = sdk_destination(destination)?;
+    let access_token = token_source(&address, AccessAction::Publish)?;
+    Ok(relay.listen(address, access_token).await?)
+}
+
+async fn dial(relay: &Relay, destination: &str) -> TestResult<Pipe> {
+    let address = sdk_destination(destination)?;
+    let access_token = token_source(&address, AccessAction::Dial)?;
+    Ok(relay.dial(address, access_token).await?)
+}
+
 async fn exercise_pipe(
     connector: &Relay,
-    client_id: &str,
+    destination: &str,
     listener: &Listener,
     marker: &str,
 ) -> TestResult {
-    let (mut connector_pipe, mut listener_pipe) = open_pipe(connector, client_id, listener).await?;
+    let (mut connector_pipe, mut listener_pipe) =
+        open_pipe(connector, destination, listener).await?;
     assert_bidirectional(&mut connector_pipe, &mut listener_pipe, marker).await?;
     connector_pipe.close().await?;
     listener_pipe.close().await?;
@@ -364,10 +372,10 @@ async fn exercise_pipe(
 
 async fn open_pipe(
     connector: &Relay,
-    client_id: &str,
+    destination: &str,
     listener: &Listener,
 ) -> TestResult<(Pipe, Pipe)> {
-    let connector_pipe = connector.dial(sdk_destination(client_id)?).await?;
+    let connector_pipe = dial(connector, destination).await?;
     let listener_pipe = listener.accept().await?;
     Ok((connector_pipe, listener_pipe))
 }
@@ -384,6 +392,7 @@ async fn open_shared_pipe(
     listener_c: &Listener,
 ) -> TestResult<(Pipe, Pipe, SharedOwner)> {
     let destination = sdk_destination(CLIENT_SHARED)?;
+    let access_token = token_source(&destination, AccessAction::Dial)?;
     timeout(Duration::from_secs(2), async {
         let accepted = async {
             tokio::select! {
@@ -391,7 +400,8 @@ async fn open_shared_pipe(
                 result = listener_c.accept() => result.map(|pipe| (pipe, SharedOwner::C)),
             }
         };
-        let (opened, accepted) = tokio::join!(connector.dial(destination), accepted);
+        let (opened, accepted) =
+            tokio::join!(connector.dial(destination.clone(), access_token), accepted);
         let connector_pipe = opened?;
         let (listener_pipe, owner) = accepted?;
         Ok::<_, relaygate_sdk::Error>((connector_pipe, listener_pipe, owner))
@@ -451,7 +461,7 @@ impl RunningGateway {
         );
         let shutdown = CancellationToken::new();
         let gateway = Gateway::new_distributed(
-            GatewayConfig::new(CLUSTER_TOKEN)
+            GatewayConfig::new(authorization_config()?)
                 .with_max_pending_offers(16)
                 .with_drain_timeout(Duration::from_millis(100)),
             routing,
@@ -464,7 +474,7 @@ impl RunningGateway {
                 .serve_distributed(sdk_listener, peer_listener, serve_shutdown)
                 .await
         });
-        check_insecure_for_tests(sdk_address, CLUSTER_TOKEN, Duration::from_secs(1)).await?;
+        check_insecure_for_tests(sdk_address, Duration::from_secs(1)).await?;
         Ok(Self {
             name: name.to_owned(),
             sdk_address,
@@ -551,7 +561,7 @@ fn route_client_config() -> Result<RouteTableClientConfig, TransportError> {
 }
 
 fn sdk_config(endpoint: SocketAddr) -> SdkConfig {
-    SdkConfig::new_insecure_for_tests(endpoint.to_string(), CLUSTER_TOKEN)
+    SdkConfig::new_insecure_for_tests(endpoint.to_string())
         .with_connect_timeout(Duration::from_millis(200))
         .with_operation_timeout(Duration::from_secs(2))
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(40))
@@ -560,15 +570,15 @@ fn sdk_config(endpoint: SocketAddr) -> SdkConfig {
 async fn wait_for_binding_count(
     client: &RouteTableClient,
     generation: relaygate_route_table::ShardDirectoryGeneration,
-    client_id: &str,
+    destination: &str,
     expected: usize,
     deadline: Duration,
 ) -> TestResult {
-    let client_id = RouteDestinationId::new(client_id)?;
+    let address = sdk_destination(destination)?;
     let expires = Instant::now() + deadline;
     loop {
         if client
-            .resolve(generation, &client_id)
+            .resolve(generation, &address)
             .await
             .is_ok_and(|bindings| bindings.len() == expected)
         {
@@ -576,7 +586,7 @@ async fn wait_for_binding_count(
         }
         if Instant::now() >= expires {
             return Err(format!(
-                "RouteTable did not converge to {expected} bindings for {client_id}"
+                "RouteTable did not converge to {expected} bindings for {address}"
             )
             .into());
         }
@@ -584,8 +594,8 @@ async fn wait_for_binding_count(
     }
 }
 
-fn sdk_destination(value: &str) -> Result<DestinationId, relaygate_sdk::DestinationIdError> {
-    value.parse()
+fn sdk_destination(value: &str) -> Result<RouteAddress, relaygate_address::AddressError> {
+    test_address(value)
 }
 
 async fn wait_until(
@@ -605,7 +615,7 @@ async fn wait_until(
 
 fn one_shard_directory(endpoint: SocketAddr) -> Vec<u8> {
     format!(
-        r#"{{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{{"id":"{SHARD_ID}","endpoint":"{endpoint}"}}]}}"#
+        r#"{{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{{"id":"{SHARD_ID}","endpoint":"{endpoint}"}}]}}"#
     )
     .into_bytes()
 }

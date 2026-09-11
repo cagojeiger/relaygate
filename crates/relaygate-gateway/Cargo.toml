@@ -10,13 +10,14 @@ autotests = false
 [dependencies]
 bytes.workspace = true
 futures-util.workspace = true
+jsonwebtoken.workspace = true
 metrics.workspace = true
+relaygate-address.workspace = true
 relaygate-protocol.workspace = true
 relaygate-route-table.workspace = true
 relaygate-route-table-transport.workspace = true
 relaygate-transport.workspace = true
-sha2.workspace = true
-subtle.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

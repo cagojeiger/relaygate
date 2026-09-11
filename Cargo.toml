@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/relaygate-address",
     "crates/relaygate-gateway",
     "crates/relaygate-protocol",
     "crates/relaygate-route-table",
@@ -24,9 +25,11 @@ repository = "https://github.com/cagojeiger/relaygate"
 anyhow = "1"
 bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 metrics = "0.24.6"
 metrics-util = "0.20.4"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
+relaygate-address = { path = "crates/relaygate-address" }
 relaygate-gateway = { path = "crates/relaygate-gateway" }
 relaygate-protocol = { path = "crates/relaygate-protocol" }
 relaygate-route-table = { path = "crates/relaygate-route-table" }
@@ -38,7 +41,6 @@ rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["codec", "rt"] }

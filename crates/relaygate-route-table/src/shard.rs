@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    BindingSet, DestinationId, LeaseId, MappingEntry, MappingIdentity, MappingSnapshot,
-    RegistrationAck, RegistrationKey, RegistrationRevision, RequestContext, RouteTableError,
+    BindingSet, LeaseId, MappingEntry, MappingIdentity, MappingSnapshot, RegistrationAck,
+    RegistrationKey, RegistrationRevision, RequestContext, RouteAddress, RouteTableError,
     RouteTableStats, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
 
@@ -50,7 +50,7 @@ pub struct RouteTableShard {
     directory: ShardDirectory,
     shard_id: ShardId,
     config: RouteTableConfig,
-    route_index: HashMap<DestinationId, BTreeMap<MappingIdentity, MappingEntry>>,
+    route_index: HashMap<RouteAddress, BTreeMap<MappingIdentity, MappingEntry>>,
     registration_index: HashMap<RegistrationKey, RegistrationState>,
     active_lease_ids: HashSet<LeaseId>,
     expiry_index: BTreeMap<Instant, BTreeSet<ExpiryKey>>,
@@ -263,16 +263,16 @@ impl RouteTableShard {
         &mut self,
         _context: RequestContext,
         generation: ShardDirectoryGeneration,
-        destination_id: &DestinationId,
+        address: &RouteAddress,
         now: Instant,
     ) -> Result<BindingSet, RouteTableError> {
         self.validate_generation(generation)?;
-        self.validate_client_authority(destination_id)?;
+        self.validate_route_authority(address)?;
         self.expire_due(now);
 
         let mappings = self
             .route_index
-            .get(destination_id)
+            .get(address)
             .ok_or(RouteTableError::NotFound)?;
         if mappings.is_empty() {
             return Err(RouteTableError::NotFound);
@@ -365,7 +365,7 @@ impl RouteTableShard {
                     "snapshot mapping is outside the RegistrationKey scope".to_owned(),
                 ));
             }
-            self.validate_client_authority(mapping.destination_id())?;
+            self.validate_route_authority(mapping.address())?;
         }
         Ok(())
     }
@@ -381,7 +381,7 @@ impl RouteTableShard {
                 .is_some_and(|current| current != next)
             {
                 return Err(RouteTableError::FailedPrecondition(
-                    "an active MappingIdentity cannot change DestinationId or GatewayLocator"
+                    "an active MappingIdentity cannot change RouteAddress or GatewayLocator"
                         .to_owned(),
                 ));
             }
@@ -389,13 +389,10 @@ impl RouteTableShard {
         Ok(())
     }
 
-    fn validate_client_authority(
-        &self,
-        destination_id: &DestinationId,
-    ) -> Result<(), RouteTableError> {
-        if self.directory.authority(destination_id).id() != &self.shard_id {
+    fn validate_route_authority(&self, address: &RouteAddress) -> Result<(), RouteTableError> {
+        if self.directory.authority(address).id() != &self.shard_id {
             return Err(RouteTableError::InvalidArgument(
-                "DestinationId belongs to a different authority shard".to_owned(),
+                "RouteAddress belongs to a different authority shard".to_owned(),
             ));
         }
         Ok(())
@@ -477,7 +474,7 @@ impl RouteTableShard {
     fn insert_route_mappings(&mut self, mappings: &BTreeMap<MappingIdentity, MappingEntry>) {
         for (identity, mapping) in mappings {
             self.route_index
-                .entry(mapping.destination_id().clone())
+                .entry(mapping.address().clone())
                 .or_default()
                 .insert(*identity, mapping.clone());
         }
@@ -485,15 +482,14 @@ impl RouteTableShard {
 
     fn remove_route_mappings(&mut self, mappings: &BTreeMap<MappingIdentity, MappingEntry>) {
         for (identity, mapping) in mappings {
-            let remove_route =
-                if let Some(route) = self.route_index.get_mut(mapping.destination_id()) {
-                    route.remove(identity);
-                    route.is_empty()
-                } else {
-                    false
-                };
+            let remove_route = if let Some(route) = self.route_index.get_mut(mapping.address()) {
+                route.remove(identity);
+                route.is_empty()
+            } else {
+                false
+            };
             if remove_route {
-                self.route_index.remove(mapping.destination_id());
+                self.route_index.remove(mapping.address());
             }
         }
     }

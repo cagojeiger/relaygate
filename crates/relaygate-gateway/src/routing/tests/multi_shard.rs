@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use relaygate_route_table::{
-    DestinationId, GatewayLocator, RegistrationKey, RegistrationRevision, RouteTableConfig,
+    GatewayLocator, RegistrationKey, RegistrationRevision, RouteAddress, RouteTableConfig,
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
@@ -85,12 +85,12 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         vec![
             Binding {
                 id: protocol_binding(3_000),
-                destination_id: client_0.as_str().parse()?,
+                address: client_0.clone(),
                 session_id,
             },
             Binding {
                 id: protocol_binding(3_001),
-                destination_id: client_1.as_str().parse()?,
+                address: client_1.clone(),
                 session_id,
             },
         ],
@@ -128,12 +128,12 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         vec![
             Binding {
                 id: protocol_binding(3_002),
-                destination_id: replacement_0.as_str().parse()?,
+                address: replacement_0.clone(),
                 session_id,
             },
             Binding {
                 id: protocol_binding(3_001),
-                destination_id: client_1.as_str().parse()?,
+                address: client_1.clone(),
                 session_id,
             },
         ],
@@ -235,7 +235,7 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
         session_id,
         vec![Binding {
             id: protocol_binding(6_000),
-            destination_id: healthy_client.as_str().parse()?,
+            address: healthy_client.clone(),
             session_id,
         }],
     )?;
@@ -320,43 +320,39 @@ fn two_live_shard_directory(
     endpoint_1: std::net::SocketAddr,
 ) -> TestResult<ShardDirectory> {
     let artifact = format!(
-        r#"{{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{{"id":"rt-0","endpoint":"{endpoint_0}"}},{{"id":"rt-1","endpoint":"{endpoint_1}"}}]}}"#
+        r#"{{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{{"id":"rt-0","endpoint":"{endpoint_0}"}},{{"id":"rt-1","endpoint":"{endpoint_1}"}}]}}"#
     );
     Ok(ShardDirectory::from_json_bytes(artifact.as_bytes())?)
 }
 
-fn clients_by_shard(directory: &ShardDirectory) -> TestResult<BTreeMap<String, DestinationId>> {
+fn clients_by_shard(directory: &ShardDirectory) -> TestResult<BTreeMap<String, RouteAddress>> {
     let mut clients = BTreeMap::new();
     for index in 0..10_000 {
-        let destination_id = DestinationId::new(format!("00000000-0000-4000-8000-{index:012x}"))?;
+        let address =
+            format!("test/00000000-0000-4000-8000-{index:012x}").parse::<RouteAddress>()?;
         clients
-            .entry(
-                directory
-                    .authority(&destination_id)
-                    .id()
-                    .as_str()
-                    .to_owned(),
-            )
-            .or_insert(destination_id);
+            .entry(directory.authority(&address).id().as_str().to_owned())
+            .or_insert(address);
         if clients.len() == directory.shards().len() {
             return Ok(clients);
         }
     }
-    Err("failed to find one DestinationId per shard".into())
+    Err("failed to find one RouteAddress per shard".into())
 }
 
 fn client_for_shard(
     directory: &ShardDirectory,
     shard_id: &str,
     prefix: &str,
-) -> TestResult<DestinationId> {
+) -> TestResult<RouteAddress> {
     for index in 0..10_000 {
         let prefix_byte = prefix.as_bytes().first().copied().unwrap_or_default();
         let suffix = (u128::from(prefix_byte) << 32) | index;
-        let destination_id = DestinationId::new(format!("00000000-0000-4000-8000-{suffix:012x}"))?;
-        if directory.authority(&destination_id).id().as_str() == shard_id {
-            return Ok(destination_id);
+        let address =
+            format!("test/00000000-0000-4000-8000-{suffix:012x}").parse::<RouteAddress>()?;
+        if directory.authority(&address).id().as_str() == shard_id {
+            return Ok(address);
         }
     }
-    Err(format!("failed to find DestinationId for {shard_id}").into())
+    Err(format!("failed to find RouteAddress for {shard_id}").into())
 }

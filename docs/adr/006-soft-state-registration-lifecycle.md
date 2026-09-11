@@ -3,7 +3,7 @@
 | 항목 | 결정 |
 | --- | --- |
 | 상태 | Accepted |
-| truth | Gateway의 live RelaySession과 Binding |
+| truth | Gateway의 live RelaySession과 RouteAddress Binding |
 | RT state | active lease에 연결된 memory-only projection |
 
 ## 결정

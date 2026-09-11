@@ -227,7 +227,7 @@ impl TransportCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct ActiveIdentityKey {
     entry_gateway: GatewayId,
-    connector_session: uuid::Uuid,
+    origin_session: uuid::Uuid,
     connection_id: u64,
 }
 
@@ -235,7 +235,7 @@ impl From<OpenIdentity> for ActiveIdentityKey {
     fn from(value: OpenIdentity) -> Self {
         Self {
             entry_gateway: value.entry_gateway(),
-            connector_session: value.connector_session().as_uuid(),
+            origin_session: value.origin_session().as_uuid(),
             connection_id: value.connection_id(),
         }
     }

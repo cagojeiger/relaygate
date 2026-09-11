@@ -15,7 +15,7 @@ SDK 사용자는 공인 CA 파일을 공급하지 않습니다. 사설 CA만 선
 ```text
 custom CA    -> ca.crt + tls.crt + tls.key
 Web PKI      -> bundled roots + tls.crt + tls.key
-both modes   -> server name + relaygate/2 ALPN + ClusterToken
+both modes   -> server name + relaygate/3 ALPN + operation JWT grant
 ```
 
 SDK와 Gateway readiness는 같은 trust source와 server name으로 certificate를 검증합니다. 공개 CA mode는

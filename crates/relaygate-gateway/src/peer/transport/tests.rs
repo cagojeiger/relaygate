@@ -93,10 +93,10 @@ fn actor_for_open(writer_capacity: usize) -> Result<TestActor, Box<dyn Error>> {
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         open_identity,
-        "echo.b",
+        crate::test_support::address("echo.b"),
         SessionId::new(),
         BindingId::new(),
-    )?;
+    );
     let (aggregate_writer, aggregate_receiver) = mpsc::channel(writer_capacity);
     let (notices, notice_receiver) = mpsc::channel(4);
     let active_opens = Arc::new(ActiveOpenSet::default());
@@ -512,10 +512,10 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         second_identity,
-        "echo.b",
+        crate::test_support::address("echo.b"),
         SessionId::new(),
         BindingId::new(),
-    )?;
+    );
     assert!(actor.active_opens.reserve(second_identity)?);
     let second_failure = actor
         .open(second_request)
@@ -546,10 +546,10 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         third_identity,
-        "echo.b",
+        crate::test_support::address("echo.b"),
         SessionId::new(),
         BindingId::new(),
-    )?;
+    );
     assert!(actor.active_opens.reserve(third_identity)?);
     let third_key = actor.open(third_request).await?;
     assert_eq!(

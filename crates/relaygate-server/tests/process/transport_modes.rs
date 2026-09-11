@@ -87,7 +87,7 @@ async fn explicit_plaintext_route_table_admits_without_keys_or_certificates()
     let client = wait_until_route_table_ready(&address, GatewayId::new(), &mut server).await?;
     let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
     let error = client
-        .resolve(directory.generation(), &DestinationId::new(DESTINATION_A)?)
+        .resolve(directory.generation(), &ROUTE_A.parse()?)
         .await;
     assert!(matches!(error, Err(error) if error.code() == RouteTableErrorCode::NotFound));
 

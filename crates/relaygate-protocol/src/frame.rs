@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-use crate::{BindingId, ClusterToken, DestinationId, PipeId, SessionId};
+use crate::{BearerToken, BindingId, PipeId, RouteAddress, SessionId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -60,9 +60,7 @@ impl PeerObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
-    Hello {
-        cluster_token: ClusterToken,
-    },
+    Hello,
     Welcome {
         session_id: SessionId,
     },
@@ -72,7 +70,8 @@ pub enum Frame {
     },
     Publish {
         request_id: u64,
-        destination_id: DestinationId,
+        address: RouteAddress,
+        access_token: BearerToken,
     },
     Published {
         request_id: u64,
@@ -92,12 +91,13 @@ pub enum Frame {
     },
     Dial {
         connection_id: u64,
-        destination_id: DestinationId,
+        address: RouteAddress,
+        access_token: BearerToken,
     },
     Offer {
         pipe_id: PipeId,
         binding_id: BindingId,
-        destination_id: DestinationId,
+        address: RouteAddress,
     },
     OfferAccepted {
         pipe_id: PipeId,

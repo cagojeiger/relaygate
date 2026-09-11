@@ -15,12 +15,18 @@ pub enum RouteTableError {
     InvalidArgument(String),
     #[error("authenticated Gateway does not own the requested registration")]
     PermissionDenied,
-    #[error("no live binding exists for the requested DestinationId")]
+    #[error("no live binding exists for the requested RouteAddress")]
     NotFound,
     #[error("operation is not valid for the current RouteTable state: {0}")]
     FailedPrecondition(String),
     #[error("RouteTable deadline cannot be represented")]
     DeadlineOverflow,
+}
+
+impl From<relaygate_address::AddressError> for RouteTableError {
+    fn from(error: relaygate_address::AddressError) -> Self {
+        Self::InvalidArgument(error.to_string())
+    }
 }
 
 impl RouteTableError {

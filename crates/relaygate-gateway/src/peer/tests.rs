@@ -187,7 +187,7 @@ fn peer_frame_codec_round_trips_every_frame_kind() -> Result<(), Box<dyn std::er
         PeerFrame::Open {
             stream_id,
             open_identity: OpenIdentity::new(GatewayId::new(), SessionId::new(), 7),
-            destination_id: "echo.a".to_owned(),
+            address: crate::test_support::address("echo.a"),
             relay_session_id: SessionId::new(),
             binding_id: BindingId::new(),
         },
@@ -287,12 +287,12 @@ fn peer_frame_codec_rejects_invalid_magic_and_version() -> Result<(), PeerCodecE
         Err(PeerCodecError::InvalidMagic)
     ));
 
-    let mut invalid_version = bytes;
-    invalid_version[2] = 1;
-    assert!(matches!(
-        codec.decode(&mut invalid_version),
-        Err(PeerCodecError::UnsupportedVersion(1))
-    ));
+    for version in [1, 2] {
+        let mut invalid_version = bytes.clone();
+        invalid_version[2] = version;
+        assert!(matches!(codec.decode(&mut invalid_version),
+            Err(PeerCodecError::UnsupportedVersion(actual)) if actual == version));
+    }
     Ok(())
 }
 
@@ -355,7 +355,7 @@ fn peer_frame_codec_rejects_truncated_fields_and_invalid_utf8() {
 #[test]
 fn peer_frame_codec_rejects_oversized_declared_frame_without_waiting_for_payload() {
     let mut codec = PeerFrameCodec::new(8);
-    let mut bytes = BytesMut::from(&[b'G', b'P', 2, 8, 0, 0, 0, 9][..]);
+    let mut bytes = BytesMut::from(&[b'G', b'P', 3, 8, 0, 0, 0, 9][..]);
 
     assert!(matches!(
         codec.decode(&mut bytes),
@@ -367,7 +367,8 @@ fn peer_frame_codec_rejects_oversized_declared_frame_without_waiting_for_payload
 }
 
 #[test]
-fn peer_frame_codec_bounds_strings_and_rejects_empty_open_destination() {
+fn peer_frame_codec_bounds_strings_and_rejects_empty_open_destination() -> Result<(), PeerCodecError>
+{
     let codec = PeerFrameCodec::new(usize::MAX);
     let too_long = PeerFrame::HandshakeRejected {
         code: ErrorCode::Unauthenticated,
@@ -385,14 +386,22 @@ fn peer_frame_codec_bounds_strings_and_rejects_empty_open_destination() {
     let empty_client = PeerFrame::Open {
         stream_id: StreamId::from_raw(0),
         open_identity: OpenIdentity::new(GatewayId::new(), SessionId::new(), 1),
-        destination_id: String::new(),
+        address: crate::test_support::address("echo"),
         relay_session_id: SessionId::new(),
         binding_id: BindingId::new(),
     };
+    let mut bytes = BytesMut::new();
+    let mut codec = codec;
+    codec.encode(empty_client, &mut bytes)?;
+    // Header (8), stream (8), origin (40), then namespace length + namespace.
+    let namespace_end = 56 + 2 + "test".len();
+    bytes[namespace_end] = 0;
+    bytes[namespace_end + 1] = 0;
     assert!(matches!(
-        codec.validate(&empty_client),
-        Err(PeerCodecError::InvalidField("destination_id"))
+        codec.decode(&mut bytes),
+        Err(PeerCodecError::InvalidField(_))
     ));
+    Ok(())
 }
 
 #[test]
@@ -441,7 +450,7 @@ fn handshake(name: &str) -> Result<PeerHandshake, Box<dyn std::error::Error>> {
 fn raw_frame(kind: u8, payload: &[u8]) -> BytesMut {
     let mut bytes = BytesMut::new();
     bytes.extend_from_slice(b"GP");
-    bytes.extend_from_slice(&[2, kind]);
+    bytes.extend_from_slice(&[3, kind]);
     bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     bytes.extend_from_slice(payload);
     bytes

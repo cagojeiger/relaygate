@@ -1,9 +1,8 @@
 use std::{collections::BTreeMap, error::Error, sync::atomic::Ordering, time::Duration};
 
 use relaygate_route_table::{
-    BindingId, DestinationId, GatewayId, GatewayLocator, LeaseId, MappingEntry, MappingSnapshot,
-    RegistrationAck, RegistrationKey, RegistrationRevision, RelaySessionId, RouteTableError,
-    ShardId,
+    BindingId, GatewayId, GatewayLocator, LeaseId, MappingEntry, MappingSnapshot, RegistrationAck,
+    RegistrationKey, RegistrationRevision, RelaySessionId, RouteAddress, RouteTableError, ShardId,
 };
 use relaygate_route_table_transport::{ErrorCode, TransportError};
 use tokio::time::Instant;
@@ -177,7 +176,7 @@ fn current_epoch_terminal_completion_keeps_existing_error_policy() -> TestResult
 
 fn snapshot() -> TestResult<MappingSnapshot> {
     Ok(MappingSnapshot::new([MappingEntry::new(
-        DestinationId::new("11111111-1111-4111-8111-111111111111")?,
+        "test/11111111-1111-4111-8111-111111111111".parse::<RouteAddress>()?,
         GatewayId::from_uuid(Uuid::from_u128(1)),
         RelaySessionId::from_uuid(Uuid::from_u128(2)),
         BindingId::from_uuid(Uuid::from_u128(3)),

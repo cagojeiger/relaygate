@@ -17,11 +17,12 @@ IMAGE_TAG=kind-${GITHUB_SHA:-local}
 GATEWAY_IMAGE=relaygate-gateway:$IMAGE_TAG
 ROUTE_TABLE_IMAGE=relaygate-route-table:$IMAGE_TAG
 GATEWAYS=127.0.0.1:28420,127.0.0.1:28421,127.0.0.1:28422
-DESTINATION_A=11111111-1111-4111-8111-111111111111
-DESTINATION_B=22222222-2222-4222-8222-222222222222
-DESTINATION_C=33333333-3333-4333-8333-333333333333
-DESTINATION_SHARED=44444444-4444-4444-8444-444444444444
-DESTINATION_CONTINUITY=55555555-5555-4555-8555-555555555555
+ROUTE_A=examples/echo-a
+ROUTE_B=examples/echo-b
+ROUTE_C=examples/echo-c
+ROUTE_SHARED=examples/echo-shared
+ROUTE_BOUNDARY=examples/echo-boundary
+TEST_ACCESS_TOKEN=${RELAYGATE_ACCESS_TOKEN:-eyJhbGciOiJFUzI1NiIsImtpZCI6ImNvbXBvc2UtdjEiLCJ0eXAiOiJyZWxheWdhdGUtb3BlcmF0aW9uK2p3dCJ9.eyJpc3MiOiJodHRwczovL2lzc3Vlci5jb21wb3NlLmludmFsaWQiLCJhdWQiOiJyZWxheWdhdGUiLCJuYmYiOjAsImV4cCI6NDEwMjQ0NDgwMCwicGVybWlzc2lvbnMiOlt7ImFjdGlvbiI6InB1Ymxpc2giLCJuYW1lc3BhY2UiOiJleGFtcGxlcyIsInNjb3BlIjp7ImtpbmQiOiJhbGwifX0seyJhY3Rpb24iOiJkaWFsIiwibmFtZXNwYWNlIjoiZXhhbXBsZXMiLCJzY29wZSI6eyJraW5kIjoiYWxsIn19XX0.YAvjlTHeCMVpkQj-FWQUKm6PwQ_K8mQyO1OBRK_zRXwwMNiabSkPXlVWoY1KOGAXkP6xFSIwmEQp1bx2-LVBDg}
 TEMP_DIR=
 CLUSTER_CREATED=false
 BACKGROUND_PIDS=()
@@ -29,7 +30,7 @@ ORIGINAL_CONTEXT=
 
 require_commands() {
   local command
-  for command in bash cargo curl docker helm jq kind kubectl openssl timeout; do
+  for command in bash cargo curl docker helm jq kind kubectl openssl; do
     if ! command -v "$command" >/dev/null 2>&1; then
       echo "required command is missing: $command" >&2
       return 1
@@ -225,8 +226,8 @@ write_kind_config() {
 create_secrets() {
   local certificate_dir=$1
   kubectl create namespace "$NAMESPACE"
-  kubectl -n "$NAMESPACE" create secret generic relaygate-credentials \
-    --from-literal=cluster-token="$CLUSTER_TOKEN"
+  kubectl -n "$NAMESPACE" create configmap relaygate-authorization \
+    --from-file=authorization.json="$ROOT/deploy/docker/authorization.test.json"
   kubectl -n "$NAMESPACE" create secret generic relaygate-edge-tls \
     --from-file=ca.crt="$certificate_dir/ca.crt" \
     --from-file=tls.crt="$certificate_dir/edge.crt" \
@@ -408,9 +409,9 @@ YAML
 start_listener() {
   local index=$1
   local address=$2
-  local destinations=$3
+  local route_address=$3
   RELAYGATE_ADDR="$address" \
-    RELAYGATE_DESTINATIONS="$destinations" \
+    RELAYGATE_ROUTE_ADDRESS="$route_address" \
     "$LISTENER" >"$ARTIFACTS/listener-$index.log" 2>&1 &
   local pid=$!
   BACKGROUND_PIDS+=("$pid")
@@ -425,7 +426,7 @@ run_probe() {
 
 wait_for_destination() {
   local destination=$1
-  local log="$ARTIFACTS/wait-$destination.log"
+  local log="$ARTIFACTS/wait-${destination//\//-}.log"
   local attempt
   : >"$log"
   for ((attempt = 1; attempt <= 6; attempt++)); do
@@ -522,7 +523,7 @@ assert_no_secret_or_payload_leak() {
   capture_evidence
   local marker
   for marker in \
-    "$CLUSTER_TOKEN" \
+    "$TEST_ACCESS_TOKEN" \
     'BEGIN PRIVATE KEY' 'hello relaygate' 'relaygate matrix entry='; do
     if grep -R -F -n -- "$marker" "$ARTIFACTS/logs" "$ARTIFACTS/metrics" >/dev/null; then
       echo "server evidence contains a protected marker" >&2
@@ -556,8 +557,7 @@ main() {
   TEMP_DIR=$(mktemp -d)
   CERTIFICATES=$TEMP_DIR/certificates
   mkdir -p "$CERTIFICATES"
-  CLUSTER_TOKEN=kind-cluster-$(openssl rand -hex 16)
-  export CLUSTER_TOKEN CERTIFICATES
+  export CERTIFICATES
 
   generate_certificates "$CERTIFICATES"
   write_kind_config "$TEMP_DIR/kind.yaml"
@@ -605,43 +605,46 @@ main() {
   apply_envoy_passthrough
 
   export RELAYGATE_GATEWAYS="$GATEWAYS"
-  export RELAYGATE_CLUSTER_TOKEN="$CLUSTER_TOKEN"
+  export RELAYGATE_ACCESS_TOKEN="$TEST_ACCESS_TOKEN"
   export RELAYGATE_SDK_TLS_CA_PATH="$CERTIFICATES/ca.crt"
   export RELAYGATE_SDK_TLS_SERVER_NAME=relaygate-gateway.internal
   export RELAYGATE_LOG=warn
 
   "$SERVER" check 127.0.0.1:28420 >"$ARTIFACTS/tls-valid.log" 2>&1
-  assert_check_fails wrong-token env RELAYGATE_CLUSTER_TOKEN=wrong-token \
-    "$SERVER" check 127.0.0.1:28420
   assert_check_fails wrong-name env RELAYGATE_SDK_TLS_SERVER_NAME=wrong.internal \
     "$SERVER" check 127.0.0.1:28420
   assert_check_fails wrong-ca env RELAYGATE_SDK_TLS_CA_PATH="$CERTIFICATES/wrong-ca.crt" \
     "$SERVER" check 127.0.0.1:28420
   assert_wrong_alpn_rejected
-  record_pass KIND-01 'TLS CA/name/token/ALPN admission'
 
   run_probe chat chat
   record_pass KIND-02 'symmetric three-participant chat'
   record_pass KIND-04 'N:M single selection and survivor failover'
 
-  start_listener 0 127.0.0.1:28420 "$DESTINATION_A" >/dev/null
-  start_listener 1 127.0.0.1:28421 "$DESTINATION_B,$DESTINATION_SHARED" >/dev/null
-  start_listener 2 127.0.0.1:28422 "$DESTINATION_C,$DESTINATION_SHARED,$DESTINATION_CONTINUITY" >/dev/null
-  wait_for_destination "$DESTINATION_A"
-  wait_for_destination "$DESTINATION_B"
-  wait_for_destination "$DESTINATION_C"
-  wait_for_destination "$DESTINATION_SHARED"
-  wait_for_destination "$DESTINATION_CONTINUITY"
+  start_listener a 127.0.0.1:28420 "$ROUTE_A" >/dev/null
+  start_listener b 127.0.0.1:28421 "$ROUTE_B" >/dev/null
+  start_listener shared-b 127.0.0.1:28421 "$ROUTE_SHARED" >/dev/null
+  start_listener c 127.0.0.1:28422 "$ROUTE_C" >/dev/null
+  start_listener shared-c 127.0.0.1:28422 "$ROUTE_SHARED" >/dev/null
+  start_listener boundary-c 127.0.0.1:28422 "$ROUTE_BOUNDARY" >/dev/null
+  wait_for_destination "$ROUTE_A"
+  wait_for_destination "$ROUTE_B"
+  wait_for_destination "$ROUTE_C"
+  wait_for_destination "$ROUTE_SHARED"
+  wait_for_destination "$ROUTE_BOUNDARY"
+  assert_check_fails wrong-token env RELAYGATE_ACCESS_TOKEN=wrong-token \
+    "$PROBE" wait-client "$ROUTE_A"
+  record_pass KIND-01 'TLS CA/name/ALPN and operation-token authorization'
 
   run_probe matrix matrix
   record_pass KIND-03 'all local and directed one-hop paths'
 
-  RELAYGATE_ADDR=127.0.0.1:28423 RELAYGATE_DESTINATION_ID="$DESTINATION_A" \
+  RELAYGATE_ADDR=127.0.0.1:28423 RELAYGATE_ROUTE_ADDRESS="$ROUTE_A" \
     run_probe envoy single
   record_pass KIND-09 'Envoy byte passthrough with Gateway TLS termination'
 
   RELAYGATE_CONTINUITY_ADDR=127.0.0.1:28420 \
-    RELAYGATE_CONTINUITY_DESTINATION_ID="$DESTINATION_C" \
+    RELAYGATE_ROUTE_ADDRESS="$ROUTE_C" \
     RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/rt-continuity.state" \
     "$PROBE" continuity >"$ARTIFACTS/rt-continuity.log" 2>&1 &
   RT_CONTINUITY_PID=$!
@@ -652,21 +655,21 @@ main() {
   RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/rt-continuity.state" \
     "$PROBE" continuity-check | tee "$ARTIFACTS/rt-continuity-check.log"
   stop_process "$RT_CONTINUITY_PID"
-  wait_for_destination "$DESTINATION_A"
-  wait_for_destination "$DESTINATION_B"
-  wait_for_destination "$DESTINATION_C"
+  wait_for_destination "$ROUTE_A"
+  wait_for_destination "$ROUTE_B"
+  wait_for_destination "$ROUTE_C"
   record_pass KIND-10 'RouteTable rolling restart continuity and recovery'
 
   kubectl -n "$NAMESPACE" scale statefulset/relaygate-rt --replicas=1
   kubectl -n "$NAMESPACE" wait --for=delete pod/relaygate-rt-1 --timeout=120s
-  run_probe rt-isolation expect-shard-isolation "$DESTINATION_B" 1 "$DESTINATION_A"
+  run_probe rt-isolation expect-shard-isolation "$ROUTE_B" 1 "$ROUTE_A"
   kubectl -n "$NAMESPACE" scale statefulset/relaygate-rt --replicas=2
   kubectl -n "$NAMESPACE" rollout status statefulset/relaygate-rt --timeout=180s
-  wait_for_destination "$DESTINATION_B"
+  wait_for_destination "$ROUTE_B"
   record_pass KIND-06 'RouteTable shard loss isolation and current-state recovery'
 
   RELAYGATE_CONTINUITY_ADDR=127.0.0.1:28420 \
-    RELAYGATE_CONTINUITY_DESTINATION_ID="$DESTINATION_B" \
+    RELAYGATE_ROUTE_ADDRESS="$ROUTE_B" \
     RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/gateway-continuity.state" \
     "$PROBE" continuity >"$ARTIFACTS/gateway-old-pipe.log" 2>&1 &
   GATEWAY_PIPE_PID=$!
@@ -680,15 +683,15 @@ main() {
     return 1
   fi
   wait_for_replaced_pod relaygate-gateway-1 "$GATEWAY_1_UID" 180
-  wait_for_destination "$DESTINATION_B"
+  wait_for_destination "$ROUTE_B"
   run_probe gateway-recovery matrix
   record_pass KIND-05 'Gateway loss closes old Pipe and fresh dial recovers'
 
   kubectl -n "$NAMESPACE" rollout restart statefulset/relaygate-gateway
   kubectl -n "$NAMESPACE" rollout status statefulset/relaygate-gateway --timeout=240s
-  wait_for_destination "$DESTINATION_A"
-  wait_for_destination "$DESTINATION_B"
-  wait_for_destination "$DESTINATION_C"
+  wait_for_destination "$ROUTE_A"
+  wait_for_destination "$ROUTE_B"
+  wait_for_destination "$ROUTE_C"
   run_probe gateway-rolling matrix
   record_pass KIND-11 'Gateway rolling restart reconnect and republish'
 
@@ -697,7 +700,7 @@ main() {
   fi
 
   RELAYGATE_ADDR=127.0.0.1:28420 \
-    RELAYGATE_DESTINATION_ID="$DESTINATION_A" \
+    RELAYGATE_ROUTE_ADDRESS="$ROUTE_A" \
     RELAYGATE_STORM_SESSIONS=100 \
     RELAYGATE_STORM_PAUSE_SECS=45 \
     "$PROBE" reconnect-storm >"$ARTIFACTS/reconnect-storm.log" 2>&1 &

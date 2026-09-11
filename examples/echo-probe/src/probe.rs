@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
-use relaygate_sdk::{DestinationId, ErrorCode, PeerObservation, Pipe, Relay};
+use relaygate_sdk::{AccessTokenSource, ErrorCode, PeerObservation, Pipe, Relay, RouteAddress};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     task::JoinSet,
@@ -15,56 +15,65 @@ use tokio::{
 };
 
 use crate::config::{
-    CONCURRENT_PIPES_PER_PATH, DESTINATION_IDS, ECHO_DEADLINE, ROUTE_WAIT, SHARED_DESTINATION_ID,
-    environment, gateway_addresses, sdk_config, soak_concurrency, soak_duration, storm_pause,
-    storm_sessions,
+    CONCURRENT_PIPES_PER_PATH, ECHO_DEADLINE, ROUTE_ADDRESSES, ROUTE_WAIT, SHARED_ROUTE_ADDRESS,
+    access_token_source, environment, gateway_addresses, route_address, sdk_config,
+    soak_concurrency, soak_duration, storm_pause, storm_sessions,
 };
 
 const STORM_PIPE_BATCH_SIZE: usize = 64;
 
 pub(crate) async fn run_single() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_ADDR", "gateway:27420");
-    let destination_id = environment("RELAYGATE_DESTINATION_ID", DESTINATION_IDS[0]);
+    let route_address = route_address()?;
+    let access_token_source = access_token_source()?;
     let connector = connect(&address).await?;
 
     assert_echo(
-        dial_when_available(&connector, &destination_id, ROUTE_WAIT).await?,
+        dial_when_available(&connector, &route_address, &access_token_source, ROUTE_WAIT).await?,
         b"hello relaygate",
     )
     .await?;
 
     let binary = deterministic_payload(65_537, 0);
     assert_echo(
-        dial_when_available(&connector, &destination_id, Duration::from_secs(3)).await?,
+        dial_when_available(
+            &connector,
+            &route_address,
+            &access_token_source,
+            Duration::from_secs(3),
+        )
+        .await?,
         &binary,
     )
     .await?;
 
-    assert_concurrent_path(&connector, &destination_id, 0, 0).await?;
+    assert_concurrent_path(&connector, &route_address, &access_token_source, 0, 0).await?;
     connector.close();
     println!("relaygate single-Gateway echo verified");
     Ok(())
 }
 
 pub(crate) async fn run_matrix() -> anyhow::Result<()> {
+    let access_token_source = access_token_source()?;
     let addresses = gateway_addresses()?;
     let connectors = connect_all(&addresses).await?;
 
     let mut cross_dial = JoinSet::new();
     for (entry, connector) in connectors.iter().enumerate() {
-        for (owner, destination_id) in DESTINATION_IDS.iter().enumerate() {
+        for (owner, route_address) in ROUTE_ADDRESSES.iter().enumerate() {
             if entry == owner {
                 continue;
             }
             let payload = matrix_payload(entry, owner, 0);
             let context = format!(
-                "phase=cross-dial entry={entry} owner={owner} destination_id={destination_id} sequence=0 payload_len={}",
+                "phase=cross-dial entry={entry} owner={owner} route_address={route_address} sequence=0 payload_len={}",
                 payload.len()
             );
             spawn_echo(
                 &mut cross_dial,
                 connector.clone(),
-                (*destination_id).to_owned(),
+                (*route_address).to_owned(),
+                access_token_source.clone(),
                 payload,
                 context,
             );
@@ -75,49 +84,68 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
     for index in 0..connectors.len() {
         let payload = matrix_payload(index, index, 0);
         assert_echo(
-            dial_when_available(&connectors[index], DESTINATION_IDS[index], ROUTE_WAIT).await?,
+            dial_when_available(
+                &connectors[index],
+                ROUTE_ADDRESSES[index],
+                &access_token_source,
+                ROUTE_WAIT,
+            )
+            .await?,
             &payload,
         )
         .await
         .with_context(|| {
             format!(
-                "phase=local entry={index} owner={index} destination_id={} sequence=0 payload_len={}",
-                DESTINATION_IDS[index],
+                "phase=local entry={index} owner={index} route_address={} sequence=0 payload_len={}",
+                ROUTE_ADDRESSES[index],
                 payload.len()
             )
         })?;
     }
 
     for (entry, connector) in connectors.iter().enumerate() {
-        let payload = matrix_payload(entry, DESTINATION_IDS.len(), 0);
+        let payload = matrix_payload(entry, ROUTE_ADDRESSES.len(), 0);
         assert_echo(
-            dial_when_available(connector, SHARED_DESTINATION_ID, ROUTE_WAIT).await?,
+            dial_when_available(
+                connector,
+                SHARED_ROUTE_ADDRESS,
+                &access_token_source,
+                ROUTE_WAIT,
+            )
+            .await?,
             &payload,
         )
         .await
         .with_context(|| {
             format!(
-                "phase=shared entry={entry} destination_id={SHARED_DESTINATION_ID} sequence=0 payload_len={}",
+                "phase=shared entry={entry} route_address={SHARED_ROUTE_ADDRESS} sequence=0 payload_len={}",
                 payload.len()
             )
         })?;
     }
 
     for (entry, connector) in connectors.iter().enumerate() {
-        for (owner, destination_id) in DESTINATION_IDS.iter().enumerate() {
+        for (owner, route_address) in ROUTE_ADDRESSES.iter().enumerate() {
             let boundary = deterministic_payload(65_537, entry * 100 + owner);
             assert_echo(
-                dial_when_available(connector, destination_id, ROUTE_WAIT).await?,
+                dial_when_available(
+                    connector,
+                    route_address,
+                    &access_token_source,
+                    ROUTE_WAIT,
+                )
+                .await?,
                 &boundary,
             )
             .await
             .with_context(|| {
                 format!(
-                    "phase=boundary entry={entry} owner={owner} destination_id={destination_id} sequence=0 payload_len={}",
+                    "phase=boundary entry={entry} owner={owner} route_address={route_address} sequence=0 payload_len={}",
                     boundary.len()
                 )
             })?;
-            assert_concurrent_path(connector, destination_id, entry, owner).await?;
+            assert_concurrent_path(connector, route_address, &access_token_source, entry, owner)
+                .await?;
         }
     }
 
@@ -132,6 +160,7 @@ pub(crate) async fn run_matrix() -> anyhow::Result<()> {
 }
 
 pub(crate) async fn run_soak() -> anyhow::Result<()> {
+    let access_token_source = access_token_source()?;
     let addresses = gateway_addresses()?;
     let connectors = connect_all(&addresses).await?;
     let duration = soak_duration()?;
@@ -143,27 +172,34 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
 
     for worker in 0..concurrency {
         let connector = connectors[worker % connectors.len()].clone();
+        let access_token_source = access_token_source.clone();
         let completed = Arc::clone(&completed);
         let admission_rejections = Arc::clone(&admission_rejections);
         workers.spawn(async move {
             let mut sequence = 0_u64;
             while Instant::now() < deadline {
-                let target = (worker + sequence as usize) % (DESTINATION_IDS.len() + 1);
-                let destination_id = if target == DESTINATION_IDS.len() {
-                    SHARED_DESTINATION_ID
+                let target = (worker + sequence as usize) % (ROUTE_ADDRESSES.len() + 1);
+                let route_address = if target == ROUTE_ADDRESSES.len() {
+                    SHARED_ROUTE_ADDRESS
                 } else {
-                    DESTINATION_IDS[target]
+                    ROUTE_ADDRESSES[target]
                 };
                 let payload = format!(
-                    "relaygate soak worker={worker} sequence={sequence} client={destination_id}"
+                    "relaygate soak worker={worker} sequence={sequence} route={route_address}"
                 )
                 .into_bytes();
                 assert_echo(
-                    crate::soak_dial::dial(&connector, destination_id, ROUTE_WAIT, &admission_rejections)
+                    crate::soak_dial::dial(
+                        &connector,
+                        route_address,
+                        &access_token_source,
+                        ROUTE_WAIT,
+                        &admission_rejections,
+                    )
                         .await
                         .with_context(|| {
                             format!(
-                                "phase=soak worker={worker} sequence={sequence} destination_id={destination_id}: dial failed"
+                                "phase=soak worker={worker} sequence={sequence} route_address={route_address}: dial failed"
                             )
                         })?,
                     &payload,
@@ -171,7 +207,7 @@ pub(crate) async fn run_soak() -> anyhow::Result<()> {
                 .await
                 .with_context(|| {
                     format!(
-                        "phase=soak worker={worker} sequence={sequence} destination_id={destination_id}: echo failed"
+                        "phase=soak worker={worker} sequence={sequence} route_address={route_address}: echo failed"
                     )
                 })?;
                 completed.fetch_add(1, Ordering::Relaxed);
@@ -246,11 +282,12 @@ pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
         .next()
         .context("at least one Gateway address is required")?;
     let address = environment("RELAYGATE_ADDR", &default_address);
-    let destination_id = environment("RELAYGATE_DESTINATION_ID", DESTINATION_IDS[0]);
+    let route_address = route_address()?;
+    let access_token_source = access_token_source()?;
     let session_count = storm_sessions()?;
     let pause = storm_pause()?;
     let connectors = connect_many(&address, session_count).await?;
-    let marker_pipes = open_marker_pipes(&connectors, &destination_id).await?;
+    let marker_pipes = open_marker_pipes(&connectors, &route_address, &access_token_source).await?;
 
     println!(
         "relaygate reconnect storm ready: {session_count} Relay sessions and marker Pipes; interrupt and restore the Gateway path within {}s",
@@ -259,7 +296,8 @@ pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
     await_marker_pipes_closed(marker_pipes, pause).await?;
     println!("relaygate reconnect storm observed all original Relay sessions close");
 
-    let result = verify_connectors_in_batches(&connectors, &destination_id).await;
+    let result =
+        verify_connectors_in_batches(&connectors, &route_address, &access_token_source).await;
     for connector in connectors {
         connector.close();
     }
@@ -271,32 +309,34 @@ pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) async fn wait_client_registered(destination_id: &str) -> anyhow::Result<()> {
+pub(crate) async fn wait_client_registered(route_address: &str) -> anyhow::Result<()> {
+    let access_token_source = access_token_source()?;
     let connectors = connect_all(&gateway_addresses()?).await?;
     for (entry, connector) in connectors.iter().enumerate() {
         let payload =
-            format!("relaygate wait-client entry={entry} client={destination_id}").into_bytes();
+            format!("relaygate wait-client entry={entry} route={route_address}").into_bytes();
         assert_echo(
-            dial_when_available(connector, destination_id, ROUTE_WAIT).await?,
+            dial_when_available(connector, route_address, &access_token_source, ROUTE_WAIT).await?,
             &payload,
         )
         .await
         .with_context(|| {
-            format!("client {destination_id:?} did not converge from gateway entry {entry}")
+            format!("route {route_address:?} did not converge from gateway entry {entry}")
         })?;
     }
     for connector in connectors {
         connector.close();
     }
-    println!("relaygate client {destination_id:?} converged from all Gateway entries");
+    println!("relaygate route {route_address:?} converged from all Gateway entries");
     Ok(())
 }
 
 pub(crate) async fn expect_shard_isolation(
-    unavailable_destination_id: &str,
+    unavailable_route_address: &str,
     local_owner_index: usize,
-    available_destination_id: &str,
+    available_route_address: &str,
 ) -> anyhow::Result<()> {
+    let access_token_source = access_token_source()?;
     let addresses = gateway_addresses()?;
     let connectors = connect_all(&addresses).await?;
     ensure!(
@@ -306,13 +346,14 @@ pub(crate) async fn expect_shard_isolation(
     );
 
     let local_payload = format!(
-        "relaygate shard-isolation local owner={local_owner_index} client={unavailable_destination_id}"
+        "relaygate shard-isolation local owner={local_owner_index} route={unavailable_route_address}"
     )
     .into_bytes();
     assert_echo(
         dial_when_available(
             &connectors[local_owner_index],
-            unavailable_destination_id,
+            unavailable_route_address,
+            &access_token_source,
             ROUTE_WAIT,
         )
         .await?,
@@ -321,17 +362,21 @@ pub(crate) async fn expect_shard_isolation(
     .await
     .with_context(|| {
         format!(
-            "local owner path for {unavailable_destination_id:?} failed at Gateway index {local_owner_index}"
+            "local owner path for {unavailable_route_address:?} failed at Gateway index {local_owner_index}"
         )
     })?;
 
     for (entry, connector) in connectors.iter().enumerate() {
         if entry != local_owner_index {
-            assert_new_remote_open_unavailable(connector, unavailable_destination_id)
+            assert_new_remote_open_unavailable(
+                connector,
+                unavailable_route_address,
+                &access_token_source,
+            )
                 .await
                 .with_context(|| {
                     format!(
-                        "remote path entry={entry} client={unavailable_destination_id:?} did not fail at the unavailable shard boundary"
+                        "remote path entry={entry} route={unavailable_route_address:?} did not fail at the unavailable shard boundary"
                     )
                 })?;
         }
@@ -339,17 +384,23 @@ pub(crate) async fn expect_shard_isolation(
 
     for (entry, connector) in connectors.iter().enumerate() {
         let payload = format!(
-            "relaygate shard-isolation healthy entry={entry} client={available_destination_id}"
+            "relaygate shard-isolation healthy entry={entry} route={available_route_address}"
         )
         .into_bytes();
         assert_echo(
-            dial_when_available(connector, available_destination_id, ROUTE_WAIT).await?,
+            dial_when_available(
+                connector,
+                available_route_address,
+                &access_token_source,
+                ROUTE_WAIT,
+            )
+            .await?,
             &payload,
         )
         .await
         .with_context(|| {
             format!(
-                "healthy shard path failed from Gateway index {entry} to {available_destination_id:?}"
+                "healthy shard path failed from Gateway index {entry} to {available_route_address:?}"
             )
         })?;
     }
@@ -358,7 +409,7 @@ pub(crate) async fn expect_shard_isolation(
         connector.close();
     }
     println!(
-        "RouteTable shard isolation verified: client {unavailable_destination_id:?} stayed local-only at Gateway index {local_owner_index}; client {available_destination_id:?} remained reachable from all Gateways"
+        "RouteTable shard isolation verified: route {unavailable_route_address:?} stayed local-only at Gateway index {local_owner_index}; route {available_route_address:?} remained reachable from all Gateways"
     );
     Ok(())
 }
@@ -375,15 +426,19 @@ pub(crate) async fn connect(address: &str) -> anyhow::Result<Relay> {
 
 pub(crate) async fn dial_when_available(
     connector: &Relay,
-    destination_id: &str,
+    route_address: &str,
+    access_token_source: &AccessTokenSource,
     wait: Duration,
 ) -> anyhow::Result<Pipe> {
-    let destination_id: DestinationId = destination_id
+    let route_address: RouteAddress = route_address
         .parse()
-        .with_context(|| format!("invalid UUIDv4 DestinationId {destination_id:?}"))?;
+        .with_context(|| format!("invalid RouteAddress {route_address:?}"))?;
     let deadline = Instant::now() + wait;
     loop {
-        match connector.dial(destination_id).await {
+        match connector
+            .dial(route_address.clone(), access_token_source.clone())
+            .await
+        {
             Ok(pipe) => return Ok(pipe),
             Err(error)
                 if Instant::now() < deadline
@@ -447,7 +502,8 @@ async fn connect_many(address: &str, count: usize) -> anyhow::Result<Vec<Relay>>
 
 async fn open_marker_pipes(
     connectors: &[Relay],
-    destination_id: &str,
+    route_address: &str,
+    access_token_source: &AccessTokenSource,
 ) -> anyhow::Result<Vec<Pipe>> {
     let mut pipes = Vec::with_capacity(connectors.len());
     for (batch, connectors) in connectors.chunks(STORM_PIPE_BATCH_SIZE).enumerate() {
@@ -455,9 +511,16 @@ async fn open_marker_pipes(
         for (offset, connector) in connectors.iter().enumerate() {
             let index = batch * STORM_PIPE_BATCH_SIZE + offset;
             let connector = connector.clone();
-            let destination_id = destination_id.to_owned();
+            let route_address = route_address.to_owned();
+            let access_token_source = access_token_source.clone();
             operations.spawn(async move {
-                let mut pipe = dial_when_available(&connector, &destination_id, ROUTE_WAIT).await?;
+                let mut pipe = dial_when_available(
+                    &connector,
+                    &route_address,
+                    &access_token_source,
+                    ROUTE_WAIT,
+                )
+                .await?;
                 let marker = format!("relaygate reconnect marker session={index}").into_bytes();
                 timeout(ECHO_DEADLINE, async {
                     pipe.write_all(&marker).await?;
@@ -502,7 +565,8 @@ async fn await_marker_pipes_closed(pipes: Vec<Pipe>, deadline: Duration) -> anyh
 
 async fn verify_connectors_in_batches(
     connectors: &[Relay],
-    destination_id: &str,
+    route_address: &str,
+    access_token_source: &AccessTokenSource,
 ) -> anyhow::Result<()> {
     for (batch, connectors) in connectors.chunks(STORM_PIPE_BATCH_SIZE).enumerate() {
         let mut operations = JoinSet::new();
@@ -512,9 +576,10 @@ async fn verify_connectors_in_batches(
             spawn_echo(
                 &mut operations,
                 connector.clone(),
-                destination_id.to_owned(),
+                route_address.to_owned(),
+                access_token_source.clone(),
                 payload,
-                format!("phase=reconnect-storm session={index} destination_id={destination_id}"),
+                format!("phase=reconnect-storm session={index} route_address={route_address}"),
             );
         }
         join_all(&mut operations).await?;
@@ -525,14 +590,16 @@ async fn verify_connectors_in_batches(
 fn spawn_echo(
     operations: &mut JoinSet<anyhow::Result<()>>,
     connector: Relay,
-    destination_id: String,
+    route_address: String,
+    access_token_source: AccessTokenSource,
     payload: Vec<u8>,
     context: String,
 ) {
     operations.spawn(async move {
-        let pipe = dial_when_available(&connector, &destination_id, ROUTE_WAIT)
-            .await
-            .with_context(|| format!("{context}: dial failed"))?;
+        let pipe =
+            dial_when_available(&connector, &route_address, &access_token_source, ROUTE_WAIT)
+                .await
+                .with_context(|| format!("{context}: dial failed"))?;
         assert_echo(pipe, &payload)
             .await
             .with_context(|| format!("{context}: echo failed"))
@@ -548,7 +615,8 @@ async fn join_all(operations: &mut JoinSet<anyhow::Result<()>>) -> anyhow::Resul
 
 async fn assert_concurrent_path(
     connector: &Relay,
-    destination_id: &str,
+    route_address: &str,
+    access_token_source: &AccessTokenSource,
     entry: usize,
     owner: usize,
 ) -> anyhow::Result<()> {
@@ -559,13 +627,14 @@ async fn assert_concurrent_path(
             entry * 10_000 + owner * 100 + sequence,
         );
         let context = format!(
-            "phase=concurrent entry={entry} owner={owner} destination_id={destination_id} sequence={sequence} payload_len={}",
+            "phase=concurrent entry={entry} owner={owner} route_address={route_address} sequence={sequence} payload_len={}",
             payload.len()
         );
         spawn_echo(
             &mut operations,
             connector.clone(),
-            destination_id.to_owned(),
+            route_address.to_owned(),
+            access_token_source.clone(),
             payload,
             context,
         );
@@ -575,12 +644,16 @@ async fn assert_concurrent_path(
 
 async fn assert_new_remote_open_unavailable(
     connector: &Relay,
-    destination_id: &str,
+    route_address: &str,
+    access_token_source: &AccessTokenSource,
 ) -> anyhow::Result<()> {
-    let destination_id: DestinationId = destination_id
+    let route_address: RouteAddress = route_address
         .parse()
-        .with_context(|| format!("invalid UUIDv4 DestinationId {destination_id:?}"))?;
-    match connector.dial(destination_id).await {
+        .with_context(|| format!("invalid RouteAddress {route_address:?}"))?;
+    match connector
+        .dial(route_address, access_token_source.clone())
+        .await
+    {
         Ok(mut pipe) => {
             let _ = pipe.close().await;
             bail!("new remote open unexpectedly succeeded")

@@ -121,9 +121,9 @@ fn execute(
             .map_err(TransportError::from),
         DomainRequest::Resolve {
             generation,
-            destination_id,
+            address,
         } => shard
-            .resolve(context, generation, &destination_id, now)
+            .resolve(context, generation, &address, now)
             .map(|bindings| WireResponse::resolved(&bindings))
             .map_err(TransportError::from),
     }

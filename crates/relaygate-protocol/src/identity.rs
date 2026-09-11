@@ -53,51 +53,9 @@ opaque_uuid!(
     SessionId
 );
 opaque_uuid!(
-    /// Identifies one live Listener binding.
+    /// Identifies one live route binding.
     BindingId
 );
-/// Application-owned UUIDv4 logical routing address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DestinationId(Uuid);
-
-impl DestinationId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-
-    #[must_use]
-    pub fn try_from_uuid(value: Uuid) -> Option<Self> {
-        (value.get_version_num() == 4).then_some(Self(value))
-    }
-
-    #[must_use]
-    pub const fn as_uuid(self) -> Uuid {
-        self.0
-    }
-}
-
-impl Default for DestinationId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for DestinationId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl std::str::FromStr for DestinationId {
-    type Err = &'static str;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = Uuid::parse_str(value).map_err(|_| "DestinationId must be a UUID")?;
-        Self::try_from_uuid(value).ok_or("DestinationId must be UUIDv4")
-    }
-}
-
 /// Identifies one Pipe as its origin Relay session plus a session-local counter.
 ///
 /// `connection_id` is monotonic only within its origin session. Combining

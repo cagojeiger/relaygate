@@ -168,7 +168,7 @@ impl RemoteStreamGuard {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct OpenIdentity {
     entry_gateway: GatewayId,
-    connector_session: SessionId,
+    origin_session: SessionId,
     connection_id: u64,
 }
 
@@ -176,12 +176,12 @@ impl OpenIdentity {
     #[must_use]
     pub(crate) const fn new(
         entry_gateway: GatewayId,
-        connector_session: SessionId,
+        origin_session: SessionId,
         connection_id: u64,
     ) -> Self {
         Self {
             entry_gateway,
-            connector_session,
+            origin_session,
             connection_id,
         }
     }
@@ -192,8 +192,8 @@ impl OpenIdentity {
     }
 
     #[must_use]
-    pub(crate) const fn connector_session(self) -> SessionId {
-        self.connector_session
+    pub(crate) const fn origin_session(self) -> SessionId {
+        self.origin_session
     }
 
     #[must_use]

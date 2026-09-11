@@ -1,12 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
+use futures_util::FutureExt;
 use relaygate_protocol::Frame;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{Instant, sleep_until, timeout_at};
 use tokio_util::sync::CancellationToken;
 
 use super::{PendingRegistration, RelaySessionState};
 use crate::{
-    Error, ErrorCode, PeerObservation,
+    AccessAction, AccessTokenRequest, Error, ErrorCode, PeerObservation, RouteAddress,
     listener::{ListenerState, ListenerStatus, RelayInner, is_current_desired},
     session::{EstablishedSession, send_bounded},
 };
@@ -17,34 +18,34 @@ pub(super) async fn reconcile_registrations(
     session: &mut RelaySessionState,
     session_cancel: &CancellationToken,
 ) -> bool {
-    let Some(desired) = snapshot_desired_by_client(inner) else {
+    let Some(desired) = snapshot_desired_by_address(inner) else {
         return false;
     };
     let abandoned_committed_registration = session.pending.values().any(|pending| {
         pending.committed
             && (!desired
-                .get(&pending.state.destination_id)
+                .get(&pending.state.address)
                 .is_some_and(|current| Arc::ptr_eq(current, &pending.state))
                 || *pending.state.status.borrow() == ListenerStatus::Closed)
     });
     if abandoned_committed_registration {
         return false;
     }
-    let registered_destinations = session.registrations.keys().copied().collect::<Vec<_>>();
-    for destination_id in registered_destinations {
+    let registered_addresses = session.registrations.keys().cloned().collect::<Vec<_>>();
+    for address in registered_addresses {
         let stale = session
             .registrations
-            .get(&destination_id)
+            .get(&address)
             .is_some_and(|registration| {
                 !desired
-                    .get(&destination_id)
+                    .get(&address)
                     .is_some_and(|current| Arc::ptr_eq(current, &registration.state))
                     || *registration.state.status.borrow() == ListenerStatus::Closed
             });
         if !stale {
             continue;
         }
-        let Some(registration) = session.registrations.remove(&destination_id) else {
+        let Some(registration) = session.registrations.remove(&address) else {
             continue;
         };
         let Some(request_id) = session.next_request_id() else {
@@ -73,10 +74,8 @@ pub(super) async fn reconcile_registrations(
         if matches!(
             *state.status.borrow(),
             ListenerStatus::Blocked | ListenerStatus::Closed
-        ) || session.registrations.contains_key(&state.destination_id)
-            || session
-                .pending_by_client
-                .contains_key(&state.destination_id)
+        ) || session.registrations.contains_key(&state.address)
+            || session.pending_by_address.contains_key(&state.address)
         {
             continue;
         }
@@ -126,45 +125,100 @@ pub(super) async fn reconcile_registrations(
             },
         );
         session
-            .pending_by_client
-            .insert(state.destination_id, request_id);
-        if !state.begin_registration_commit() {
-            session.pending.remove(&request_id);
-            session.pending_by_client.remove(&state.destination_id);
-            continue;
-        }
-        if let Some(pending) = session.pending.get_mut(&request_id) {
-            pending.committed = true;
-        }
-        if send_bounded(
-            &mut established.transport,
-            Frame::Publish {
-                request_id,
-                destination_id: state.destination_id.to_wire(),
-            },
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(inner.config.operation_timeout),
-            session_cancel,
-        )
-        .await
-        .is_err()
-        {
-            return false;
-        }
+            .pending_by_address
+            .insert(state.address.clone(), request_id);
+        let source = state.access_token_source.clone();
+        let address = state.address.clone();
+        session.token_supplies.push(
+            async move {
+                let result = timeout_at(
+                    deadline,
+                    source.supply(AccessTokenRequest {
+                        action: AccessAction::Publish,
+                        address,
+                    }),
+                )
+                .await
+                .map_err(|_| Error::deadline(PeerObservation::NotObserved))
+                .and_then(|result| result);
+                (request_id, result)
+            }
+            .boxed(),
+        );
     }
 
     !inner.cancel.is_cancelled()
 }
 
-fn snapshot_desired_by_client(
+pub(super) async fn commit_registration_token(
+    request_id: u64,
+    token: crate::Result<relaygate_protocol::BearerToken>,
     inner: &RelayInner,
-) -> Option<HashMap<crate::DestinationId, Arc<ListenerState>>> {
+    established: &mut EstablishedSession,
+    session: &mut RelaySessionState,
+    session_cancel: &CancellationToken,
+) -> bool {
+    let Some(mut pending) = session.pending.remove(&request_id) else {
+        return true;
+    };
+    let state = Arc::clone(&pending.state);
+    session.pending_by_address.remove(&state.address);
+    if !is_current_desired(inner, &state) || *state.status.borrow() == ListenerStatus::Closed {
+        return true;
+    }
+    let token = match token {
+        Ok(token) if pending.deadline > Instant::now() => token,
+        Ok(_) => {
+            handle_token_source_error(inner, &state, Error::deadline(PeerObservation::NotObserved));
+            return true;
+        }
+        Err(error) => {
+            handle_token_source_error(inner, &state, error);
+            return true;
+        }
+    };
+    if !state.begin_registration_commit() {
+        return true;
+    }
+    pending.committed = true;
+    let deadline = pending.deadline;
+    session.pending.insert(request_id, pending);
+    session
+        .pending_by_address
+        .insert(state.address.clone(), request_id);
+    send_bounded(
+        &mut established.transport,
+        Frame::Publish {
+            request_id,
+            address: state.address.clone(),
+            access_token: token,
+        },
+        deadline
+            .saturating_duration_since(Instant::now())
+            .min(inner.config.operation_timeout),
+        session_cancel,
+    )
+    .await
+    .is_ok()
+}
+
+fn handle_token_source_error(inner: &RelayInner, state: &Arc<ListenerState>, error: Error) {
+    if !state.was_returned() {
+        inner.fail_initial_listener(state, error);
+        return;
+    }
+    state.set_status(ListenerStatus::Suspended, Some(error));
+    inner.schedule_reconcile();
+}
+
+fn snapshot_desired_by_address(
+    inner: &RelayInner,
+) -> Option<HashMap<RouteAddress, Arc<ListenerState>>> {
     match inner.desired.lock() {
         Ok(desired) => Some(
             desired
                 .iter()
-                .map(|(destination_id, state)| (*destination_id, Arc::clone(state)))
+                .map(|(address, state)| (address.clone(), Arc::clone(state)))
                 .collect(),
         ),
         Err(_) => {

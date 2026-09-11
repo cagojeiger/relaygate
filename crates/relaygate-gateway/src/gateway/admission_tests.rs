@@ -2,9 +2,7 @@ use std::{error::Error, sync::Arc, time::Duration};
 
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
-use relaygate_protocol::{
-    ClusterToken, DestinationId, Frame, FrameCodec, MAX_HELLO_FRAME_LEN, ProtocolError,
-};
+use relaygate_protocol::{Frame, FrameCodec, MAX_HELLO_FRAME_LEN, ProtocolError};
 use tokio::{
     io::{AsyncWriteExt, DuplexStream, duplex},
     task::JoinHandle,
@@ -16,11 +14,10 @@ use tokio_util::{
 };
 
 use super::{Gateway, GatewayConfig, session::SessionError};
+use crate::test_support::{TestAction, authorization_config, bearer_token, unique_address};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 type SessionTask = JoinHandle<Result<(), SessionError>>;
-const TOKEN: &str = "admission-test-token";
-
 mod backpressure;
 
 fn start_session(
@@ -56,7 +53,7 @@ fn assert_empty(gateway: &Gateway) {
 #[tokio::test]
 async fn handshake_capacity_is_separate_and_released_after_welcome() -> TestResult {
     let gateway = Gateway::new(
-        GatewayConfig::new(TOKEN)
+        GatewayConfig::new(authorization_config())
             .with_max_sessions(3)
             .with_max_pending_handshakes(1),
     )?;
@@ -69,11 +66,7 @@ async fn handshake_capacity_is_separate_and_released_after_welcome() -> TestResu
             .is_err()
     );
     let mut client = Framed::new(client, FrameCodec::default());
-    client
-        .send(Frame::Hello {
-            cluster_token: ClusterToken::new(TOKEN),
-        })
-        .await?;
+    client.send(Frame::Hello).await?;
     assert!(matches!(
         client.next().await,
         Some(Ok(Frame::Welcome { .. }))
@@ -99,9 +92,9 @@ async fn handshake_capacity_is_separate_and_released_after_welcome() -> TestResu
 
 #[tokio::test]
 async fn oversized_pre_auth_header_is_rejected_without_waiting_for_payload() -> TestResult {
-    let gateway = Gateway::new(GatewayConfig::new(TOKEN))?;
+    let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
     let (mut client, _cancel, task) = start_session(&gateway, 8)?;
-    let mut header = vec![b'R', b'G', 2, 1];
+    let mut header = vec![b'R', b'G', 3, 1];
     header.extend_from_slice(&((MAX_HELLO_FRAME_LEN + 1) as u32).to_be_bytes());
     client.write_all(&header).await?;
     assert!(matches!(
@@ -117,18 +110,13 @@ async fn oversized_pre_auth_header_is_rejected_without_waiting_for_payload() -> 
 
 #[tokio::test(start_paused = true)]
 async fn stalled_hello_and_blocked_handshake_responses_release_all_capacity() -> TestResult {
-    for token in [None, Some(TOKEN), Some("wrong-token")] {
-        let gateway = Gateway::new(GatewayConfig::new(TOKEN))?;
+    for send_hello in [false, true] {
+        let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
         // Neither WELCOME nor SESSION_REJECTED fits unless the client reads.
         let (mut client, _cancel, task) = start_session(&gateway, 8)?;
-        if let Some(token) = token {
+        if send_hello {
             let mut hello = BytesMut::new();
-            FrameCodec::default().encode(
-                Frame::Hello {
-                    cluster_token: ClusterToken::new(token),
-                },
-                &mut hello,
-            )?;
+            FrameCodec::default().encode(Frame::Hello, &mut hello)?;
             client.write_all(&hello).await?;
         }
         assert!(matches!(
@@ -141,22 +129,18 @@ async fn stalled_hello_and_blocked_handshake_responses_release_all_capacity() ->
 }
 
 #[tokio::test]
-async fn admission_preserves_pipelined_frames_and_maximum_legal_hello() -> TestResult {
-    let token = "a".repeat(u16::MAX as usize);
-    let gateway = Gateway::new(GatewayConfig::new(&token))?;
+async fn admission_preserves_pipelined_authorized_frame() -> TestResult {
+    let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
     let (mut client, cancel, task) = start_session(&gateway, 128 * 1024)?;
     let mut frames = BytesMut::new();
     let mut codec = FrameCodec::default();
-    codec.encode(
-        Frame::Hello {
-            cluster_token: ClusterToken::new(token),
-        },
-        &mut frames,
-    )?;
+    codec.encode(Frame::Hello, &mut frames)?;
+    let address = unique_address();
     codec.encode(
         Frame::Publish {
             request_id: 1,
-            destination_id: DestinationId::new(),
+            address: address.clone(),
+            access_token: bearer_token(&address, TestAction::Publish),
         },
         &mut frames,
     )?;
@@ -178,17 +162,12 @@ async fn admission_preserves_pipelined_frames_and_maximum_legal_hello() -> TestR
 
 #[tokio::test(start_paused = true)]
 async fn late_hello_response_uses_only_the_remaining_handshake_budget() -> TestResult {
-    let gateway = Gateway::new(GatewayConfig::new(TOKEN))?;
+    let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
     let (mut client, _cancel, task) = start_session(&gateway, 8)?;
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(4)).await;
     let mut hello = BytesMut::new();
-    FrameCodec::default().encode(
-        Frame::Hello {
-            cluster_token: ClusterToken::new(TOKEN),
-        },
-        &mut hello,
-    )?;
+    FrameCodec::default().encode(Frame::Hello, &mut hello)?;
     client.write_all(&hello).await?;
     assert!(matches!(
         timeout(Duration::from_secs(2), task).await??,
@@ -201,12 +180,22 @@ async fn late_hello_response_uses_only_the_remaining_handshake_budget() -> TestR
 #[tokio::test]
 async fn malformed_first_frame_and_cancellation_release_handshake_capacity() -> TestResult {
     for input in [Some(Frame::Ping { nonce: 1 }), None] {
-        let gateway = Gateway::new(GatewayConfig::new(TOKEN))?;
+        let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
         let (client, cancel, task) = start_session(&gateway, 4096)?;
         let mut client = Framed::new(client, FrameCodec::default());
         if let Some(frame) = input {
             client.send(frame).await?;
-            assert!(matches!(task.await?, Err(SessionError::ExpectedHello)));
+            let result = task.await?;
+            assert!(
+                matches!(
+                    result,
+                    Err(SessionError::Protocol(ProtocolError::FrameTooLarge {
+                        maximum: MAX_HELLO_FRAME_LEN,
+                        ..
+                    }))
+                ),
+                "unexpected handshake result: {result:?}"
+            );
         } else {
             cancel.cancel();
             task.await??;
@@ -219,7 +208,7 @@ async fn malformed_first_frame_and_cancellation_release_handshake_capacity() -> 
 #[tokio::test]
 async fn handshake_limit_is_capped_by_total_session_limit() -> TestResult {
     let gateway = Gateway::new(
-        GatewayConfig::new(TOKEN)
+        GatewayConfig::new(authorization_config())
             .with_max_sessions(1)
             .with_max_pending_handshakes(10),
     )?;
@@ -246,7 +235,7 @@ async fn tls_handshake_saturation_rejects_before_tls_and_recovers() -> TestResul
     let client_tls =
         ClientTlsConfig::server_authenticated("relaygate.test", certificate.as_bytes())?;
     let gateway = Gateway::new(
-        GatewayConfig::new(TOKEN)
+        GatewayConfig::new(authorization_config())
             .with_sdk_tls(tls)
             .with_max_sessions(3)
             .with_max_pending_handshakes(1)
@@ -264,11 +253,7 @@ async fn tls_handshake_saturation_rejects_before_tls_and_recovers() -> TestResul
             let stream = TcpStream::connect(address).await?;
             let stream = client_tls.connect_boxed(stream).await?;
             let mut client = Framed::new(stream, FrameCodec::default());
-            client
-                .send(Frame::Hello {
-                    cluster_token: ClusterToken::new(TOKEN),
-                })
-                .await?;
+            client.send(Frame::Hello).await?;
             assert!(matches!(
                 client.next().await,
                 Some(Ok(Frame::Welcome { .. }))

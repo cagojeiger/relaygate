@@ -2,11 +2,10 @@ clusterDomain: cluster.local
 
 imagePullSecrets: []
 
-credentials:
-  # Workload가 release namespace의 operator-managed credential을 읽는다.
-  existingSecret: relaygate-credentials
-  clusterTokenKey: cluster-token
-  nextClusterTokenKey: next-cluster-token
+authorization:
+  # Namespace별 trusted issuer와 ES256 public JWK만 포함한다.
+  existingConfigMap: relaygate-authorization
+  configKey: authorization.json
 
 tls:
   # SDK edge와 internal mTLS는 별도 trust domain이며 platform이 Issuer/CA를 소유한다.

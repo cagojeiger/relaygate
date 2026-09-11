@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    AuthenticatedGatewayId, DestinationId, RegistrationKey, RegistrationRevision, RequestContext,
+    AuthenticatedGatewayId, RegistrationKey, RegistrationRevision, RequestContext, RouteAddress,
     RouteTableConfig, RouteTableShard, ShardId,
 };
 use tokio::time::Instant;
@@ -100,7 +100,7 @@ fn lost_register_response_retry_uses_only_the_current_attempt() -> TestResult {
             .resolve(
                 context,
                 generation,
-                &DestinationId::new("11111111-1111-4111-8111-111111111111")?,
+                &"test/11111111-1111-4111-8111-111111111111".parse::<RouteAddress>()?,
                 route_table_start + Duration::from_secs(6),
             )?
             .len(),

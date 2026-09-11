@@ -2,8 +2,8 @@ use std::future::pending;
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_route_table::{
-    AuthenticatedGatewayId, BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry,
-    MappingSnapshot, RegistrationKey, RegistrationRevision, RelaySessionId, RequestContext,
+    AuthenticatedGatewayId, BindingId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot,
+    RegistrationKey, RegistrationRevision, RelaySessionId, RequestContext, RouteAddress,
     RouteTableConfig, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
 use tokio::{net::TcpStream, sync::oneshot};
@@ -22,7 +22,7 @@ use super::{
     *,
 };
 
-const DIRECTORY: &[u8] = br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"rt-0:27430"}]}"#;
+const DIRECTORY: &[u8] = br#"{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{"id":"rt-0","endpoint":"rt-0:27430"}]}"#;
 
 #[test]
 fn config_rejects_zero_bounds_and_deadline() {
@@ -140,7 +140,9 @@ async fn bounded_request_and_writer_queues_report_full_without_waiting()
     let context = RequestContext::new(AuthenticatedGatewayId::from_verified_transport(gateway_id));
     let request = WireRequest::resolve(
         ShardDirectoryGeneration::from_bytes([1; 32]),
-        &DestinationId::new("11111111-1111-4111-8111-111111111111")?,
+        &"test/11111111-1111-4111-8111-111111111111"
+            .parse::<RouteAddress>()
+            .map_err(relaygate_route_table::RouteTableError::from)?,
     );
     let (requests, _request_receiver) = mpsc::channel(1);
     let _pending = submit_service_request(&requests, context, request)?;
@@ -149,7 +151,9 @@ async fn bounded_request_and_writer_queues_report_full_without_waiting()
         context,
         WireRequest::resolve(
             ShardDirectoryGeneration::from_bytes([1; 32]),
-            &DestinationId::new("22222222-2222-4222-8222-222222222222")?,
+            &"test/22222222-2222-4222-8222-222222222222"
+                .parse::<RouteAddress>()
+                .map_err(relaygate_route_table::RouteTableError::from)?,
         ),
     )
     .err();
@@ -301,7 +305,9 @@ async fn expiry_driver_removes_state_without_an_intervening_request() -> Result<
     let context = RequestContext::new(AuthenticatedGatewayId::from_verified_transport(gateway_id));
     let key = RegistrationKey::new(gateway_id, relay_session_id, ShardId::new("rt-0")?);
     let snapshot = MappingSnapshot::new([MappingEntry::new(
-        DestinationId::new("11111111-1111-4111-8111-111111111111")?,
+        "test/11111111-1111-4111-8111-111111111111"
+            .parse::<RouteAddress>()
+            .map_err(relaygate_route_table::RouteTableError::from)?,
         gateway_id,
         relay_session_id,
         BindingId::from_uuid(Uuid::from_u128(3)),

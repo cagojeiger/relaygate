@@ -2,9 +2,72 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use relaygate_route_table::{ErrorCode, RegistrationRevision, RouteTableError};
+use relaygate_route_table::{
+    BindingId, ErrorCode, GatewayLocator, MappingEntry, RegistrationRevision, RouteAddress,
+    RouteTableError,
+};
+use uuid::Uuid;
 
-use support::{binding, client, context, gateway, key, mapping, session, shard, snapshot};
+use support::{address, binding, context, gateway, key, mapping, session, shard, snapshot};
+
+#[test]
+fn equal_destination_names_in_different_namespaces_are_isolated() -> Result<(), RouteTableError> {
+    let now = Instant::now();
+    let gateway_id = gateway(900);
+    let relay_session_id = session(901);
+    let registration_key = key(gateway_id, relay_session_id)?;
+    let mut shard = shard(Duration::from_secs(60))?;
+    let generation = shard.generation();
+    let lease_id = shard
+        .register(
+            context(gateway_id),
+            generation,
+            registration_key.clone(),
+            now,
+        )?
+        .lease_id();
+    let red = "red/shared".parse::<RouteAddress>()?;
+    let blue = "blue/shared".parse::<RouteAddress>()?;
+    let red_mapping = MappingEntry::new(
+        red.clone(),
+        gateway_id,
+        relay_session_id,
+        BindingId::from_uuid(Uuid::from_u128(902)),
+        GatewayLocator::new("gw-red")?,
+    );
+    let blue_mapping = MappingEntry::new(
+        blue.clone(),
+        gateway_id,
+        relay_session_id,
+        BindingId::from_uuid(Uuid::from_u128(903)),
+        GatewayLocator::new("gw-blue")?,
+    );
+
+    shard.update(
+        context(gateway_id),
+        generation,
+        &registration_key,
+        lease_id,
+        RegistrationRevision::FIRST,
+        snapshot([red_mapping.clone(), blue_mapping.clone()])?,
+        now,
+    )?;
+
+    assert_eq!(
+        shard
+            .resolve(context(gateway_id), generation, &red, now)?
+            .entries(),
+        &[red_mapping]
+    );
+    assert_eq!(
+        shard
+            .resolve(context(gateway_id), generation, &blue, now)?
+            .entries(),
+        &[blue_mapping]
+    );
+    assert_eq!(shard.stats().route_count, 2);
+    Ok(())
+}
 
 #[test]
 fn register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle()
@@ -61,7 +124,7 @@ fn register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle()
     let alpha_bindings = shard.resolve(
         context,
         generation,
-        &client("alpha")?,
+        &address("alpha")?,
         start + Duration::from_secs(7),
     )?;
     assert_eq!(alpha_bindings.entries(), std::slice::from_ref(&alpha));
@@ -80,7 +143,7 @@ fn register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle()
         shard.resolve(
             context,
             generation,
-            &client("alpha")?,
+            &address("alpha")?,
             start + Duration::from_secs(8),
         ),
         Err(RouteTableError::NotFound)
@@ -90,7 +153,7 @@ fn register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle()
             .resolve(
                 context,
                 generation,
-                &client("beta")?,
+                &address("beta")?,
                 start + Duration::from_secs(8),
             )?
             .entries(),
@@ -126,7 +189,7 @@ fn register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle()
         shard.resolve(
             context,
             generation,
-            &client("beta")?,
+            &address("beta")?,
             start + Duration::from_secs(21),
         ),
         Err(RouteTableError::NotFound)
@@ -237,7 +300,7 @@ fn revision_rules_are_monotonic_atomic_and_idempotent() -> Result<(), RouteTable
             .resolve(
                 context,
                 generation,
-                &client("beta")?,
+                &address("beta")?,
                 start + Duration::from_secs(4),
             )?
             .entries(),

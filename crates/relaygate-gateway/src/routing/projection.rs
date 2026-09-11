@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use relaygate_protocol::{BindingId as ProtocolBindingId, SessionId};
 use relaygate_route_table::{
-    BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot,
-    RelaySessionId, ShardDirectory, ShardId,
+    BindingId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot, RelaySessionId,
+    ShardDirectory, ShardId,
 };
 
 use crate::registry::Binding;
@@ -38,13 +38,13 @@ pub(super) fn project_session(
                 "binding belongs to a different RelaySession".to_owned(),
             ));
         }
-        let destination_id = DestinationId::new(binding.destination_id.to_string())?;
-        let shard_id = directory.authority(&destination_id).id();
+        let address = binding.address;
+        let shard_id = directory.authority(&address).id();
         let entries = by_shard.get_mut(shard_id).ok_or_else(|| {
             RoutingError::InvalidProjection("authority shard is absent from directory".to_owned())
         })?;
         entries.push(MappingEntry::new(
-            destination_id,
+            address,
             gateway_id,
             relay_session_id,
             project_binding_id(binding.id),

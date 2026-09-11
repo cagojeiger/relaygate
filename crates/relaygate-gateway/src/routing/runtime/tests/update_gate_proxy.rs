@@ -244,7 +244,7 @@ async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<Option<
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(error) => return Err(error),
     }
-    if &header[..2] != b"RT" || header[2] != 2 {
+    if &header[..2] != b"RT" || header[2] != 3 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid RouteTable frame header",

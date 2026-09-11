@@ -1,20 +1,23 @@
 use bytes::{Bytes, BytesMut};
 use relaygate_protocol::{
-    BindingId, ClusterToken, DestinationId, ErrorCode, Frame, FrameCodec, PeerObservation, PipeId,
-    ProtocolError, SessionId,
+    BearerToken, BindingId, ErrorCode, Frame, FrameCodec, MAX_BEARER_TOKEN_BYTES, PeerObservation,
+    PipeId, ProtocolError, RouteAddress, SessionId,
 };
 use tokio_util::codec::{Decoder, Encoder};
+
+fn address() -> Result<RouteAddress, Box<dyn std::error::Error>> {
+    Ok("inference/stt.seoul".parse()?)
+}
 
 #[test]
 fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let session_id = SessionId::new();
-    let destination_id = DestinationId::new();
+    let address = address()?;
+    let access_token = BearerToken::new("secret")?;
     let binding_id = BindingId::new();
     let pipe_id = PipeId::new(session_id, 42);
     let frames = vec![
-        Frame::Hello {
-            cluster_token: ClusterToken::new("secret"),
-        },
+        Frame::Hello,
         Frame::Welcome { session_id },
         Frame::SessionRejected {
             code: ErrorCode::Unauthenticated,
@@ -22,7 +25,8 @@ fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         },
         Frame::Publish {
             request_id: 1,
-            destination_id,
+            address: address.clone(),
+            access_token: access_token.clone(),
         },
         Frame::Published {
             request_id: 1,
@@ -40,12 +44,13 @@ fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         Frame::Unpublished { request_id: 3 },
         Frame::Dial {
             connection_id: 42,
-            destination_id,
+            address: address.clone(),
+            access_token,
         },
         Frame::Offer {
             pipe_id,
             binding_id,
-            destination_id,
+            address,
         },
         Frame::OfferAccepted { pipe_id },
         Frame::OfferRejected {
@@ -90,7 +95,8 @@ fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
 fn fragmented_frame_waits_for_complete_payload() -> Result<(), Box<dyn std::error::Error>> {
     let expected = Frame::Dial {
         connection_id: 7,
-        destination_id: DestinationId::new(),
+        address: address()?,
+        access_token: BearerToken::new("grant")?,
     };
     let mut encoded = BytesMut::new();
     FrameCodec::default().encode(expected.clone(), &mut encoded)?;
@@ -104,25 +110,42 @@ fn fragmented_frame_waits_for_complete_payload() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn version_one_is_rejected_before_payload_decode() {
-    let mut input = BytesMut::from(&b"RG\x01\x01\x00\x00\x00\x00"[..]);
+fn version_two_is_rejected_before_payload_decode() {
+    let mut input = BytesMut::from(&b"RG\x02\x01\x00\x00\x00\x00"[..]);
 
     let error = FrameCodec::default().decode(&mut input);
 
-    assert!(matches!(error, Err(ProtocolError::UnsupportedVersion(1))));
+    assert!(matches!(error, Err(ProtocolError::UnsupportedVersion(2))));
 }
 
 #[test]
 fn oversized_frame_is_rejected_before_allocation() {
-    let mut input = BytesMut::from(&b"RG\x02\x0f\x00\x10\x00\x00"[..]);
+    let mut input = BytesMut::from(&b"RG\x03\x0f\x00\x10\x00\x00"[..]);
     let error = FrameCodec::new(1024).decode(&mut input);
     assert!(error.is_err());
 }
 
 #[test]
-fn cluster_token_debug_is_redacted() {
-    let token = ClusterToken::new("must-not-appear");
+fn bearer_token_is_bounded_and_redacted() -> Result<(), ProtocolError> {
+    let token = BearerToken::new("must-not-appear")?;
     let rendered = format!("{token:?}");
     assert!(!rendered.contains("must-not-appear"));
     assert!(rendered.contains("REDACTED"));
+    let frame = Frame::Dial {
+        connection_id: 1,
+        address: "inference/stt.seoul"
+            .parse()
+            .map_err(|_| ProtocolError::InvalidRouteAddress)?,
+        access_token: token,
+    };
+    assert!(!format!("{frame:?}").contains("must-not-appear"));
+    assert!(matches!(
+        BearerToken::new("x".repeat(MAX_BEARER_TOKEN_BYTES + 1)),
+        Err(ProtocolError::FieldTooLong {
+            field: "access_token",
+            maximum: MAX_BEARER_TOKEN_BYTES,
+            ..
+        })
+    ));
+    Ok(())
 }

@@ -22,14 +22,14 @@ impl TransportActor {
             PeerFrame::Open {
                 stream_id,
                 open_identity,
-                destination_id,
+                address,
                 relay_session_id,
                 binding_id,
             } => {
                 self.receive_open(
                     stream_id,
                     open_identity,
-                    destination_id,
+                    address,
                     relay_session_id,
                     binding_id,
                 )
@@ -92,7 +92,7 @@ impl TransportActor {
         &mut self,
         stream_id: StreamId,
         open_identity: OpenIdentity,
-        destination_id: String,
+        address: relaygate_protocol::RouteAddress,
         relay_session_id: SessionId,
         binding_id: BindingId,
     ) {
@@ -152,7 +152,7 @@ impl TransportActor {
         self.emit(PeerEvent::IncomingOpen {
             key: self.key(stream_id),
             open_identity,
-            destination_id,
+            address,
             relay_session_id,
             binding_id,
         })

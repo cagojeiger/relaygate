@@ -2,11 +2,11 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted, implemented |
+| 상태 | Superseded by [ADR 016](016-per-operation-jwt-authorization.md) |
 | credential | current 1개 + next 0..1개 |
 | 권한 단위 | RelayGate trust domain |
 
-## 결정
+## 이전 결정
 
 ```text
 Configured transport ready (TLS by default)

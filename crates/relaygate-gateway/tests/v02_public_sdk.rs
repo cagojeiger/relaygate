@@ -3,7 +3,8 @@ use std::{error::Error, time::Duration};
 use rcgen::{CertifiedKey, generate_simple_self_signed};
 use relaygate_gateway::{Gateway, GatewayConfig};
 use relaygate_sdk::{
-    ClientTlsConfig, Config, DestinationId, GatewayTransportConfig, ListenerStatus, Relay,
+    AccessAction, AccessToken, AccessTokenSource, ClientTlsConfig, Config, GatewayTransportConfig,
+    ListenerStatus, Relay,
 };
 use relaygate_transport::ServerTlsConfig;
 use tokio::{
@@ -15,7 +16,9 @@ use tokio_util::sync::CancellationToken;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
-const CLUSTER_TOKEN: &str = "v02-test-cluster-token";
+mod support;
+
+use support::{authorization_config, token_source, unique_address};
 
 #[path = "public_sdk/control_admission.rs"]
 mod control_admission;
@@ -24,7 +27,7 @@ mod control_admission;
 mod endpoint;
 
 #[tokio::test]
-async fn sdk_gateway_path_uses_tls_before_cluster_admission() -> TestResult {
+async fn sdk_gateway_path_uses_tls_before_operation_authorization() -> TestResult {
     let CertifiedKey { cert, signing_key } =
         generate_simple_self_signed(vec!["relaygate.test".to_owned()])?;
     let certificate = cert.pem();
@@ -33,26 +36,28 @@ async fn sdk_gateway_path_uses_tls_before_cluster_admission() -> TestResult {
         ServerTlsConfig::server_authenticated(certificate.as_bytes(), private_key.as_bytes())?;
     let client_tls =
         ClientTlsConfig::server_authenticated("relaygate.test", certificate.as_bytes())?;
-    let config = GatewayConfig::new(CLUSTER_TOKEN).with_sdk_tls(gateway_tls);
+    let config = GatewayConfig::new(authorization_config()?).with_sdk_tls(gateway_tls);
     let (address, shutdown, server) = start_gateway_with_config(config).await?;
 
-    let relay = Relay::connect(Config::with_transport(
-        CLUSTER_TOKEN,
-        GatewayTransportConfig::tls_tcp(address.to_string(), client_tls.clone()),
-    ))
+    let relay = Relay::connect(Config::with_transport(GatewayTransportConfig::tls_tcp(
+        address.to_string(),
+        client_tls,
+    )))
     .await?;
-    let rejected = Relay::connect(
-        Config::with_transport(
-            "wrong-token",
-            GatewayTransportConfig::tls_tcp(address.to_string(), client_tls),
+    let route = unique_address()?;
+    let rejected = relay
+        .listen(
+            route.clone(),
+            AccessTokenSource::static_token(AccessToken::new("not-a-jwt")?),
         )
-        .with_connect_timeout(Duration::from_secs(1))
-        .with_operation_timeout(Duration::from_secs(1)),
-    )
-    .await
-    .err()
-    .ok_or("invalid ClusterToken was admitted over TLS")?;
+        .await
+        .err()
+        .ok_or("invalid access token authorized PUBLISH over TLS")?;
     assert_eq!(rejected.code(), relaygate_sdk::ErrorCode::Unauthenticated);
+    let listener = relay
+        .listen(route.clone(), token_source(&route, AccessAction::Publish)?)
+        .await?;
+    listener.close().await?;
 
     relay.close();
     shutdown.cancel();
@@ -63,22 +68,34 @@ async fn sdk_gateway_path_uses_tls_before_cluster_admission() -> TestResult {
 #[tokio::test]
 async fn one_session_can_listen_dial_and_accept() -> TestResult {
     let (address, shutdown, server) = start_gateway().await?;
-    let config = Config::new_insecure_for_tests(address.to_string(), CLUSTER_TOKEN)
+    let config = Config::new_insecure_for_tests(address.to_string())
         .with_operation_timeout(Duration::from_secs(1))
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50));
     let relay_a = Relay::connect(config.clone()).await?;
     let relay_b = Relay::connect(config).await?;
-    let destination_a = DestinationId::new();
-    let destination_b = DestinationId::new();
-    let listener_a = relay_a.listen(destination_a).await?;
-    let listener_b = relay_b.listen(destination_b).await?;
+    let destination_a = unique_address()?;
+    let destination_b = unique_address()?;
+    let listener_a = relay_a
+        .listen(
+            destination_a.clone(),
+            token_source(&destination_a, AccessAction::Publish)?,
+        )
+        .await?;
+    let listener_b = relay_b
+        .listen(
+            destination_b.clone(),
+            token_source(&destination_b, AccessAction::Publish)?,
+        )
+        .await?;
+    let dial_to_b_token = token_source(&destination_b, AccessAction::Dial)?;
+    let dial_to_a_token = token_source(&destination_a, AccessAction::Dial)?;
 
     let (dial_a_to_b, accepted_by_b, dial_b_to_a, accepted_by_a) =
         timeout(Duration::from_secs(2), async {
             tokio::join!(
-                relay_a.dial(destination_b),
+                relay_a.dial(destination_b.clone(), dial_to_b_token),
                 listener_b.accept(),
-                relay_b.dial(destination_a),
+                relay_b.dial(destination_a.clone(), dial_to_a_token),
                 listener_a.accept(),
             )
         })
@@ -110,15 +127,24 @@ async fn one_session_can_listen_dial_and_accept() -> TestResult {
 #[tokio::test]
 async fn session_frame_buffers_grow_beyond_their_initial_capacity() -> TestResult {
     let (address, shutdown, server) = start_gateway().await?;
-    let config = Config::new_insecure_for_tests(address.to_string(), CLUSTER_TOKEN)
+    let config = Config::new_insecure_for_tests(address.to_string())
         .with_operation_timeout(Duration::from_secs(2));
     let publisher = Relay::connect(config.clone()).await?;
     let caller = Relay::connect(config).await?;
-    let destination = DestinationId::new();
-    let publication = publisher.listen(destination).await?;
+    let destination = unique_address()?;
+    let publication = publisher
+        .listen(
+            destination.clone(),
+            token_source(&destination, AccessAction::Publish)?,
+        )
+        .await?;
+    let dial_token = token_source(&destination, AccessAction::Dial)?;
 
     let (dialed, accepted) = timeout(Duration::from_secs(2), async {
-        tokio::join!(caller.dial(destination), publication.accept())
+        tokio::join!(
+            caller.dial(destination.clone(), dial_token),
+            publication.accept()
+        )
     })
     .await?;
     let mut dialed = dialed?;
@@ -147,16 +173,29 @@ async fn session_frame_buffers_grow_beyond_their_initial_capacity() -> TestResul
 #[tokio::test]
 async fn same_destination_selects_one_of_multiple_relays() -> TestResult {
     let (address, shutdown, server) = start_gateway().await?;
-    let config = Config::new_insecure_for_tests(address.to_string(), CLUSTER_TOKEN)
+    let config = Config::new_insecure_for_tests(address.to_string())
         .with_operation_timeout(Duration::from_secs(1));
     let first = Relay::connect(config.clone()).await?;
     let second = Relay::connect(config.clone()).await?;
     let caller = Relay::connect(config).await?;
-    let destination = DestinationId::new();
-    let first_listener = first.listen(destination).await?;
-    let second_listener = second.listen(destination).await?;
+    let destination = unique_address()?;
+    let first_listener = first
+        .listen(
+            destination.clone(),
+            token_source(&destination, AccessAction::Publish)?,
+        )
+        .await?;
+    let second_listener = second
+        .listen(
+            destination.clone(),
+            token_source(&destination, AccessAction::Publish)?,
+        )
+        .await?;
 
-    let dial = caller.dial(destination);
+    let dial = caller.dial(
+        destination.clone(),
+        token_source(&destination, AccessAction::Dial)?,
+    );
     let accepted = async {
         tokio::select! {
             pipe = first_listener.accept() => pipe,
@@ -184,32 +223,39 @@ async fn same_destination_selects_one_of_multiple_relays() -> TestResult {
 }
 
 #[tokio::test]
-async fn session_admission_accepts_current_and_next_tokens_and_rejects_other_tokens() -> TestResult
-{
-    let config = GatewayConfig::new(CLUSTER_TOKEN).with_next_cluster_token("next-token");
-    let (address, shutdown, server) = start_gateway_with_config(config).await?;
-
-    let current = Relay::connect(Config::new_insecure_for_tests(
-        address.to_string(),
-        CLUSTER_TOKEN,
-    ))
-    .await?;
-    let next = Relay::connect(Config::new_insecure_for_tests(
-        address.to_string(),
-        "next-token",
-    ))
-    .await?;
-    let rejected = Relay::connect(Config::new_insecure_for_tests(
-        address.to_string(),
-        "wrong-token",
-    ))
-    .await
-    .err()
-    .ok_or("invalid ClusterToken was admitted")?;
+async fn operation_denial_does_not_end_the_relay_session() -> TestResult {
+    let (address, shutdown, server) = start_gateway().await?;
+    let relay = Relay::connect(Config::new_insecure_for_tests(address.to_string())).await?;
+    let denied_address = unique_address()?;
+    let rejected = relay
+        .listen(
+            denied_address.clone(),
+            AccessTokenSource::static_token(AccessToken::new("invalid-jwt")?),
+        )
+        .await
+        .err()
+        .ok_or("invalid access token authorized PUBLISH")?;
     assert_eq!(rejected.code(), relaygate_sdk::ErrorCode::Unauthenticated);
+    let missing = relay
+        .dial(
+            denied_address.clone(),
+            token_source(&denied_address, AccessAction::Dial)?,
+        )
+        .await
+        .err()
+        .ok_or("denied PUBLISH mutated Gateway routing state")?;
+    assert_eq!(missing.code(), relaygate_sdk::ErrorCode::NotFound);
 
-    current.close();
-    next.close();
+    let allowed_address = unique_address()?;
+    let listener = relay
+        .listen(
+            allowed_address.clone(),
+            token_source(&allowed_address, AccessAction::Publish)?,
+        )
+        .await?;
+    assert_eq!(listener.address(), &allowed_address);
+    listener.close().await?;
+    relay.close();
     shutdown.cancel();
     server.await??;
     Ok(())
@@ -218,16 +264,20 @@ async fn session_admission_accepts_current_and_next_tokens_and_rejects_other_tok
 #[tokio::test]
 async fn relay_cannot_dial_its_own_only_binding() -> TestResult {
     let (address, shutdown, server) = start_gateway().await?;
-    let relay = Relay::connect(Config::new_insecure_for_tests(
-        address.to_string(),
-        CLUSTER_TOKEN,
-    ))
-    .await?;
-    let destination = DestinationId::new();
-    let _listener = relay.listen(destination).await?;
+    let relay = Relay::connect(Config::new_insecure_for_tests(address.to_string())).await?;
+    let destination = unique_address()?;
+    let _listener = relay
+        .listen(
+            destination.clone(),
+            token_source(&destination, AccessAction::Publish)?,
+        )
+        .await?;
 
     let error = relay
-        .dial(destination)
+        .dial(
+            destination.clone(),
+            token_source(&destination, AccessAction::Dial)?,
+        )
         .await
         .err()
         .ok_or("Relay unexpectedly dialed its own only Binding")?;
@@ -244,23 +294,32 @@ async fn relay_reconnects_republishes_and_replaces_ended_pipes() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let first_gateway = Gateway::new(
-        GatewayConfig::new(CLUSTER_TOKEN).with_drain_timeout(Duration::from_millis(20)),
+        GatewayConfig::new(authorization_config()?).with_drain_timeout(Duration::from_millis(20)),
     )?;
     let first_shutdown = CancellationToken::new();
     let serve_shutdown = first_shutdown.clone();
     let first_server =
         tokio::spawn(async move { first_gateway.serve(listener, serve_shutdown).await });
 
-    let config = Config::new_insecure_for_tests(address.to_string(), CLUSTER_TOKEN)
+    let config = Config::new_insecure_for_tests(address.to_string())
         .with_operation_timeout(Duration::from_secs(2))
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50));
     let publisher = Relay::connect(config.clone()).await?;
     let caller = Relay::connect(config).await?;
-    let destination = DestinationId::new();
-    let publication = publisher.listen(destination).await?;
+    let destination = unique_address()?;
+    let publication = publisher
+        .listen(
+            destination.clone(),
+            token_source(&destination, AccessAction::Publish)?,
+        )
+        .await?;
+    let old_dial_token = token_source(&destination, AccessAction::Dial)?;
 
     let (old_dialed, old_accepted) = timeout(Duration::from_secs(2), async {
-        tokio::join!(caller.dial(destination), publication.accept())
+        tokio::join!(
+            caller.dial(destination.clone(), old_dial_token),
+            publication.accept()
+        )
     })
     .await?;
     let mut old_dialed = old_dialed?;
@@ -282,7 +341,7 @@ async fn relay_reconnects_republishes_and_replaces_ended_pipes() -> TestResult {
 
     let listener = TcpListener::bind(address).await?;
     let second_gateway = Gateway::new(
-        GatewayConfig::new(CLUSTER_TOKEN).with_drain_timeout(Duration::from_millis(20)),
+        GatewayConfig::new(authorization_config()?).with_drain_timeout(Duration::from_millis(20)),
     )?;
     let second_shutdown = CancellationToken::new();
     let serve_shutdown = second_shutdown.clone();
@@ -295,9 +354,13 @@ async fn relay_reconnects_republishes_and_replaces_ended_pipes() -> TestResult {
         }
     })
     .await?;
+    let new_dial_token = token_source(&destination, AccessAction::Dial)?;
 
     let (new_dialed, new_accepted) = timeout(Duration::from_secs(2), async {
-        tokio::join!(caller.dial(destination), publication.accept())
+        tokio::join!(
+            caller.dial(destination.clone(), new_dial_token),
+            publication.accept()
+        )
     })
     .await?;
     let mut new_dialed = new_dialed?;
@@ -320,7 +383,7 @@ async fn start_gateway() -> TestResult<(
     CancellationToken,
     tokio::task::JoinHandle<Result<(), relaygate_gateway::GatewayError>>,
 )> {
-    start_gateway_with_config(GatewayConfig::new(CLUSTER_TOKEN)).await
+    start_gateway_with_config(GatewayConfig::new(authorization_config()?)).await
 }
 
 async fn start_gateway_with_config(

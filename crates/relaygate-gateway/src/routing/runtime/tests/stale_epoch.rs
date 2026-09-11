@@ -2,7 +2,7 @@ use std::{error::Error, time::Duration};
 
 use relaygate_protocol::{BindingId as ProtocolBindingId, SessionId};
 use relaygate_route_table::{
-    BindingId, DestinationId, GatewayId, GatewayLocator, RouteTableConfig, RouteTableError,
+    BindingId, GatewayId, GatewayLocator, RouteAddress, RouteTableConfig, RouteTableError,
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
@@ -80,10 +80,10 @@ async fn stale_epoch_case() -> TestResult {
     let first_epoch = ready_epoch(&availability).ok_or("first worker epoch is not ready")?;
     assert_eq!(first_epoch, 1);
 
-    let destination_id = DestinationId::new("11111111-1111-4111-8111-111111111111")?;
+    let address = "test/11111111-1111-4111-8111-111111111111".parse::<RouteAddress>()?;
     let first_keep_alive_count = proxy.keep_alive_count();
     proxy.disconnect_next_resolve();
-    let failed_resolve = handle.resolve(destination_id.clone()).await;
+    let failed_resolve = handle.resolve(address.clone()).await;
     assert!(matches!(
         failed_resolve,
         Err(RoutingError::Transport(ref error)) if error.code() == ErrorCode::Unavailable
@@ -114,7 +114,7 @@ async fn stale_epoch_case() -> TestResult {
         .wait_for_keep_alive_after(second_keep_alive_count)
         .await?;
     wait_for_counts(&handle, 1, 0).await?;
-    let resolved = handle.resolve(destination_id).await?;
+    let resolved = handle.resolve(address).await?;
     assert_eq!(resolved.len(), 1);
     assert_eq!(
         resolved.entries()[0].identity().binding_id(),
@@ -129,12 +129,13 @@ async fn stale_epoch_case() -> TestResult {
     Ok(())
 }
 
+#[allow(clippy::expect_used)]
 fn binding(session_id: SessionId, binding_id: u128) -> Binding {
     Binding {
         id: ProtocolBindingId::from_uuid(Uuid::from_u128(binding_id)),
-        destination_id: "11111111-1111-4111-8111-111111111111"
+        address: "test/11111111-1111-4111-8111-111111111111"
             .parse()
-            .unwrap_or_default(),
+            .expect("test RouteAddress must be valid"),
         session_id,
     }
 }
@@ -185,7 +186,7 @@ async fn wait_for_counts(handle: &RoutingHandle, synced: usize, unsynced: usize)
 
 fn one_shard_directory(endpoint: std::net::SocketAddr) -> TestResult<ShardDirectory> {
     let artifact = format!(
-        r#"{{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{{"id":"rt-0","endpoint":"{endpoint}"}}]}}"#
+        r#"{{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{{"id":"rt-0","endpoint":"{endpoint}"}}]}}"#
     );
     Ok(ShardDirectory::from_json_bytes(artifact.as_bytes())?)
 }

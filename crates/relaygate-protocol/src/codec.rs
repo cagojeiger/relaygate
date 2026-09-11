@@ -3,16 +3,16 @@ use tokio_util::codec::{Decoder, Encoder};
 use uuid::Uuid;
 
 use crate::{
-    BindingId, ClusterToken, DestinationId, ErrorCode, Frame, PeerObservation, PipeId,
-    ProtocolError, SessionId,
+    BearerToken, BindingId, DestinationName, ErrorCode, Frame, NamespaceId, PeerObservation,
+    PipeId, ProtocolError, RouteAddress, SessionId,
 };
 
 const MAGIC: [u8; 2] = *b"RG";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const HEADER_LEN: usize = 8;
 const MAX_STRING_LEN: usize = u16::MAX as usize;
-/// HELLO contains one u16-length-prefixed ClusterToken string.
-pub const MAX_HELLO_FRAME_LEN: usize = 2 + MAX_STRING_LEN;
+/// HELLO carries no credential or payload; PUBLISH and DIAL carry authorization.
+pub const MAX_HELLO_FRAME_LEN: usize = 0;
 pub const DEFAULT_MAX_FRAME_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
@@ -92,10 +92,7 @@ impl Decoder for FrameCodec {
 
 fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, ProtocolError> {
     let kind = match frame {
-        Frame::Hello { cluster_token } => {
-            put_string(destination, "cluster_token", cluster_token.expose_secret())?;
-            1
-        }
+        Frame::Hello => 1,
         Frame::Welcome { session_id } => {
             put_session_id(destination, session_id);
             2
@@ -107,10 +104,12 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
         }
         Frame::Publish {
             request_id,
-            destination_id,
+            address,
+            access_token,
         } => {
             destination.put_u64(request_id);
-            put_destination_id(destination, destination_id);
+            put_address(destination, &address)?;
+            put_string(destination, "access_token", access_token.expose_secret())?;
             4
         }
         Frame::Published {
@@ -145,20 +144,22 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
         }
         Frame::Dial {
             connection_id,
-            destination_id,
+            address,
+            access_token,
         } => {
             destination.put_u64(connection_id);
-            put_destination_id(destination, destination_id);
+            put_address(destination, &address)?;
+            put_string(destination, "access_token", access_token.expose_secret())?;
             9
         }
         Frame::Offer {
             pipe_id,
             binding_id,
-            destination_id,
+            address,
         } => {
             put_pipe_id(destination, pipe_id);
             put_binding_id(destination, binding_id);
-            put_destination_id(destination, destination_id);
+            put_address(destination, &address)?;
             10
         }
         Frame::OfferAccepted { pipe_id } => {
@@ -233,9 +234,7 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
 fn decode_payload(kind: u8, payload: Bytes) -> Result<Frame, ProtocolError> {
     let mut reader = PayloadReader::new(payload);
     let frame = match kind {
-        1 => Frame::Hello {
-            cluster_token: ClusterToken::new(reader.string("cluster_token")?),
-        },
+        1 => Frame::Hello,
         2 => Frame::Welcome {
             session_id: reader.session_id()?,
         },
@@ -245,7 +244,8 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<Frame, ProtocolError> {
         },
         4 => Frame::Publish {
             request_id: reader.u64("request_id")?,
-            destination_id: reader.destination_id()?,
+            address: reader.address()?,
+            access_token: reader.access_token()?,
         },
         5 => Frame::Published {
             request_id: reader.u64("request_id")?,
@@ -265,12 +265,13 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<Frame, ProtocolError> {
         },
         9 => Frame::Dial {
             connection_id: reader.u64("connection_id")?,
-            destination_id: reader.destination_id()?,
+            address: reader.address()?,
+            access_token: reader.access_token()?,
         },
         10 => Frame::Offer {
             pipe_id: reader.pipe_id()?,
             binding_id: reader.binding_id()?,
-            destination_id: reader.destination_id()?,
+            address: reader.address()?,
         },
         11 => Frame::OfferAccepted {
             pipe_id: reader.pipe_id()?,
@@ -344,8 +345,9 @@ fn put_binding_id(destination: &mut BytesMut, value: BindingId) {
     destination.extend_from_slice(value.as_uuid().as_bytes());
 }
 
-fn put_destination_id(destination: &mut BytesMut, value: DestinationId) {
-    destination.extend_from_slice(value.as_uuid().as_bytes());
+fn put_address(destination: &mut BytesMut, value: &RouteAddress) -> Result<(), ProtocolError> {
+    put_string(destination, "namespace", value.namespace().as_str())?;
+    put_string(destination, "destination", value.destination().as_str())
 }
 
 fn put_pipe_id(destination: &mut BytesMut, value: PipeId) {
@@ -414,9 +416,27 @@ impl PayloadReader {
         self.uuid("binding_id").map(BindingId::from_uuid)
     }
 
-    fn destination_id(&mut self) -> Result<DestinationId, ProtocolError> {
-        DestinationId::try_from_uuid(self.uuid("destination_id")?)
-            .ok_or(ProtocolError::InvalidDestinationId)
+    fn address(&mut self) -> Result<RouteAddress, ProtocolError> {
+        let namespace = NamespaceId::new(&self.string("namespace")?)
+            .map_err(|_| ProtocolError::InvalidRouteAddress)?;
+        let destination = DestinationName::new(&self.string("destination")?)
+            .map_err(|_| ProtocolError::InvalidRouteAddress)?;
+        Ok(RouteAddress::new(namespace, destination))
+    }
+
+    fn access_token(&mut self) -> Result<BearerToken, ProtocolError> {
+        let length = self.u16("access_token")? as usize;
+        if length > crate::MAX_BEARER_TOKEN_BYTES {
+            return Err(ProtocolError::FieldTooLong {
+                field: "access_token",
+                actual: length,
+                maximum: crate::MAX_BEARER_TOKEN_BYTES,
+            });
+        }
+        let bytes = self.take(length, "access_token")?;
+        let value =
+            std::str::from_utf8(bytes).map_err(|_| ProtocolError::InvalidUtf8("access_token"))?;
+        BearerToken::new(value.to_owned())
     }
 
     fn pipe_id(&mut self) -> Result<PipeId, ProtocolError> {

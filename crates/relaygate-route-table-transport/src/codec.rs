@@ -6,7 +6,7 @@ use tokio_util::codec::{Decoder, Encoder};
 use crate::frame::WireFrame;
 
 const MAGIC: [u8; 2] = *b"RT";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const HEADER_LEN: usize = 7;
 
 #[derive(Debug, thiserror::Error)]
@@ -190,7 +190,7 @@ mod tests {
             },
             &mut bytes,
         )?;
-        for rejected in [1, VERSION + 1] {
+        for rejected in [1, 2, VERSION + 1] {
             let mut invalid = bytes.clone();
             invalid[2] = rejected;
             assert!(matches!(

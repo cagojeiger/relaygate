@@ -4,7 +4,7 @@
   "additionalProperties": false,
   "required": [
     "clusterDomain",
-    "credentials",
+    "authorization",
     "tls",
     "serviceAccount",
     "podSecurityContext",
@@ -36,28 +36,21 @@
         }
       }
     },
-    "credentials": {
+    "authorization": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "existingSecret",
-        "clusterTokenKey",
-        "nextClusterTokenKey"
+        "existingConfigMap",
+        "configKey"
       ],
       "properties": {
-        "existingSecret": {
+        "existingConfigMap": {
           "type": "string",
           "minLength": 1,
           "maxLength": 253,
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
         },
-        "clusterTokenKey": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 253,
-          "pattern": "^[-._a-zA-Z0-9]+$"
-        },
-        "nextClusterTokenKey": {
+        "configKey": {
           "type": "string",
           "minLength": 1,
           "maxLength": 253,

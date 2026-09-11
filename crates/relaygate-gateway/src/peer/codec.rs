@@ -12,7 +12,7 @@ use super::{
 };
 
 const MAGIC: [u8; 2] = *b"GP";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const HEADER_LEN: usize = 8;
 const MAX_STRING_LEN: usize = u16::MAX as usize;
 
@@ -157,15 +157,7 @@ fn frame_metadata(frame: &PeerFrame) -> Result<(u8, usize), PeerCodecError> {
             HANDSHAKE_REJECTED,
             checked_add(1, string_wire_len("message", message)?)?,
         ),
-        PeerFrame::Open { destination_id, .. } => {
-            if destination_id.is_empty() {
-                return Err(PeerCodecError::InvalidField("destination_id"));
-            }
-            (
-                OPEN,
-                checked_add(80, string_wire_len("destination_id", destination_id)?)?,
-            )
-        }
+        PeerFrame::Open { address, .. } => (OPEN, checked_add(80, address.canonical_key().len())?),
         PeerFrame::Opened { .. } => (OPENED, 8),
         PeerFrame::Failed { message, .. } => (
             FAILED,
@@ -216,15 +208,15 @@ fn encode_payload(frame: PeerFrame, destination: &mut BytesMut) -> Result<(), Pe
         PeerFrame::Open {
             stream_id,
             open_identity,
-            destination_id,
+            address,
             relay_session_id,
             binding_id,
         } => {
             destination.put_u64(stream_id.raw());
             put_gateway_id(destination, open_identity.entry_gateway());
-            put_session_id(destination, open_identity.connector_session());
+            put_session_id(destination, open_identity.origin_session());
             destination.put_u64(open_identity.connection_id());
-            put_string(destination, "destination_id", &destination_id)?;
+            destination.extend_from_slice(&address.canonical_key());
             put_session_id(destination, relay_session_id);
             put_binding_id(destination, binding_id);
         }
@@ -317,19 +309,27 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<PeerFrame, PeerCodecError>
         OPEN => {
             let stream_id = reader.stream_id()?;
             let entry_gateway_id = reader.gateway_id("entry_gateway_id")?;
-            let connector_session_id = reader.session_id("connector_session_id")?;
+            let origin_session_id = reader.session_id("origin_session_id")?;
             let connection_id = reader.u64("connection_id")?;
-            let destination_id = reader.non_empty_string("destination_id")?;
+            let namespace = reader
+                .string("namespace")?
+                .parse()
+                .map_err(|_| PeerCodecError::InvalidField("namespace"))?;
+            let destination = reader
+                .string("destination")?
+                .parse()
+                .map_err(|_| PeerCodecError::InvalidField("destination"))?;
+            let address = relaygate_protocol::RouteAddress::new(namespace, destination);
             let relay_session_id = reader.session_id("relay_session_id")?;
             let binding_id = reader.binding_id()?;
             PeerFrame::Open {
                 stream_id,
                 open_identity: OpenIdentity::new(
                     entry_gateway_id,
-                    connector_session_id,
+                    origin_session_id,
                     connection_id,
                 ),
-                destination_id,
+                address,
                 relay_session_id,
                 binding_id,
             }

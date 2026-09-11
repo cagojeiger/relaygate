@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector, client, server};
 
-const ALPN_PROTOCOL: &[u8] = b"relaygate/2";
+const ALPN_PROTOCOL: &[u8] = b"relaygate/3";
 
 pub trait AsyncIo: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -200,7 +200,7 @@ fn require_relaygate_alpn(negotiated: Option<&[u8]>) -> Result<(), io::Error> {
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
-        "TLS peer did not negotiate the relaygate/2 ALPN protocol",
+        "TLS peer did not negotiate the relaygate/3 ALPN protocol",
     ))
 }
 

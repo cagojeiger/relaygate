@@ -3,28 +3,28 @@
 | 항목 | 결정 |
 | --- | --- |
 | 상태 | Accepted |
-| 목적 | `DestinationId`의 live Binding 위치 조회 |
+| 목적 | `RouteAddress`의 live Binding 위치 조회 |
 | 확장 축 | route key를 여러 shard로 분할 |
 
 ## 결정
 
 ```text
 ShardDirectoryGeneration             = SHA-256(exact directory bytes)
-Authority(generation, DestinationId)  = logical shard 1개
-Mappings(DestinationId)               = live Binding 0..N
+Authority(generation, canonical RouteAddress) = logical shard 1개
+Mappings(RouteAddress)                       = live Binding 0..N
 ```
 
 ```mermaid
 flowchart LR
     GWA[Gateway A] -->|register owned Binding| RT[RouteTable shard]
-    GWB[Gateway B] -->|resolve Destination| RT
+    GWB[Gateway B] -->|resolve RouteAddress| RT
     GWB -->|payload · 최대 one hop| GWA
 ```
 
 | 축 | 현재 모델 |
 | --- | --- |
 | mapping system | identifier-to-locator control plane |
-| authority | deterministic hash가 Destination별 shard 하나를 선택 |
+| authority | canonical RouteAddress hash가 주소별 shard 하나를 선택 |
 | directory | 모든 process가 동일한 불변 artifact와 generation 사용 |
 | shard endpoint | logical shard마다 stable endpoint 하나 |
 | Gateway state | owned Binding 등록, remote dial마다 resolve |

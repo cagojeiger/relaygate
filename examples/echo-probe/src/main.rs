@@ -10,9 +10,9 @@ use std::env;
 
 use anyhow::{Context, bail, ensure};
 
-use crate::config::DESTINATION_IDS;
+use crate::config::ROUTE_ADDRESSES;
 
-const SHARD_ISOLATION_USAGE: &str = "expect-shard-isolation <unavailable-destination-id> <local-owner-index> <available-destination-id>";
+const SHARD_ISOLATION_USAGE: &str = "expect-shard-isolation <unavailable-route-address> <local-owner-index> <available-route-address>";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,16 +25,16 @@ async fn main() -> anyhow::Result<()> {
         Command::Overload => overload::run().await,
         Command::Latency => latency::run().await,
         Command::ReconnectStorm => probe::run_reconnect_storm().await,
-        Command::WaitClient(destination_id) => probe::wait_client_registered(&destination_id).await,
+        Command::WaitClient(route_address) => probe::wait_client_registered(&route_address).await,
         Command::ExpectShardIsolation {
-            unavailable_destination_id,
+            unavailable_route_address,
             local_owner_index,
-            available_destination_id,
+            available_route_address,
         } => {
             probe::expect_shard_isolation(
-                &unavailable_destination_id,
+                &unavailable_route_address,
                 local_owner_index,
-                &available_destination_id,
+                &available_route_address,
             )
             .await
         }
@@ -54,9 +54,9 @@ enum Command {
     ReconnectStorm,
     WaitClient(String),
     ExpectShardIsolation {
-        unavailable_destination_id: String,
+        unavailable_route_address: String,
         local_owner_index: usize,
-        available_destination_id: String,
+        available_route_address: String,
     },
     Continuity,
     ContinuityCheck,
@@ -77,13 +77,13 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         Some("latency") => Command::Latency,
         Some("reconnect-storm") => Command::ReconnectStorm,
         Some("wait-client") => {
-            let Some(destination_id) = args.next() else {
-                bail!("wait-client requires a DestinationId argument");
+            let Some(route_address) = args.next() else {
+                bail!("wait-client requires a RouteAddress argument");
             };
-            Command::WaitClient(destination_id)
+            Command::WaitClient(route_address)
         }
         Some("expect-shard-isolation") => {
-            let Some(unavailable_destination_id) = args.next() else {
+            let Some(unavailable_route_address) = args.next() else {
                 bail!("usage: {SHARD_ISOLATION_USAGE}");
             };
             let Some(local_owner_index) = args.next() else {
@@ -93,17 +93,17 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
                 .parse::<usize>()
                 .with_context(|| "local-owner-index must be a non-negative integer")?;
             ensure!(
-                local_owner_index < DESTINATION_IDS.len(),
+                local_owner_index < ROUTE_ADDRESSES.len(),
                 "local-owner-index must be in 0..{} (one index per configured Gateway)",
-                DESTINATION_IDS.len()
+                ROUTE_ADDRESSES.len()
             );
-            let Some(available_destination_id) = args.next() else {
+            let Some(available_route_address) = args.next() else {
                 bail!("usage: {SHARD_ISOLATION_USAGE}");
             };
             Command::ExpectShardIsolation {
-                unavailable_destination_id,
+                unavailable_route_address,
                 local_owner_index,
-                available_destination_id,
+                available_route_address,
             }
         }
         Some("continuity") => Command::Continuity,
@@ -135,12 +135,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_wait_client_command_with_destination_id() -> anyhow::Result<()> {
-        match command_from(["wait-client".to_owned(), "echo.b".to_owned()]) {
-            Ok(Command::WaitClient(destination_id)) => {
+    fn parses_wait_client_command_with_route_address() -> anyhow::Result<()> {
+        match command_from(["wait-client".to_owned(), "examples/echo-b".to_owned()]) {
+            Ok(Command::WaitClient(route_address)) => {
                 anyhow::ensure!(
-                    destination_id == "echo.b",
-                    "unexpected client id: {destination_id}"
+                    route_address == "examples/echo-b",
+                    "unexpected route address: {route_address}"
                 );
             }
             Ok(other) => anyhow::bail!("unexpected command: {other:?}"),
@@ -186,13 +186,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wait_client_without_destination_id() -> anyhow::Result<()> {
+    fn rejects_wait_client_without_route_address() -> anyhow::Result<()> {
         let error = match command_from(["wait-client".to_owned()]) {
             Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
             Err(error) => error,
         };
         anyhow::ensure!(
-            error.to_string().contains("requires a DestinationId"),
+            error.to_string().contains("requires a RouteAddress"),
             "unexpected error: {error}"
         );
         Ok(())
@@ -202,18 +202,18 @@ mod tests {
     fn parses_shard_isolation_command() -> anyhow::Result<()> {
         match command_from([
             "expect-shard-isolation".to_owned(),
-            "echo.b".to_owned(),
+            "examples/echo-b".to_owned(),
             "1".to_owned(),
-            "echo.c".to_owned(),
+            "examples/echo-c".to_owned(),
         ]) {
             Ok(Command::ExpectShardIsolation {
-                unavailable_destination_id,
+                unavailable_route_address,
                 local_owner_index,
-                available_destination_id,
+                available_route_address,
             }) => {
-                anyhow::ensure!(unavailable_destination_id == "echo.b");
+                anyhow::ensure!(unavailable_route_address == "examples/echo-b");
                 anyhow::ensure!(local_owner_index == 1);
-                anyhow::ensure!(available_destination_id == "echo.c");
+                anyhow::ensure!(available_route_address == "examples/echo-c");
             }
             Ok(other) => anyhow::bail!("unexpected command: {other:?}"),
             Err(error) => anyhow::bail!("unexpected error: {error}"),
@@ -225,7 +225,7 @@ mod tests {
     fn rejects_shard_isolation_with_missing_arguments() -> anyhow::Result<()> {
         let error = match command_from([
             "expect-shard-isolation".to_owned(),
-            "echo.b".to_owned(),
+            "examples/echo-b".to_owned(),
             "1".to_owned(),
         ]) {
             Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
@@ -242,9 +242,9 @@ mod tests {
     fn rejects_non_numeric_shard_isolation_owner_index() -> anyhow::Result<()> {
         let error = match command_from([
             "expect-shard-isolation".to_owned(),
-            "echo.b".to_owned(),
+            "examples/echo-b".to_owned(),
             "gateway-b".to_owned(),
-            "echo.c".to_owned(),
+            "examples/echo-c".to_owned(),
         ]) {
             Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
             Err(error) => error,
@@ -262,9 +262,9 @@ mod tests {
     fn rejects_out_of_range_shard_isolation_owner_index() -> anyhow::Result<()> {
         let error = match command_from([
             "expect-shard-isolation".to_owned(),
-            "echo.b".to_owned(),
-            DESTINATION_IDS.len().to_string(),
-            "echo.c".to_owned(),
+            "examples/echo-b".to_owned(),
+            ROUTE_ADDRESSES.len().to_string(),
+            "examples/echo-c".to_owned(),
         ]) {
             Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
             Err(error) => error,

@@ -1,16 +1,14 @@
 use std::time::Instant;
 
 use relaygate_protocol::{
-    BindingId, DestinationId, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
+    BindingId, ErrorCode, Frame, PeerObservation, PipeId, RouteAddress, SessionId,
 };
-use relaygate_route_table::DestinationId as RouteDestinationId;
 
 use crate::{peer::OpenIdentity, registry::Binding};
 
 use super::{
     GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipeEntry, PipePhase,
-    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase, observe_dial_request,
-    observe_dial_result,
+    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase, observe_dial_result,
 };
 
 impl GatewayState {
@@ -18,20 +16,13 @@ impl GatewayState {
         &mut self,
         connector: SessionId,
         connection_id: u64,
-        destination_id: DestinationId,
+        address: RouteAddress,
         now: Instant,
+        started_at: Instant,
     ) -> Vec<GatewayAction> {
-        let Some(session) = self.sessions.get_mut(&connector) else {
-            return Vec::new();
-        };
-        if session
-            .highest_connection_id
-            .is_some_and(|highest| connection_id <= highest)
-        {
+        if !self.sessions.contains_key(&connector) {
             return Vec::new();
         }
-        session.highest_connection_id = Some(connection_id);
-        observe_dial_request();
 
         if self.draining {
             return self.new_open_failed(
@@ -40,20 +31,10 @@ impl GatewayState {
                 ErrorCode::Unavailable,
                 PeerObservation::NotObserved,
                 "Gateway is draining",
-                now,
+                started_at,
             );
         }
 
-        if !self.admit_control(connector, "dial", now) {
-            return self.new_open_failed(
-                connector,
-                connection_id,
-                ErrorCode::ResourceExhausted,
-                PeerObservation::NotObserved,
-                "Gateway PUBLISH/DIAL rate limit reached",
-                now,
-            );
-        }
         if self.live_pipe_count() >= self.limits.max_live_pipes {
             return self.new_open_failed(
                 connector,
@@ -61,7 +42,7 @@ impl GatewayState {
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
                 "Gateway live Pipe limit reached",
-                now,
+                started_at,
             );
         }
         if self.pending_capacity_reached() {
@@ -71,23 +52,15 @@ impl GatewayState {
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
                 "Gateway pending open limit reached",
-                now,
+                started_at,
             );
         }
 
         let pipe_id = PipeId::new(connector, connection_id);
-        let self_publishes_destination = self
-            .registry
-            .contains_session_destination(connector, destination_id);
-        if let Some(binding) = self.registry.select_excluding(destination_id, connector) {
-            return self.offer_local_at(
-                connector,
-                pipe_id,
-                binding,
-                destination_id,
-                now,
-                Some(now),
-            );
+        let self_publishes_destination =
+            self.registry.contains_session_address(connector, &address);
+        if let Some(binding) = self.registry.select_excluding(&address, connector) {
+            return self.offer_local_at(pipe_id, binding, now, Some(started_at));
         }
 
         let Some(gateway_id) = self.gateway_id else {
@@ -105,7 +78,7 @@ impl GatewayState {
                 } else {
                     "no live Binding exists"
                 },
-                now,
+                started_at,
             );
         };
         if self.remote_open_attempts.len() >= self.limits.max_remote_dial_attempts {
@@ -115,45 +88,35 @@ impl GatewayState {
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
                 "Gateway remote DIAL admission limit reached",
-                now,
+                started_at,
             );
         }
-        let Ok(route_destination_id) = RouteDestinationId::new(destination_id.to_string()) else {
-            return self.new_open_failed(
-                connector,
-                connection_id,
-                ErrorCode::InvalidArgument,
-                PeerObservation::NotObserved,
-                "DestinationId is invalid",
-                now,
-            );
-        };
         let open_identity = OpenIdentity::new(gateway_id, connector, connection_id);
         let previous = self.remote_open_attempts.insert(
             open_identity,
             RemoteOpenAttempt {
                 pipe_id,
-                destination_id: destination_id.to_string(),
-                started_at: now,
+                address: address.clone(),
+                started_at,
                 phase: RemoteOpenPhase::Resolving,
             },
         );
         debug_assert!(previous.is_none());
         vec![GatewayAction::ResolveRoute {
             open_identity,
-            destination_id: route_destination_id,
+            address,
         }]
     }
 
     pub(super) fn offer_local_at(
         &mut self,
-        connector: SessionId,
         pipe_id: PipeId,
         binding: Binding,
-        destination_id: DestinationId,
         now: Instant,
         open_started_at: Option<Instant>,
     ) -> Vec<GatewayAction> {
+        let connector = pipe_id.origin_session_id();
+        let address = binding.address.clone();
         let listener_is_live = self.sessions.contains_key(&binding.session_id);
         if !listener_is_live {
             self.registry.remove_owned(binding.session_id, binding.id);
@@ -176,7 +139,7 @@ impl GatewayState {
             relay_session_id = %binding.session_id.as_uuid(),
             connection_id = pipe_id.connection_id(),
             binding_id = %binding.id.as_uuid(),
-            destination_id = %destination_id,
+            address = %address,
             pending_offers = self.pending_offer_count() + 1,
             live_pipes = self.live_pipe_count(),
             "Pipe offer created"
@@ -200,7 +163,7 @@ impl GatewayState {
             Frame::Offer {
                 pipe_id,
                 binding_id: binding.id,
-                destination_id,
+                address,
             },
         )
         .map(GatewayAction::SendSdkFrame)

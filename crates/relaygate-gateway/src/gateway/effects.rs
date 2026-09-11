@@ -4,7 +4,7 @@ use std::{
 };
 
 use relaygate_protocol::{BindingId, ErrorCode, PeerObservation, SessionId};
-use relaygate_route_table::{DestinationId as RouteDestinationId, GatewayId, GatewayLocator};
+use relaygate_route_table::{GatewayId, GatewayLocator, RouteAddress};
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -26,13 +26,13 @@ pub(super) struct ControlEffects {
 enum ControlAction {
     ResolveRoute {
         open_identity: OpenIdentity,
-        destination_id: RouteDestinationId,
+        address: RouteAddress,
     },
     OpenPeer {
         open_identity: OpenIdentity,
         gateway_id: GatewayId,
         gateway_locator: GatewayLocator,
-        destination_id: String,
+        address: RouteAddress,
         relay_session_id: SessionId,
         binding_id: BindingId,
     },
@@ -106,23 +106,23 @@ impl Inner {
                 GatewayAction::PublishRegistration { .. } => {}
                 GatewayAction::ResolveRoute {
                     open_identity,
-                    destination_id,
+                    address,
                 } => pending.extend(self.spawn_control_effect(ControlAction::ResolveRoute {
                     open_identity,
-                    destination_id,
+                    address,
                 })),
                 GatewayAction::OpenPeer {
                     open_identity,
                     gateway_id,
                     gateway_locator,
-                    destination_id,
+                    address,
                     relay_session_id,
                     binding_id,
                 } => pending.extend(self.spawn_control_effect(ControlAction::OpenPeer {
                     open_identity,
                     gateway_id,
                     gateway_locator,
-                    destination_id,
+                    address,
                     relay_session_id,
                     binding_id,
                 })),
@@ -189,7 +189,7 @@ impl Inner {
         match action {
             ControlAction::ResolveRoute {
                 open_identity,
-                destination_id,
+                address,
             } => {
                 let Some(control) = &self.control_effects else {
                     return self.transition(|state| {
@@ -200,7 +200,7 @@ impl Inner {
                         )
                     });
                 };
-                match control.route_resolver.resolve(destination_id).await {
+                match control.route_resolver.resolve(address).await {
                     Ok(bindings) => {
                         self.transition(|state| state.route_resolved(open_identity, bindings))
                     }
@@ -213,7 +213,7 @@ impl Inner {
                 open_identity,
                 gateway_id,
                 gateway_locator,
-                destination_id,
+                address,
                 relay_session_id,
                 binding_id,
             } => {
@@ -227,25 +227,13 @@ impl Inner {
                         )
                     });
                 };
-                let request = match PeerOpenRequest::new(
+                let request = PeerOpenRequest::new(
                     PeerTarget::new(gateway_id, gateway_locator),
                     open_identity,
-                    destination_id,
+                    address,
                     relay_session_id,
                     binding_id,
-                ) {
-                    Ok(request) => request,
-                    Err(error) => {
-                        return self.transition(|state| {
-                            state.peer_open_commit_failed(
-                                open_identity,
-                                error.code(),
-                                error.observation(),
-                                error.message(),
-                            )
-                        });
-                    }
-                };
+                );
                 match peer.open(request).await {
                     Ok(key) => {
                         self.transition(|state| state.peer_open_committed(open_identity, key))
@@ -268,7 +256,7 @@ impl Inner {
                         component = "gateway",
                         event = "gateway.peer_open.cancel_failed",
                         entry_gateway_id = %open_identity.entry_gateway().as_uuid(),
-                        connector_session_id = %open_identity.connector_session().as_uuid(),
+                        origin_session_id = %open_identity.origin_session().as_uuid(),
                         connection_id = open_identity.connection_id(),
                         error_code = ?error.code(),
                         observation = ?error.observation(),
@@ -390,16 +378,10 @@ impl Inner {
             PeerEvent::IncomingOpen {
                 key,
                 open_identity,
-                destination_id,
+                address,
                 relay_session_id,
                 binding_id,
-            } => state.receive_peer_open(
-                key,
-                open_identity,
-                destination_id,
-                relay_session_id,
-                binding_id,
-            ),
+            } => state.receive_peer_open(key, open_identity, address, relay_session_id, binding_id),
             PeerEvent::Opened { key, open_identity } => state.peer_opened(key, open_identity),
             PeerEvent::Failed {
                 key,

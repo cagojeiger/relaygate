@@ -2,8 +2,8 @@ use std::{fmt, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_route_table::{
-    BindingSet, DestinationId, GatewayId, LeaseId, MappingSnapshot, RegistrationAck,
-    RegistrationKey, RegistrationRevision, ShardDirectoryGeneration,
+    BindingSet, GatewayId, LeaseId, MappingSnapshot, RegistrationAck, RegistrationKey,
+    RegistrationRevision, RouteAddress, ShardDirectoryGeneration,
 };
 use relaygate_transport::{BoxedIo, ClientTlsConfig, insecure_boxed};
 use tokio::{
@@ -242,14 +242,14 @@ impl RouteTableClient {
     pub async fn resolve(
         &self,
         generation: ShardDirectoryGeneration,
-        destination_id: &DestinationId,
+        address: &RouteAddress,
     ) -> Result<BindingSet, TransportError> {
         let started_at = Instant::now();
         let result = async {
             let response = self
-                .request(WireRequest::resolve(generation, destination_id))
+                .request(WireRequest::resolve(generation, address))
                 .await?;
-            response_bindings(response, destination_id)
+            response_bindings(response, address)
         }
         .await;
         observe_request("resolve", started_at, &result);

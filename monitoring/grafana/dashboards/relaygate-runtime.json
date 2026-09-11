@@ -1062,7 +1062,7 @@
             },
             {
               "expr": "sum(relaygate_route_table_routes{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
-              "legendFormat": "Destination",
+              "legendFormat": "RouteAddress",
               "refId": "C",
               "range": true,
               "instant": false

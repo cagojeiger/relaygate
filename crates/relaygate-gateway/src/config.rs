@@ -5,6 +5,7 @@ use relaygate_transport::ServerTlsConfig;
 use tokio::time::Instant;
 
 use crate::GatewayError;
+use crate::authorization::AuthorizationConfig;
 
 pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_SESSIONS: usize = 10_000;
@@ -15,6 +16,10 @@ pub const DEFAULT_CONTROL_RATE_PER_SECOND: usize = 4096;
 pub const DEFAULT_CONTROL_BURST: usize = 4096;
 pub const DEFAULT_SESSION_CONTROL_RATE_PER_SECOND: usize = 256;
 pub const DEFAULT_SESSION_CONTROL_BURST: usize = 256;
+pub const DEFAULT_AUTHORIZATION_CONCURRENCY: usize = 32;
+pub const DEFAULT_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(1);
+pub const MAX_AUTHORIZATION_CONCURRENCY: usize = 1_024;
+pub const MAX_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_MAX_BINDINGS: usize = 100_000;
 pub const DEFAULT_MAX_PENDING_OFFERS: usize = 10_000;
 pub const DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS: usize = 128;
@@ -27,8 +32,9 @@ pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
 /// Immutable runtime configuration for one Gateway process.
 #[derive(Clone)]
 pub struct GatewayConfig {
-    pub(crate) cluster_token: String,
-    pub(crate) next_cluster_token: Option<String>,
+    pub(crate) authorization: AuthorizationConfig,
+    pub(crate) authorization_concurrency: usize,
+    pub(crate) authorization_timeout: Duration,
     pub(crate) sdk_tls: Option<ServerTlsConfig>,
     pub(crate) writer_queue_capacity: usize,
     pub(crate) max_frame_len: usize,
@@ -54,11 +60,9 @@ impl std::fmt::Debug for GatewayConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("GatewayConfig")
-            .field("cluster_token", &"[REDACTED]")
-            .field(
-                "next_cluster_token",
-                &self.next_cluster_token.as_ref().map(|_| "[REDACTED]"),
-            )
+            .field("authorization", &self.authorization)
+            .field("authorization_concurrency", &self.authorization_concurrency)
+            .field("authorization_timeout", &self.authorization_timeout)
             .field("writer_queue_capacity", &self.writer_queue_capacity)
             .field("max_frame_len", &self.max_frame_len)
             .field("max_sessions", &self.max_sessions)
@@ -92,10 +96,11 @@ impl std::fmt::Debug for GatewayConfig {
 
 impl GatewayConfig {
     #[must_use]
-    pub fn new(cluster_token: impl Into<String>) -> Self {
+    pub fn new(authorization: AuthorizationConfig) -> Self {
         Self {
-            cluster_token: cluster_token.into(),
-            next_cluster_token: None,
+            authorization,
+            authorization_concurrency: DEFAULT_AUTHORIZATION_CONCURRENCY,
+            authorization_timeout: DEFAULT_AUTHORIZATION_TIMEOUT,
             sdk_tls: None,
             writer_queue_capacity: DEFAULT_WRITER_QUEUE_CAPACITY,
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
@@ -125,9 +130,19 @@ impl GatewayConfig {
     }
 
     #[must_use]
-    pub fn with_next_cluster_token(mut self, token: impl Into<String>) -> Self {
-        self.next_cluster_token = Some(token.into());
+    pub const fn with_authorization_limits(
+        mut self,
+        concurrency: usize,
+        timeout: Duration,
+    ) -> Self {
+        self.authorization_concurrency = concurrency;
+        self.authorization_timeout = timeout;
         self
+    }
+
+    #[must_use]
+    pub const fn authorization_limits(&self) -> (usize, Duration) {
+        (self.authorization_concurrency, self.authorization_timeout)
     }
 
     #[must_use]
@@ -267,6 +282,11 @@ impl GatewayConfig {
                 "writer queue capacity must be greater than zero".to_owned(),
             ));
         }
+        if self.authorization_concurrency > MAX_AUTHORIZATION_CONCURRENCY {
+            return Err(GatewayError::InvalidConfig(
+                "authorization concurrency must not exceed 1024".to_owned(),
+            ));
+        }
         if self.max_frame_len == 0 {
             return Err(GatewayError::InvalidConfig(
                 "maximum frame length must be greater than zero".to_owned(),
@@ -280,6 +300,7 @@ impl GatewayConfig {
             || self.control_burst == 0
             || self.session_control_rate_per_second == 0
             || self.session_control_burst == 0
+            || self.authorization_concurrency == 0
             || self.max_bindings == 0
             || self.max_pending_offers == 0
             || self.max_remote_dial_attempts == 0
@@ -292,10 +313,16 @@ impl GatewayConfig {
         if self.offer_timeout.is_zero()
             || self.heartbeat_idle_interval.is_zero()
             || self.heartbeat_response_timeout.is_zero()
+            || self.authorization_timeout.is_zero()
             || self.drain_timeout.is_zero()
         {
             return Err(GatewayError::InvalidConfig(
                 "Gateway timeouts must be greater than zero".to_owned(),
+            ));
+        }
+        if self.authorization_timeout > MAX_AUTHORIZATION_TIMEOUT {
+            return Err(GatewayError::InvalidConfig(
+                "authorization timeout must not exceed 5 seconds".to_owned(),
             ));
         }
         validate_deadline_timeout("offer_timeout", self.offer_timeout)?;
@@ -311,24 +338,8 @@ impl GatewayConfig {
             "heartbeat_response_timeout",
             self.heartbeat_response_timeout,
         )?;
+        validate_deadline_timeout("authorization_timeout", self.authorization_timeout)?;
         validate_deadline_timeout("drain_timeout", self.drain_timeout)?;
-        if self.cluster_token.is_empty() {
-            return Err(GatewayError::InvalidConfig(
-                "current ClusterToken must not be empty".to_owned(),
-            ));
-        }
-        if let Some(next) = &self.next_cluster_token {
-            if next.is_empty() {
-                return Err(GatewayError::InvalidConfig(
-                    "next ClusterToken must not be empty".to_owned(),
-                ));
-            }
-            if next == &self.cluster_token {
-                return Err(GatewayError::InvalidConfig(
-                    "current and next ClusterToken must be different".to_owned(),
-                ));
-            }
-        }
         Ok(())
     }
 }
@@ -358,16 +369,18 @@ fn duration_from_nanos(nanos: u128) -> Option<Duration> {
 mod tests {
     use std::time::Duration;
 
+    use crate::test_support::authorization_config;
+
     use super::GatewayConfig;
 
     #[test]
     fn unrepresentable_deadline_configuration_is_rejected() {
         let valid = Duration::from_secs(1);
         for config in [
-            GatewayConfig::new("test-token").with_offer_timeout(Duration::MAX),
-            GatewayConfig::new("test-token").with_heartbeat(Duration::MAX, valid),
-            GatewayConfig::new("test-token").with_heartbeat(valid, Duration::MAX),
-            GatewayConfig::new("test-token").with_drain_timeout(Duration::MAX),
+            GatewayConfig::new(authorization_config()).with_offer_timeout(Duration::MAX),
+            GatewayConfig::new(authorization_config()).with_heartbeat(Duration::MAX, valid),
+            GatewayConfig::new(authorization_config()).with_heartbeat(valid, Duration::MAX),
+            GatewayConfig::new(authorization_config()).with_drain_timeout(Duration::MAX),
         ] {
             assert!(config.validate().is_err());
         }
@@ -376,7 +389,7 @@ mod tests {
     #[test]
     fn zero_handshake_limit_is_rejected() {
         assert!(
-            GatewayConfig::new("test-token")
+            GatewayConfig::new(authorization_config())
                 .with_max_pending_handshakes(0)
                 .validate()
                 .is_err()
@@ -387,7 +400,7 @@ mod tests {
     fn zero_connection_rate_or_burst_is_rejected() {
         for (rate, burst) in [(0, 1), (1, 0)] {
             assert!(
-                GatewayConfig::new("test-token")
+                GatewayConfig::new(authorization_config())
                     .with_sdk_connection_rate_limit(rate, burst)
                     .validate()
                     .is_err()
@@ -399,13 +412,13 @@ mod tests {
     fn zero_control_rate_or_burst_is_rejected() {
         for (rate, burst) in [(0, 1), (1, 0)] {
             assert!(
-                GatewayConfig::new("test-token")
+                GatewayConfig::new(authorization_config())
                     .with_control_rate_limit(rate, burst)
                     .validate()
                     .is_err()
             );
             assert!(
-                GatewayConfig::new("test-token")
+                GatewayConfig::new(authorization_config())
                     .with_session_control_rate_limit(rate, burst)
                     .validate()
                     .is_err()
@@ -416,10 +429,33 @@ mod tests {
     #[test]
     fn zero_remote_dial_admission_limit_is_rejected() {
         assert!(
-            GatewayConfig::new("test-token")
+            GatewayConfig::new(authorization_config())
                 .with_max_remote_dial_attempts(0)
                 .validate()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn authorization_work_is_bounded() {
+        for (concurrency, timeout) in [
+            (0, Duration::from_secs(1)),
+            (1_025, Duration::from_secs(1)),
+            (1, Duration::ZERO),
+            (1, Duration::from_secs(6)),
+        ] {
+            assert!(
+                GatewayConfig::new(authorization_config())
+                    .with_authorization_limits(concurrency, timeout)
+                    .validate()
+                    .is_err()
+            );
+        }
+        assert!(
+            GatewayConfig::new(authorization_config())
+                .with_authorization_limits(1_024, Duration::from_secs(5))
+                .validate()
+                .is_ok()
         );
     }
 }

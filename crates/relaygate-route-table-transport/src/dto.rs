@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    BindingId, BindingSet, DestinationId, GatewayId, GatewayLocator, LeaseId, MappingEntry,
-    MappingSnapshot, RegistrationAck, RegistrationKey, RegistrationRevision, RelaySessionId,
-    RequestContext, RouteTableError, ShardDirectoryGeneration, ShardId,
+    BindingId, BindingSet, GatewayId, GatewayLocator, LeaseId, MappingEntry, MappingSnapshot,
+    RegistrationAck, RegistrationKey, RegistrationRevision, RelaySessionId, RequestContext,
+    RouteAddress, RouteTableError, ShardDirectoryGeneration, ShardId,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -40,7 +40,7 @@ pub(crate) enum WireRequest {
     },
     Resolve {
         generation: String,
-        destination_id: String,
+        address: String,
     },
 }
 
@@ -132,13 +132,10 @@ impl WireRequest {
         }
     }
 
-    pub(crate) fn resolve(
-        generation: ShardDirectoryGeneration,
-        destination_id: &DestinationId,
-    ) -> Self {
+    pub(crate) fn resolve(generation: ShardDirectoryGeneration, address: &RouteAddress) -> Self {
         Self::Resolve {
             generation: generation.to_string(),
-            destination_id: destination_id.as_str().to_owned(),
+            address: address.to_string(),
         }
     }
 
@@ -187,10 +184,12 @@ impl WireRequest {
             }),
             Self::Resolve {
                 generation,
-                destination_id,
+                address,
             } => Ok(DomainRequest::Resolve {
                 generation: parse_generation(&generation)?,
-                destination_id: DestinationId::new(destination_id)?,
+                address: address
+                    .parse::<RouteAddress>()
+                    .map_err(RouteTableError::from)?,
             }),
         }
     }
@@ -240,7 +239,7 @@ pub(crate) enum DomainRequest {
     },
     Resolve {
         generation: ShardDirectoryGeneration,
-        destination_id: DestinationId,
+        address: RouteAddress,
     },
 }
 
@@ -317,7 +316,7 @@ impl WireRegistrationKey {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WireMappingEntry {
-    destination_id: String,
+    address: String,
     gateway_id: String,
     relay_session_id: String,
     binding_id: String,
@@ -328,7 +327,7 @@ impl WireMappingEntry {
     fn from_domain(entry: &MappingEntry) -> Self {
         let identity = entry.identity();
         Self {
-            destination_id: entry.destination_id().as_str().to_owned(),
+            address: entry.address().to_string(),
             gateway_id: identity.gateway_id().to_string(),
             relay_session_id: identity.relay_session_id().to_string(),
             binding_id: identity.binding_id().to_string(),
@@ -338,7 +337,9 @@ impl WireMappingEntry {
 
     fn into_domain(self) -> Result<MappingEntry, TransportError> {
         Ok(MappingEntry::new(
-            DestinationId::new(self.destination_id)?,
+            self.address
+                .parse::<RouteAddress>()
+                .map_err(RouteTableError::from)?,
             parse_uuid(&self.gateway_id, "GatewayId").map(GatewayId::from_uuid)?,
             parse_uuid(&self.relay_session_id, "RelaySessionId").map(RelaySessionId::from_uuid)?,
             parse_uuid(&self.binding_id, "BindingId").map(BindingId::from_uuid)?,
@@ -452,7 +453,7 @@ pub(crate) fn response_deregistered(response: WireResponse) -> Result<(), Transp
 
 pub(crate) fn response_bindings(
     response: WireResponse,
-    expected_destination_id: &DestinationId,
+    expected_address: &RouteAddress,
 ) -> Result<BindingSet, TransportError> {
     let WireResponse::Resolved { entries } = response else {
         return Err(TransportError::protocol(
@@ -474,9 +475,9 @@ pub(crate) fn response_bindings(
             "invalid BindingSet in RouteTable response: {error}"
         ))
     })?;
-    if bindings.entries()[0].destination_id() != expected_destination_id {
+    if bindings.entries()[0].address() != expected_address {
         return Err(TransportError::protocol(
-            "RouteTable Resolve response has a mismatched DestinationId",
+            "RouteTable Resolve response has a mismatched RouteAddress",
         ));
     }
     Ok(bindings)
@@ -591,11 +592,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_generation_precedes_destination_id_validation() {
+    fn resolve_generation_precedes_address_validation() {
         let authenticated = GatewayId::from_uuid(Uuid::from_u128(1));
         let request = WireRequest::Resolve {
             generation: ShardDirectoryGeneration::from_bytes([2; 32]).to_string(),
-            destination_id: String::new(),
+            address: String::new(),
         };
 
         let error = request

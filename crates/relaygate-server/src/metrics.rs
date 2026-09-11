@@ -139,7 +139,7 @@ fn describe_metrics() {
     );
     describe_counter!(
         "relaygate_gateway_publish_results_total",
-        "Terminal Destination publication results by bounded outcome and code."
+        "Terminal RouteAddress publication results by bounded outcome and code."
     );
     describe_gauge!(
         "relaygate_gateway_draining",
@@ -155,7 +155,7 @@ fn describe_metrics() {
     );
     describe_gauge!(
         "relaygate_gateway_bindings",
-        "Current Destination bindings owned by this Gateway."
+        "Current RouteAddress bindings owned by this Gateway."
     );
     describe_gauge!(
         "relaygate_gateway_pending_offers",
@@ -175,7 +175,15 @@ fn describe_metrics() {
     );
     describe_counter!(
         "relaygate_gateway_sdk_transport_rejections_total",
-        "SDK transports rejected by connection rate, session capacity, handshake capacity or ClusterToken."
+        "SDK transports rejected by connection rate, session capacity, or handshake capacity."
+    );
+    describe_counter!(
+        "relaygate_gateway_authorization_results_total",
+        "Terminal PUBLISH and DIAL authorization verification results."
+    );
+    describe_histogram!(
+        "relaygate_gateway_authorization_duration_seconds",
+        "Time spent verifying one PUBLISH or DIAL access token."
     );
     describe_counter!(
         "relaygate_gateway_control_rejections_total",
@@ -259,7 +267,7 @@ fn describe_metrics() {
     );
     describe_gauge!(
         "relaygate_route_table_routes",
-        "Current Destinations with at least one mapping on this RouteTable shard."
+        "Current RouteAddresses with at least one mapping on this RouteTable shard."
     );
     describe_gauge!(
         "relaygate_route_table_expiry_records",

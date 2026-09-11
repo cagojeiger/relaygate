@@ -86,17 +86,8 @@ spec:
               value: "$(POD_NAME)"
             - name: RELAYGATE_GATEWAY_LOCATOR
               value: "$(POD_NAME).{{ include "relaygate.gatewayPeerServiceName" . }}.$(POD_NAMESPACE).svc.{{ .Values.clusterDomain }}:{{ .Values.gateway.peerPort }}"
-            - name: RELAYGATE_CLUSTER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.credentials.existingSecret | quote }}
-                  key: {{ .Values.credentials.clusterTokenKey | quote }}
-            - name: RELAYGATE_NEXT_CLUSTER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.credentials.existingSecret | quote }}
-                  key: {{ .Values.credentials.nextClusterTokenKey | quote }}
-                  optional: true
+            - name: RELAYGATE_AUTH_CONFIG_PATH
+              value: /etc/relaygate/authorization/authorization.json
             {{- if eq .Values.tls.edge.trustMode "customCa" }}
             - name: RELAYGATE_SDK_TLS_CA_PATH
               value: /etc/relaygate/tls/edge/ca.crt
@@ -167,6 +158,9 @@ spec:
           resources:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
           volumeMounts:
+            - name: authorization
+              mountPath: /etc/relaygate/authorization
+              readOnly: true
             - name: shard-directory
               mountPath: /etc/relaygate
               readOnly: true
@@ -179,6 +173,13 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        - name: authorization
+          configMap:
+            name: {{ .Values.authorization.existingConfigMap | quote }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.authorization.configKey | quote }}
+                path: authorization.json
         - name: shard-directory
           configMap:
             name: {{ include "relaygate.shardDirectoryName" . | quote }}

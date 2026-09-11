@@ -2,12 +2,9 @@ use super::*;
 
 fn request(operation: &str, id: u64) -> Frame {
     if operation == "publish" {
-        publish(id, DestinationId::new())
+        publish(id, &unique_address())
     } else {
-        Frame::Dial {
-            connection_id: id,
-            destination_id: DestinationId::new(),
-        }
+        dial(id, &unique_address())
     }
 }
 
@@ -119,10 +116,10 @@ fn duplicate_publish_is_charged_without_replacing_binding() -> TestResult {
     });
     let owner = session(&mut state)?;
     let now = Instant::now();
-    let destination = DestinationId::new();
+    let destination = unique_address();
     let mut ids = Vec::new();
     for id in 1..=2 {
-        let actions = state.handle_at(owner, publish(id, destination), now)?;
+        let actions = state.handle_at(owner, publish(id, &destination), now)?;
         ids.push(
             frames(&actions)
                 .find_map(|frame| match frame {
@@ -135,7 +132,7 @@ fn duplicate_publish_is_charged_without_replacing_binding() -> TestResult {
     assert_eq!(ids[0], ids[1]);
     assert!(exhausted(&state.handle_at(
         owner,
-        publish(3, destination),
+        publish(3, &destination),
         now
     )?));
     assert_eq!(state.snapshot().bindings, 1);
@@ -152,7 +149,7 @@ fn failed_operations_do_not_refund_credit() -> TestResult {
         });
         let owner = session(&mut state)?;
         let now = Instant::now();
-        state.handle_at(owner, publish(1, DestinationId::new()), now)?;
+        state.handle_at(owner, publish(1, &unique_address()), now)?;
         let operation = if publish_failure { "publish" } else { "dial" };
         let failed = state.handle_at(owner, request(operation, 2), now)?;
         assert!(frames(&failed).any(|frame| match publish_failure {
@@ -237,8 +234,63 @@ fn missing_session_drain_and_replayed_dial_do_not_spend_credit() -> TestResult {
     let now = Instant::now();
     let dial = request("dial", 2);
     state.handle_at(owner, dial.clone(), now)?;
-    assert!(state.handle_at(owner, dial, now)?.is_empty());
-    assert!(state.handle_at(owner, request("dial", 1), now)?.is_empty());
+    for replayed in [dial, request("dial", 1)] {
+        let actions = state.handle_at(owner, replayed, now)?;
+        assert!(frames(&actions).any(|frame| matches!(
+            frame,
+            Frame::DialFailed {
+                code: ErrorCode::ProtocolError,
+                observation: PeerObservation::NotObserved,
+                ..
+            }
+        )));
+    }
+    assert!(state.control_rate.try_take(now));
+    assert!(!state.control_rate.try_take(now));
+    let session_rate = &mut state
+        .sessions
+        .get_mut(&owner)
+        .ok_or("missing session")?
+        .control_rate;
+    assert!(session_rate.try_take(now));
+    assert!(!session_rate.try_take(now));
+    Ok(())
+}
+
+#[test]
+fn direct_unauthenticated_dial_is_fenced_before_authorization() -> TestResult {
+    let mut state = GatewayState::new(GatewayLimits {
+        control_rate_per_second: 1,
+        control_burst: 2,
+        session_control_rate_per_second: 1,
+        session_control_burst: 2,
+        ..GatewayLimits::default()
+    });
+    let owner = session(&mut state)?;
+    let address = unique_address();
+    let denied = state.handle(owner, dial(2, &address))?;
+    assert!(frames(&denied).any(|frame| matches!(
+        frame,
+        Frame::DialFailed {
+            connection_id: 2,
+            code: ErrorCode::Unauthenticated,
+            observation: PeerObservation::NotObserved,
+            ..
+        }
+    )));
+    for connection_id in [2, 1] {
+        let replayed = state.handle(owner, dial(connection_id, &address))?;
+        assert!(frames(&replayed).any(|frame| matches!(
+            frame,
+            Frame::DialFailed {
+                code: ErrorCode::ProtocolError,
+                observation: PeerObservation::NotObserved,
+                ..
+            }
+        )));
+    }
+
+    let now = Instant::now();
     assert!(state.control_rate.try_take(now));
     assert!(!state.control_rate.try_take(now));
     let session_rate = &mut state

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use relaygate_protocol::{ClusterToken, Frame, FrameCodec, SessionId};
+use relaygate_protocol::{Frame, FrameCodec, SessionId};
 use relaygate_transport::BoxedIo;
 use tokio::time::{Instant, sleep_until, timeout};
 use tokio_util::codec::Framed;
@@ -35,15 +35,10 @@ async fn establish_inner(config: &Config) -> Result<EstablishedSession> {
         SDK_FRAME_INITIAL_CAPACITY,
     );
     transport.set_backpressure_boundary(SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY);
-    timeout(
-        config.connect_timeout,
-        transport.send(Frame::Hello {
-            cluster_token: ClusterToken::new(config.cluster_token.clone()),
-        }),
-    )
-    .await
-    .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
-    .map_err(|error| Error::unavailable(format!("session hello failed: {error}")))?;
+    timeout(config.connect_timeout, transport.send(Frame::Hello))
+        .await
+        .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
+        .map_err(|error| Error::unavailable(format!("session hello failed: {error}")))?;
     let frame = timeout(config.connect_timeout, transport.next())
         .await
         .map_err(|_| Error::deadline(PeerObservation::NotObserved))?
@@ -133,7 +128,7 @@ impl SessionHeartbeat {
             (Some(pending), Frame::Pong { nonce })
                 if pending.nonce == *nonce && Instant::now() < pending.deadline => {}
             (Some(_), _) | (None, Frame::Pong { .. }) => return,
-            (None, Frame::Hello { .. })
+            (None, Frame::Hello)
             | (None, Frame::Welcome { .. })
             | (None, Frame::SessionRejected { .. })
             | (None, Frame::Publish { .. })
@@ -278,7 +273,7 @@ mod tests {
     use crate::Config;
 
     fn heartbeat() -> SessionHeartbeat {
-        let config = Config::new_insecure_for_tests("127.0.0.1:0", "test-token")
+        let config = Config::new_insecure_for_tests("127.0.0.1:0")
             .with_heartbeat(Duration::from_secs(60), Duration::from_secs(20));
         SessionHeartbeat::new(&config, SessionId::new(), 0x43)
     }

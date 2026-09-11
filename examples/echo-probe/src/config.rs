@@ -1,14 +1,13 @@
 use std::{env, path::PathBuf, time::Duration};
 
 use anyhow::{Context, ensure};
-use relaygate_sdk::{ClientTlsConfig, Config, GatewayTransportConfig};
+use relaygate_sdk::{
+    AccessToken, AccessTokenSource, ClientTlsConfig, Config, GatewayTransportConfig,
+};
 
-pub(crate) const DESTINATION_IDS: [&str; 3] = [
-    "11111111-1111-4111-8111-111111111111",
-    "22222222-2222-4222-8222-222222222222",
-    "33333333-3333-4333-8333-333333333333",
-];
-pub(crate) const SHARED_DESTINATION_ID: &str = "44444444-4444-4444-8444-444444444444";
+pub(crate) const ROUTE_ADDRESSES: [&str; 3] =
+    ["examples/echo-a", "examples/echo-b", "examples/echo-c"];
+pub(crate) const SHARED_ROUTE_ADDRESS: &str = "examples/echo-shared";
 pub(crate) const CONCURRENT_PIPES_PER_PATH: usize = 32;
 pub(crate) const ECHO_DEADLINE: Duration = Duration::from_secs(10);
 pub(crate) const ROUTE_WAIT: Duration = Duration::from_secs(20);
@@ -24,7 +23,6 @@ pub(crate) const DEFAULT_STORM_PAUSE: Duration = Duration::from_secs(30);
 
 const DEFAULT_GATEWAYS: &str = "gateway-a:27420,gateway-b:27420,gateway-c:27420";
 const DEFAULT_CONTINUITY_STATE: &str = "/tmp/relaygate-continuity.state";
-const DEFAULT_CLUSTER_TOKEN: &str = "relaygate-local-cluster-token";
 const DEFAULT_TLS_CA_PATH: &str = "/etc/relaygate/tls/ca.crt";
 const DEFAULT_TLS_SERVER_NAME: &str = "relaygate-gateway.internal";
 
@@ -41,14 +39,23 @@ pub(crate) fn gateway_addresses() -> anyhow::Result<Vec<String>> {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     ensure!(
-        addresses.len() == DESTINATION_IDS.len(),
+        addresses.len() == ROUTE_ADDRESSES.len(),
         "RELAYGATE_GATEWAYS must contain exactly three comma-separated addresses"
     );
     Ok(addresses)
 }
 
-pub(crate) fn cluster_token() -> String {
-    environment("RELAYGATE_CLUSTER_TOKEN", DEFAULT_CLUSTER_TOKEN)
+pub(crate) fn required_environment(name: &str) -> anyhow::Result<String> {
+    env::var(name).with_context(|| format!("{name} is required"))
+}
+
+pub(crate) fn route_address() -> anyhow::Result<String> {
+    required_environment("RELAYGATE_ROUTE_ADDRESS")
+}
+
+pub(crate) fn access_token_source() -> anyhow::Result<AccessTokenSource> {
+    let token = AccessToken::new(required_environment("RELAYGATE_ACCESS_TOKEN")?)?;
+    Ok(AccessTokenSource::static_token(token))
 }
 
 pub(crate) fn sdk_config(address: impl Into<String>) -> anyhow::Result<Config> {
@@ -57,10 +64,9 @@ pub(crate) fn sdk_config(address: impl Into<String>) -> anyhow::Result<Config> {
     let ca = std::fs::read(&ca_path)
         .with_context(|| format!("failed to read SDK TLS CA at {ca_path:?}"))?;
     let tls = ClientTlsConfig::server_authenticated(server_name, &ca)?;
-    Ok(Config::with_transport(
-        cluster_token(),
-        GatewayTransportConfig::tls_tcp(address, tls),
-    ))
+    Ok(Config::with_transport(GatewayTransportConfig::tls_tcp(
+        address, tls,
+    )))
 }
 
 pub(crate) fn continuity_state_path() -> PathBuf {

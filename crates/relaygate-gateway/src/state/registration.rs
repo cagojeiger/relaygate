@@ -1,4 +1,4 @@
-use relaygate_protocol::{BindingId, DestinationId, ErrorCode, Frame, SessionId};
+use relaygate_protocol::{BindingId, ErrorCode, Frame, RouteAddress, SessionId};
 
 use crate::registry::Registration;
 
@@ -9,8 +9,8 @@ impl GatewayState {
         &mut self,
         session_id: SessionId,
         request_id: u64,
-        destination_id: DestinationId,
-        now: std::time::Instant,
+        address: RouteAddress,
+        _now: std::time::Instant,
     ) -> Vec<GatewayAction> {
         let (response, publish) = if self.draining {
             (
@@ -21,26 +21,15 @@ impl GatewayState {
                 },
                 false,
             )
-        } else if !self.admit_control(session_id, "publish", now) {
-            (
-                Frame::PublishFailed {
-                    request_id,
-                    code: ErrorCode::ResourceExhausted,
-                    message: "Gateway PUBLISH/DIAL rate limit reached".to_owned(),
-                },
-                false,
-            )
         } else if self.registry.binding_count() >= self.limits.max_bindings
-            && !self
-                .registry
-                .contains_session_destination(session_id, destination_id)
+            && !self.registry.contains_session_address(session_id, &address)
         {
             tracing::warn!(
                 component = "gateway",
                 event = "gateway.publication.rejected",
                 session_id = %session_id.as_uuid(),
                 request_id,
-                destination_id = %destination_id,
+                address = %address,
                 error_code = ?ErrorCode::ResourceExhausted,
                 bindings = self.registry.binding_count(),
                 "Destination publication rejected"
@@ -54,7 +43,7 @@ impl GatewayState {
                 false,
             )
         } else {
-            let registration = self.registry.register(session_id, destination_id);
+            let registration = self.registry.register(session_id, address.clone());
             let (binding_id, created) = match registration {
                 Registration::Created(binding) => (binding.id, true),
                 Registration::Existing(binding) => (binding.id, false),
@@ -64,7 +53,7 @@ impl GatewayState {
                 event = "gateway.publication.active",
                 session_id = %session_id.as_uuid(),
                 request_id,
-                destination_id = %destination_id,
+                address = %address,
                 binding_id = %binding_id.as_uuid(),
                 created,
                 bindings = self.registry.binding_count(),

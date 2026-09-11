@@ -13,13 +13,13 @@ insecure-test-transport = []
 bytes.workspace = true
 futures-util.workspace = true
 metrics.workspace = true
+relaygate-address.workspace = true
 relaygate-protocol.workspace = true
 relaygate-transport.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
 metrics-util.workspace = true

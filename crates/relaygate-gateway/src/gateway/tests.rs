@@ -1,18 +1,21 @@
 use std::sync::Arc;
 
 use crate::state::GatewayAction;
-use relaygate_protocol::{DestinationId, ErrorCode, Frame, PeerObservation};
+use relaygate_protocol::{BearerToken, ErrorCode, Frame, PeerObservation};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{Gateway, GatewayConfig};
+use crate::test_support::{authorization_config, unique_address};
 
-const CLUSTER_TOKEN: &str = "gateway-test-token";
+fn token() -> Result<BearerToken, relaygate_protocol::ProtocolError> {
+    BearerToken::new("gateway-state-test-token")
+}
 
 #[tokio::test]
 async fn snapshot_admission_requires_capacity_and_non_draining_state()
 -> Result<(), Box<dyn std::error::Error>> {
-    let gateway = Gateway::new(GatewayConfig::new(CLUSTER_TOKEN).with_max_sessions(1))?;
+    let gateway = Gateway::new(GatewayConfig::new(authorization_config()).with_max_sessions(1))?;
     assert!(gateway.snapshot().sdk_admission_ready);
     assert_eq!(gateway.snapshot().max_sessions, 1);
     assert_eq!(gateway.snapshot().session_slots_used, 0);
@@ -34,8 +37,8 @@ async fn snapshot_admission_requires_capacity_and_non_draining_state()
 #[tokio::test]
 async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
 -> Result<(), Box<dyn std::error::Error>> {
-    let gateway = Gateway::new(GatewayConfig::new(CLUSTER_TOKEN))?;
-    let destination_id = DestinationId::new();
+    let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
+    let address = unique_address();
     let (listener_sender, _listener_receiver) = mpsc::channel(1);
     listener_sender.try_send(Frame::Ping { nonce: 1 })?;
     let (connector_sender, mut connector_receiver) = mpsc::channel(8);
@@ -47,19 +50,23 @@ async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
         let connector = state
             .add_session(connector_sender, CancellationToken::new())
             .ok_or("missing connector session")?;
-        let _registration = state.handle(
+        let _registration = state.handle_at(
             listener,
             Frame::Publish {
                 request_id: 1,
-                destination_id,
+                address: address.clone(),
+                access_token: token()?,
             },
+            std::time::Instant::now(),
         )?;
-        let offer = state.handle(
+        let offer = state.handle_at(
             connector,
             Frame::Dial {
                 connection_id: 1,
-                destination_id,
+                address: address.clone(),
+                access_token: token()?,
             },
+            std::time::Instant::now(),
         )?;
         (listener, connector, offer)
     };
@@ -75,12 +82,14 @@ async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
             ..
         }
     ));
-    let after_rejection = gateway.inner.lock_state().handle(
+    let after_rejection = gateway.inner.lock_state().handle_at(
         connector,
         Frame::Dial {
             connection_id: 2,
-            destination_id,
+            address,
+            access_token: token()?,
         },
+        std::time::Instant::now(),
     )?;
     assert!(matches!(
         after_rejection.first().and_then(|action| match action {
@@ -109,7 +118,7 @@ async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
 #[tokio::test]
 async fn full_non_offer_queue_still_removes_the_failed_session_state()
 -> Result<(), Box<dyn std::error::Error>> {
-    let gateway = Gateway::new(GatewayConfig::new(CLUSTER_TOKEN))?;
+    let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
     let (sender, _receiver) = mpsc::channel(1);
     sender.try_send(Frame::Ping { nonce: 1 })?;
     let (session, delivery) = {

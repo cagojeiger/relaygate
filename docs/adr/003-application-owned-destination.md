@@ -2,12 +2,12 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted, implemented |
+| 상태 | Superseded by [ADR 015](015-hierarchical-route-address.md) |
 | 생성·보관 | application |
 | 형식 검증 | SDK와 Gateway |
 | live location | Gateway Binding과 RT mapping |
 
-## 결정
+## 이전 결정
 
 ```mermaid
 flowchart LR

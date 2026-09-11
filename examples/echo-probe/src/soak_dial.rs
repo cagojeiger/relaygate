@@ -5,18 +5,22 @@ use std::{
 };
 
 use anyhow::Context;
-use relaygate_sdk::{DestinationId, ErrorCode, PeerObservation, Pipe, Relay};
+use relaygate_sdk::{AccessTokenSource, ErrorCode, PeerObservation, Pipe, Relay, RouteAddress};
 use tokio::time::{sleep, timeout};
 
 pub(crate) async fn dial(
     relay: &Relay,
-    destination: &str,
+    route_address: &str,
+    access_token_source: &AccessTokenSource,
     wait: Duration,
     admission_rejections: &AtomicU64,
 ) -> anyhow::Result<Pipe> {
-    let destination: DestinationId = destination.parse()?;
+    let route_address: RouteAddress = route_address.parse()?;
     retry_until_available(wait, admission_rejections, || async {
-        match relay.dial(destination).await {
+        match relay
+            .dial(route_address.clone(), access_token_source.clone())
+            .await
+        {
             Ok(pipe) => Attempt::Complete(Ok(pipe)),
             Err(error) if retryable(error.code(), error.observation()) => Attempt::Retry {
                 admission_rejected: error.code() == ErrorCode::ResourceExhausted,

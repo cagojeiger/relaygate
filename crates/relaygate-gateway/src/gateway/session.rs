@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use relaygate_protocol::{ErrorCode, Frame, FrameCodec, MAX_HELLO_FRAME_LEN};
+use relaygate_protocol::{Frame, FrameCodec, MAX_HELLO_FRAME_LEN};
 use relaygate_transport::BoxedIo;
 use tokio::{
     sync::{OwnedSemaphorePermit, mpsc},
@@ -16,6 +16,7 @@ use tokio::{
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
+use crate::authorization::ControlOperation;
 use crate::metrics::{HeartbeatTransport, observe_heartbeat_round_trip, observe_heartbeat_timeout};
 use crate::state::ProtocolViolation;
 
@@ -37,7 +38,7 @@ impl Inner {
         let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
         let mut framed = Framed::with_capacity(
             stream,
-            FrameCodec::new(self.max_frame_len.min(MAX_HELLO_FRAME_LEN)),
+            FrameCodec::new(MAX_HELLO_FRAME_LEN),
             SDK_FRAME_INITIAL_CAPACITY,
         );
         framed.set_backpressure_boundary(SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY);
@@ -49,30 +50,9 @@ impl Inner {
                     .ok_or(SessionError::HandshakeClosed)??
             }
         };
-        let Frame::Hello { cluster_token } = first else {
+        let Frame::Hello = first else {
             return Err(SessionError::ExpectedHello);
         };
-        if !self.cluster_tokens.authorizes(&cluster_token) {
-            metrics::counter!(
-                "relaygate_gateway_sdk_transport_rejections_total",
-                "reason" => "cluster_token"
-            )
-            .increment(1);
-            tokio::select! {
-                _ = cancellation.cancelled() => return Ok(()),
-                result = timeout_at(deadline, framed.send(Frame::SessionRejected {
-                    code: ErrorCode::Unauthenticated,
-                    message: "ClusterToken was not accepted".to_owned(),
-                })) => result.map_err(|_| SessionError::HandshakeTimeout)??,
-            }
-            tracing::debug!(
-                component = "gateway",
-                event = "gateway.session.rejected",
-                error_code = ?ErrorCode::Unauthenticated,
-                "rejecting SDK session with an invalid ClusterToken"
-            );
-            return Err(SessionError::Unauthenticated);
-        }
         *framed.codec_mut() = FrameCodec::new(self.max_frame_len);
 
         let (sender, receiver) = mpsc::channel(self.writer_queue_capacity);
@@ -161,26 +141,107 @@ impl Inner {
                         );
                         break;
                     }
-                    let mut actions = {
-                        let mut state = self.lock_state();
-                        let actions = state.handle(session_id, frame)?;
-                        self.commit_registration_actions(&actions);
-                        actions
+                    let (operation, access_token) = match ControlOperation::take(frame) {
+                        Ok(control) => control,
+                        Err(frame) => {
+                            let actions = {
+                                let mut state = self.lock_state();
+                                let actions = state.handle(session_id, frame)?;
+                                self.commit_registration_actions(&actions);
+                                actions
+                            };
+                            self.send_session_actions(
+                                actions,
+                                session_id,
+                                &sender,
+                                &cancellation,
+                                heartbeat.next_deadline(),
+                            ).await?;
+                            continue;
+                        }
                     };
-                    if admission::is_local_rejection(&actions, session_id)
-                        && let Some(crate::state::GatewayAction::SendSdkFrame(delivery)) = actions.pop()
-                    {
-                        admission::send_rejection(
+                    let early = self.lock_state().prepare_authorization(
+                        session_id,
+                        &operation,
+                        std::time::Instant::now(),
+                    );
+                    if let Some(actions) = early {
+                        self.send_session_actions(
+                            actions,
+                            session_id,
                             &sender,
-                            delivery.frame,
                             &cancellation,
                             heartbeat.next_deadline(),
                         ).await?;
-                    } else {
-                        self.execute_all(actions).await;
+                        continue;
                     }
+                    let verification_started = std::time::Instant::now();
+                    let verification_deadline = Instant::now()
+                        .checked_add(self.authorization_timeout)
+                        .ok_or(SessionError::AuthorizationDeadline)?;
+                    let verified = match self.authorization.start(access_token, &operation) {
+                        Ok(job) => tokio::select! {
+                            _ = cancellation.cancelled() => return Ok(()),
+                            result = job.finish(verification_deadline) => result,
+                        },
+                        Err(code) => Err(code),
+                    };
+                    let (outcome, code) = match &verified {
+                        Ok(_) => ("success", "ok"),
+                        Err(code) => ("error", crate::state::error_code_name(*code)),
+                    };
+                    metrics::counter!(
+                        "relaygate_gateway_authorization_results_total",
+                        "operation" => operation.name(),
+                        "outcome" => outcome,
+                        "code" => code,
+                    ).increment(1);
+                    metrics::histogram!(
+                        "relaygate_gateway_authorization_duration_seconds",
+                        "operation" => operation.name(),
+                        "outcome" => outcome,
+                    ).record(verification_started.elapsed().as_secs_f64());
+                    let actions = {
+                        let mut state = self.lock_state();
+                        let actions = match verified {
+                            Ok(verified) => state.commit_authorized(
+                                session_id,
+                                operation,
+                                verified,
+                                std::time::Instant::now(),
+                            ),
+                            Err(code) => state.authorization_failed(session_id, &operation, code),
+                        };
+                        self.commit_registration_actions(&actions);
+                        actions
+                    };
+                    self.send_session_actions(
+                        actions,
+                        session_id,
+                        &sender,
+                        &cancellation,
+                        heartbeat.next_deadline(),
+                    ).await?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    async fn send_session_actions(
+        self: &Arc<Self>,
+        mut actions: Vec<crate::state::GatewayAction>,
+        session_id: relaygate_protocol::SessionId,
+        sender: &mpsc::Sender<Frame>,
+        cancellation: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<(), SessionError> {
+        if admission::is_local_rejection(&actions, session_id)
+            && let Some(crate::state::GatewayAction::SendSdkFrame(delivery)) = actions.pop()
+        {
+            admission::send_rejection(sender, delivery.frame, cancellation, deadline).await?;
+        } else {
+            self.execute_all(actions).await;
         }
         Ok(())
     }
@@ -245,8 +306,8 @@ pub(super) enum SessionError {
     ResourceExhausted,
     #[error("SDK admission response could not be queued before the liveness deadline")]
     AdmissionResponseUnavailable,
-    #[error("SDK session ClusterToken was not accepted")]
-    Unauthenticated,
+    #[error("authorization timeout is too large to form a deadline")]
+    AuthorizationDeadline,
     #[error(transparent)]
     Protocol(#[from] relaygate_protocol::ProtocolError),
     #[error(transparent)]

@@ -103,7 +103,7 @@ impl TransportActor {
         let frame = PeerFrame::Open {
             stream_id,
             open_identity: request.open_identity(),
-            destination_id: request.destination_id().to_owned(),
+            address: request.address().clone(),
             relay_session_id: request.relay_session_id(),
             binding_id: request.binding_id(),
         };

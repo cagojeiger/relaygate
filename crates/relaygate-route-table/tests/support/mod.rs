@@ -3,14 +3,14 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    AuthenticatedGatewayId, BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry,
-    MappingSnapshot, RegistrationKey, RelaySessionId, RequestContext, RouteTableConfig,
+    AuthenticatedGatewayId, BindingId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot,
+    RegistrationKey, RelaySessionId, RequestContext, RouteAddress, RouteTableConfig,
     RouteTableError, RouteTableShard, ShardDirectory, ShardId,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-pub const ONE_SHARD_DIRECTORY: &[u8] = br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"http://rt-0:8080"}]}"#;
+pub const ONE_SHARD_DIRECTORY: &[u8] = br#"{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{"id":"rt-0","endpoint":"http://rt-0:8080"}]}"#;
 
 pub fn directory() -> Result<ShardDirectory, RouteTableError> {
     ShardDirectory::from_json_bytes(ONE_SHARD_DIRECTORY)
@@ -51,18 +51,20 @@ pub fn key(
     ))
 }
 
-pub fn client(value: &str) -> Result<DestinationId, RouteTableError> {
-    DestinationId::new(test_destination(value))
+pub fn address(value: &str) -> Result<RouteAddress, RouteTableError> {
+    format!("test/{}", test_destination(value))
+        .parse()
+        .map_err(Into::into)
 }
 
 pub fn mapping(
-    destination_id: &str,
+    destination: &str,
     gateway_id: GatewayId,
     relay_session_id: RelaySessionId,
     binding_id: BindingId,
 ) -> Result<MappingEntry, RouteTableError> {
     Ok(MappingEntry::new(
-        client(destination_id)?,
+        address(destination)?,
         gateway_id,
         relay_session_id,
         binding_id,

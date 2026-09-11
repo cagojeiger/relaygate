@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    BindingId, DestinationId, GatewayId, GatewayLocator, LeaseId, RegistrationRevision,
-    RelaySessionId, RouteTableError, ShardId,
+    BindingId, GatewayId, GatewayLocator, LeaseId, RegistrationRevision, RelaySessionId,
+    RouteAddress, RouteTableError, ShardId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,7 +84,7 @@ impl MappingIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappingEntry {
-    destination_id: DestinationId,
+    address: RouteAddress,
     identity: MappingIdentity,
     gateway_locator: GatewayLocator,
 }
@@ -92,22 +92,22 @@ pub struct MappingEntry {
 impl MappingEntry {
     #[must_use]
     pub const fn new(
-        destination_id: DestinationId,
+        address: RouteAddress,
         gateway_id: GatewayId,
         relay_session_id: RelaySessionId,
         binding_id: BindingId,
         gateway_locator: GatewayLocator,
     ) -> Self {
         Self {
-            destination_id,
+            address,
             identity: MappingIdentity::new(gateway_id, relay_session_id, binding_id),
             gateway_locator,
         }
     }
 
     #[must_use]
-    pub fn destination_id(&self) -> &DestinationId {
-        &self.destination_id
+    pub fn address(&self) -> &RouteAddress {
+        &self.address
     }
 
     #[must_use]
@@ -130,18 +130,18 @@ pub struct MappingSnapshot {
 impl MappingSnapshot {
     pub fn new(entries: impl IntoIterator<Item = MappingEntry>) -> Result<Self, RouteTableError> {
         let mut by_identity = BTreeMap::new();
-        let mut by_session_client = std::collections::HashSet::new();
+        let mut by_session_address = std::collections::HashSet::new();
 
         for entry in entries {
             let identity = entry.identity();
-            let session_client = (
+            let session_address = (
                 identity.gateway_id(),
                 identity.relay_session_id(),
-                entry.destination_id().clone(),
+                entry.address().clone(),
             );
-            if !by_session_client.insert(session_client) {
+            if !by_session_address.insert(session_address) {
                 return Err(RouteTableError::InvalidArgument(
-                    "snapshot contains duplicate DestinationId scope for one RelaySession"
+                    "snapshot contains duplicate RouteAddress scope for one RelaySession"
                         .to_owned(),
                 ));
             }
@@ -202,12 +202,12 @@ impl BindingSet {
                 "BindingSet must contain at least one mapping".to_owned(),
             ));
         };
-        let destination_id = first.destination_id();
+        let address = first.address();
         let mut identities = HashSet::with_capacity(entries.len());
         for entry in &entries {
-            if entry.destination_id() != destination_id {
+            if entry.address() != address {
                 return Err(RouteTableError::InvalidArgument(
-                    "BindingSet mappings must share one DestinationId".to_owned(),
+                    "BindingSet mappings must share one RouteAddress".to_owned(),
                 ));
             }
             if !identities.insert(entry.identity()) {

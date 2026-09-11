@@ -12,21 +12,20 @@ use tokio::{
 
 use crate::{
     config::{
-        CONTINUITY_FRESHNESS, CONTINUITY_INTERVAL, ECHO_DEADLINE, ROUTE_WAIT,
-        continuity_state_path, environment,
+        CONTINUITY_FRESHNESS, CONTINUITY_INTERVAL, ECHO_DEADLINE, ROUTE_WAIT, access_token_source,
+        continuity_state_path, environment, route_address,
     },
     probe::{connect, dial_when_available},
 };
 
 pub(crate) async fn run_continuity() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_CONTINUITY_ADDR", "gateway-a:27420");
-    let destination_id = environment(
-        "RELAYGATE_CONTINUITY_DESTINATION_ID",
-        crate::config::DESTINATION_IDS[2],
-    );
+    let route_address = route_address()?;
+    let access_token_source = access_token_source()?;
     let state_path = continuity_state_path();
     let connector = connect(&address).await?;
-    let mut pipe = dial_when_available(&connector, &destination_id, ROUTE_WAIT).await?;
+    let mut pipe =
+        dial_when_available(&connector, &route_address, &access_token_source, ROUTE_WAIT).await?;
     let mut sequence = 1_u64;
 
     loop {

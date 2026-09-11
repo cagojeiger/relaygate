@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use relaygate_route_table::{DestinationId, GatewayLocator, ShardDirectoryGeneration};
+use relaygate_route_table::{GatewayLocator, RouteAddress, ShardDirectoryGeneration};
 use relaygate_route_table_transport::{
     ErrorCode, GatewayName, RouteTableClient, RouteTableClientConfig, RouteTableServiceConfig,
 };
@@ -95,12 +95,12 @@ async fn keep_alive_partition_case() -> TestResult {
         vec![
             Binding {
                 id: protocol_binding(4_002),
-                destination_id: client_0.as_str().parse()?,
+                address: client_0.clone(),
                 session_id,
             },
             Binding {
                 id: protocol_binding(4_003),
-                destination_id: client_1.as_str().parse()?,
+                address: client_1.clone(),
                 session_id,
             },
         ],
@@ -109,7 +109,7 @@ async fn keep_alive_partition_case() -> TestResult {
         unrelated_session_id,
         vec![Binding {
             id: protocol_binding(4_005),
-            destination_id: unrelated_client_0.as_str().parse()?,
+            address: unrelated_client_0.clone(),
             session_id: unrelated_session_id,
         }],
     )?;
@@ -164,18 +164,14 @@ async fn keep_alive_partition_case() -> TestResult {
 async fn wait_for_direct_not_found(
     client: &RouteTableClient,
     generation: ShardDirectoryGeneration,
-    destination_id: &DestinationId,
+    address: &RouteAddress,
 ) -> TestResult {
     for _ in 0..400 {
-        match client.resolve(generation, destination_id).await {
+        match client.resolve(generation, address).await {
             Err(error) if error.code() == ErrorCode::NotFound => return Ok(()),
             Ok(_) => tokio::time::sleep(Duration::from_millis(5)).await,
             Err(error) => return Err(error.into()),
         }
     }
-    Err(format!(
-        "{} did not expire during the held partition",
-        destination_id.as_str()
-    )
-    .into())
+    Err(format!("{} did not expire during the held partition", address).into())
 }

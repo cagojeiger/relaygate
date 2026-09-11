@@ -40,10 +40,10 @@ class TransportTests(unittest.TestCase):
             self.assertIn("name: RELAYGATE_INTERNAL_TLS_CERT_PATH", item)
             self.assertIn("mountPath: /etc/relaygate/tls/internal", item)
             self.assertNotIn("secret.reloader.stakater.com/reload:", item)
-            for annotation in ("credentials-reload", "edge-tls-reload", "internal-tls-reload"):
+            for annotation in ("authorization-reload", "edge-tls-reload", "internal-tls-reload"):
                 self.assertNotIn(f"relaygate.io/{annotation}:", item)
 
-    def test_plaintext_keeps_edge_tls_and_token_but_removes_internal_certificates(self):
+    def test_plaintext_keeps_edge_tls_and_authorization_but_removes_internal_certificates(self):
         output = self.successful("tls.internal.mode=plaintext")
         for component in ("gateway", "route-table"):
             item = workload(output, component)
@@ -53,7 +53,8 @@ class TransportTests(unittest.TestCase):
             self.assertNotIn("name: internal-tls", item)
             self.assertNotIn("RELAYGATE_INSECURE_TEST_TRANSPORT", item)
         self.assertIn("RELAYGATE_SDK_TLS_CERT_PATH", workload(output, "gateway"))
-        self.assertIn("RELAYGATE_CLUSTER_TOKEN", workload(output, "gateway"))
+        self.assertIn("RELAYGATE_AUTH_CONFIG_PATH", workload(output, "gateway"))
+        self.assertNotIn("RELAYGATE_CLUSTER_TOKEN", workload(output, "gateway"))
         self.assertNotIn("kind: Certificate", output)
 
     def test_existing_secrets_mount_only_role_leaf_and_public_trust(self):
@@ -90,7 +91,7 @@ class TransportTests(unittest.TestCase):
     def test_removed_options_and_invalid_annotations_are_rejected(self):
         for setting in (
             "tls.internal.mode=tcp", "tls.edge.autoReload=true", "tls.internal.autoReload=true",
-            "credentials.reloadToken=old", "tls.edge.reloadToken=old", "tls.internal.reloadToken=old",
+            "credentials.existingSecret=old", "tls.edge.reloadToken=old", "tls.internal.reloadToken=old",
             "tls.internal.source=certManager", "tls.internal.certManager.issuerRef.name=old",
             "tls.internal.existingSecret=old", "tls.edge.certificateKey=old",
             "tls.internal.gatewayPrivateKeyKey=old", "tls.internal.trustSecret=",

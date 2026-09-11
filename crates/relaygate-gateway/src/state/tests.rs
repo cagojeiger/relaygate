@@ -6,7 +6,7 @@ use std::{
 
 use bytes::Bytes;
 use relaygate_protocol::{
-    BindingId, DestinationId, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
+    BearerToken, BindingId, ErrorCode, Frame, PeerObservation, PipeId, RouteAddress, SessionId,
 };
 use relaygate_route_table::GatewayId;
 use tokio::sync::mpsc;
@@ -19,8 +19,31 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const DESTINATION_A: &str = "11111111-1111-4111-8111-111111111111";
 const DESTINATION_B: &str = "22222222-2222-4222-8222-222222222222";
 
-fn destination(raw: &str) -> Result<DestinationId, &'static str> {
-    DestinationId::from_str(raw)
+fn destination(raw: &str) -> Result<RouteAddress, relaygate_address::AddressError> {
+    RouteAddress::from_str(&format!("test/{raw}"))
+}
+
+#[allow(clippy::expect_used)]
+fn access_token() -> BearerToken {
+    BearerToken::new("state-test-token").expect("bounded test token")
+}
+
+trait GatewayStateTestExt {
+    fn test_handle(
+        &mut self,
+        session_id: SessionId,
+        frame: Frame,
+    ) -> Result<Vec<GatewayAction>, ProtocolViolation>;
+}
+
+impl GatewayStateTestExt for GatewayState {
+    fn test_handle(
+        &mut self,
+        session_id: SessionId,
+        frame: Frame,
+    ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
+        self.handle_at(session_id, frame, Instant::now())
+    }
 }
 
 fn state() -> GatewayState {
@@ -55,16 +78,25 @@ fn published_binding(actions: &[GatewayAction]) -> Option<BindingId> {
 fn publish(
     state: &mut GatewayState,
     session: SessionId,
-    destination_id: DestinationId,
+    address: &RouteAddress,
 ) -> TestResult<BindingId> {
-    let actions = state.handle(
+    let actions = state.test_handle(
         session,
         Frame::Publish {
             request_id: 1,
-            destination_id,
+            address: address.clone(),
+            access_token: access_token(),
         },
     )?;
     published_binding(&actions).ok_or_else(|| "missing PUBLISHED response".into())
+}
+
+fn dial(connection_id: u64, address: &RouteAddress) -> Frame {
+    Frame::Dial {
+        connection_id,
+        address: address.clone(),
+        access_token: access_token(),
+    }
 }
 
 fn offered_pipe(actions: &[GatewayAction]) -> Option<PipeId> {
@@ -81,32 +113,20 @@ fn one_session_can_publish_and_dial_while_self_binding_is_excluded() -> TestResu
     let relay_b = add_session(&mut state);
     let destination_a = destination(DESTINATION_A)?;
     let destination_b = destination(DESTINATION_B)?;
-    publish(&mut state, relay_a, destination_a)?;
-    publish(&mut state, relay_b, destination_a)?;
-    publish(&mut state, relay_b, destination_b)?;
+    publish(&mut state, relay_a, &destination_a)?;
+    publish(&mut state, relay_b, &destination_a)?;
+    publish(&mut state, relay_b, &destination_b)?;
 
-    let actions = state.handle(
-        relay_a,
-        Frame::Dial {
-            connection_id: 1,
-            destination_id: destination_a,
-        },
-    )?;
+    let actions = state.test_handle(relay_a, dial(1, &destination_a))?;
     assert!(sdk_frames(&actions).any(|(target, frame)| {
         target == relay_b
-            && matches!(frame, Frame::Offer { destination_id, .. } if *destination_id == destination_a)
+            && matches!(frame, Frame::Offer { address, .. } if address == &destination_a)
     }));
 
-    let actions = state.handle(
-        relay_a,
-        Frame::Dial {
-            connection_id: 2,
-            destination_id: destination_b,
-        },
-    )?;
+    let actions = state.test_handle(relay_a, dial(2, &destination_b))?;
     assert!(sdk_frames(&actions).any(|(target, frame)| {
         target == relay_b
-            && matches!(frame, Frame::Offer { destination_id, .. } if *destination_id == destination_b)
+            && matches!(frame, Frame::Offer { address, .. } if address == &destination_b)
     }));
     Ok(())
 }
@@ -115,13 +135,13 @@ fn one_session_can_publish_and_dial_while_self_binding_is_excluded() -> TestResu
 fn publish_is_idempotent_but_unpublish_then_publish_creates_a_new_binding() -> TestResult {
     let mut state = state();
     let relay = add_session(&mut state);
-    let destination_id = destination(DESTINATION_A)?;
-    let first = publish(&mut state, relay, destination_id)?;
-    let repeated = publish(&mut state, relay, destination_id)?;
+    let address = destination(DESTINATION_A)?;
+    let first = publish(&mut state, relay, &address)?;
+    let repeated = publish(&mut state, relay, &address)?;
     assert_eq!(first, repeated);
     assert_eq!(state.snapshot().bindings, 1);
 
-    state.handle(
+    state.test_handle(
         relay,
         Frame::Unpublish {
             request_id: 2,
@@ -129,7 +149,7 @@ fn publish_is_idempotent_but_unpublish_then_publish_creates_a_new_binding() -> T
         },
     )?;
     assert_eq!(state.snapshot().bindings, 0);
-    let replacement = publish(&mut state, relay, destination_id)?;
+    let replacement = publish(&mut state, relay, &address)?;
     assert_ne!(first, replacement);
     Ok(())
 }
@@ -139,25 +159,19 @@ fn accepted_pipe_relays_data_and_closes_without_residue() -> TestResult {
     let mut state = state();
     let caller = add_session(&mut state);
     let receiver = add_session(&mut state);
-    let destination_id = destination(DESTINATION_A)?;
-    publish(&mut state, receiver, destination_id)?;
+    let address = destination(DESTINATION_A)?;
+    publish(&mut state, receiver, &address)?;
 
-    let actions = state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 7,
-            destination_id,
-        },
-    )?;
+    let actions = state.test_handle(caller, dial(7, &address))?;
     let pipe_id = offered_pipe(&actions).ok_or("missing OFFER")?;
-    let actions = state.handle(receiver, Frame::OfferAccepted { pipe_id })?;
+    let actions = state.test_handle(receiver, Frame::OfferAccepted { pipe_id })?;
     assert!(sdk_frames(&actions).any(|(target, frame)| {
         target == caller && matches!(frame, Frame::Opened { pipe_id: opened } if *opened == pipe_id)
     }));
     assert_eq!(state.snapshot().live_pipes, 1);
     assert_eq!(state.snapshot().originated_pipes, 1);
 
-    let actions = state.handle(
+    let actions = state.test_handle(
         caller,
         Frame::Data {
             pipe_id,
@@ -169,8 +183,8 @@ fn accepted_pipe_relays_data_and_closes_without_residue() -> TestResult {
             && matches!(frame, Frame::Data { pipe_id: data_pipe, payload } if *data_pipe == pipe_id && payload.as_ref() == b"hello")
     }));
 
-    state.handle(caller, Frame::Fin { pipe_id })?;
-    state.handle(receiver, Frame::Fin { pipe_id })?;
+    state.test_handle(caller, Frame::Fin { pipe_id })?;
+    state.test_handle(receiver, Frame::Fin { pipe_id })?;
     assert_eq!(state.snapshot().live_pipes, 0);
     assert_eq!(state.snapshot().originated_pipes, 0);
     assert_eq!(state.pipe_count(), 0);
@@ -186,18 +200,11 @@ fn offer_timeout_closes_the_unresponsive_relay_and_preserves_sibling_binding() -
     let caller = add_session(&mut state);
     let stalled = add_session(&mut state);
     let sibling = add_session(&mut state);
-    let destination_id = destination(DESTINATION_A)?;
-    publish(&mut state, stalled, destination_id)?;
-    publish(&mut state, sibling, destination_id)?;
+    let address = destination(DESTINATION_A)?;
+    publish(&mut state, stalled, &address)?;
+    publish(&mut state, sibling, &address)?;
     let started = Instant::now();
-    let actions = state.handle_at(
-        caller,
-        Frame::Dial {
-            connection_id: 1,
-            destination_id,
-        },
-        started,
-    )?;
+    let actions = state.handle_at(caller, dial(1, &address), started)?;
     let offered_to = sdk_frames(&actions)
         .find_map(|(target, frame)| matches!(frame, Frame::Offer { .. }).then_some(target))
         .ok_or("missing OFFER")?;
@@ -225,21 +232,15 @@ fn session_removal_cleans_its_bindings_and_pipes_only() -> TestResult {
     let caller = add_session(&mut state);
     let removed = add_session(&mut state);
     let sibling = add_session(&mut state);
-    let destination_id = destination(DESTINATION_A)?;
-    publish(&mut state, removed, destination_id)?;
-    publish(&mut state, sibling, destination_id)?;
-    let actions = state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 1,
-            destination_id,
-        },
-    )?;
+    let address = destination(DESTINATION_A)?;
+    publish(&mut state, removed, &address)?;
+    publish(&mut state, sibling, &address)?;
+    let actions = state.test_handle(caller, dial(1, &address))?;
     let pipe_id = offered_pipe(&actions).ok_or("missing OFFER")?;
     let offered_to = sdk_frames(&actions)
         .find_map(|(target, frame)| matches!(frame, Frame::Offer { .. }).then_some(target))
         .ok_or("missing OFFER target")?;
-    state.handle(offered_to, Frame::OfferAccepted { pipe_id })?;
+    state.test_handle(offered_to, Frame::OfferAccepted { pipe_id })?;
 
     let actions = state.remove_session(offered_to);
     assert!(sdk_frames(&actions).any(|(target, frame)| {
@@ -259,42 +260,29 @@ fn session_removal_cleans_its_bindings_and_pipes_only() -> TestResult {
 }
 
 #[test]
-fn duplicate_or_out_of_order_dial_identifiers_do_not_create_more_state() -> TestResult {
+fn duplicate_or_out_of_order_dial_identifiers_fail_without_creating_more_state() -> TestResult {
     let mut state = state();
     let caller = add_session(&mut state);
     let receiver = add_session(&mut state);
-    let destination_id = destination(DESTINATION_A)?;
-    publish(&mut state, receiver, destination_id)?;
-    let first = state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 2,
-            destination_id,
-        },
-    )?;
+    let address = destination(DESTINATION_A)?;
+    publish(&mut state, receiver, &address)?;
+    let first = state.test_handle(caller, dial(2, &address))?;
     assert!(offered_pipe(&first).is_some());
-    assert!(
-        state
-            .handle(
-                caller,
-                Frame::Dial {
-                    connection_id: 2,
-                    destination_id,
-                },
-            )?
-            .is_empty()
-    );
-    assert!(
-        state
-            .handle(
-                caller,
-                Frame::Dial {
-                    connection_id: 1,
-                    destination_id,
-                },
-            )?
-            .is_empty()
-    );
+    for connection_id in [2, 1] {
+        let rejected = state.test_handle(caller, dial(connection_id, &address))?;
+        assert!(sdk_frames(&rejected).any(|(target, frame)| {
+            target == caller
+                && matches!(
+                    frame,
+                    Frame::DialFailed {
+                        connection_id: rejected_id,
+                        code: ErrorCode::ProtocolError,
+                        observation: PeerObservation::NotObserved,
+                        ..
+                    } if *rejected_id == connection_id
+                )
+        }));
+    }
     assert_eq!(state.snapshot().pending_offers, 1);
     Ok(())
 }
@@ -305,20 +293,14 @@ fn foreign_session_cannot_control_an_existing_pipe() -> TestResult {
     let caller = add_session(&mut state);
     let receiver = add_session(&mut state);
     let stranger = add_session(&mut state);
-    let destination_id = destination(DESTINATION_A)?;
-    publish(&mut state, receiver, destination_id)?;
-    let actions = state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 1,
-            destination_id,
-        },
-    )?;
+    let address = destination(DESTINATION_A)?;
+    publish(&mut state, receiver, &address)?;
+    let actions = state.test_handle(caller, dial(1, &address))?;
     let pipe_id = offered_pipe(&actions).ok_or("missing OFFER")?;
-    state.handle(receiver, Frame::OfferAccepted { pipe_id })?;
+    state.test_handle(receiver, Frame::OfferAccepted { pipe_id })?;
 
     let error = state
-        .handle(
+        .test_handle(
             stranger,
             Frame::Data {
                 pipe_id,
@@ -351,12 +333,13 @@ fn resource_limits_reject_without_leaking_state() -> TestResult {
     );
     let destination_a = destination(DESTINATION_A)?;
     let destination_b = destination(DESTINATION_B)?;
-    publish(&mut state, receiver, destination_a)?;
-    let actions = state.handle(
+    publish(&mut state, receiver, &destination_a)?;
+    let actions = state.test_handle(
         receiver,
         Frame::Publish {
             request_id: 2,
-            destination_id: destination_b,
+            address: destination_b,
+            access_token: access_token(),
         },
     )?;
     assert!(sdk_frames(&actions).any(|(_, frame)| {
@@ -369,20 +352,8 @@ fn resource_limits_reject_without_leaking_state() -> TestResult {
         )
     }));
 
-    state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 1,
-            destination_id: destination_a,
-        },
-    )?;
-    let actions = state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 2,
-            destination_id: destination_a,
-        },
-    )?;
+    state.test_handle(caller, dial(1, &destination_a))?;
+    let actions = state.test_handle(caller, dial(2, &destination_a))?;
     assert!(sdk_frames(&actions).any(|(_, frame)| {
         matches!(
             frame,
@@ -410,13 +381,7 @@ fn remote_dial_admission_rejects_before_resolve_and_releases_after_terminal_resu
     let destination_a = destination(DESTINATION_A)?;
     let destination_b = destination(DESTINATION_B)?;
 
-    let first = state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 1,
-            destination_id: destination_a,
-        },
-    )?;
+    let first = state.test_handle(caller, dial(1, &destination_a))?;
     let open_identity = first
         .iter()
         .find_map(|action| match action {
@@ -426,13 +391,7 @@ fn remote_dial_admission_rejects_before_resolve_and_releases_after_terminal_resu
         .ok_or("first remote DIAL did not start route resolution")?;
     assert_eq!(state.snapshot().remote_open_attempts, 1);
 
-    let rejected = state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 2,
-            destination_id: destination_b,
-        },
-    )?;
+    let rejected = state.test_handle(caller, dial(2, &destination_b))?;
     assert!(sdk_frames(&rejected).any(|(target, frame)| {
         target == caller
             && matches!(
@@ -450,13 +409,7 @@ fn remote_dial_admission_rejects_before_resolve_and_releases_after_terminal_resu
     state.route_failed(open_identity, ErrorCode::Unavailable, "test route failure");
     assert_eq!(state.snapshot().remote_open_attempts, 0);
 
-    let admitted = state.handle(
-        caller,
-        Frame::Dial {
-            connection_id: 3,
-            destination_id: destination_b,
-        },
-    )?;
+    let admitted = state.test_handle(caller, dial(3, &destination_b))?;
     assert!(
         admitted
             .iter()
@@ -477,17 +430,11 @@ fn remote_dial_admission_releases_all_slots_when_caller_session_ends() -> TestRe
     );
     let caller = add_session(&mut state);
 
-    for (connection_id, destination_id) in [
+    for (connection_id, address) in [
         (1, destination(DESTINATION_A)?),
         (2, destination(DESTINATION_B)?),
     ] {
-        let actions = state.handle(
-            caller,
-            Frame::Dial {
-                connection_id,
-                destination_id,
-            },
-        )?;
+        let actions = state.test_handle(caller, dial(connection_id, &address))?;
         assert!(
             actions
                 .iter()

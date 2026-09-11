@@ -1,7 +1,7 @@
 use std::{env, time::Instant};
 
 use anyhow::{Context, ensure};
-use relaygate_sdk::{DestinationId, Pipe};
+use relaygate_sdk::{Pipe, RouteAddress};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -9,11 +9,15 @@ use tokio::{
 };
 
 use crate::{
-    config::{DESTINATION_IDS, ECHO_DEADLINE, ROUTE_WAIT, environment, gateway_addresses},
+    config::{
+        ECHO_DEADLINE, ROUTE_ADDRESSES, ROUTE_WAIT, access_token_source, gateway_addresses,
+        route_address,
+    },
     probe::{connect, dial_when_available},
 };
 
 pub(crate) async fn run() -> anyhow::Result<()> {
+    let access_token_source = access_token_source()?;
     let warmup = setting("RELAYGATE_LATENCY_WARMUP", 100, 0, 10_000)?;
     let samples = setting("RELAYGATE_LATENCY_SAMPLES", 1_000, 1, 100_000)?;
     let payload_bytes = setting("RELAYGATE_LATENCY_PAYLOAD_BYTES", 64, 1, 65_536)?;
@@ -23,9 +27,9 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         None => gateway_addresses()?,
     };
     let destinations = if single.is_some() {
-        vec![environment("RELAYGATE_DESTINATION_ID", DESTINATION_IDS[0])]
+        vec![route_address()?]
     } else {
-        DESTINATION_IDS
+        ROUTE_ADDRESSES
             .iter()
             .map(|value| (*value).to_owned())
             .collect()
@@ -38,9 +42,14 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         let setup_seconds = setup.elapsed().as_secs_f64();
         for (owner, destination) in destinations.iter().enumerate() {
             // Registration convergence is a preflight, outside the timed dial and DATA samples.
-            drop(dial_when_available(&relay, destination, ROUTE_WAIT).await?);
+            drop(dial_when_available(&relay, destination, &access_token_source, ROUTE_WAIT).await?);
             let dial_started = Instant::now();
-            let pipe = relay.dial(destination.parse::<DestinationId>()?).await?;
+            let pipe = relay
+                .dial(
+                    destination.parse::<RouteAddress>()?,
+                    access_token_source.clone(),
+                )
+                .await?;
             let dial_seconds = dial_started.elapsed().as_secs_f64();
             let mut result = measure(pipe, warmup, samples, payload_bytes).await?;
             failed |= result["errors"].as_u64().unwrap_or(1) != 0;

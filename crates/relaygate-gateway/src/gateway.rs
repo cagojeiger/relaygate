@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     GatewayConfig, GatewayError, GatewayPeerConfig, GatewayRoutingConfig,
-    auth::ClusterTokenSet,
+    authorization::Authorization,
     peer::PeerHandle,
     routing::RoutingHandle,
     state::GatewayState,
@@ -46,7 +46,8 @@ pub struct Gateway {
 
 struct Inner {
     state: Mutex<GatewayState>,
-    cluster_tokens: ClusterTokenSet,
+    authorization: Authorization,
+    authorization_timeout: Duration,
     sdk_tls: Option<ServerTlsConfig>,
     writer_queue_capacity: usize,
     max_frame_len: usize,
@@ -143,10 +144,11 @@ impl Gateway {
                     Some(gateway_id) => GatewayState::new_distributed(limits, gateway_id),
                     None => GatewayState::new(limits),
                 }),
-                cluster_tokens: ClusterTokenSet::new(
-                    config.cluster_token,
-                    config.next_cluster_token,
+                authorization: Authorization::new(
+                    config.authorization,
+                    config.authorization_concurrency,
                 ),
+                authorization_timeout: config.authorization_timeout,
                 sdk_tls: config.sdk_tls,
                 writer_queue_capacity: config.writer_queue_capacity,
                 max_frame_len: config.max_frame_len,

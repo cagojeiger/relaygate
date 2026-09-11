@@ -12,12 +12,24 @@ fn returned_listeners_republish_after_rate_limited_reconnect() -> TestResult {
     metrics::with_local_recorder(&recorder, || {
         runtime.block_on(async {
             let (address, first_shutdown, first_server) = start_gateway().await?;
-            let config = Config::new_insecure_for_tests(address.to_string(), CLUSTER_TOKEN)
+            let config = Config::new_insecure_for_tests(address.to_string())
                 .with_operation_timeout(Duration::from_secs(2))
                 .with_reconnect_backoff(Duration::from_millis(50), Duration::from_millis(100));
             let relay = Relay::connect(config.clone()).await?;
-            let first = relay.listen(DestinationId::new()).await?;
-            let second = relay.listen(DestinationId::new()).await?;
+            let first_address = unique_address()?;
+            let second_address = unique_address()?;
+            let first = relay
+                .listen(
+                    first_address.clone(),
+                    token_source(&first_address, AccessAction::Publish)?,
+                )
+                .await?;
+            let second = relay
+                .listen(
+                    second_address.clone(),
+                    token_source(&second_address, AccessAction::Publish)?,
+                )
+                .await?;
             first_shutdown.cancel();
             timeout(Duration::from_secs(3), first_server).await???;
             timeout(Duration::from_secs(2), async {
@@ -31,7 +43,7 @@ fn returned_listeners_republish_after_rate_limited_reconnect() -> TestResult {
 
             let socket = TcpListener::bind(address).await?;
             let gateway = Gateway::new(
-                GatewayConfig::new(CLUSTER_TOKEN)
+                GatewayConfig::new(authorization_config()?)
                     .with_session_control_rate_limit(1, 1)
                     .with_drain_timeout(Duration::from_millis(20)),
             )?;
@@ -67,8 +79,13 @@ fn returned_listeners_republish_after_rate_limited_reconnect() -> TestResult {
                 // Separate caller sessions avoid consuming a shared caller budget in this recovery test.
                 for listener in [&first, &second] {
                     let caller = Relay::connect(config.clone()).await?;
+                    let listener_address = listener.address().clone();
+                    let dial_token = token_source(&listener_address, AccessAction::Dial)?;
                     let (outgoing, incoming) = timeout(Duration::from_secs(2), async {
-                        tokio::join!(caller.dial(listener.destination_id()), listener.accept())
+                        tokio::join!(
+                            caller.dial(listener_address.clone(), dial_token),
+                            listener.accept()
+                        )
                     })
                     .await?;
                     let mut outgoing = outgoing?;
@@ -95,23 +112,38 @@ fn returned_listeners_republish_after_rate_limited_reconnect() -> TestResult {
 #[tokio::test]
 async fn control_throttle_returns_request_errors_preserves_pipe_and_recovers() -> TestResult {
     let (address, shutdown, server) = start_gateway_with_config(
-        GatewayConfig::new(CLUSTER_TOKEN).with_session_control_rate_limit(1, 1),
+        GatewayConfig::new(authorization_config()?).with_session_control_rate_limit(1, 1),
     )
     .await?;
     let result: TestResult = async {
-        let config = Config::new_insecure_for_tests(address.to_string(), CLUSTER_TOKEN)
+        let config = Config::new_insecure_for_tests(address.to_string())
             .with_operation_timeout(Duration::from_secs(2));
         let receiver = Relay::connect(config.clone()).await?;
         let caller = Relay::connect(config).await?;
-        let destination = DestinationId::new();
-        let listener = receiver.listen(destination).await?;
-        let (outgoing, incoming) = tokio::join!(caller.dial(destination), listener.accept());
+        let destination = unique_address()?;
+        let listener = receiver
+            .listen(
+                destination.clone(),
+                token_source(&destination, AccessAction::Publish)?,
+            )
+            .await?;
+        let (outgoing, incoming) = tokio::join!(
+            caller.dial(
+                destination.clone(),
+                token_source(&destination, AccessAction::Dial)?,
+            ),
+            listener.accept()
+        );
         let mut outgoing = outgoing?;
         let mut incoming = incoming?;
         // Repeated operations tolerate a token refill but must eventually reject.
         timeout(Duration::from_secs(3), async {
             loop {
-                match caller.dial(DestinationId::new()).await {
+                let address = unique_address()?;
+                match caller
+                    .dial(address.clone(), token_source(&address, AccessAction::Dial)?)
+                    .await
+                {
                     Err(error) if error.code() == relaygate_sdk::ErrorCode::ResourceExhausted => {
                         assert_eq!(
                             error.observation(),
@@ -128,7 +160,14 @@ async fn control_throttle_returns_request_errors_preserves_pipe_and_recovers() -
         .await??;
         timeout(Duration::from_secs(3), async {
             loop {
-                match receiver.listen(DestinationId::new()).await {
+                let address = unique_address()?;
+                match receiver
+                    .listen(
+                        address.clone(),
+                        token_source(&address, AccessAction::Publish)?,
+                    )
+                    .await
+                {
                     Err(error) if error.code() == relaygate_sdk::ErrorCode::ResourceExhausted => {
                         break;
                     }
@@ -147,7 +186,13 @@ async fn control_throttle_returns_request_errors_preserves_pipe_and_recovers() -
         timeout(Duration::from_secs(1), outgoing.read_exact(&mut bytes)).await??;
         assert_eq!(&bytes, b"pong");
         sleep(Duration::from_millis(1100)).await;
-        let (recovered, accepted) = tokio::join!(caller.dial(destination), listener.accept());
+        let (recovered, accepted) = tokio::join!(
+            caller.dial(
+                destination.clone(),
+                token_source(&destination, AccessAction::Dial)?,
+            ),
+            listener.accept()
+        );
         drop((recovered?, accepted?));
         listener.close().await?;
         caller.close();

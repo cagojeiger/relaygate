@@ -43,7 +43,7 @@ impl SessionHeartbeat {
                 Some(pending.sent_at.elapsed())
             }
             (Some(_), _) | (None, Frame::Pong { .. }) => return None,
-            (None, Frame::Hello { .. })
+            (None, Frame::Hello)
             | (None, Frame::Welcome { .. })
             | (None, Frame::SessionRejected { .. })
             | (None, Frame::Publish { .. })

@@ -8,7 +8,6 @@ use crate::{Error, ErrorCode, GatewayTransportConfig, PeerObservation, Result};
 /// Runtime limits, TLS identity and reconnect policy for one Relay.
 #[derive(Clone)]
 pub struct Config {
-    pub(crate) cluster_token: String,
     pub(crate) transport: GatewayTransportConfig,
     pub(crate) connect_timeout: Duration,
     pub(crate) operation_timeout: Duration,
@@ -26,19 +25,11 @@ pub struct Config {
 impl Config {
     /// Connects to `host:port` or `tls://host:port` using public CA trust.
     /// `tcp://host:port` explicitly selects unencrypted transport, including
-    /// the ClusterToken. TLS failures never fall back to plaintext.
+    /// operation access tokens. TLS failures never fall back to plaintext.
     pub fn new(endpoint: impl AsRef<str>) -> Result<Self> {
         Ok(Self::new_with_transport(
-            "",
             GatewayTransportConfig::from_endpoint(endpoint.as_ref())?,
         ))
-    }
-
-    /// Sets the deployment admission credential, independently of TLS trust.
-    #[must_use]
-    pub fn cluster_token(mut self, token: impl Into<String>) -> Self {
-        self.cluster_token = token.into();
-        self
     }
 
     /// Replaces public trust with a private CA; the endpoint still supplies
@@ -52,32 +43,19 @@ impl Config {
 
     /// Creates a Relay configuration with an explicit Gateway transport.
     #[must_use]
-    pub fn with_transport(
-        cluster_token: impl Into<String>,
-        transport: GatewayTransportConfig,
-    ) -> Self {
-        Self::new_with_transport(cluster_token, transport)
+    pub fn with_transport(transport: GatewayTransportConfig) -> Self {
+        Self::new_with_transport(transport)
     }
 
     #[doc(hidden)]
     #[cfg(any(test, feature = "insecure-test-transport"))]
     #[must_use]
-    pub fn new_insecure_for_tests(
-        gateway_addr: impl Into<String>,
-        cluster_token: impl Into<String>,
-    ) -> Self {
-        Self::new_with_transport(
-            cluster_token,
-            GatewayTransportConfig::insecure_tcp(gateway_addr),
-        )
+    pub fn new_insecure_for_tests(gateway_addr: impl Into<String>) -> Self {
+        Self::new_with_transport(GatewayTransportConfig::insecure_tcp(gateway_addr))
     }
 
-    fn new_with_transport(
-        cluster_token: impl Into<String>,
-        transport: GatewayTransportConfig,
-    ) -> Self {
+    fn new_with_transport(transport: GatewayTransportConfig) -> Self {
         Self {
-            cluster_token: cluster_token.into(),
             transport,
             connect_timeout: Duration::from_secs(5),
             operation_timeout: Duration::from_secs(10),
@@ -154,13 +132,6 @@ impl Config {
 
     pub(crate) fn validate(&self) -> Result<()> {
         self.transport.validate()?;
-        if self.cluster_token.is_empty() {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                PeerObservation::NotObserved,
-                "ClusterToken must not be empty",
-            ));
-        }
         if self.connect_timeout.is_zero()
             || self.operation_timeout.is_zero()
             || self.heartbeat_idle_interval.is_zero()
@@ -213,7 +184,6 @@ impl std::fmt::Debug for Config {
         formatter
             .debug_struct("Config")
             .field("transport", &self.transport)
-            .field("cluster_token", &"[REDACTED]")
             .field("connect_timeout", &self.connect_timeout)
             .field("operation_timeout", &self.operation_timeout)
             .field("heartbeat_idle_interval", &self.heartbeat_idle_interval)

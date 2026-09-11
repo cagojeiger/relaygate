@@ -7,7 +7,9 @@ use super::{
     RelayFrameAction, RelaySessionState,
     cleanup::cleanup_relay_session,
     frame::handle_relay_frame,
-    registration::{reconcile_registrations, wait_for_registration_deadline},
+    registration::{
+        commit_registration_token, reconcile_registrations, wait_for_registration_deadline,
+    },
 };
 use crate::{
     Error, ErrorCode, PeerObservation,
@@ -120,10 +122,23 @@ pub(super) async fn run_relay_session(
             _ = inner.reconcile.notified() => {
                 needs_reconcile = true;
             }
+            supplied = state.token_supplies.next(), if !state.token_supplies.is_empty() => {
+                let Some((request_id, token)) = supplied else { continue; };
+                if !commit_registration_token(
+                    request_id,
+                    token,
+                    inner,
+                    &mut established,
+                    &mut state,
+                    &session_cancel,
+                ).await {
+                    break;
+                }
+            }
             command = commands.recv() => {
                 let Some(command) = command else { break; };
                 match command {
-                    RelayCommand::Dial { connection_id, destination_id, response } => {
+                    RelayCommand::Dial { connection_id, address, access_token, response } => {
                         if state.pending_dials.insert(connection_id, response).is_some() {
                             if let Some(response) = state.pending_dials.remove(&connection_id) {
                                 let _ = response.send(Err(Error::new(
@@ -138,7 +153,8 @@ pub(super) async fn run_relay_session(
                             &mut established.transport,
                             Frame::Dial {
                                 connection_id,
-                                destination_id: destination_id.to_wire(),
+                                address,
+                                access_token,
                             },
                             inner.config.operation_timeout,
                             &session_cancel,

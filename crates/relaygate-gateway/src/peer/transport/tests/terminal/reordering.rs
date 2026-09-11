@@ -24,10 +24,10 @@ fn request_for(
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         open_identity,
-        "echo.b",
+        crate::test_support::address("echo.b"),
         SessionId::new(),
         BindingId::new(),
-    )?;
+    );
     Ok((open_identity, request))
 }
 

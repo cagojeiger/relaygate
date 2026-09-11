@@ -11,11 +11,11 @@ source "$1/tests/kind/certificates.sh"
 export ARTIFACTS=$2 CERTIFICATES=$2
 sequence=$3
 printf '0' >"$ARTIFACTS/calls"
-timeout() {
+run_with_timeout() {
   [[ "$1" == 3 && "$2" == openssl && "$3" == s_client ]] || return 95
   [[ "$*" == *"-verify_return_error"* && "$*" == *"-CAfile"* ]] || return 95
   [[ "$*" == *"-servername relaygate-gateway.internal"* ]] || return 95
-  [[ "$*" == *"-alpn relaygate/2"* ]] || return 95
+  [[ "$*" == *"-alpn relaygate/3"* ]] || return 95
   local count outcome
   count=$(<"$ARTIFACTS/calls")
   count=$((count + 1))
