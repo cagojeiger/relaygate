@@ -1,7 +1,7 @@
 use anyhow::Context;
 use relaygate_sdk::{
-    AccessToken, AccessTokenSource, ClientTlsConfig, Config, GatewayTransportConfig, Listener,
-    Pipe, Relay, RouteAddress,
+    AccessToken, AccessTokenSource, ClientTlsConfig, Config, Destination, GatewayTransportConfig,
+    Listener, Pipe, Relay,
 };
 use tokio::io::{AsyncWriteExt, copy};
 
@@ -12,7 +12,7 @@ const DEFAULT_TLS_SERVER_NAME: &str = "relaygate-gateway.internal";
 async fn main() -> anyhow::Result<()> {
     init_tracing()?;
     let address = environment("RELAYGATE_ADDR", "gateway:27420");
-    let route_address = route_address_from_env()?;
+    let destination = destination_from_env()?;
     let access_token = AccessToken::new(required_environment("RELAYGATE_ACCESS_TOKEN")?)?;
     let ca_path = environment("RELAYGATE_SDK_TLS_CA_PATH", DEFAULT_TLS_CA_PATH);
     let server_name = environment("RELAYGATE_SDK_TLS_SERVER_NAME", DEFAULT_TLS_SERVER_NAME);
@@ -27,12 +27,12 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     let listener = relay
         .listen(
-            route_address.clone(),
+            destination.clone(),
             AccessTokenSource::static_token(access_token),
         )
         .await
-        .with_context(|| format!("failed to listen on RouteAddress {route_address}"))?;
-    serve_listener(route_address, listener).await
+        .with_context(|| format!("failed to listen on Destination {destination}"))?;
+    serve_listener(destination, listener).await
 }
 
 fn init_tracing() -> anyhow::Result<()> {
@@ -53,12 +53,12 @@ async fn echo(pipe: Pipe) -> std::io::Result<()> {
     writer.shutdown().await
 }
 
-async fn serve_listener(address: RouteAddress, listener: Listener) -> anyhow::Result<()> {
+async fn serve_listener(destination: Destination, listener: Listener) -> anyhow::Result<()> {
     loop {
         let pipe = listener
             .accept()
             .await
-            .with_context(|| format!("RouteAddress {address} accept loop stopped"))?;
+            .with_context(|| format!("Destination {destination} accept loop stopped"))?;
         tokio::spawn(async move {
             if let Err(error) = echo(pipe).await {
                 eprintln!("echo Pipe failed: {error}");
@@ -75,27 +75,27 @@ fn required_environment(name: &str) -> anyhow::Result<String> {
     std::env::var(name).with_context(|| format!("{name} is required"))
 }
 
-fn route_address_from_env() -> anyhow::Result<RouteAddress> {
-    parse_route_address(&required_environment("RELAYGATE_ROUTE_ADDRESS")?)
+fn destination_from_env() -> anyhow::Result<Destination> {
+    parse_destination(&required_environment("RELAYGATE_DESTINATION")?)
 }
 
-fn parse_route_address(value: &str) -> anyhow::Result<RouteAddress> {
+fn parse_destination(value: &str) -> anyhow::Result<Destination> {
     value
         .parse()
-        .with_context(|| format!("invalid RouteAddress {value:?}"))
+        .with_context(|| format!("invalid Destination {value:?}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_route_address;
+    use super::parse_destination;
 
     #[test]
-    fn route_address_requires_namespace_and_destination() -> anyhow::Result<()> {
+    fn destination_requires_namespace_and_name() -> anyhow::Result<()> {
         assert_eq!(
-            parse_route_address("examples/echo")?.to_string(),
+            parse_destination("examples/echo")?.to_string(),
             "examples/echo"
         );
-        assert!(parse_route_address("echo").is_err());
+        assert!(parse_destination("echo").is_err());
         Ok(())
     }
 }

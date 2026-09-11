@@ -7,13 +7,13 @@ use std::{
 };
 
 use anyhow::{Context, ensure};
-use relaygate_sdk::{ErrorCode, PeerObservation, RouteAddress};
+use relaygate_sdk::{Destination, ErrorCode, PeerObservation};
 use tokio::task::JoinSet;
 
 use crate::{
     config::{
-        access_token_source, environment, overload_duration, overload_sessions, overload_workers,
-        route_address,
+        access_token_source, destination, environment, overload_duration, overload_sessions,
+        overload_workers,
     },
     probe::{assert_echo, connect},
 };
@@ -42,10 +42,10 @@ impl OverloadAccounting {
 
 pub(crate) async fn run() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_ADDR", "gateway-a:27420");
-    let route_address = route_address()?;
-    let route_address: RouteAddress = route_address
+    let destination = destination()?;
+    let destination: Destination = destination
         .parse()
-        .with_context(|| format!("invalid RouteAddress {route_address:?}"))?;
+        .with_context(|| format!("invalid Destination {destination:?}"))?;
     let access_token_source = access_token_source()?;
     let duration = overload_duration()?;
     let worker_count = overload_workers()?;
@@ -61,7 +61,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     let mut workers = JoinSet::new();
     for worker in 0..worker_count {
         let relay = relays[worker % relays.len()].clone();
-        let route_address = route_address.clone();
+        let destination = destination.clone();
         let access_token_source = access_token_source.clone();
         let stop = Arc::clone(&stop);
         workers.spawn(async move {
@@ -71,7 +71,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
             while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
                 accounting.attempted += 1;
                 match relay
-                    .dial(route_address.clone(), access_token_source.clone())
+                    .dial(destination.clone(), access_token_source.clone())
                     .await
                 {
                     Ok(pipe) => {

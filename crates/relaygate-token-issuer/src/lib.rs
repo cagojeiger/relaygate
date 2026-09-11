@@ -11,7 +11,7 @@ use p256::{
     ecdsa::SigningKey,
     pkcs8::{DecodePrivateKey, EncodePrivateKey},
 };
-use relaygate_address::{DestinationName, NamespaceId, RouteAddress};
+use relaygate_destination::{Destination, DestinationName, Namespace};
 use serde::Serialize;
 
 const MAX_AUDIENCE_BYTES: usize = 256;
@@ -35,36 +35,36 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Permission {
     action: Action,
-    namespace: NamespaceId,
+    namespace: Namespace,
     scope: DestinationScope,
 }
 
 impl Permission {
-    /// Authorizes exactly one route address.
+    /// Authorizes exactly one destination.
     #[must_use]
-    pub fn exact(action: Action, address: &RouteAddress) -> Self {
+    pub fn exact(action: Action, destination: &Destination) -> Self {
         Self {
             action,
-            namespace: address.namespace().clone(),
+            namespace: destination.namespace().clone(),
             scope: DestinationScope::Exact {
-                destination: address.destination().clone(),
+                name: destination.name().clone(),
             },
         }
     }
 
     /// Authorizes a destination and all of its whole-label descendants.
     #[must_use]
-    pub fn subtree(action: Action, namespace: NamespaceId, destination: DestinationName) -> Self {
+    pub fn subtree(action: Action, namespace: Namespace, name: DestinationName) -> Self {
         Self {
             action,
             namespace,
-            scope: DestinationScope::Subtree { destination },
+            scope: DestinationScope::Subtree { name },
         }
     }
 
     /// Authorizes every destination in one namespace.
     #[must_use]
-    pub fn all(action: Action, namespace: NamespaceId) -> Self {
+    pub fn all(action: Action, namespace: Namespace) -> Self {
         Self {
             action,
             namespace,
@@ -76,8 +76,8 @@ impl Permission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum DestinationScope {
-    Exact { destination: DestinationName },
-    Subtree { destination: DestinationName },
+    Exact { name: DestinationName },
+    Subtree { name: DestinationName },
     All,
 }
 
@@ -165,14 +165,14 @@ impl TokenIssuer {
         })
     }
 
-    /// Issues a least-privilege token for exactly one operation and address.
+    /// Issues a least-privilege token for exactly one operation and destination.
     pub fn issue_exact(
         &self,
         action: Action,
-        address: &RouteAddress,
+        destination: &Destination,
         valid_for: Duration,
     ) -> Result<IssuedToken, TokenIssuerError> {
-        self.issue([Permission::exact(action, address)], valid_for)
+        self.issue([Permission::exact(action, destination)], valid_for)
     }
 
     /// Issues a token containing application-approved permissions.

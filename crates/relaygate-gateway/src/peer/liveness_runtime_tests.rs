@@ -187,7 +187,7 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
     let first_request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b.clone()),
         OpenIdentity::new(gateway_a, SessionId::new(), 1),
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -233,7 +233,7 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
     let second_request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b),
         OpenIdentity::new(gateway_a, SessionId::new(), 2),
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -326,7 +326,7 @@ async fn zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazi
     let first_request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b.clone()),
         OpenIdentity::new(gateway_a, SessionId::new(), 1),
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -372,7 +372,7 @@ async fn zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazi
     let second_request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b),
         OpenIdentity::new(gateway_a, SessionId::new(), 2),
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );

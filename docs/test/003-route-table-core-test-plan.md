@@ -2,8 +2,8 @@
 
 | 범주 | 필수 증거 |
 | --- | --- |
-| address | Namespace/DestinationName validation, canonical key, exact Namespace 격리 |
-| directory | format version 2, exact artifact bytes generation, RouteAddress authority, invalid schema 거절 |
+| Destination | Namespace/DestinationName validation, canonical key, exact Namespace 격리 |
+| directory | format version 2, exact artifact bytes generation, Destination authority, invalid schema 거절 |
 | registration | Register/Update/KeepAlive/Deregister closed lifecycle |
 | revision | monotonic, atomic, idempotent, stale lease 격리 |
 | expiry | sibling 보존, expired operation no resurrection |

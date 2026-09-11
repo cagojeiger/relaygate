@@ -10,9 +10,9 @@ failure입니다.
 
 | code | 대표 조건 | 새 operation 조건 |
 | --- | --- | --- |
-| `INVALID_ARGUMENT` | RouteAddress/config/frame 오류 | 입력 변경 |
+| `INVALID_ARGUMENT` | Destination/config/frame 오류 | 입력 변경 |
 | `UNAUTHENTICATED` | access token 형식·서명·alg·kid·issuer·audience·time claim 검증 실패 | 새 유효 token/config |
-| `PERMISSION_DENIED` | 유효한 token에 요청 action·exact RouteAddress 권한 없음 | 권한이 맞는 새 token |
+| `PERMISSION_DENIED` | 유효한 token에 요청 action·exact Destination 권한 없음 | 권한이 맞는 새 token |
 | `NOT_FOUND` | current Binding 없음 | 상태 변경 |
 | `FAILED_PRECONDITION` | self Binding만 존재, closed object | 전제 변경 |
 | `UNAVAILABLE` | drain, dependency/transport/token source loss | backoff |
@@ -21,37 +21,32 @@ failure입니다.
 | `CANCELLED` | owner operation/session 종료 | caller 결정 |
 | `PROTOCOL_ERROR` | version, frame order·ownership 위반 | 구현/config 수정 |
 | `INTERNAL` | internal invariant/lock/task failure | terminal |
-| `ALREADY_EXISTS` | 같은 Relay·RouteAddress Listener 중복 | 기존 Listener 종료 |
+| `ALREADY_EXISTS` | 같은 Relay·Destination Listener 중복 | 기존 Listener 종료 |
 
 `UNAUTHENTICATED`와 `PERMISSION_DENIED`는 해당 PUBLISH/DIAL만 거절하고 RelaySession을 인증 주체로
-승격하지 않습니다. DIAL 실패 observation은 `NOT_OBSERVED`입니다.
+승격하지 않습니다. 이 두 인증 실패의 DIAL observation은 `NOT_OBSERVED`입니다.
 
 ## SDK와 Binding 상태
 
 ```mermaid
 stateDiagram-v2
-    state RelaySession {
+    state Relay {
         [*] --> CONNECTING
         CONNECTING --> ACTIVE
-        ACTIVE --> RECONNECTING
+        CONNECTING --> [*]: Relay::connect Err
+        ACTIVE --> RECONNECTING: session/protocol/transport loss
         RECONNECTING --> ACTIVE
-        CONNECTING --> BLOCKED
-        ACTIVE --> BLOCKED
-        RECONNECTING --> BLOCKED
-        CONNECTING --> CLOSED
+        RECONNECTING --> RECONNECTING: bounded backoff retry
         ACTIVE --> CLOSED
         RECONNECTING --> CLOSED
-        BLOCKED --> CLOSED
     }
     state Listener {
         [*] --> REGISTERING
         REGISTERING --> ACTIVE
-        REGISTERING --> BLOCKED
-        REGISTERING --> CLOSED
+        REGISTERING --> CLOSED: Relay::listen Err / close
         ACTIVE --> SUSPENDED
         SUSPENDED --> ACTIVE
-        ACTIVE --> BLOCKED
-        SUSPENDED --> BLOCKED
+        SUSPENDED --> BLOCKED: permanent PUBLISH failure
         ACTIVE --> CLOSED
         SUSPENDED --> CLOSED
         BLOCKED --> CLOSED
@@ -64,7 +59,11 @@ stateDiagram-v2
 ```
 
 Session reconnect는 Listener identity와 AccessTokenSource를 유지하고 새 SessionId와 BindingId를 만듭니다.
-늦은 old-session `PUBLISHED/OFFER`는 current state를 유지하며 `REMOVED` Binding은 terminal입니다.
+초기 config·transport·handshake 실패는 `Relay::connect`의 `Err`입니다. 실행 중 session·protocol·transport
+failure는 current session을 끝내고 bounded backoff 재연결을 계속합니다. 늦은 old-session
+`PUBLISHED/OFFER`는 current state를 유지하며 `REMOVED` Binding은 terminal입니다. Gateway의 initial
+PUBLISH 실패 응답은 `Relay::listen`의 `Err`이고, 이미 반환된 Listener의 영구적인 PUBLISH 실패는 Listener만
+`BLOCKED`로 만듭니다.
 
 ## Authorization과 Pipe 상태
 
@@ -91,28 +90,39 @@ stateDiagram-v2
     state Pipe {
         [*] --> OFFERED
         OFFERED --> OPEN
-        OPEN --> HALF_CLOSED
+        OPEN --> HALF_CLOSED: 한 방향 FIN
         OPEN --> CLOSED
-        HALF_CLOSED --> CLOSED
+        HALF_CLOSED --> CLOSED: 반대 FIN / CLOSE / RESET
     }
 ```
 
 Authorization은 operation admission으로 끝납니다. COMMITTED 뒤 token·claim·expiry state를 Binding 또는 Pipe에
-보관하지 않습니다.
+보관하지 않습니다. `HALF_CLOSED`는 별도 wire/state enum이 아니라 `OPEN` Pipe의 방향별 finished flag 중
+하나만 설정된 논리 상태입니다.
 
 ## RouteTable registration 상태
 
 ```mermaid
 stateDiagram-v2
     [*] --> REGISTERING: RT Register
-    REGISTERING --> SYNCED
-    SYNCED --> UNSYNCED: RT loss/restart
-    UNSYNCED --> SYNCED: full snapshot
+    REGISTERING --> LEASED: Register ACK
+    LEASED --> LEASED: KeepAlive ACK
+    LEASED --> SYNCED: Update(revision 1, current full snapshot) ACK
+    SYNCED --> UNSYNCED: transport loss / snapshot change
+    UNSYNCED --> SYNCED: current snapshot Update ACK / existing snapshot KeepAlive ACK
+    LEASED --> REGISTERING: lease invalid
+    UNSYNCED --> REGISTERING: lease invalid
+    LEASED --> DEREGISTERING
+    UNSYNCED --> DEREGISTERING
     SYNCED --> DEREGISTERING
     DEREGISTERING --> REMOVED
-    REGISTERING --> TERMINAL: transport/config
-    UNSYNCED --> TERMINAL: transport/config
+    REGISTERING --> TERMINAL: permanent failure
+    LEASED --> TERMINAL: permanent failure
+    UNSYNCED --> TERMINAL: permanent failure
 ```
+
+첫 sync는 revision 1의 current full snapshot `Update` ACK로 성립합니다. RT restart로 기존 lease가 사라지면
+Gateway는 `Register`로 새 lease를 얻고 첫 `Update`를 반복합니다.
 
 ## 장애 전파
 
@@ -131,7 +141,7 @@ SDK session 생성 전 connection-rate budget 부족 또는 transport·handshake
 | PUBLISH/DIAL rate 초과 | 해당 요청, DIAL은 `NOT_OBSERVED` | session·기존 Binding·Pipe, 정리 메시지 | budget refill 뒤 새 operation; DIAL은 새 ConnectionId |
 | GW–GW loss | 해당 transport의 stream/Pipe | local Binding·다른 transport | 다음 dial이 transport 생성 |
 | GW–RT loss | remote resolve·sync | local Binding·established Pipe | worker reconnect + snapshot |
-| RT restart | 해당 shard lease/mapping | Gateway local Binding·Pipe | Gateway 재등록 |
+| RT restart | 해당 shard lease·BindingProjection | Gateway local Binding·Pipe | Gateway 재등록 |
 | GW drain | 신규 admission 후 deadline의 owned state | 다른 GW·RT state | SDK/peer reconnect |
 
 ## 불변 조건

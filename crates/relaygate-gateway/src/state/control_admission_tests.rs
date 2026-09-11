@@ -4,13 +4,13 @@ use std::{
 };
 
 use bytes::Bytes;
-use relaygate_protocol::{BearerToken, ErrorCode, Frame, PeerObservation, RouteAddress, SessionId};
+use relaygate_protocol::{BearerToken, Destination, ErrorCode, Frame, PeerObservation, SessionId};
 use relaygate_route_table::GatewayId;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{GatewayAction, GatewayLimits, GatewayState};
-use crate::test_support::unique_address;
+use crate::test_support::unique_destination;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -36,18 +36,18 @@ fn access_token() -> BearerToken {
     BearerToken::new("state-admission-test-token").expect("bounded test token")
 }
 
-fn publish(id: u64, address: &RouteAddress) -> Frame {
+fn publish(id: u64, destination: &Destination) -> Frame {
     Frame::Publish {
         request_id: id,
-        address: address.clone(),
+        destination: destination.clone(),
         access_token: access_token(),
     }
 }
 
-fn dial(id: u64, address: &RouteAddress) -> Frame {
+fn dial(id: u64, destination: &Destination) -> Frame {
     Frame::Dial {
         connection_id: id,
-        address: address.clone(),
+        destination: destination.clone(),
         access_token: access_token(),
     }
 }
@@ -62,9 +62,9 @@ fn session_budget_is_shared_by_publish_and_dial_and_preserves_siblings() -> Test
     let caller = session(&mut state)?;
     let sibling = session(&mut state)?;
     let now = Instant::now();
-    let first = state.handle_at(caller, publish(1, &unique_address()), now)?;
+    let first = state.handle_at(caller, publish(1, &unique_destination()), now)?;
     assert!(frames(&first).any(|f| matches!(f, Frame::Published { .. })));
-    let second = state.handle_at(caller, dial(1, &unique_address()), now)?;
+    let second = state.handle_at(caller, dial(1, &unique_destination()), now)?;
     assert!(frames(&second).any(|f| matches!(
         f,
         Frame::DialFailed {
@@ -72,7 +72,7 @@ fn session_budget_is_shared_by_publish_and_dial_and_preserves_siblings() -> Test
             ..
         }
     )));
-    let rejected = state.handle_at(caller, publish(2, &unique_address()), now)?;
+    let rejected = state.handle_at(caller, publish(2, &unique_destination()), now)?;
     assert!(frames(&rejected).any(|f| matches!(
         f,
         Frame::PublishFailed {
@@ -82,11 +82,11 @@ fn session_budget_is_shared_by_publish_and_dial_and_preserves_siblings() -> Test
         }
     )));
     assert_eq!(state.snapshot().bindings, 1);
-    let allowed = state.handle_at(sibling, publish(1, &unique_address()), now)?;
+    let allowed = state.handle_at(sibling, publish(1, &unique_destination()), now)?;
     assert!(frames(&allowed).any(|f| matches!(f, Frame::Published { .. })));
     let recovered = state.handle_at(
         caller,
-        publish(3, &unique_address()),
+        publish(3, &unique_destination()),
         now + Duration::from_secs(1),
     )?;
     assert!(frames(&recovered).any(|f| matches!(f, Frame::Published { .. })));
@@ -104,12 +104,12 @@ fn gateway_rate_rejection_precedes_resolve_and_fences_replayed_dial() -> TestRes
         },
         GatewayId::new(),
     );
-    let listener = session(&mut state)?;
+    let acceptor = session(&mut state)?;
     let caller = session(&mut state)?;
     let now = Instant::now();
-    let destination = unique_address();
-    state.handle_at(listener, publish(1, &destination), now)?;
-    let replayed_dial = dial(1, &unique_address());
+    let destination = unique_destination();
+    state.handle_at(acceptor, publish(1, &destination), now)?;
+    let replayed_dial = dial(1, &unique_destination());
     let rejected = state.handle_at(caller, replayed_dial.clone(), now)?;
     assert_eq!(rejected.len(), 1);
     assert!(frames(&rejected).any(|f| matches!(
@@ -148,10 +148,10 @@ fn exhausted_control_budget_preserves_pipe_data_and_cleanup() -> TestResult {
             ..GatewayLimits::default()
         });
         let caller = session(&mut state)?;
-        let listener = session(&mut state)?;
+        let acceptor = session(&mut state)?;
         let now = Instant::now();
-        let destination = unique_address();
-        let published = state.handle_at(listener, publish(1, &destination), now)?;
+        let destination = unique_destination();
+        let published = state.handle_at(acceptor, publish(1, &destination), now)?;
         let binding_id = frames(&published)
             .find_map(|f| match f {
                 Frame::Published { binding_id, .. } => Some(*binding_id),
@@ -169,7 +169,7 @@ fn exhausted_control_budget_preserves_pipe_data_and_cleanup() -> TestResult {
             state.handle_at(caller, Frame::Cancel { pipe_id }, now)?;
         } else if terminal == "reject" {
             state.handle_at(
-                listener,
+                acceptor,
                 Frame::OfferRejected {
                     pipe_id,
                     code: ErrorCode::Unavailable,
@@ -178,9 +178,9 @@ fn exhausted_control_budget_preserves_pipe_data_and_cleanup() -> TestResult {
                 now,
             )?;
         } else {
-            let opened = state.handle_at(listener, Frame::OfferAccepted { pipe_id }, now)?;
+            let opened = state.handle_at(acceptor, Frame::OfferAccepted { pipe_id }, now)?;
             assert!(frames(&opened).any(|f| matches!(f, Frame::Opened { .. })));
-            let rejected = state.handle_at(caller, publish(2, &unique_address()), now)?;
+            let rejected = state.handle_at(caller, publish(2, &unique_destination()), now)?;
             assert!(frames(&rejected).any(|f| matches!(
                 f,
                 Frame::PublishFailed {
@@ -188,7 +188,7 @@ fn exhausted_control_budget_preserves_pipe_data_and_cleanup() -> TestResult {
                     ..
                 }
             )));
-            for sender in [caller, listener] {
+            for sender in [caller, acceptor] {
                 let data = state.handle_at(
                     sender,
                     Frame::Data {
@@ -204,7 +204,7 @@ fn exhausted_control_budget_preserves_pipe_data_and_cleanup() -> TestResult {
             match terminal {
                 "fin" => {
                     state.handle_at(caller, Frame::Fin { pipe_id }, now)?;
-                    state.handle_at(listener, Frame::Fin { pipe_id }, now)?;
+                    state.handle_at(acceptor, Frame::Fin { pipe_id }, now)?;
                 }
                 "close" => {
                     state.handle_at(caller, Frame::Close { pipe_id }, now)?;
@@ -223,7 +223,7 @@ fn exhausted_control_budget_preserves_pipe_data_and_cleanup() -> TestResult {
             }
         }
         let unpublish = state.handle_at(
-            listener,
+            acceptor,
             Frame::Unpublish {
                 request_id: 3,
                 binding_id,
@@ -250,10 +250,10 @@ fn session_recreation_does_not_reset_gateway_budget() -> TestResult {
     });
     let first = session(&mut state)?;
     let now = Instant::now();
-    state.handle_at(first, publish(1, &unique_address()), now)?;
+    state.handle_at(first, publish(1, &unique_destination()), now)?;
     state.remove_session(first);
     let second = session(&mut state)?;
-    let rejected = state.handle_at(second, publish(1, &unique_address()), now)?;
+    let rejected = state.handle_at(second, publish(1, &unique_destination()), now)?;
     assert!(frames(&rejected).any(|f| matches!(
         f,
         Frame::PublishFailed {
@@ -287,11 +287,11 @@ fn control_rejection_metrics_separate_gateway_and_session_scopes() -> TestResult
                 let mut state = GatewayState::new(limits);
                 let caller = session(&mut state)?;
                 let now = Instant::now();
-                state.handle_at(caller, publish(1, &unique_address()), now)?;
+                state.handle_at(caller, publish(1, &unique_destination()), now)?;
                 let rejected = if operation == "publish" {
-                    publish(2, &unique_address())
+                    publish(2, &unique_destination())
                 } else {
-                    dial(1, &unique_address())
+                    dial(1, &unique_destination())
                 };
                 state.handle_at(caller, rejected, now)?;
             }

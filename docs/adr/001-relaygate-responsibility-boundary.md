@@ -2,11 +2,11 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted |
-| 입력 | `listen(RouteAddress, token source)`, `dial(RouteAddress, token source)`, opaque bytes |
+| 상태 | Superseded by [ADR 018](018-operation-authorized-relay-boundary.md) |
+| 입력 | `listen(DestinationId)`, `dial(DestinationId)`, opaque bytes |
 | 출력 | terminal result 또는 full-duplex Pipe 1개 |
 
-## 결정
+## 이전 결정
 
 ```text
 Application A                                      Application B
@@ -18,17 +18,17 @@ peer auth · payload · ack                     peer auth · payload · ack
 
 | 주체 | 책임 |
 | --- | --- |
-| RelayGate | operation JWT grant 검증, live RouteAddress publication·조회, local/one-hop Pipe, bounded lifecycle·오류 관측 |
-| Application | RouteAddress 생성·보관, token 발급·갱신, Pipe 상대 인증·인가, payload framing·의미·acknowledgement·업무 재시도, 필요한 E2E 보호 |
+| RelayGate | session admission, live Destination publication·조회, local/one-hop Pipe, bounded lifecycle·오류 관측 |
+| Application | DestinationId 생성·보관, Pipe 상대 인증·인가, payload framing·의미·acknowledgement·업무 재시도, 필요한 E2E 보호 |
 | Platform | 외부 L4 진입점, 인증서·Secret 공급, workload 배포·재시작 |
 
-Namespace grant는 RelayGate의 publish/dial admission을 제한합니다. Pipe 상대 identity와 payload 권한은
-application이 Pipe 위 protocol로 적용합니다.
+Session admission은 trust domain 단위입니다. Per-Destination ACL과 tenant isolation은 application이
+Pipe 위 protocol로 적용합니다.
 
 ```text
-RouteAddress -> live Binding 0..N
-dial 1회     -> eligible Binding 1개 -> Pipe 1개
-Pipe         -> ordered opaque bytes in both directions
+DestinationId -> live Binding 0..N
+dial 1회      -> eligible Binding 1개 -> Pipe 1개
+Pipe          -> ordered opaque bytes in both directions
 ```
 
 RelayGate의 완료 경계는 Pipe 수립과 byte-path I/O 결과입니다. Application protocol의 acknowledgement가

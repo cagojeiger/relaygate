@@ -14,7 +14,7 @@ use tokio_util::{
 };
 
 use super::{Gateway, GatewayConfig, session::SessionError};
-use crate::test_support::{TestAction, authorization_config, bearer_token, unique_address};
+use crate::test_support::{TestAction, authorization_config, bearer_token, unique_destination};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 type SessionTask = JoinHandle<Result<(), SessionError>>;
@@ -135,12 +135,12 @@ async fn admission_preserves_pipelined_authorized_frame() -> TestResult {
     let mut frames = BytesMut::new();
     let mut codec = FrameCodec::default();
     codec.encode(Frame::Hello, &mut frames)?;
-    let address = unique_address();
+    let destination = unique_destination();
     codec.encode(
         Frame::Publish {
             request_id: 1,
-            address: address.clone(),
-            access_token: bearer_token(&address, TestAction::Publish),
+            destination: destination.clone(),
+            access_token: bearer_token(&destination, TestAction::Publish),
         },
         &mut frames,
     )?;

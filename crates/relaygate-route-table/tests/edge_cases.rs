@@ -3,13 +3,13 @@ mod support;
 use std::time::{Duration, Instant};
 
 use relaygate_route_table::{
-    BindingId, BindingSet, ErrorCode, GatewayLocator, MappingEntry, MappingSnapshot,
-    RegistrationKey, RegistrationRevision, RequestContext, RouteAddress, RouteTableConfig,
+    BindingId, BindingProjection, BindingSet, BindingSnapshot, Destination, ErrorCode,
+    GatewayLocator, RegistrationKey, RegistrationRevision, RequestContext, RouteTableConfig,
     RouteTableError, RouteTableShard, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
 use uuid::Uuid;
 
-use support::{address, binding, context, gateway, key, mapping, session, shard, snapshot};
+use support::{binding, context, destination, gateway, key, projection, session, shard, snapshot};
 
 #[test]
 fn internal_register_deadline_overflow_leaves_no_partial_route_table_state()
@@ -33,14 +33,14 @@ fn internal_register_deadline_overflow_leaves_no_partial_route_table_state()
     ));
     let stats = shard.stats();
     assert_eq!(stats.registration_count, 0);
-    assert_eq!(stats.mapping_count, 0);
-    assert_eq!(stats.route_count, 0);
+    assert_eq!(stats.binding_count, 0);
+    assert_eq!(stats.destination_count, 0);
     assert_eq!(stats.expiry_record_count, 0);
 
     let resolve = shard.resolve(
         context(gateway_id),
         generation,
-        &address("unregistered")?,
+        &destination("unregistered")?,
         start,
     );
     assert!(matches!(
@@ -57,7 +57,7 @@ fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTable
     let ttl = Duration::from_secs(10);
     let mut shard = shard(ttl)?;
     let generation = shard.generation();
-    let address = address("shared")?;
+    let destination = destination("shared")?;
 
     let gateway_one = gateway(11);
     let gateway_two = gateway(12);
@@ -84,7 +84,12 @@ fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTable
         &key_one,
         lease_one,
         RegistrationRevision::FIRST,
-        snapshot([mapping("shared", gateway_one, session_one, binding(1111))?])?,
+        snapshot([projection(
+            "shared",
+            gateway_one,
+            session_one,
+            binding(1111),
+        )?])?,
         start,
     )?;
     shard.update(
@@ -93,7 +98,12 @@ fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTable
         &key_two,
         lease_two,
         RegistrationRevision::FIRST,
-        snapshot([mapping("shared", gateway_two, session_two, binding(1112))?])?,
+        snapshot([projection(
+            "shared",
+            gateway_two,
+            session_two,
+            binding(1112),
+        )?])?,
         start,
     )?;
     shard.update(
@@ -102,7 +112,7 @@ fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTable
         &key_three,
         lease_three,
         RegistrationRevision::FIRST,
-        snapshot([mapping(
+        snapshot([projection(
             "shared",
             gateway_three,
             session_three,
@@ -127,7 +137,7 @@ fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTable
     )?;
 
     assert_eq!(shard.expire_due(start + ttl), 1);
-    let remaining = shard.resolve(context(gateway_two), generation, &address, start + ttl)?;
+    let remaining = shard.resolve(context(gateway_two), generation, &destination, start + ttl)?;
     assert_eq!(remaining.len(), 2);
     assert!(
         remaining
@@ -159,7 +169,7 @@ fn ended_lease_operations_cannot_change_a_new_lease() -> Result<(), RouteTableEr
         &key,
         lease_one,
         RegistrationRevision::FIRST,
-        snapshot([mapping("old", gateway_id, session_id, binding(2101))?])?,
+        snapshot([projection("old", gateway_id, session_id, binding(2101))?])?,
         start,
     )?;
     shard.deregister(context, generation, &key, lease_one, start)?;
@@ -168,14 +178,14 @@ fn ended_lease_operations_cannot_change_a_new_lease() -> Result<(), RouteTableEr
         .register(context, generation, key.clone(), start)?
         .lease_id();
     assert_ne!(lease_one, lease_two);
-    let new_mapping = mapping("new", gateway_id, session_id, binding(2102))?;
+    let new_binding = projection("new", gateway_id, session_id, binding(2102))?;
     shard.update(
         context,
         generation,
         &key,
         lease_two,
         RegistrationRevision::FIRST,
-        snapshot([new_mapping.clone()])?,
+        snapshot([new_binding.clone()])?,
         start,
     )?;
 
@@ -185,7 +195,7 @@ fn ended_lease_operations_cannot_change_a_new_lease() -> Result<(), RouteTableEr
         &key,
         lease_one,
         RegistrationRevision::new(2)?,
-        snapshot([mapping("old", gateway_id, session_id, binding(2103))?])?,
+        snapshot([projection("old", gateway_id, session_id, binding(2103))?])?,
         start,
     );
     let stale_keepalive = shard.keep_alive(context, generation, &key, lease_one, start);
@@ -204,12 +214,12 @@ fn ended_lease_operations_cannot_change_a_new_lease() -> Result<(), RouteTableEr
     ));
     assert_eq!(
         shard
-            .resolve(context, generation, &address("new")?, start)?
+            .resolve(context, generation, &destination("new")?, start)?
             .entries(),
-        &[new_mapping]
+        &[new_binding]
     );
     assert!(matches!(
-        shard.resolve(context, generation, &address("old")?, start),
+        shard.resolve(context, generation, &destination("old")?, start),
         Err(RouteTableError::NotFound)
     ));
     Ok(())
@@ -228,7 +238,7 @@ fn auth_generation_and_scope_failures_do_not_expire_or_mutate_state() -> Result<
     let lease = shard
         .register(request_context, generation, key.clone(), start)?
         .lease_id();
-    let original = mapping("alpha", gateway_id, session_id, binding(3101))?;
+    let original = projection("alpha", gateway_id, session_id, binding(3101))?;
     shard.update(
         request_context,
         generation,
@@ -300,7 +310,7 @@ fn invalid_snapshot_is_rejected_before_existing_state_changes() -> Result<(), Ro
     let lease = shard
         .register(context, generation, key.clone(), start)?
         .lease_id();
-    let original = mapping("alpha", gateway_id, session_id, binding(4101))?;
+    let original = projection("alpha", gateway_id, session_id, binding(4101))?;
     shard.update(
         context,
         generation,
@@ -312,8 +322,8 @@ fn invalid_snapshot_is_rejected_before_existing_state_changes() -> Result<(), Ro
     )?;
 
     let wrong_session = session(411);
-    let out_of_scope = MappingSnapshot::new([MappingEntry::new(
-        "test/f44e64e7-5f39-48e9-b73f-8dfa94721c4c".parse::<RouteAddress>()?,
+    let out_of_scope = BindingSnapshot::new([BindingProjection::new(
+        "test/f44e64e7-5f39-48e9-b73f-8dfa94721c4c".parse::<Destination>()?,
         gateway_id,
         wrong_session,
         BindingId::from_uuid(Uuid::from_u128(4102)),
@@ -332,15 +342,15 @@ fn invalid_snapshot_is_rejected_before_existing_state_changes() -> Result<(), Ro
         result,
         Err(ref error) if error.code() == ErrorCode::InvalidArgument
     ));
-    assert_eq!(shard.stats().mapping_count, 1);
+    assert_eq!(shard.stats().binding_count, 1);
     assert_eq!(
         shard
-            .resolve(context, generation, &address("alpha")?, start)?
+            .resolve(context, generation, &destination("alpha")?, start)?
             .entries(),
         &[original]
     );
     assert!(matches!(
-        shard.resolve(context, generation, &address("beta")?, start),
+        shard.resolve(context, generation, &destination("beta")?, start),
         Err(RouteTableError::NotFound)
     ));
     Ok(())
@@ -374,7 +384,7 @@ fn expiry_memory_is_bounded_by_live_leases_not_keepalive_count() -> Result<(), R
     }
     assert_eq!(shard.stats().registration_count, 1);
     assert_eq!(shard.stats().expiry_record_count, 1);
-    assert_eq!(shard.stats().mapping_count, 0);
+    assert_eq!(shard.stats().binding_count, 0);
     assert_eq!(
         shard.next_expiry_deadline(),
         Some(start + Duration::from_secs(1_010_000))
@@ -385,29 +395,29 @@ fn expiry_memory_is_bounded_by_live_leases_not_keepalive_count() -> Result<(), R
 #[test]
 fn empty_and_duplicate_snapshot_shapes_are_rejected() -> Result<(), RouteTableError> {
     assert!(matches!(
-        MappingSnapshot::new([]),
+        BindingSnapshot::new([]),
         Err(ref error) if error.code() == ErrorCode::InvalidArgument
     ));
 
     let gateway_id = gateway(61);
     let session_id = session(610);
-    let address = "test/e9f1e8e5-7d18-4a65-8c1c-b695d74eab6a".parse::<RouteAddress>()?;
-    let first = MappingEntry::new(
-        address.clone(),
+    let destination = "test/e9f1e8e5-7d18-4a65-8c1c-b695d74eab6a".parse::<Destination>()?;
+    let first = BindingProjection::new(
+        destination.clone(),
         gateway_id,
         session_id,
         binding(6101),
         GatewayLocator::new("gw")?,
     );
-    let second = MappingEntry::new(
-        address,
+    let second = BindingProjection::new(
+        destination,
         gateway_id,
         session_id,
         binding(6102),
         GatewayLocator::new("gw")?,
     );
     assert!(matches!(
-        MappingSnapshot::new([first, second]),
+        BindingSnapshot::new([first, second]),
         Err(ref error) if error.code() == ErrorCode::InvalidArgument
     ));
     Ok(())
@@ -422,9 +432,9 @@ fn binding_set_transport_reconstruction_rejects_invalid_shapes() -> Result<(), R
 
     let gateway_id = gateway(62);
     let session_id = session(620);
-    let alpha = mapping("alpha", gateway_id, session_id, binding(6201))?;
+    let alpha = projection("alpha", gateway_id, session_id, binding(6201))?;
     let duplicate = alpha.clone();
-    let beta = mapping("beta", gateway_id, session_id, binding(6202))?;
+    let beta = projection("beta", gateway_id, session_id, binding(6202))?;
 
     assert!(matches!(
         BindingSet::from_entries(vec![alpha.clone(), duplicate]),
@@ -456,7 +466,7 @@ fn a_new_shard_instance_starts_ready_and_empty() -> Result<(), RouteTableError> 
         &key,
         old_lease,
         RegistrationRevision::FIRST,
-        snapshot([mapping("alpha", gateway_id, session_id, binding(7101))?])?,
+        snapshot([projection("alpha", gateway_id, session_id, binding(7101))?])?,
         start,
     )?;
 
@@ -464,7 +474,7 @@ fn a_new_shard_instance_starts_ready_and_empty() -> Result<(), RouteTableError> 
     assert_eq!(after_restart.generation(), generation);
     assert_eq!(after_restart.stats().registration_count, 0);
     assert!(matches!(
-        after_restart.resolve(context, generation, &address("alpha")?, start),
+        after_restart.resolve(context, generation, &destination("alpha")?, start),
         Err(RouteTableError::NotFound)
     ));
     let new_lease = after_restart
@@ -493,7 +503,7 @@ fn expired_lease_update_and_keepalive_fail_without_recreating_state() -> Result<
         &key,
         lease,
         RegistrationRevision::FIRST,
-        snapshot([mapping("alpha", gateway_id, session_id, binding(8101))?])?,
+        snapshot([projection("alpha", gateway_id, session_id, binding(8101))?])?,
         start,
     )?;
 
@@ -503,7 +513,7 @@ fn expired_lease_update_and_keepalive_fail_without_recreating_state() -> Result<
         &key,
         lease,
         RegistrationRevision::new(2)?,
-        snapshot([mapping("alpha", gateway_id, session_id, binding(8102))?])?,
+        snapshot([projection("alpha", gateway_id, session_id, binding(8102))?])?,
         start + Duration::from_secs(5),
     );
     let expired_keepalive = shard.keep_alive(
@@ -522,14 +532,14 @@ fn expired_lease_update_and_keepalive_fail_without_recreating_state() -> Result<
         Err(ref error) if error.code() == ErrorCode::FailedPrecondition
     ));
     assert_eq!(shard.stats().registration_count, 0);
-    assert_eq!(shard.stats().mapping_count, 0);
+    assert_eq!(shard.stats().binding_count, 0);
     assert_eq!(shard.stats().expiry_record_count, 0);
     Ok(())
 }
 
 #[test]
 fn wrong_authority_snapshot_and_resolve_are_invalid_and_atomic() -> Result<(), RouteTableError> {
-    const DIRECTORY: &[u8] = br#"{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{"id":"rt-0","endpoint":"rt-0"},{"id":"rt-1","endpoint":"rt-1"},{"id":"rt-2","endpoint":"rt-2"}]}"#;
+    const DIRECTORY: &[u8] = br#"{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{"id":"rt-0","endpoint":"rt-0"},{"id":"rt-1","endpoint":"rt-1"},{"id":"rt-2","endpoint":"rt-2"}]}"#;
 
     let start = Instant::now();
     let gateway_id = gateway(91);
@@ -549,8 +559,8 @@ fn wrong_authority_snapshot_and_resolve_are_invalid_and_atomic() -> Result<(), R
         .lease_id();
 
     // SHA-256("alpha") modulo 3 selects rt-2, not this rt-0 shard.
-    let wrong_authority_mapping = MappingEntry::new(
-        "test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<RouteAddress>()?,
+    let wrong_authority_binding = BindingProjection::new(
+        "test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<Destination>()?,
         gateway_id,
         session_id,
         binding(9101),
@@ -562,13 +572,13 @@ fn wrong_authority_snapshot_and_resolve_are_invalid_and_atomic() -> Result<(), R
         &key,
         lease,
         RegistrationRevision::FIRST,
-        snapshot([wrong_authority_mapping])?,
+        snapshot([wrong_authority_binding])?,
         start,
     );
     let resolve = shard.resolve(
         request_context,
         generation,
-        &"test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<RouteAddress>()?,
+        &"test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<Destination>()?,
         start,
     );
     assert!(matches!(
@@ -580,13 +590,13 @@ fn wrong_authority_snapshot_and_resolve_are_invalid_and_atomic() -> Result<(), R
         Err(ref error) if error.code() == ErrorCode::InvalidArgument
     ));
     assert_eq!(shard.stats().registration_count, 1);
-    assert_eq!(shard.stats().mapping_count, 0);
+    assert_eq!(shard.stats().binding_count, 0);
     assert_eq!(shard.stats().expiry_record_count, 1);
     Ok(())
 }
 
 #[test]
-fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), RouteTableError> {
+fn active_binding_identity_cannot_change_destination_or_locator() -> Result<(), RouteTableError> {
     let start = Instant::now();
     let gateway_id = gateway(101);
     let session_id = session(1010);
@@ -598,7 +608,7 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
         .register(request_context, generation, key.clone(), start)?
         .lease_id();
     let binding_id = binding(10101);
-    let original = mapping("alpha", gateway_id, session_id, binding_id)?;
+    let original = projection("alpha", gateway_id, session_id, binding_id)?;
     shard.update(
         request_context,
         generation,
@@ -609,8 +619,8 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
         start,
     )?;
 
-    let changed_destination = MappingEntry::new(
-        "test/f44e64e7-5f39-48e9-b73f-8dfa94721c4c".parse::<RouteAddress>()?,
+    let changed_destination = BindingProjection::new(
+        "test/f44e64e7-5f39-48e9-b73f-8dfa94721c4c".parse::<Destination>()?,
         gateway_id,
         session_id,
         binding_id,
@@ -630,8 +640,8 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
         Err(ref error) if error.code() == ErrorCode::FailedPrecondition
     ));
 
-    let changed_locator = MappingEntry::new(
-        "test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<RouteAddress>()?,
+    let changed_locator = BindingProjection::new(
+        "test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<Destination>()?,
         gateway_id,
         session_id,
         binding_id,
@@ -656,7 +666,7 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
             .resolve(
                 request_context,
                 generation,
-                &"test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<RouteAddress>()?,
+                &"test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<Destination>()?,
                 start + Duration::from_secs(2),
             )?
             .entries(),
@@ -666,11 +676,11 @@ fn active_mapping_identity_cannot_change_destination_or_locator() -> Result<(), 
         shard.resolve(
             request_context,
             generation,
-            &"test/f44e64e7-5f39-48e9-b73f-8dfa94721c4c".parse::<RouteAddress>()?,
+            &"test/f44e64e7-5f39-48e9-b73f-8dfa94721c4c".parse::<Destination>()?,
             start + Duration::from_secs(2),
         ),
         Err(RouteTableError::NotFound)
     ));
-    assert_eq!(shard.stats().mapping_count, 1);
+    assert_eq!(shard.stats().binding_count, 1);
     Ok(())
 }

@@ -1,4 +1,4 @@
-use relaygate_address::{DestinationName, NamespaceId, RouteAddress};
+use relaygate_destination::{Destination, DestinationName, Namespace};
 use serde::Deserialize;
 
 const MAX_PERMISSIONS: usize = 128;
@@ -26,12 +26,12 @@ impl Claims {
         !self.iss.is_empty() && self.aud.is_non_empty() && self.nbf < self.exp
     }
 
-    pub(crate) fn authorizes(&self, action: Action, address: &RouteAddress) -> bool {
+    pub(crate) fn authorizes(&self, action: Action, destination: &Destination) -> bool {
         self.permissions.len() <= MAX_PERMISSIONS
             && self.permissions.iter().any(|permission| {
                 permission.action == action
-                    && permission.namespace == *address.namespace()
-                    && permission.scope.contains(address.destination())
+                    && permission.namespace == *destination.namespace()
+                    && permission.scope.contains(destination.name())
             })
     }
 }
@@ -47,25 +47,23 @@ pub(crate) enum Audience {
 #[serde(deny_unknown_fields)]
 struct Permission {
     action: Action,
-    namespace: NamespaceId,
+    namespace: Namespace,
     scope: DestinationScope,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 enum DestinationScope {
-    Exact { destination: DestinationName },
-    Subtree { destination: DestinationName },
+    Exact { name: DestinationName },
+    Subtree { name: DestinationName },
     All,
 }
 
 impl DestinationScope {
-    fn contains(&self, destination: &DestinationName) -> bool {
+    fn contains(&self, name: &DestinationName) -> bool {
         match self {
-            Self::Exact { destination: exact } => destination == exact,
-            Self::Subtree {
-                destination: prefix,
-            } => destination == prefix || destination.is_descendant_of(prefix),
+            Self::Exact { name: exact } => name == exact,
+            Self::Subtree { name: prefix } => name == prefix || name.is_descendant_of(prefix),
             Self::All => true,
         }
     }

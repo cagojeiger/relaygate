@@ -1,19 +1,19 @@
-# ADR 015: RouteAddress는 Namespace와 계층 이름으로 구성한다
+# ADR 015: Destination은 Namespace와 계층 이름으로 구성한다
 
 | 항목 | 결정 |
 | --- | --- |
 | 상태 | Accepted |
-| routing key | `NamespaceId/DestinationName` |
+| routing key | `Namespace/DestinationName` |
 | 생성·보관 | application |
 | lookup | exact match |
 
 ## 결정
 
 ```text
-RouteAddress = NamespaceId "/" DestinationName
+Destination = Namespace "/" DestinationName
 example      = inference/stt.seoul.worker-1
 
-NamespaceId     = lowercase DNS-like label 1개
+Namespace     = lowercase DNS-like label 1개
 DestinationName = lowercase DNS-like label 1..N개
 ```
 
@@ -21,12 +21,12 @@ DestinationName = lowercase DNS-like label 1..N개
 | --- | --- |
 | Namespace | issuer와 권한의 고정 경계 |
 | DestinationName | application이 관리하는 계층형 논리 이름 |
-| routing | 전체 RouteAddress exact match |
+| routing | 전체 Destination exact match |
 | authorization | Exact·Subtree·All scope가 DestinationName label 경계를 사용 |
-| ownership | RelayGate는 주소 발급·영속 registry를 제공하지 않음 |
+| ownership | RelayGate는 Destination 발급·영속 registry를 제공하지 않음 |
 
-RouteTable authority는 canonical RouteAddress bytes를 hash한다. wildcard와 subtree lookup은 routing에
-들어가지 않으며 같은 RouteAddress의 여러 RelaySession은 live BindingSet을 구성한다.
+RouteTable authority는 canonical Destination bytes를 hash한다. wildcard와 subtree lookup은 routing에
+들어가지 않으며 같은 Destination의 여러 RelaySession은 live BindingSet을 구성한다.
 
 ## 참고
 

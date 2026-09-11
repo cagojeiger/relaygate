@@ -6,13 +6,13 @@ SPEC requirement -> Test ID -> exact cargo test name
 
 | Test ID | Requirement | 검증 |
 | --- | --- | --- |
-| `T-MODEL-01` | `TERM-001`, `TERM-002`, `TERM-003`, `TERM-004`, `TERM-005`, `TERM-006`, `TERM-007`, `TERM-008`, `TERM-009`, `TERM-010`, `TERM-011`, `TERM-012` | 대칭 Relay, canonical RouteAddress, exact routing, N:M Binding과 1:1 Pipe cardinality |
-| `T-SDK-01` | `SDK-001`, `SDK-002`, `SDK-003`, `SDK-004`, `SDK-005`, `SDK-006`, `SDK-007` | credential-free 초기 연결, heartbeat, reconnect/republish, old Pipe 종료와 no replay |
+| `T-MODEL-01` | `TERM-001`, `TERM-002`, `TERM-003`, `TERM-004`, `TERM-005`, `TERM-006`, `TERM-007`, `TERM-008`, `TERM-009`, `TERM-010`, `TERM-011`, `TERM-012` | 대칭 Relay, canonical Destination, exact routing, N:M Binding과 1:1 Pipe cardinality |
+| `T-SDK-01` | `SDK-001`, `SDK-002`, `SDK-003`, `SDK-004`, `SDK-005`, `SDK-006`, `SDK-007` | 초기 연결 성공·실패, heartbeat, bounded reconnect·republish, pre-commit listen 재시도와 committed operation·old Pipe no replay |
 | `T-SDK-02` | `SDK-008`, `SDK-009`, `SDK-010`, `SDK-011`, `SDK-012`, `SDK-013` | listen/accept/close, bounded incoming queue, Relay-local 중복 Listener |
 | `T-AUTH-01` | `SDK-014`, `SDK-015`, `SDK-016`, `SDK-017`, `SDK-018`, `AUTH-001`, `AUTH-002`, `AUTH-003`, `AUTH-004`, `AUTH-005`, `AUTH-006`, `AUTH-007`, `AUTH-008`, `AUTH-009`, `AUTH-010`, `AUTH-011`, `AUTH-012`, `AUTH-013`, `AUTH-014`, `AUTH-015`, `AUTH-016` | static/dynamic token source, token issuer helper, custom `typ` equivalence, `crit` fail-closed, ES256·kid·claim·Exact/Subtree/All, Namespace 격리, bounded verifier, response correlation·redaction과 admission-only state 격리 |
 | `T-PIPE-01` | `PIPE-001`, `PIPE-002`, `PIPE-003`, `PIPE-004`, `PIPE-005`, `PIPE-006` | full-duplex, FIN/CLOSE/RESET, backpressure와 sibling 격리 |
-| `T-BIND-01` | `BIND-001`, `BIND-002`, `BIND-003`, `BIND-004`, `BIND-005`, `BIND-006`, `BIND-007`, `BIND-008`, `BIND-009`, `BIND-010` | hierarchical address, live-only Binding index와 session cleanup |
-| `T-RT-01` | `RT-001`, `RT-002`, `RT-003`, `RT-004`, `RT-005`, `RT-006`, `RT-007`, `RT-008`, `RT-009`, `RT-010`, `RT-011`, `RT-012`, `RT-013` | RouteAddress shard authority, lease/revision, expiry/restart/재수렴, bounded memory |
+| `T-BIND-01` | `BIND-001`, `BIND-002`, `BIND-003`, `BIND-004`, `BIND-005`, `BIND-006`, `BIND-007`, `BIND-008`, `BIND-009`, `BIND-010` | hierarchical destination, live-only Binding index와 session cleanup |
+| `T-RT-01` | `RT-001`, `RT-002`, `RT-003`, `RT-004`, `RT-005`, `RT-006`, `RT-007`, `RT-008`, `RT-009`, `RT-010`, `RT-011`, `RT-012`, `RT-013` | Destination shard authority, lease/revision, expiry/restart/재수렴, bounded memory |
 | `T-DIAL-01` | `DIAL-001`, `DIAL-002`, `DIAL-003`, `DIAL-004`, `DIAL-005`, `DIAL-006`, `DIAL-007`, `DIAL-008`, `DIAL-009`, `DIAL-010`, `DIAL-011`, `DIAL-012` | authorized local/remote dial, self exclusion, 단일 선택, timeout/cancel/observation과 bounded admission |
 | `T-PEER-01` | `PEER-001`, `PEER-002`, `PEER-003`, `PEER-004`, `PEER-005`, `PEER-006`, `PEER-007`, `PEER-008`, `PEER-009`, `PEER-010`, `PEER-011`, `PEER-012` | token-free one-hop multiplexing, direction arbitration, heartbeat/idle/terminal cleanup |
 | `T-STATE-01` | `STATE-001`, `STATE-002`, `STATE-003`, `STATE-004`, `STATE-005`, `STATE-006`, `STATE-007`, `STATE-008` | terminal no-resurrection, owner-scoped cleanup, RT 독립, admission 격리와 idempotent convergence |
@@ -30,7 +30,7 @@ rolling/fault runtime acceptance를, TEST 006은 PromQL과 DATA probe를 검증�
 
 | 계층 | 검증 내용 | 증거 범위 |
 | --- | --- | --- |
-| Address unit | grammar·byte bound·canonical key·whole-label descendant | exact routing key와 scope 기반 자료구조 |
+| Destination unit | grammar·byte bound·canonical key·whole-label descendant | exact routing key와 scope 기반 자료구조 |
 | JWT unit | JWS `typ`·`crit`·alg·signature·kid, closed claims, issuer·audience·nbf·exp, action·Namespace·Exact/Subtree/All | [SPEC 009](../spec/009-operation-jwt-authorization-contract.md)의 static public-key custom profile; OAuth 2.0·RFC 9068 아님 |
 | Config unit | version 1, public ES256 JWK, Namespace당 issuer 하나, key 1..2, verifier bounds | startup parse와 fail-closed |
 | GatewayState unit | drain/rate/ConnectionId fence, auth failure state 격리 | crypto 이전·이후 commit 경계 |

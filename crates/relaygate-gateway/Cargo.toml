@@ -12,7 +12,7 @@ bytes.workspace = true
 futures-util.workspace = true
 jsonwebtoken.workspace = true
 metrics.workspace = true
-relaygate-address.workspace = true
+relaygate-destination.workspace = true
 relaygate-protocol.workspace = true
 relaygate-route-table.workspace = true
 relaygate-route-table-transport.workspace = true
@@ -37,8 +37,8 @@ tracing-subscriber.workspace = true
 workspace = true
 
 [[test]]
-name = "v02_public_sdk"
-path = "tests/v02_public_sdk.rs"
+name = "sdk_gateway_contract"
+path = "tests/sdk_gateway_contract.rs"
 
 [[test]]
 name = "three_gateway"

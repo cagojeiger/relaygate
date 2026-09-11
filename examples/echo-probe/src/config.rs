@@ -5,12 +5,12 @@ use relaygate_sdk::{
     AccessToken, AccessTokenSource, ClientTlsConfig, Config, GatewayTransportConfig,
 };
 
-pub(crate) const ROUTE_ADDRESSES: [&str; 3] =
+pub(crate) const DESTINATIONS: [&str; 3] =
     ["examples/echo-a", "examples/echo-b", "examples/echo-c"];
-pub(crate) const SHARED_ROUTE_ADDRESS: &str = "examples/echo-shared";
+pub(crate) const SHARED_DESTINATION: &str = "examples/echo-shared";
 pub(crate) const CONCURRENT_PIPES_PER_PATH: usize = 32;
 pub(crate) const ECHO_DEADLINE: Duration = Duration::from_secs(10);
-pub(crate) const ROUTE_WAIT: Duration = Duration::from_secs(20);
+pub(crate) const DESTINATION_WAIT: Duration = Duration::from_secs(20);
 pub(crate) const CONTINUITY_INTERVAL: Duration = Duration::from_millis(100);
 pub(crate) const CONTINUITY_FRESHNESS: Duration = Duration::from_secs(2);
 pub(crate) const DEFAULT_SOAK_DURATION: Duration = Duration::from_secs(60);
@@ -39,7 +39,7 @@ pub(crate) fn gateway_addresses() -> anyhow::Result<Vec<String>> {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     ensure!(
-        addresses.len() == ROUTE_ADDRESSES.len(),
+        addresses.len() == DESTINATIONS.len(),
         "RELAYGATE_GATEWAYS must contain exactly three comma-separated addresses"
     );
     Ok(addresses)
@@ -49,8 +49,8 @@ pub(crate) fn required_environment(name: &str) -> anyhow::Result<String> {
     env::var(name).with_context(|| format!("{name} is required"))
 }
 
-pub(crate) fn route_address() -> anyhow::Result<String> {
-    required_environment("RELAYGATE_ROUTE_ADDRESS")
+pub(crate) fn destination() -> anyhow::Result<String> {
+    required_environment("RELAYGATE_DESTINATION")
 }
 
 pub(crate) fn access_token_source() -> anyhow::Result<AccessTokenSource> {

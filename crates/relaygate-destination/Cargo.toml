@@ -1,11 +1,11 @@
 [package]
-name = "relaygate-address"
+name = "relaygate-destination"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Canonical logical route addresses for RelayGate"
+description = "Canonical logical destinations for RelayGate"
 publish = false
 
 [dependencies]

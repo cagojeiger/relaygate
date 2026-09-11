@@ -117,6 +117,10 @@ GitOps는 실제 Secret 이름에 맞춰 갱신 watch를 설정하고 controller
 | CA rotation | old/new trust overlap → leaf 교체 → old trust 제거 |
 | 내부 mode·RT shard directory | maintenance window에서 coordinated restart |
 
+Authorization key rotation은 `새 public JWK 추가 → 전체 Gateway rollout 확인 → issuer가 새 kid로 전환 → 기존
+token 최대 수명과 clock skew 경과 → 이전 JWK 제거 → 전체 Gateway rollout 확인` 순서로 수행한다. 각 단계에서
+모든 Gateway가 같은 Namespace issuer 설정을 사용해야 한다.
+
 RT shard 수는 immutable ShardDirectory를 바꾼다. 기존 workload 종료를 확인한 뒤 새 directory로 재설치한다.
 
 인증서는 startup 시 읽는다. GW 교체는 신규 admission 중단 → active Pipe drain → deadline cleanup 순서다.

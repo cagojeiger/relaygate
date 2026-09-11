@@ -268,7 +268,7 @@ fn session_shutdown_task_failure(error: JoinError) -> GatewayError {
 
 /// Checks SDK admission readiness through a TCP `HELLO`/`WELCOME` exchange.
 ///
-/// This does not check RouteTable availability, Listener bindings, Pipe
+/// This does not check RouteTable availability, Bindings, Pipe
 /// establishment, or application payload processing.
 pub async fn check(
     address: impl ToSocketAddrs,
@@ -313,7 +313,7 @@ pub async fn check_insecure_for_tests(
 mod tests {
     use super::check_insecure_for_tests;
     use futures_util::{SinkExt, StreamExt};
-    use relaygate_protocol::{Frame, FrameCodec, RouteAddress};
+    use relaygate_protocol::{Destination, Frame, FrameCodec};
     use tokio::{
         net::{TcpListener, TcpStream},
         time::{Duration, sleep, timeout},
@@ -322,7 +322,7 @@ mod tests {
 
     use crate::{
         Gateway, GatewayConfig, GatewayError,
-        test_support::{TestAction, address as route_address, authorization_config, bearer_token},
+        test_support::{TestAction, authorization_config, bearer_token, destination},
     };
 
     const DESTINATION: &str = "sdk-server";
@@ -377,7 +377,7 @@ mod tests {
                 async move { serving_gateway.serve_sdk(listener, serving_shutdown).await },
             );
 
-        let (mut listener_sdk, mut connector_sdk, pipe_id) = open_pipe(address).await?;
+        let (mut acceptor_sdk, mut dialer_sdk, pipe_id) = open_pipe(address).await?;
         assert_eq!(gateway.snapshot().live_pipes, 1);
         shutdown.cancel();
         sleep(Duration::from_millis(50)).await;
@@ -390,31 +390,31 @@ mod tests {
                 .is_err()
         );
 
-        let route = route_address(DESTINATION);
-        connector_sdk
+        let destination = destination(DESTINATION);
+        dialer_sdk
             .send(Frame::Dial {
                 connection_id: 2,
-                address: route.clone(),
-                access_token: bearer_token(&route, TestAction::Dial),
+                destination: destination.clone(),
+                access_token: bearer_token(&destination, TestAction::Dial),
             })
             .await?;
         assert!(matches!(
-            timeout(Duration::from_secs(1), connector_sdk.next()).await?,
+            timeout(Duration::from_secs(1), dialer_sdk.next()).await?,
             Some(Ok(Frame::DialFailed {
                 connection_id: 2,
                 code: relaygate_protocol::ErrorCode::Unavailable,
                 ..
             }))
         ));
-        listener_sdk
+        acceptor_sdk
             .send(Frame::Publish {
                 request_id: 2,
-                address: route.clone(),
-                access_token: bearer_token(&route, TestAction::Publish),
+                destination: destination.clone(),
+                access_token: bearer_token(&destination, TestAction::Publish),
             })
             .await?;
         assert!(matches!(
-            timeout(Duration::from_secs(1), listener_sdk.next()).await?,
+            timeout(Duration::from_secs(1), acceptor_sdk.next()).await?,
             Some(Ok(Frame::PublishFailed {
                 request_id: 2,
                 code: relaygate_protocol::ErrorCode::Unavailable,
@@ -422,9 +422,9 @@ mod tests {
             }))
         ));
 
-        connector_sdk.send(Frame::Close { pipe_id }).await?;
+        dialer_sdk.send(Frame::Close { pipe_id }).await?;
         assert!(matches!(
-            timeout(Duration::from_secs(1), listener_sdk.next()).await?,
+            timeout(Duration::from_secs(1), acceptor_sdk.next()).await?,
             Some(Ok(Frame::Close { pipe_id: closed })) if closed == pipe_id
         ));
         timeout(Duration::from_secs(1), serving).await???;
@@ -449,7 +449,7 @@ mod tests {
                 async move { serving_gateway.serve_sdk(listener, serving_shutdown).await },
             );
 
-        let (_listener_sdk, _connector_sdk, _pipe_id) = open_pipe(address).await?;
+        let (_acceptor_sdk, _dialer_sdk, _pipe_id) = open_pipe(address).await?;
         shutdown.cancel();
         timeout(Duration::from_secs(1), serving).await???;
         assert!(gateway.snapshot().draining);
@@ -476,7 +476,7 @@ mod tests {
                 .await
         });
 
-        let (_listener_sdk, _connector_sdk, _pipe_id) = open_pipe(address).await?;
+        let (_acceptor_sdk, _dialer_sdk, _pipe_id) = open_pipe(address).await?;
         force.cancel();
         timeout(Duration::from_secs(1), serving).await???;
 
@@ -496,13 +496,13 @@ mod tests {
         ),
         Box<dyn std::error::Error>,
     > {
-        let address: RouteAddress = route_address(DESTINATION);
+        let destination: Destination = destination(DESTINATION);
         let mut listener = open_sdk_session(gateway_address).await?;
         listener
             .send(Frame::Publish {
                 request_id: 1,
-                address: address.clone(),
-                access_token: bearer_token(&address, TestAction::Publish),
+                destination: destination.clone(),
+                access_token: bearer_token(&destination, TestAction::Publish),
             })
             .await?;
         assert!(matches!(
@@ -510,12 +510,12 @@ mod tests {
             Some(Ok(Frame::Published { .. }))
         ));
 
-        let mut connector = open_sdk_session(gateway_address).await?;
-        connector
+        let mut dialer = open_sdk_session(gateway_address).await?;
+        dialer
             .send(Frame::Dial {
                 connection_id: 1,
-                address: address.clone(),
-                access_token: bearer_token(&address, TestAction::Dial),
+                destination: destination.clone(),
+                access_token: bearer_token(&destination, TestAction::Dial),
             })
             .await?;
         let Some(Ok(Frame::Offer { pipe_id, .. })) = listener.next().await else {
@@ -523,10 +523,10 @@ mod tests {
         };
         listener.send(Frame::OfferAccepted { pipe_id }).await?;
         assert!(matches!(
-            connector.next().await,
+            dialer.next().await,
             Some(Ok(Frame::Opened { pipe_id: opened })) if opened == pipe_id
         ));
-        Ok((listener, connector, pipe_id))
+        Ok((listener, dialer, pipe_id))
     }
 
     async fn open_sdk_session(

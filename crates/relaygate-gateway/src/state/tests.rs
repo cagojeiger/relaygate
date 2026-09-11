@@ -6,7 +6,7 @@ use std::{
 
 use bytes::Bytes;
 use relaygate_protocol::{
-    BearerToken, BindingId, ErrorCode, Frame, PeerObservation, PipeId, RouteAddress, SessionId,
+    BearerToken, BindingId, Destination, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
 };
 use relaygate_route_table::GatewayId;
 use tokio::sync::mpsc;
@@ -19,8 +19,8 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const DESTINATION_A: &str = "11111111-1111-4111-8111-111111111111";
 const DESTINATION_B: &str = "22222222-2222-4222-8222-222222222222";
 
-fn destination(raw: &str) -> Result<RouteAddress, relaygate_address::AddressError> {
-    RouteAddress::from_str(&format!("test/{raw}"))
+fn destination(raw: &str) -> Result<Destination, relaygate_destination::DestinationError> {
+    Destination::from_str(&format!("test/{raw}"))
 }
 
 #[allow(clippy::expect_used)]
@@ -78,23 +78,23 @@ fn published_binding(actions: &[GatewayAction]) -> Option<BindingId> {
 fn publish(
     state: &mut GatewayState,
     session: SessionId,
-    address: &RouteAddress,
+    destination: &Destination,
 ) -> TestResult<BindingId> {
     let actions = state.test_handle(
         session,
         Frame::Publish {
             request_id: 1,
-            address: address.clone(),
+            destination: destination.clone(),
             access_token: access_token(),
         },
     )?;
     published_binding(&actions).ok_or_else(|| "missing PUBLISHED response".into())
 }
 
-fn dial(connection_id: u64, address: &RouteAddress) -> Frame {
+fn dial(connection_id: u64, destination: &Destination) -> Frame {
     Frame::Dial {
         connection_id,
-        address: address.clone(),
+        destination: destination.clone(),
         access_token: access_token(),
     }
 }
@@ -120,13 +120,13 @@ fn one_session_can_publish_and_dial_while_self_binding_is_excluded() -> TestResu
     let actions = state.test_handle(relay_a, dial(1, &destination_a))?;
     assert!(sdk_frames(&actions).any(|(target, frame)| {
         target == relay_b
-            && matches!(frame, Frame::Offer { address, .. } if address == &destination_a)
+            && matches!(frame, Frame::Offer { destination, .. } if destination == &destination_a)
     }));
 
     let actions = state.test_handle(relay_a, dial(2, &destination_b))?;
     assert!(sdk_frames(&actions).any(|(target, frame)| {
         target == relay_b
-            && matches!(frame, Frame::Offer { address, .. } if address == &destination_b)
+            && matches!(frame, Frame::Offer { destination, .. } if destination == &destination_b)
     }));
     Ok(())
 }
@@ -135,9 +135,9 @@ fn one_session_can_publish_and_dial_while_self_binding_is_excluded() -> TestResu
 fn publish_is_idempotent_but_unpublish_then_publish_creates_a_new_binding() -> TestResult {
     let mut state = state();
     let relay = add_session(&mut state);
-    let address = destination(DESTINATION_A)?;
-    let first = publish(&mut state, relay, &address)?;
-    let repeated = publish(&mut state, relay, &address)?;
+    let destination = destination(DESTINATION_A)?;
+    let first = publish(&mut state, relay, &destination)?;
+    let repeated = publish(&mut state, relay, &destination)?;
     assert_eq!(first, repeated);
     assert_eq!(state.snapshot().bindings, 1);
 
@@ -149,7 +149,7 @@ fn publish_is_idempotent_but_unpublish_then_publish_creates_a_new_binding() -> T
         },
     )?;
     assert_eq!(state.snapshot().bindings, 0);
-    let replacement = publish(&mut state, relay, &address)?;
+    let replacement = publish(&mut state, relay, &destination)?;
     assert_ne!(first, replacement);
     Ok(())
 }
@@ -159,10 +159,10 @@ fn accepted_pipe_relays_data_and_closes_without_residue() -> TestResult {
     let mut state = state();
     let caller = add_session(&mut state);
     let receiver = add_session(&mut state);
-    let address = destination(DESTINATION_A)?;
-    publish(&mut state, receiver, &address)?;
+    let destination = destination(DESTINATION_A)?;
+    publish(&mut state, receiver, &destination)?;
 
-    let actions = state.test_handle(caller, dial(7, &address))?;
+    let actions = state.test_handle(caller, dial(7, &destination))?;
     let pipe_id = offered_pipe(&actions).ok_or("missing OFFER")?;
     let actions = state.test_handle(receiver, Frame::OfferAccepted { pipe_id })?;
     assert!(sdk_frames(&actions).any(|(target, frame)| {
@@ -200,11 +200,11 @@ fn offer_timeout_closes_the_unresponsive_relay_and_preserves_sibling_binding() -
     let caller = add_session(&mut state);
     let stalled = add_session(&mut state);
     let sibling = add_session(&mut state);
-    let address = destination(DESTINATION_A)?;
-    publish(&mut state, stalled, &address)?;
-    publish(&mut state, sibling, &address)?;
+    let destination = destination(DESTINATION_A)?;
+    publish(&mut state, stalled, &destination)?;
+    publish(&mut state, sibling, &destination)?;
     let started = Instant::now();
-    let actions = state.handle_at(caller, dial(1, &address), started)?;
+    let actions = state.handle_at(caller, dial(1, &destination), started)?;
     let offered_to = sdk_frames(&actions)
         .find_map(|(target, frame)| matches!(frame, Frame::Offer { .. }).then_some(target))
         .ok_or("missing OFFER")?;
@@ -232,10 +232,10 @@ fn session_removal_cleans_its_bindings_and_pipes_only() -> TestResult {
     let caller = add_session(&mut state);
     let removed = add_session(&mut state);
     let sibling = add_session(&mut state);
-    let address = destination(DESTINATION_A)?;
-    publish(&mut state, removed, &address)?;
-    publish(&mut state, sibling, &address)?;
-    let actions = state.test_handle(caller, dial(1, &address))?;
+    let destination = destination(DESTINATION_A)?;
+    publish(&mut state, removed, &destination)?;
+    publish(&mut state, sibling, &destination)?;
+    let actions = state.test_handle(caller, dial(1, &destination))?;
     let pipe_id = offered_pipe(&actions).ok_or("missing OFFER")?;
     let offered_to = sdk_frames(&actions)
         .find_map(|(target, frame)| matches!(frame, Frame::Offer { .. }).then_some(target))
@@ -264,12 +264,12 @@ fn duplicate_or_out_of_order_dial_identifiers_fail_without_creating_more_state()
     let mut state = state();
     let caller = add_session(&mut state);
     let receiver = add_session(&mut state);
-    let address = destination(DESTINATION_A)?;
-    publish(&mut state, receiver, &address)?;
-    let first = state.test_handle(caller, dial(2, &address))?;
+    let destination = destination(DESTINATION_A)?;
+    publish(&mut state, receiver, &destination)?;
+    let first = state.test_handle(caller, dial(2, &destination))?;
     assert!(offered_pipe(&first).is_some());
     for connection_id in [2, 1] {
-        let rejected = state.test_handle(caller, dial(connection_id, &address))?;
+        let rejected = state.test_handle(caller, dial(connection_id, &destination))?;
         assert!(sdk_frames(&rejected).any(|(target, frame)| {
             target == caller
                 && matches!(
@@ -293,9 +293,9 @@ fn foreign_session_cannot_control_an_existing_pipe() -> TestResult {
     let caller = add_session(&mut state);
     let receiver = add_session(&mut state);
     let stranger = add_session(&mut state);
-    let address = destination(DESTINATION_A)?;
-    publish(&mut state, receiver, &address)?;
-    let actions = state.test_handle(caller, dial(1, &address))?;
+    let destination = destination(DESTINATION_A)?;
+    publish(&mut state, receiver, &destination)?;
+    let actions = state.test_handle(caller, dial(1, &destination))?;
     let pipe_id = offered_pipe(&actions).ok_or("missing OFFER")?;
     state.test_handle(receiver, Frame::OfferAccepted { pipe_id })?;
 
@@ -338,7 +338,7 @@ fn resource_limits_reject_without_leaking_state() -> TestResult {
         receiver,
         Frame::Publish {
             request_id: 2,
-            address: destination_b,
+            destination: destination_b,
             access_token: access_token(),
         },
     )?;
@@ -430,11 +430,11 @@ fn remote_dial_admission_releases_all_slots_when_caller_session_ends() -> TestRe
     );
     let caller = add_session(&mut state);
 
-    for (connection_id, address) in [
+    for (connection_id, destination) in [
         (1, destination(DESTINATION_A)?),
         (2, destination(DESTINATION_B)?),
     ] {
-        let actions = state.test_handle(caller, dial(connection_id, &address))?;
+        let actions = state.test_handle(caller, dial(connection_id, &destination))?;
         assert!(
             actions
                 .iter()

@@ -3,8 +3,8 @@
 use std::{error::Error, net::SocketAddr, time::Duration};
 
 use relaygate_route_table::{
-    BindingId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot, RegistrationKey,
-    RelaySessionId, RouteAddress, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
+    BindingId, BindingProjection, BindingSnapshot, Destination, GatewayId, GatewayLocator,
+    RegistrationKey, RelaySessionId, RouteTableConfig, RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
     GatewayName, RouteTableClient, RouteTableClientConfig, RouteTableService,
@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
-pub const ONE_SHARD_DIRECTORY: &[u8] = br#"{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{"id":"rt-0","endpoint":"rt-0:27430"}]}"#;
+pub const ONE_SHARD_DIRECTORY: &[u8] = br#"{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{"id":"rt-0","endpoint":"rt-0:27430"}]}"#;
 
 pub struct RunningService {
     pub endpoint: SocketAddr,
@@ -121,14 +121,14 @@ pub fn registration_key(
     ))
 }
 
-pub fn mapping_snapshot(
-    address: &str,
+pub fn binding_snapshot(
+    destination: &str,
     gateway_id: GatewayId,
     relay_session_id: RelaySessionId,
     binding_id: BindingId,
-) -> TestResult<MappingSnapshot> {
-    Ok(MappingSnapshot::new([MappingEntry::new(
-        address.parse::<RouteAddress>()?,
+) -> TestResult<BindingSnapshot> {
+    Ok(BindingSnapshot::new([BindingProjection::new(
+        destination.parse::<Destination>()?,
         gateway_id,
         relay_session_id,
         binding_id,

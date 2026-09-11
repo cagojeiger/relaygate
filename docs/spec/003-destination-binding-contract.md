@@ -1,4 +1,4 @@
-# SPEC 003: RouteAddress와 Binding 계약
+# SPEC 003: Destination과 Binding 계약
 
 ```text
 RelaySession X -- alpha/service.a -- Binding AX
@@ -11,12 +11,12 @@ alpha/service.a
 
 | ID | 계약 |
 | --- | --- |
-| `BIND-001` | RouteAddress는 canonical `NamespaceId/DestinationName` 형식이다. |
-| `BIND-002` | NamespaceId는 lowercase DNS-like label 하나이고 DestinationName은 dot-separated lowercase DNS-like labels다. |
-| `BIND-003` | application이 RouteAddress를 생성·보관하며 RelayGate는 exact address의 live location만 관리한다. |
-| `BIND-004` | 같은 RelaySession의 동일 RouteAddress publish는 current Binding 하나로 수렴한다. |
+| `BIND-001` | Destination은 canonical `Namespace/DestinationName` 형식이다. |
+| `BIND-002` | Namespace는 lowercase DNS-like label 하나이고 DestinationName은 dot-separated lowercase DNS-like labels다. |
+| `BIND-003` | application이 Destination을 생성·보관하며 RelayGate는 exact Destination의 live location만 관리한다. |
+| `BIND-004` | 같은 RelaySession의 동일 Destination publish는 current Binding 하나로 수렴한다. |
 | `BIND-005` | Binding 제거 뒤 재등록은 새 BindingId를 만든다. |
-| `BIND-006` | 서로 다른 RelaySession의 동일 RouteAddress Binding은 동시에 존재할 수 있다. |
+| `BIND-006` | 서로 다른 RelaySession의 동일 Destination Binding은 동시에 존재할 수 있다. |
 | `BIND-007` | session 종료는 그 session의 Binding 전체를 local registry에서 원자 제거한다. |
 | `BIND-008` | Listener close는 해당 Binding을 제거하고 sibling state를 유지한다. |
 | `BIND-009` | Gateway drain 상태의 신규 publish와 session은 `UNAVAILABLE`로 끝난다. |

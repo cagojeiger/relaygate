@@ -10,9 +10,10 @@ use std::env;
 
 use anyhow::{Context, bail, ensure};
 
-use crate::config::ROUTE_ADDRESSES;
+use crate::config::DESTINATIONS;
 
-const SHARD_ISOLATION_USAGE: &str = "expect-shard-isolation <unavailable-route-address> <local-owner-index> <available-route-address>";
+const SHARD_ISOLATION_USAGE: &str =
+    "expect-shard-isolation <unavailable-destination> <local-owner-index> <available-destination>";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,16 +26,18 @@ async fn main() -> anyhow::Result<()> {
         Command::Overload => overload::run().await,
         Command::Latency => latency::run().await,
         Command::ReconnectStorm => probe::run_reconnect_storm().await,
-        Command::WaitClient(route_address) => probe::wait_client_registered(&route_address).await,
+        Command::WaitDestination(destination) => {
+            probe::wait_destination_available(&destination).await
+        }
         Command::ExpectShardIsolation {
-            unavailable_route_address,
+            unavailable_destination,
             local_owner_index,
-            available_route_address,
+            available_destination,
         } => {
             probe::expect_shard_isolation(
-                &unavailable_route_address,
+                &unavailable_destination,
                 local_owner_index,
-                &available_route_address,
+                &available_destination,
             )
             .await
         }
@@ -52,11 +55,11 @@ enum Command {
     Overload,
     Latency,
     ReconnectStorm,
-    WaitClient(String),
+    WaitDestination(String),
     ExpectShardIsolation {
-        unavailable_route_address: String,
+        unavailable_destination: String,
         local_owner_index: usize,
-        available_route_address: String,
+        available_destination: String,
     },
     Continuity,
     ContinuityCheck,
@@ -76,14 +79,14 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
         Some("overload") => Command::Overload,
         Some("latency") => Command::Latency,
         Some("reconnect-storm") => Command::ReconnectStorm,
-        Some("wait-client") => {
-            let Some(route_address) = args.next() else {
-                bail!("wait-client requires a RouteAddress argument");
+        Some("wait-destination") => {
+            let Some(destination) = args.next() else {
+                bail!("wait-destination requires a Destination argument");
             };
-            Command::WaitClient(route_address)
+            Command::WaitDestination(destination)
         }
         Some("expect-shard-isolation") => {
-            let Some(unavailable_route_address) = args.next() else {
+            let Some(unavailable_destination) = args.next() else {
                 bail!("usage: {SHARD_ISOLATION_USAGE}");
             };
             let Some(local_owner_index) = args.next() else {
@@ -93,23 +96,23 @@ fn command_from(args: impl IntoIterator<Item = String>) -> anyhow::Result<Comman
                 .parse::<usize>()
                 .with_context(|| "local-owner-index must be a non-negative integer")?;
             ensure!(
-                local_owner_index < ROUTE_ADDRESSES.len(),
+                local_owner_index < DESTINATIONS.len(),
                 "local-owner-index must be in 0..{} (one index per configured Gateway)",
-                ROUTE_ADDRESSES.len()
+                DESTINATIONS.len()
             );
-            let Some(available_route_address) = args.next() else {
+            let Some(available_destination) = args.next() else {
                 bail!("usage: {SHARD_ISOLATION_USAGE}");
             };
             Command::ExpectShardIsolation {
-                unavailable_route_address,
+                unavailable_destination,
                 local_owner_index,
-                available_route_address,
+                available_destination,
             }
         }
         Some("continuity") => Command::Continuity,
         Some("continuity-check") => Command::ContinuityCheck,
         Some(other) => bail!(
-            "unknown command {other:?}; expected single, chat, matrix, soak, overload, latency, reconnect-storm, wait-client, expect-shard-isolation, continuity, or continuity-check"
+            "unknown command {other:?}; expected single, chat, matrix, soak, overload, latency, reconnect-storm, wait-destination, expect-shard-isolation, continuity, or continuity-check"
         ),
     };
     if args.next().is_some() {
@@ -135,12 +138,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_wait_client_command_with_route_address() -> anyhow::Result<()> {
-        match command_from(["wait-client".to_owned(), "examples/echo-b".to_owned()]) {
-            Ok(Command::WaitClient(route_address)) => {
+    fn parses_wait_destination_command_with_destination() -> anyhow::Result<()> {
+        match command_from(["wait-destination".to_owned(), "examples/echo-b".to_owned()]) {
+            Ok(Command::WaitDestination(destination)) => {
                 anyhow::ensure!(
-                    route_address == "examples/echo-b",
-                    "unexpected route address: {route_address}"
+                    destination == "examples/echo-b",
+                    "unexpected destination: {destination}"
                 );
             }
             Ok(other) => anyhow::bail!("unexpected command: {other:?}"),
@@ -186,13 +189,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wait_client_without_route_address() -> anyhow::Result<()> {
-        let error = match command_from(["wait-client".to_owned()]) {
+    fn rejects_wait_destination_without_destination() -> anyhow::Result<()> {
+        let error = match command_from(["wait-destination".to_owned()]) {
             Ok(command) => anyhow::bail!("unexpected command: {command:?}"),
             Err(error) => error,
         };
         anyhow::ensure!(
-            error.to_string().contains("requires a RouteAddress"),
+            error.to_string().contains("requires a Destination"),
             "unexpected error: {error}"
         );
         Ok(())
@@ -207,13 +210,13 @@ mod tests {
             "examples/echo-c".to_owned(),
         ]) {
             Ok(Command::ExpectShardIsolation {
-                unavailable_route_address,
+                unavailable_destination,
                 local_owner_index,
-                available_route_address,
+                available_destination,
             }) => {
-                anyhow::ensure!(unavailable_route_address == "examples/echo-b");
+                anyhow::ensure!(unavailable_destination == "examples/echo-b");
                 anyhow::ensure!(local_owner_index == 1);
-                anyhow::ensure!(available_route_address == "examples/echo-c");
+                anyhow::ensure!(available_destination == "examples/echo-c");
             }
             Ok(other) => anyhow::bail!("unexpected command: {other:?}"),
             Err(error) => anyhow::bail!("unexpected error: {error}"),
@@ -263,7 +266,7 @@ mod tests {
         let error = match command_from([
             "expect-shard-isolation".to_owned(),
             "examples/echo-b".to_owned(),
-            ROUTE_ADDRESSES.len().to_string(),
+            DESTINATIONS.len().to_string(),
             "examples/echo-c".to_owned(),
         ]) {
             Ok(command) => anyhow::bail!("unexpected command: {command:?}"),

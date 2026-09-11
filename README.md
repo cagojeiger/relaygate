@@ -1,6 +1,6 @@
 # RelayGate
 
-NAT 뒤 애플리케이션이 outbound session 하나로 논리 주소를 수신하고 다른 주소로 양방향 byte stream을
+NAT 뒤 애플리케이션이 outbound session 하나로 Destination을 수신하고 다른 Destination으로 양방향 byte stream을
 여는 Rust relay입니다.
 
 ```mermaid
@@ -13,7 +13,7 @@ flowchart LR
 ```
 
 ```text
-RouteAddress -> live Binding 0..N
+Destination -> live Binding 0..N
 dial 1회     -> Binding 1개 -> opaque bidirectional Pipe 1개
 ```
 
@@ -21,7 +21,7 @@ dial 1회     -> Binding 1개 -> opaque bidirectional Pipe 1개
 
 | RelayGate | Application |
 | --- | --- |
-| TLS session과 PUBLISH/DIAL JWT grant 검증 | RouteAddress·token 발급 정책 |
+| TLS session과 PUBLISH/DIAL JWT grant 검증 | Destination·token 발급 정책 |
 | live Binding 조회와 local/one-hop Pipe | Pipe 상대 인증·인가 |
 | bounded queue, timeout, heartbeat, cleanup | payload framing·의미·acknowledgement·retry |
 | SDK reconnect와 Listener republish | 필요한 E2E payload 보호 |
@@ -32,20 +32,20 @@ RouteTable은 memory-only current state를 유지합니다. 새 연결은 새 `d
 ## Rust SDK
 
 ```rust,no_run
-use relaygate_sdk::{AccessToken, AccessTokenSource, Config, Relay, RouteAddress};
+use relaygate_sdk::{AccessToken, AccessTokenSource, Config, Relay, Destination};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let gateway_host = std::env::var("RELAYGATE_GATEWAY_HOST")?;
 let config = Config::new(format!("{gateway_host}:443"))?;
 let relay = Relay::connect(config).await?;
 
-let address: RouteAddress = "inference/stt.seoul".parse()?;
+let destination: Destination = "inference/stt.seoul".parse()?;
 let token = AccessToken::new(std::env::var("RELAYGATE_ACCESS_TOKEN")?)?;
 let listener = relay
-    .listen(address.clone(), AccessTokenSource::static_token(token))
+    .listen(destination.clone(), AccessTokenSource::static_token(token))
     .await?;
 
-// 다른 Relay: relay.dial(address, its_token_source).await?;
+// 다른 Relay: relay.dial(destination, its_token_source).await?;
 let mut incoming = listener.accept().await?;
 # let _ = &mut incoming;
 # Ok(())
@@ -69,7 +69,7 @@ Backend는 호출자를 인증하고 operation을 허가한 뒤 server-side help
 ```rust,no_run
 use std::time::Duration;
 
-use relaygate_address::RouteAddress;
+use relaygate_destination::Destination;
 use relaygate_token_issuer::{Action, TokenIssuer};
 
 # fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -80,10 +80,10 @@ let issuer = TokenIssuer::from_es256_pem(
     "issuer-key-v1",
     private_key,
 )?;
-let address: RouteAddress = "inference/stt.seoul".parse()?;
+let destination: Destination = "inference/stt.seoul".parse()?;
 
 // Application authorization must succeed before this call.
-let token = issuer.issue_exact(Action::Dial, &address, Duration::from_secs(300))?;
+let token = issuer.issue_exact(Action::Dial, &destination, Duration::from_secs(300))?;
 # let _ = token;
 # Ok(())
 # }
@@ -129,7 +129,7 @@ helm template relaygate deploy/helm/relaygate --kube-version 1.32.0
 
 ```text
 crates/
-├── relaygate-address/               RouteAddress grammar
+├── relaygate-destination/           Destination grammar
 ├── relaygate-protocol/              SDK-GW wire
 ├── relaygate-transport/             TLS/mTLS adapter
 ├── relaygate-sdk/                   public Relay, Listener, Pipe API

@@ -95,7 +95,7 @@ impl RuntimePair {
         Ok(PeerOpenRequest::new(
             PeerTarget::new(self.gateway_b, self.locator_b.clone()),
             OpenIdentity::new(self.gateway_a, SessionId::new(), connection_id),
-            crate::test_support::address("echo.b"),
+            crate::test_support::destination("echo.b"),
             SessionId::new(),
             BindingId::new(),
         ))
@@ -105,7 +105,7 @@ impl RuntimePair {
         Ok(PeerOpenRequest::new(
             PeerTarget::new(self.gateway_a, self.locator_a.clone()),
             OpenIdentity::new(self.gateway_b, SessionId::new(), connection_id),
-            crate::test_support::address("echo.a"),
+            crate::test_support::destination("echo.a"),
             SessionId::new(),
             BindingId::new(),
         ))
@@ -344,7 +344,7 @@ async fn post_commit_cancel_ignores_late_opened_and_converges_through_transport_
     let reused = PeerOpenRequest::new(
         PeerTarget::new(pair.gateway_b, pair.locator_b.clone()),
         identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -587,7 +587,7 @@ async fn handshake_timeout_fails_before_open_commit_and_leaves_no_transport_stat
     let request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b),
         OpenIdentity::new(gateway_a, SessionId::new(), 1),
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -781,7 +781,7 @@ async fn cancel_during_handshake_never_flushes_cancelled_open_and_retires_idle_t
     let request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b),
         identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -946,7 +946,7 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
         .send(PeerFrame::Open {
             stream_id: StreamId::from_raw(0),
             open_identity: OpenIdentity::new(old_gateway_a, SessionId::new(), 1),
-            address: crate::test_support::address("echo.b"),
+            destination: crate::test_support::destination("echo.b"),
             relay_session_id: SessionId::new(),
             binding_id: BindingId::new(),
         })
@@ -976,7 +976,7 @@ async fn replacement_peer_rejects_old_identity_without_harming_current_stream() 
         .send(PeerFrame::Open {
             stream_id: StreamId::from_raw(2),
             open_identity: valid_identity,
-            address: crate::test_support::address("echo.b"),
+            destination: crate::test_support::destination("echo.b"),
             relay_session_id: SessionId::new(),
             binding_id: BindingId::new(),
         })
@@ -1148,7 +1148,7 @@ async fn open_identity_is_unique_only_while_current_stream_is_active() -> TestRe
     let request = PeerOpenRequest::new(
         PeerTarget::new(pair.gateway_b, pair.locator_b.clone()),
         identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -1163,7 +1163,7 @@ async fn open_identity_is_unique_only_while_current_stream_is_active() -> TestRe
     let duplicate = PeerOpenRequest::new(
         PeerTarget::new(pair.gateway_b, pair.locator_b.clone()),
         identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -1183,7 +1183,7 @@ async fn open_identity_is_unique_only_while_current_stream_is_active() -> TestRe
     let reused = PeerOpenRequest::new(
         PeerTarget::new(pair.gateway_b, pair.locator_b.clone()),
         identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );

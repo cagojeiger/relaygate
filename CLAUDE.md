@@ -19,7 +19,7 @@
 - `relaygate-route-table`은 synchronous memory-only current-state core를, `relaygate-route-table-transport`는 bounded internal network/auth adapter를 소유하며 persistence를 포함하지 않는다.
 - local-only mode는 Gateway 하나의 local Pipe 경로를 유지한다. distributed mode는 memory-only RouteTable과 one-hop peer relay를 사용하며 persistence를 포함하지 않는다.
 - RelayGate는 payload를 opaque bytes로 취급하고 application 인증·인가, message 의미, delivery acknowledgement와 업무 retry를 소유하지 않는다.
-- `RouteAddress`는 application이 생성·보관하는 `NamespaceId/DestinationName` 라우팅 주소다. RelayGate는 중앙 발급·소유권 registry를 제공하지 않으며 routing은 exact match만 수행한다.
+- `Destination`은 application이 생성·보관하는 `Namespace/DestinationName` 라우팅 주소다. RelayGate는 중앙 발급·소유권 registry를 제공하지 않으며 routing은 exact match만 수행한다.
 - SDK session 수립은 identity를 부여하지 않는다. `PUBLISH`와 `DIAL`은 operation마다 application이 공급한 JWT access token을 검증하며 raw token을 영속화하거나 RT·peer로 전달하지 않는다.
 - Namespace 하나는 static ES256 issuer 하나에 대응하고 issuer는 회전용 공개키를 최대 두 개 가진다. private key·token 발급·갱신은 application/backend가 소유한다.
 - SDK–Gateway TLS와 내부 mTLS가 기본값이다. 내부 plaintext는 명시적으로 선택하며 TLS 실패 시 평문 fallback을 제공하지 않는다. 인증서·trust 갱신 적용 정책은 platform이 소유하고 chart는 Secret mount와 범용 annotation을 전달한다.

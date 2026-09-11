@@ -157,9 +157,9 @@ verify_certificate_reissue_rollout() {
     fi
     kubectl -n "$NAMESPACE" get certificate "$certificate" -o json \
       >"$ARTIFACTS/certificate-${role}.json"
-    wait_for_destination "$ROUTE_A"
-    wait_for_destination "$ROUTE_B"
-    wait_for_destination "$ROUTE_C"
+    wait_for_destination "$DESTINATION_A"
+    wait_for_destination "$DESTINATION_B"
+    wait_for_destination "$DESTINATION_C"
     run_probe "certificate-${role}-recovery" matrix
   done
   record_pass KIND-14 'edge/internal reissue replaces only affected Pods; served edge serial and SDK recovery verified'

@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{PendingRegistration, RelaySessionState};
 use crate::{
-    AccessAction, AccessTokenRequest, Error, ErrorCode, PeerObservation, RouteAddress,
+    AccessAction, AccessTokenRequest, Destination, Error, ErrorCode, PeerObservation,
     listener::{ListenerState, ListenerStatus, RelayInner, is_current_desired},
     session::{EstablishedSession, send_bounded},
 };
@@ -18,34 +18,34 @@ pub(super) async fn reconcile_registrations(
     session: &mut RelaySessionState,
     session_cancel: &CancellationToken,
 ) -> bool {
-    let Some(desired) = snapshot_desired_by_address(inner) else {
+    let Some(desired) = snapshot_desired_by_destination(inner) else {
         return false;
     };
     let abandoned_committed_registration = session.pending.values().any(|pending| {
         pending.committed
             && (!desired
-                .get(&pending.state.address)
+                .get(&pending.state.destination)
                 .is_some_and(|current| Arc::ptr_eq(current, &pending.state))
                 || *pending.state.status.borrow() == ListenerStatus::Closed)
     });
     if abandoned_committed_registration {
         return false;
     }
-    let registered_addresses = session.registrations.keys().cloned().collect::<Vec<_>>();
-    for address in registered_addresses {
+    let registered_destinations = session.registrations.keys().cloned().collect::<Vec<_>>();
+    for destination in registered_destinations {
         let stale = session
             .registrations
-            .get(&address)
+            .get(&destination)
             .is_some_and(|registration| {
                 !desired
-                    .get(&address)
+                    .get(&destination)
                     .is_some_and(|current| Arc::ptr_eq(current, &registration.state))
                     || *registration.state.status.borrow() == ListenerStatus::Closed
             });
         if !stale {
             continue;
         }
-        let Some(registration) = session.registrations.remove(&address) else {
+        let Some(registration) = session.registrations.remove(&destination) else {
             continue;
         };
         let Some(request_id) = session.next_request_id() else {
@@ -74,8 +74,10 @@ pub(super) async fn reconcile_registrations(
         if matches!(
             *state.status.borrow(),
             ListenerStatus::Blocked | ListenerStatus::Closed
-        ) || session.registrations.contains_key(&state.address)
-            || session.pending_by_address.contains_key(&state.address)
+        ) || session.registrations.contains_key(&state.destination)
+            || session
+                .pending_by_destination
+                .contains_key(&state.destination)
         {
             continue;
         }
@@ -125,17 +127,17 @@ pub(super) async fn reconcile_registrations(
             },
         );
         session
-            .pending_by_address
-            .insert(state.address.clone(), request_id);
+            .pending_by_destination
+            .insert(state.destination.clone(), request_id);
         let source = state.access_token_source.clone();
-        let address = state.address.clone();
+        let destination = state.destination.clone();
         session.token_supplies.push(
             async move {
                 let result = timeout_at(
                     deadline,
                     source.supply(AccessTokenRequest {
                         action: AccessAction::Publish,
-                        address,
+                        destination,
                     }),
                 )
                 .await
@@ -162,7 +164,7 @@ pub(super) async fn commit_registration_token(
         return true;
     };
     let state = Arc::clone(&pending.state);
-    session.pending_by_address.remove(&state.address);
+    session.pending_by_destination.remove(&state.destination);
     if !is_current_desired(inner, &state) || *state.status.borrow() == ListenerStatus::Closed {
         return true;
     }
@@ -184,13 +186,13 @@ pub(super) async fn commit_registration_token(
     let deadline = pending.deadline;
     session.pending.insert(request_id, pending);
     session
-        .pending_by_address
-        .insert(state.address.clone(), request_id);
+        .pending_by_destination
+        .insert(state.destination.clone(), request_id);
     send_bounded(
         &mut established.transport,
         Frame::Publish {
             request_id,
-            address: state.address.clone(),
+            destination: state.destination.clone(),
             access_token: token,
         },
         deadline
@@ -211,14 +213,14 @@ fn handle_token_source_error(inner: &RelayInner, state: &Arc<ListenerState>, err
     inner.schedule_reconcile();
 }
 
-fn snapshot_desired_by_address(
+fn snapshot_desired_by_destination(
     inner: &RelayInner,
-) -> Option<HashMap<RouteAddress, Arc<ListenerState>>> {
+) -> Option<HashMap<Destination, Arc<ListenerState>>> {
     match inner.desired.lock() {
         Ok(desired) => Some(
             desired
                 .iter()
-                .map(|(address, state)| (address.clone(), Arc::clone(state)))
+                .map(|(destination, state)| (destination.clone(), Arc::clone(state)))
                 .collect(),
         ),
         Err(_) => {

@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{Gateway, GatewayConfig};
-use crate::test_support::{authorization_config, unique_address};
+use crate::test_support::{authorization_config, unique_destination};
 
 fn token() -> Result<BearerToken, relaygate_protocol::ProtocolError> {
     BearerToken::new("gateway-state-test-token")
@@ -38,43 +38,43 @@ async fn snapshot_admission_requires_capacity_and_non_draining_state()
 async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
 -> Result<(), Box<dyn std::error::Error>> {
     let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
-    let address = unique_address();
+    let destination = unique_destination();
     let (listener_sender, _listener_receiver) = mpsc::channel(1);
     listener_sender.try_send(Frame::Ping { nonce: 1 })?;
-    let (connector_sender, mut connector_receiver) = mpsc::channel(8);
-    let (listener, connector, offer) = {
+    let (dialer_sender, mut dialer_receiver) = mpsc::channel(8);
+    let (listener, dialer, offer) = {
         let mut state = gateway.inner.lock_state();
         let listener = state
             .add_session(listener_sender, CancellationToken::new())
             .ok_or("missing listener session")?;
-        let connector = state
-            .add_session(connector_sender, CancellationToken::new())
-            .ok_or("missing connector session")?;
+        let dialer = state
+            .add_session(dialer_sender, CancellationToken::new())
+            .ok_or("missing dialer session")?;
         let _registration = state.handle_at(
             listener,
             Frame::Publish {
                 request_id: 1,
-                address: address.clone(),
+                destination: destination.clone(),
                 access_token: token()?,
             },
             std::time::Instant::now(),
         )?;
         let offer = state.handle_at(
-            connector,
+            dialer,
             Frame::Dial {
                 connection_id: 1,
-                address: address.clone(),
+                destination: destination.clone(),
                 access_token: token()?,
             },
             std::time::Instant::now(),
         )?;
-        (listener, connector, offer)
+        (listener, dialer, offer)
     };
 
     gateway.inner.execute_all(offer).await;
 
     assert!(matches!(
-        connector_receiver.try_recv()?,
+        dialer_receiver.try_recv()?,
         Frame::DialFailed {
             connection_id: 1,
             code: ErrorCode::ResourceExhausted,
@@ -83,10 +83,10 @@ async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
         }
     ));
     let after_rejection = gateway.inner.lock_state().handle_at(
-        connector,
+        dialer,
         Frame::Dial {
             connection_id: 2,
-            address,
+            destination,
             access_token: token()?,
         },
         std::time::Instant::now(),

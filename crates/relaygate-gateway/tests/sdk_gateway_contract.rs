@@ -18,7 +18,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 mod support;
 
-use support::{authorization_config, token_source, unique_address};
+use support::{authorization_config, token_source, unique_destination};
 
 #[path = "public_sdk/control_admission.rs"]
 mod control_admission;
@@ -44,10 +44,10 @@ async fn sdk_gateway_path_uses_tls_before_operation_authorization() -> TestResul
         client_tls,
     )))
     .await?;
-    let route = unique_address()?;
+    let destination = unique_destination()?;
     let rejected = relay
         .listen(
-            route.clone(),
+            destination.clone(),
             AccessTokenSource::static_token(AccessToken::new("not-a-jwt")?),
         )
         .await
@@ -55,7 +55,10 @@ async fn sdk_gateway_path_uses_tls_before_operation_authorization() -> TestResul
         .ok_or("invalid access token authorized PUBLISH over TLS")?;
     assert_eq!(rejected.code(), relaygate_sdk::ErrorCode::Unauthenticated);
     let listener = relay
-        .listen(route.clone(), token_source(&route, AccessAction::Publish)?)
+        .listen(
+            destination.clone(),
+            token_source(&destination, AccessAction::Publish)?,
+        )
         .await?;
     listener.close().await?;
 
@@ -73,8 +76,8 @@ async fn one_session_can_listen_dial_and_accept() -> TestResult {
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50));
     let relay_a = Relay::connect(config.clone()).await?;
     let relay_b = Relay::connect(config).await?;
-    let destination_a = unique_address()?;
-    let destination_b = unique_address()?;
+    let destination_a = unique_destination()?;
+    let destination_b = unique_destination()?;
     let listener_a = relay_a
         .listen(
             destination_a.clone(),
@@ -131,7 +134,7 @@ async fn session_frame_buffers_grow_beyond_their_initial_capacity() -> TestResul
         .with_operation_timeout(Duration::from_secs(2));
     let publisher = Relay::connect(config.clone()).await?;
     let caller = Relay::connect(config).await?;
-    let destination = unique_address()?;
+    let destination = unique_destination()?;
     let publication = publisher
         .listen(
             destination.clone(),
@@ -178,7 +181,7 @@ async fn same_destination_selects_one_of_multiple_relays() -> TestResult {
     let first = Relay::connect(config.clone()).await?;
     let second = Relay::connect(config.clone()).await?;
     let caller = Relay::connect(config).await?;
-    let destination = unique_address()?;
+    let destination = unique_destination()?;
     let first_listener = first
         .listen(
             destination.clone(),
@@ -226,7 +229,7 @@ async fn same_destination_selects_one_of_multiple_relays() -> TestResult {
 async fn operation_denial_does_not_end_the_relay_session() -> TestResult {
     let (address, shutdown, server) = start_gateway().await?;
     let relay = Relay::connect(Config::new_insecure_for_tests(address.to_string())).await?;
-    let denied_address = unique_address()?;
+    let denied_address = unique_destination()?;
     let rejected = relay
         .listen(
             denied_address.clone(),
@@ -246,14 +249,14 @@ async fn operation_denial_does_not_end_the_relay_session() -> TestResult {
         .ok_or("denied PUBLISH mutated Gateway routing state")?;
     assert_eq!(missing.code(), relaygate_sdk::ErrorCode::NotFound);
 
-    let allowed_address = unique_address()?;
+    let allowed_address = unique_destination()?;
     let listener = relay
         .listen(
             allowed_address.clone(),
             token_source(&allowed_address, AccessAction::Publish)?,
         )
         .await?;
-    assert_eq!(listener.address(), &allowed_address);
+    assert_eq!(listener.destination(), &allowed_address);
     listener.close().await?;
     relay.close();
     shutdown.cancel();
@@ -265,7 +268,7 @@ async fn operation_denial_does_not_end_the_relay_session() -> TestResult {
 async fn relay_cannot_dial_its_own_only_binding() -> TestResult {
     let (address, shutdown, server) = start_gateway().await?;
     let relay = Relay::connect(Config::new_insecure_for_tests(address.to_string())).await?;
-    let destination = unique_address()?;
+    let destination = unique_destination()?;
     let _listener = relay
         .listen(
             destination.clone(),
@@ -306,7 +309,7 @@ async fn relay_reconnects_republishes_and_replaces_ended_pipes() -> TestResult {
         .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(50));
     let publisher = Relay::connect(config.clone()).await?;
     let caller = Relay::connect(config).await?;
-    let destination = unique_address()?;
+    let destination = unique_destination()?;
     let publication = publisher
         .listen(
             destination.clone(),

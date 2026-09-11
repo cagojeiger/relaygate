@@ -2,7 +2,7 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Superseded by [ADR 015](015-hierarchical-route-address.md) |
+| 상태 | Superseded by [ADR 015](015-hierarchical-destination.md) |
 | 생성·보관 | application |
 | 형식 검증 | SDK와 Gateway |
 | live location | Gateway Binding과 RT mapping |

@@ -8,23 +8,23 @@ sequenceDiagram
     participant RT as RouteTable
     participant O as Owner Gateway
     participant L as Listener
-    R->>E: DIAL(RouteAddress, AccessToken)
+    R->>E: DIAL(Destination, AccessToken)
     E->>E: ConnectionId fence + control budget
-    E->>A: verify(action=dial, exact address)
+    E->>A: verify(action=dial, exact Destination)
     A-->>E: authorized
     E->>E: local exact lookup
     opt local miss
-        E->>RT: Resolve(RouteAddress)
+        E->>RT: Resolve(Destination)
         RT-->>E: BindingSet
     end
     E->>E: self 제외 · candidate 1개 선택
     E->>O: local OFFER 또는 one-hop OPEN
-    O->>L: OFFER(RouteAddress)
+    O->>L: OFFER(Destination)
     L-->>O: queue admission
     O-->>R: OPENED + Pipe
 ```
 
-AccessToken은 Entry Gateway에서 제거됩니다. RT Resolve와 peer OPEN에는 RouteAddress·Binding identity만 전달합니다.
+AccessToken은 Entry Gateway에서 제거됩니다. RT Resolve와 peer OPEN에는 Destination·Binding identity만 전달합니다.
 
 | ID | 계약 |
 | --- | --- |

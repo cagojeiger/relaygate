@@ -79,8 +79,8 @@ impl GatewayState {
             .pipes
             .iter()
             .filter_map(|(pipe_id, pipe)| {
-                (pipe.connector == PipeEndpoint::Sdk(session_id)
-                    || pipe.listener == PipeEndpoint::Sdk(session_id))
+                (pipe.dialer == PipeEndpoint::Sdk(session_id)
+                    || pipe.acceptor == PipeEndpoint::Sdk(session_id))
                 .then_some(*pipe_id)
             })
             .collect();
@@ -89,11 +89,11 @@ impl GatewayState {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
-            if pipe.connector == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
+            if pipe.dialer == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
                 observe_dial_result(pipe.open_started_at, Some(ErrorCode::Cancelled));
             }
-            if pipe.listener == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
-                actions.extend(self.connector_failure(
+            if pipe.acceptor == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
+                actions.extend(self.dialer_failure(
                     &pipe,
                     pipe_id,
                     ErrorCode::Unavailable,
@@ -102,12 +102,12 @@ impl GatewayState {
                 ));
                 continue;
             }
-            let counterpart = if pipe.connector == PipeEndpoint::Sdk(session_id) {
-                pipe.listener
+            let counterpart = if pipe.dialer == PipeEndpoint::Sdk(session_id) {
+                pipe.acceptor
             } else {
-                pipe.connector
+                pipe.dialer
             };
-            let code = if pipe.connector == PipeEndpoint::Sdk(session_id)
+            let code = if pipe.dialer == PipeEndpoint::Sdk(session_id)
                 && counterpart.peer_key().is_some()
             {
                 ErrorCode::Cancelled

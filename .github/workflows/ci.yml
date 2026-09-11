@@ -204,7 +204,7 @@ jobs:
           grep -Fq '"id":"rt-0"' target/helm/default.yaml
           grep -Fq '"id":"rt-1"' target/helm/default.yaml
           grep -Fq '"format_version":2' target/helm/default.yaml
-          grep -Fq '"authority_hash":"sha256-route-address-modulo-v2"' target/helm/default.yaml
+          grep -Fq '"authority_hash":"sha256-destination-modulo-v2"' target/helm/default.yaml
           grep -Fq 'relaygate-rt-0.relaygate-rt.relaygate.svc.cluster.local:27430' target/helm/default.yaml
           grep -Fq 'relaygate-rt-1.relaygate-rt.relaygate.svc.cluster.local:27430' target/helm/default.yaml
           grep -Fq 'immutable: true' target/helm/default.yaml
@@ -607,7 +607,7 @@ jobs:
           prometheus_has 'sum(relaygate_gateway_peer_transport_closed_total) > 0'
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client examples/echo-b
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-b
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 
       - name: Measure established Pipe DATA RTT
@@ -637,9 +637,9 @@ jobs:
       - name: Verify rt-0 current-state recovery
         run: |
           docker compose up -d rt-0
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client examples/echo-a
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client examples/echo-shared
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client examples/echo-boundary
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-a
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-shared
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-boundary
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
@@ -655,8 +655,8 @@ jobs:
       - name: Verify rt-1 current-state recovery
         run: |
           docker compose up -d rt-1
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client examples/echo-b
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client examples/echo-c
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-b
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-c
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
@@ -699,7 +699,7 @@ jobs:
             relaygate_gateway_sessions relaygate_gateway_bindings \
             relaygate_gateway_pending_offers relaygate_gateway_live_pipes \
             relaygate_gateway_originated_pipes relaygate_gateway_remote_dial_attempts \
-            relaygate_gateway_peer_streams relaygate_route_table_mappings; do
+            relaygate_gateway_peer_streams relaygate_route_table_bindings; do
             matched=false
             for _ in {1..60}; do
               if curl -fsSG --data-urlencode "query=sum($metric{cluster=\"compose\",namespace=\"relaygate\"}) == 0" \

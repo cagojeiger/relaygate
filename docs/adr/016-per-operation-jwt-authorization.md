@@ -25,14 +25,14 @@ private signing key                    public verification key only
 | --- | --- |
 | trust mapping | Namespace 하나 → issuer 하나 → current/next `kid` 1..2개 |
 | profile | producer는 canonical `typ=relaygate-operation+jwt`, `alg=ES256`, `kid`를 protected header에 넣고 verifier는 RFC 7515의 `typ` case·`application/` equivalence를 적용 |
-| admission | Gateway가 Binding 생성·RT Resolve·peer `OPEN`·Pipe 생성 전에 header·signature·claims·action·exact RouteAddress 검증 |
+| admission | Gateway가 Binding 생성·RT Resolve·peer `OPEN`·Pipe 생성 전에 header·signature·claims·action·exact Destination 검증 |
 | scope | `Exact`, whole-label `Subtree`, Namespace `All` |
 | token lifecycle | operation 검증 뒤 폐기; Binding·Pipe에 보관하지 않음 |
 | renewal | Listener republish와 새 dial이 application token source를 다시 호출 |
 | existing state | token 만료가 이미 승인된 Binding·Pipe를 종료하지 않음 |
 | transport | raw token을 RT·peer Gateway로 전달하지 않음 |
 
-`permissions` private claim은 RelayGate의 action·RouteAddress 권한만 표현합니다. OAuth `scope`는 계층
+`permissions` private claim은 RelayGate의 action·Destination 권한만 표현합니다. OAuth `scope`는 계층
 Destination selector를 위한 문자열 문법을 추가로 필요로 합니다. RFC 9396 `authorization_details`를 표준대로
 채택하려면 OAuth request·grant context와 type별 검증 의미가 필요하지만 RelayGate runtime에는 그 흐름이 없어
 사용하지 않습니다.

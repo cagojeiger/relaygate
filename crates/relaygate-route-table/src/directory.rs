@@ -3,9 +3,9 @@ use std::{collections::HashSet, sync::Arc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::{RouteAddress, RouteTableError, ShardDirectoryGeneration, ShardEndpoint, ShardId};
+use crate::{Destination, RouteTableError, ShardDirectoryGeneration, ShardEndpoint, ShardId};
 
-pub const AUTHORITY_HASH_SHA256_MODULO_V2: &str = "sha256-route-address-modulo-v2";
+pub const AUTHORITY_HASH_SHA256_MODULO_V2: &str = "sha256-destination-modulo-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShardRecord {
@@ -115,8 +115,8 @@ impl ShardDirectory {
     }
 
     #[must_use]
-    pub fn authority(&self, address: &RouteAddress) -> &ShardRecord {
-        let digest = Sha256::digest(address.canonical_key());
+    pub fn authority(&self, destination: &Destination) -> &ShardRecord {
+        let digest = Sha256::digest(destination.canonical_key());
         let mut prefix = [0_u8; 8];
         prefix.copy_from_slice(&digest[..8]);
         let value = u64::from_be_bytes(prefix);

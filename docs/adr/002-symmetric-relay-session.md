@@ -10,18 +10,18 @@
 
 ```text
 Relay runtime 1 ── current RelaySession 0..1
-Relay::listen(RouteAddress, token source) ──► Listener
-Relay::dial(RouteAddress, token source)   ──► Pipe
+Relay::listen(Destination, token source) ──► Listener
+Relay::dial(Destination, token source)   ──► Pipe
 Listener::accept()           ──► Pipe
 
-RouteAddress * ◄── Binding ──► * RelaySession
+Destination * ◄── Binding ──► * RelaySession
 dial 1회 ──► Binding 1개 ──► bidirectional Pipe 1개
 ```
 
 | 규칙 | 결과 |
 | --- | --- |
-| 하나의 Relay·RouteAddress | pending/active Listener 최대 하나 |
-| 여러 Relay·RouteAddress | live Binding 0..N |
+| 하나의 Relay·Destination | pending/active Listener 최대 하나 |
+| 여러 Relay·Destination | live Binding 0..N |
 | self Binding | dial candidate에서 제외 |
 | session loss | live Listener를 새 SessionId·BindingId로 재등록 |
 | existing Pipe·committed dial | terminal 결과로 유지, 새 operation이 복구 담당 |

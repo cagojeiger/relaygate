@@ -13,8 +13,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AccessAction, AccessTokenRequest, AccessTokenSource, Config, Error, ErrorCode, PeerObservation,
-    Pipe, Result, RouteAddress, lifetime::RuntimeLifetime, session::establish,
+    AccessAction, AccessTokenRequest, AccessTokenSource, Config, Destination, Error, ErrorCode,
+    PeerObservation, Pipe, Result, lifetime::RuntimeLifetime, session::establish,
 };
 
 use self::{
@@ -56,7 +56,7 @@ pub(super) struct RelaySession {
 pub(super) enum RelayCommand {
     Dial {
         connection_id: u64,
-        address: RouteAddress,
+        destination: Destination,
         access_token: relaygate_protocol::BearerToken,
         response: oneshot::Sender<Result<Pipe>>,
     },
@@ -100,7 +100,7 @@ impl std::fmt::Debug for Listener {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Listener")
-            .field("address", &self.state.address)
+            .field("destination", &self.state.destination)
             .field("status", &self.status())
             .finish()
     }
@@ -130,18 +130,18 @@ impl Relay {
         })
     }
 
-    /// Creates one desired Listener for an address and waits until its initial
+    /// Creates one desired Listener for a destination and waits until its initial
     /// Gateway-local binding is active.
     pub async fn listen(
         &self,
-        address: RouteAddress,
+        destination: Destination,
         access_token_source: AccessTokenSource,
     ) -> Result<Listener> {
         let deadline = self.inner.config.operation_deadline()?;
         let (incoming_tx, incoming_rx) = mpsc::channel(self.inner.config.listener_queue_capacity);
         let (status, _) = watch::channel(ListenerStatus::Registering);
         let state = Arc::new(ListenerState {
-            address: address.clone(),
+            destination: destination.clone(),
             access_token_source,
             status,
             last_error: StdMutex::new(None),
@@ -160,14 +160,14 @@ impl Relay {
                     "Listener registry lock is poisoned",
                 )
             })?;
-            if desired.contains_key(&address) {
+            if desired.contains_key(&destination) {
                 return Err(Error::new(
                     ErrorCode::AlreadyExists,
                     PeerObservation::NotObserved,
-                    "a non-closed Listener already owns this address in the Relay",
+                    "a non-closed Listener already owns this destination in the Relay",
                 ));
             }
-            desired.insert(address, Arc::clone(&state));
+            desired.insert(destination, Arc::clone(&state));
         }
 
         let mut guard = ListenGuard {
@@ -224,18 +224,19 @@ impl Relay {
         }
     }
 
-    /// Opens one Pipe to an address. A committed dial is never replayed.
+    /// Opens one Pipe to a destination. A committed dial is never replayed.
     pub async fn dial(
         &self,
-        address: RouteAddress,
+        destination: Destination,
         access_token_source: AccessTokenSource,
     ) -> Result<Pipe> {
-        crate::observability::observe("dial", self.dial_inner(address, access_token_source)).await
+        crate::observability::observe("dial", self.dial_inner(destination, access_token_source))
+            .await
     }
 
     async fn dial_inner(
         &self,
-        address: RouteAddress,
+        destination: Destination,
         access_token_source: AccessTokenSource,
     ) -> Result<Pipe> {
         let deadline = self.inner.config.operation_deadline()?;
@@ -243,7 +244,7 @@ impl Relay {
             deadline,
             access_token_source.supply(AccessTokenRequest {
                 action: AccessAction::Dial,
-                address: address.clone(),
+                destination: destination.clone(),
             }),
         )
         .await
@@ -273,7 +274,7 @@ impl Relay {
                     deadline,
                     session.commands.send(RelayCommand::Dial {
                         connection_id,
-                        address: address.clone(),
+                        destination: destination.clone(),
                         access_token: access_token.clone(),
                         response: response_tx,
                     }),
@@ -347,8 +348,8 @@ impl Relay {
 
 impl Listener {
     #[must_use]
-    pub fn address(&self) -> &RouteAddress {
-        &self.state.address
+    pub fn destination(&self) -> &Destination {
+        &self.state.destination
     }
 
     #[must_use]

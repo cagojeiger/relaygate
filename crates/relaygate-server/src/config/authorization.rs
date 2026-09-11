@@ -6,7 +6,7 @@ use relaygate_gateway::{
     Es256PublicKey, GatewayConfig, MAX_AUTHORIZATION_CONCURRENCY, MAX_AUTHORIZATION_TIMEOUT,
     TrustedIssuer,
 };
-use relaygate_route_table::NamespaceId;
+use relaygate_route_table::Namespace;
 use serde::Deserialize;
 
 const CONFIG_ENV: &str = "RELAYGATE_AUTH_CONFIG_PATH";
@@ -112,7 +112,7 @@ fn parse(bytes: &[u8]) -> Result<GatewayConfig> {
 }
 
 fn parse_issuer(document: IssuerDocument) -> Result<TrustedIssuer> {
-    let namespace: NamespaceId = document
+    let namespace: Namespace = document
         .namespace
         .parse()
         .context("authorization issuer namespace is invalid")?;

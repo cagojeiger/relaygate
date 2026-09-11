@@ -16,14 +16,14 @@ async fn rejection_burst_with_slow_reader_preserves_session_and_sibling() -> Tes
         Some(Ok(Frame::Welcome { .. }))
     ));
     let (mut writer, mut reader) = client.split();
-    let address = unique_address();
-    let access_token = bearer_token(&address, TestAction::Dial);
+    let destination = unique_destination();
+    let access_token = bearer_token(&destination, TestAction::Dial);
     let producer = tokio::spawn(async move {
         for connection_id in 1..=512 {
             writer
                 .send(Frame::Dial {
                     connection_id,
-                    address: address.clone(),
+                    destination: destination.clone(),
                     access_token: access_token.clone(),
                 })
                 .await?;

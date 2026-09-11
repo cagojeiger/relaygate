@@ -2,19 +2,19 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-use crate::AddressError;
+use crate::DestinationError;
 
 pub const MAX_LABEL_BYTES: usize = 63;
-pub const MAX_DESTINATION_BYTES: usize = 253;
+pub const MAX_DESTINATION_NAME_BYTES: usize = 253;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct NamespaceId(Box<str>);
+pub struct Namespace(Box<str>);
 
-impl NamespaceId {
-    pub fn new(value: &str) -> Result<Self, AddressError> {
+impl Namespace {
+    pub fn new(value: &str) -> Result<Self, DestinationError> {
         if value.contains('.') {
-            return Err(AddressError::InvalidNamespace);
+            return Err(DestinationError::InvalidNamespace);
         }
         validate_label(value)?;
         Ok(Self(value.into()))
@@ -26,29 +26,29 @@ impl NamespaceId {
     }
 }
 
-impl FromStr for NamespaceId {
-    type Err = AddressError;
+impl FromStr for Namespace {
+    type Err = DestinationError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::new(value)
     }
 }
 
-impl TryFrom<String> for NamespaceId {
-    type Error = AddressError;
+impl TryFrom<String> for Namespace {
+    type Error = DestinationError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::new(&value)
     }
 }
 
-impl From<NamespaceId> for String {
-    fn from(value: NamespaceId) -> Self {
+impl From<Namespace> for String {
+    fn from(value: Namespace) -> Self {
         value.0.into_string()
     }
 }
 
-impl fmt::Display for NamespaceId {
+impl fmt::Display for Namespace {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
@@ -59,9 +59,9 @@ impl fmt::Display for NamespaceId {
 pub struct DestinationName(Box<str>);
 
 impl DestinationName {
-    pub fn new(value: &str) -> Result<Self, AddressError> {
-        if value.len() > MAX_DESTINATION_BYTES {
-            return Err(AddressError::DestinationLength);
+    pub fn new(value: &str) -> Result<Self, DestinationError> {
+        if value.len() > MAX_DESTINATION_NAME_BYTES {
+            return Err(DestinationError::DestinationNameLength);
         }
         for label in value.split('.') {
             validate_label(label)?;
@@ -85,7 +85,7 @@ impl DestinationName {
 }
 
 impl FromStr for DestinationName {
-    type Err = AddressError;
+    type Err = DestinationError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::new(value)
@@ -93,7 +93,7 @@ impl FromStr for DestinationName {
 }
 
 impl TryFrom<String> for DestinationName {
-    type Error = AddressError;
+    type Error = DestinationError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::new(&value)
@@ -112,21 +112,21 @@ impl fmt::Display for DestinationName {
     }
 }
 
-fn validate_label(value: &str) -> Result<(), AddressError> {
+fn validate_label(value: &str) -> Result<(), DestinationError> {
     let bytes = value.as_bytes();
     if bytes.is_empty() || bytes.len() > MAX_LABEL_BYTES {
-        return Err(AddressError::LabelLength);
+        return Err(DestinationError::LabelLength);
     }
 
     let is_alphanumeric = |byte: &u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
     if !bytes.first().is_some_and(is_alphanumeric) || !bytes.last().is_some_and(is_alphanumeric) {
-        return Err(AddressError::LabelBoundary);
+        return Err(DestinationError::LabelBoundary);
     }
     if !bytes
         .iter()
         .all(|byte| is_alphanumeric(byte) || *byte == b'-')
     {
-        return Err(AddressError::LabelCharacter);
+        return Err(DestinationError::LabelCharacter);
     }
     Ok(())
 }

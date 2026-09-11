@@ -16,8 +16,8 @@ fn returned_listeners_republish_after_rate_limited_reconnect() -> TestResult {
                 .with_operation_timeout(Duration::from_secs(2))
                 .with_reconnect_backoff(Duration::from_millis(50), Duration::from_millis(100));
             let relay = Relay::connect(config.clone()).await?;
-            let first_address = unique_address()?;
-            let second_address = unique_address()?;
+            let first_address = unique_destination()?;
+            let second_address = unique_destination()?;
             let first = relay
                 .listen(
                     first_address.clone(),
@@ -79,7 +79,7 @@ fn returned_listeners_republish_after_rate_limited_reconnect() -> TestResult {
                 // Separate caller sessions avoid consuming a shared caller budget in this recovery test.
                 for listener in [&first, &second] {
                     let caller = Relay::connect(config.clone()).await?;
-                    let listener_address = listener.address().clone();
+                    let listener_address = listener.destination().clone();
                     let dial_token = token_source(&listener_address, AccessAction::Dial)?;
                     let (outgoing, incoming) = timeout(Duration::from_secs(2), async {
                         tokio::join!(
@@ -120,7 +120,7 @@ async fn control_throttle_returns_request_errors_preserves_pipe_and_recovers() -
             .with_operation_timeout(Duration::from_secs(2));
         let receiver = Relay::connect(config.clone()).await?;
         let caller = Relay::connect(config).await?;
-        let destination = unique_address()?;
+        let destination = unique_destination()?;
         let listener = receiver
             .listen(
                 destination.clone(),
@@ -139,9 +139,12 @@ async fn control_throttle_returns_request_errors_preserves_pipe_and_recovers() -
         // Repeated operations tolerate a token refill but must eventually reject.
         timeout(Duration::from_secs(3), async {
             loop {
-                let address = unique_address()?;
+                let destination = unique_destination()?;
                 match caller
-                    .dial(address.clone(), token_source(&address, AccessAction::Dial)?)
+                    .dial(
+                        destination.clone(),
+                        token_source(&destination, AccessAction::Dial)?,
+                    )
                     .await
                 {
                     Err(error) if error.code() == relaygate_sdk::ErrorCode::ResourceExhausted => {
@@ -160,11 +163,11 @@ async fn control_throttle_returns_request_errors_preserves_pipe_and_recovers() -
         .await??;
         timeout(Duration::from_secs(3), async {
             loop {
-                let address = unique_address()?;
+                let destination = unique_destination()?;
                 match receiver
                     .listen(
-                        address.clone(),
-                        token_source(&address, AccessAction::Publish)?,
+                        destination.clone(),
+                        token_source(&destination, AccessAction::Publish)?,
                     )
                     .await
                 {

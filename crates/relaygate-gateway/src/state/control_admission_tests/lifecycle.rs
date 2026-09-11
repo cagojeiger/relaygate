@@ -4,7 +4,7 @@ use relaygate_protocol::PipeId;
 fn offer(
     state: &mut GatewayState,
     caller: SessionId,
-    destination: &RouteAddress,
+    destination: &Destination,
     now: Instant,
 ) -> Result<PipeId, Box<dyn Error>> {
     let actions = state.handle_at(caller, dial(1, destination), now)?;
@@ -36,7 +36,7 @@ fn rate_rejection_cancel_disconnect_and_late_accept_orders_preserve_siblings() -
                         let healthy = session(&mut state)?;
                         let victim = session(&mut state)?;
                         let now = Instant::now();
-                        let destination = unique_address();
+                        let destination = unique_destination();
                         state.handle_at(owner, publish(1, &destination), now)?;
                         let healthy_pipe = offer(&mut state, healthy, &destination, now)?;
                         state.handle_at(
@@ -46,7 +46,7 @@ fn rate_rejection_cancel_disconnect_and_late_accept_orders_preserve_siblings() -
                             },
                             now,
                         )?;
-                        state.handle_at(victim, publish(1, &unique_address()), now)?;
+                        state.handle_at(victim, publish(1, &unique_destination()), now)?;
                         let pending = offer(&mut state, victim, &destination, now)?;
                         assert!(!state.control_rate.has_capacity(now));
                         let mut removed = false;
@@ -54,7 +54,7 @@ fn rate_rejection_cancel_disconnect_and_late_accept_orders_preserve_siblings() -
                             match event {
                                 0 => {
                                     let frame = if publish_rejection {
-                                        publish(2, &unique_address())
+                                        publish(2, &unique_destination())
                                     } else {
                                         dial(2, &destination)
                                     };
@@ -155,7 +155,7 @@ fn cancelling_a_rate_rejected_dial_does_not_cancel_another_pipe() -> TestResult 
     let owner = session(&mut state)?;
     let caller = session(&mut state)?;
     let now = Instant::now();
-    let destination = unique_address();
+    let destination = unique_destination();
     state.handle_at(owner, publish(1, &destination), now)?;
     let active = offer(&mut state, caller, &destination, now)?;
     state.handle_at(owner, Frame::OfferAccepted { pipe_id: active }, now)?;

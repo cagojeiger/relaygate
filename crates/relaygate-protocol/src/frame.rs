@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-use crate::{BearerToken, BindingId, PipeId, RouteAddress, SessionId};
+use crate::{BearerToken, BindingId, Destination, PipeId, SessionId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -70,7 +70,7 @@ pub enum Frame {
     },
     Publish {
         request_id: u64,
-        address: RouteAddress,
+        destination: Destination,
         access_token: BearerToken,
     },
     Published {
@@ -91,13 +91,13 @@ pub enum Frame {
     },
     Dial {
         connection_id: u64,
-        address: RouteAddress,
+        destination: Destination,
         access_token: BearerToken,
     },
     Offer {
         pipe_id: PipeId,
         binding_id: BindingId,
-        address: RouteAddress,
+        destination: Destination,
     },
     OfferAccepted {
         pipe_id: PipeId,

@@ -79,13 +79,13 @@ impl GatewayState {
             return Vec::new();
         };
         let peer_cancelled_offer = self.pipes.get(&pipe_id).is_some_and(|pipe| {
-            pipe.phase == PipePhase::Offered && pipe.connector == PipeEndpoint::Peer(key)
+            pipe.phase == PipePhase::Offered && pipe.dialer == PipeEndpoint::Peer(key)
         });
         if peer_cancelled_offer {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 return Vec::new();
             };
-            return self.endpoint_reset(pipe.listener, pipe_id, code, &message);
+            return self.endpoint_reset(pipe.acceptor, pipe_id, code, &message);
         }
         self.relay_reset(PipeEndpoint::Peer(key), pipe_id, code, message)
     }
@@ -128,13 +128,13 @@ impl GatewayState {
             let Some(pipe) = self.pipes.get_mut(&pipe_id) else {
                 return Vec::new();
             };
-            if pipe.connector == sender {
-                pipe.connector_finished = true;
-                pipe.listener_finished
+            if pipe.dialer == sender {
+                pipe.dialer_finished = true;
+                pipe.acceptor_finished
             } else {
-                debug_assert_eq!(pipe.listener, sender);
-                pipe.listener_finished = true;
-                pipe.connector_finished
+                debug_assert_eq!(pipe.acceptor, sender);
+                pipe.acceptor_finished = true;
+                pipe.dialer_finished
             }
         };
         if remove_after_delivery {
@@ -181,7 +181,7 @@ impl GatewayState {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Vec::new();
         };
-        [pipe.connector, pipe.listener]
+        [pipe.dialer, pipe.acceptor]
             .into_iter()
             .flat_map(|target| {
                 self.endpoint_reset(target, pipe_id, ErrorCode::ProtocolError, message)
@@ -273,10 +273,10 @@ impl GatewayState {
 }
 
 fn endpoint(pipe: &PipeEntry, sender: PipeEndpoint) -> Option<(PipeEndpoint, bool)> {
-    if pipe.connector == sender {
-        Some((pipe.listener, pipe.connector_finished))
-    } else if pipe.listener == sender {
-        Some((pipe.connector, pipe.listener_finished))
+    if pipe.dialer == sender {
+        Some((pipe.acceptor, pipe.dialer_finished))
+    } else if pipe.acceptor == sender {
+        Some((pipe.dialer, pipe.acceptor_finished))
     } else {
         None
     }

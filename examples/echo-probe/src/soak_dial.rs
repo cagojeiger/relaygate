@@ -5,20 +5,20 @@ use std::{
 };
 
 use anyhow::Context;
-use relaygate_sdk::{AccessTokenSource, ErrorCode, PeerObservation, Pipe, Relay, RouteAddress};
+use relaygate_sdk::{AccessTokenSource, Destination, ErrorCode, PeerObservation, Pipe, Relay};
 use tokio::time::{sleep, timeout};
 
 pub(crate) async fn dial(
     relay: &Relay,
-    route_address: &str,
+    destination: &str,
     access_token_source: &AccessTokenSource,
     wait: Duration,
     admission_rejections: &AtomicU64,
 ) -> anyhow::Result<Pipe> {
-    let route_address: RouteAddress = route_address.parse()?;
+    let destination: Destination = destination.parse()?;
     retry_until_available(wait, admission_rejections, || async {
         match relay
-            .dial(route_address.clone(), access_token_source.clone())
+            .dial(destination.clone(), access_token_source.clone())
             .await
         {
             Ok(pipe) => Attempt::Complete(Ok(pipe)),

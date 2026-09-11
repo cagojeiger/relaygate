@@ -10,13 +10,13 @@ GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 
 위 구성이 기본값입니다. `RELAYGATE_INTERNAL_TRANSPORT=plaintext`는 내부 두 구간만 평문 TCP로 실행하고
 SDK TLS를 유지합니다. SDK edge는 독립적으로 `RELAYGATE_SDK_TRANSPORT=tls|plaintext`를 사용합니다(`tls`
-기본). SDK 주소의 `tcp://`는 plaintext에 대응하며 access token과 payload를 암호화하지 않습니다. Unknown mode,
+기본). SDK Gateway endpoint의 `tcp://`는 plaintext에 대응하며 access token과 payload를 암호화하지 않습니다. Unknown mode,
 명시적 mode와 legacy test flag 혼용은 시작 실패입니다. Readiness도 같은 mode를 사용합니다.
 
 | ID | 계약 |
 | --- | --- |
 | `SEC-001` | TLS endpoint에서 SDK는 CA trust source, server name, SNI와 `relaygate/3` ALPN을 검증한 뒤 credential-free HELLO를 보낸다. |
-| `SEC-002` | HELLO는 application identity·token·RouteAddress를 포함하지 않고 WELCOME은 새 SessionId만 부여한다. |
+| `SEC-002` | HELLO는 application identity·token·Destination을 포함하지 않고 WELCOME은 새 SessionId만 부여한다. |
 | `SEC-003` | internal mTLS는 신뢰 CA·Gateway client DNS SAN·서버 DNS SAN·`relaygate/3` ALPN을 검증한다. Logical identity는 incarnation/owner fencing에 사용한다. |
 | `SEC-004` | TLS failure는 평문 fallback 없는 terminal connection failure이며 새 retry는 새 TLS connection으로 시작한다. |
 | `SEC-005` | Gateway SDK TLS와 internal mTLS는 서버 certificate/key path를 요구한다. 공인 TLS SDK client는 기본 roots를 사용한다. |
@@ -34,9 +34,9 @@ SDK TLS를 유지합니다. SDK edge는 독립적으로 `RELAYGATE_SDK_TRANSPORT
 ## Operation authorization
 
 ```text
-PUBLISH(RouteAddress, AccessToken) --+
+PUBLISH(Destination, AccessToken) --+
                                      +--> SPEC 009 verification --> state operation
-DIAL(RouteAddress, AccessToken) -----+                |
+DIAL(Destination, AccessToken) -----+                |
                                                       `-- raw token drop
 ```
 
@@ -159,7 +159,7 @@ Heartbeat는 liveness RTT, DATA RTT는 payload 왕복입니다. SDK dial 시간�
 | 고유 Pipe | `relaygate_gateway_originated_pipes`: 호출 SDK의 GW에서 한 번 집계 |
 | Peer | connecting/ready transport endpoints, stream endpoints; one-hop 양단 포함 |
 | Capacity | `relaygate_gateway_resource_used/limit{resource}`: 현재 점유 / 설정 상한 |
-| RouteTable | registrations, mappings, routes, expiry records |
+| RouteTable | registrations, BindingProjection, Destination index, expiry records |
 | Saturation | writer·control·authorization rejection, `RESOURCE_EXHAUSTED` result |
 | Recovery | reconnect 진행 개수·종료 시간, dependency transition, lease expiry, drain |
 
@@ -173,7 +173,7 @@ Heartbeat는 liveness RTT, DATA RTT는 payload 왕복입니다. SDK dial 시간�
 | `pipes` | GW-local open Pipe states | max live Pipes |
 
 Authorization concurrency는 authorization result의 `resource_exhausted`와 duration으로 관측하며 raw token·Namespace·
-RouteAddress를 metric label로 사용하지 않습니다. 설정 상한은 지속 가능한 처리량이 아닙니다. Snapshot은 GW별
+Destination을 metric label로 사용하지 않습니다. 설정 상한은 지속 가능한 처리량이 아닙니다. Snapshot은 GW별
 순간 관측이고 cluster 합계는 전역 원자적 값이 아닙니다.
 
 Metric label set은 `operation`, `outcome`, `code`, `class`, `reason`, `scope`, `resource`, `state`, `direction`,
@@ -204,7 +204,7 @@ lifecycle log가 담당합니다.
 
 | probe | 판정 범위 | 상위 검증 |
 | --- | --- | --- |
-| startup/readiness `check` | TLS + credential-free `HELLO/WELCOME` | topology test가 authorization·RT·RouteAddress·Pipe 검증 |
+| startup/readiness `check` | TLS + credential-free `HELLO/WELCOME` | topology test가 authorization·RT·Destination·Pipe 검증 |
 | liveness TCP | process socket reachability | health metric이 control/data plane 구분 |
 | topology test | authorization/local/one-hop/dial/Pipe byte | application test가 업무 성공 검증 |
 | Pipe latency probe | 고정 workload의 established Pipe RTT | application benchmark가 실제 payload 특성 검증 |

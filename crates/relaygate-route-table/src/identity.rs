@@ -122,7 +122,7 @@ opaque_uuid!(
     RelaySessionId
 );
 opaque_uuid!(
-    /// Identifies one route binding incarnation.
+    /// Identifies one Binding incarnation.
     BindingId
 );
 opaque_uuid!(

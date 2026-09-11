@@ -4,7 +4,7 @@ mod config;
 use std::{sync::Arc, time::Duration};
 
 use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
-use relaygate_address::RouteAddress;
+use relaygate_destination::Destination;
 use relaygate_protocol::{BearerToken, ErrorCode, Frame, PeerObservation};
 use tokio::{sync::Semaphore, task::JoinHandle, time::Instant};
 
@@ -19,11 +19,11 @@ const TOKEN_MEDIA_TYPE: &str = "application/relaygate-operation+jwt";
 pub(crate) enum ControlOperation {
     Publish {
         request_id: u64,
-        address: RouteAddress,
+        destination: Destination,
     },
     Dial {
         connection_id: u64,
-        address: RouteAddress,
+        destination: Destination,
         started_at: std::time::Instant,
     },
 }
@@ -33,23 +33,23 @@ impl ControlOperation {
         match frame {
             Frame::Publish {
                 request_id,
-                address,
+                destination,
                 access_token,
             } => Ok((
                 Self::Publish {
                     request_id,
-                    address,
+                    destination,
                 },
                 access_token,
             )),
             Frame::Dial {
                 connection_id,
-                address,
+                destination,
                 access_token,
             } => Ok((
                 Self::Dial {
                     connection_id,
-                    address,
+                    destination,
                     started_at: std::time::Instant::now(),
                 },
                 access_token,
@@ -58,9 +58,9 @@ impl ControlOperation {
         }
     }
 
-    pub(crate) fn address(&self) -> &RouteAddress {
+    pub(crate) fn destination(&self) -> &Destination {
         match self {
-            Self::Publish { address, .. } | Self::Dial { address, .. } => address,
+            Self::Publish { destination, .. } | Self::Dial { destination, .. } => destination,
         }
     }
 
@@ -116,7 +116,7 @@ impl Verifier {
             return Err(ErrorCode::Unauthenticated);
         }
         let kid = header.kid.ok_or(ErrorCode::Unauthenticated)?;
-        let namespace = operation.address().namespace();
+        let namespace = operation.destination().namespace();
 
         let trusted = self
             .config
@@ -155,12 +155,12 @@ impl Verifier {
             .ok_or(ErrorCode::Unauthenticated)?;
         if !data
             .claims
-            .authorizes(operation.action(), operation.address())
+            .authorizes(operation.action(), operation.destination())
         {
             return Err(ErrorCode::PermissionDenied);
         }
         Ok(VerifiedAuthorization {
-            address: operation.address().clone(),
+            destination: operation.destination().clone(),
             action: operation.action(),
             expires_at,
         })
@@ -230,14 +230,14 @@ impl Drop for VerificationJob {
 
 #[derive(Debug)]
 pub(crate) struct VerifiedAuthorization {
-    address: RouteAddress,
+    destination: Destination,
     action: Action,
     expires_at: Instant,
 }
 
 impl VerifiedAuthorization {
     pub(crate) fn authorizes(&self, operation: &ControlOperation, now: Instant) -> bool {
-        self.address == *operation.address()
+        self.destination == *operation.destination()
             && self.action == operation.action()
             && now < self.expires_at
     }

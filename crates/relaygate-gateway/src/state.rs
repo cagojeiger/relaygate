@@ -5,7 +5,7 @@ use std::{
 
 use bytes::Bytes;
 use relaygate_protocol::{
-    BindingId, ErrorCode, Frame, PeerObservation, PipeId, RouteAddress, SessionId,
+    BindingId, Destination, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
 };
 use relaygate_route_table::{GatewayId, GatewayLocator};
 use tokio::sync::mpsc;
@@ -66,7 +66,7 @@ impl Delivery {
                 && let Frame::Offer { pipe_id, .. } = frame
             {
                 return Some(DeliveryFailure::OfferQueueFull {
-                    listener: self.target,
+                    acceptor: self.target,
                     pipe_id,
                 });
             }
@@ -80,7 +80,7 @@ impl Delivery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeliveryFailure {
     OfferQueueFull {
-        listener: SessionId,
+        acceptor: SessionId,
         pipe_id: PipeId,
     },
     SessionUnavailable(SessionId),
@@ -95,13 +95,13 @@ pub(crate) enum GatewayAction {
     },
     ResolveRoute {
         open_identity: OpenIdentity,
-        address: RouteAddress,
+        destination: Destination,
     },
     OpenPeer {
         open_identity: OpenIdentity,
         gateway_id: GatewayId,
         gateway_locator: GatewayLocator,
-        address: RouteAddress,
+        destination: Destination,
         relay_session_id: SessionId,
         binding_id: BindingId,
     },
@@ -177,15 +177,15 @@ enum PipePhase {
 
 #[derive(Debug, Clone)]
 struct PipeEntry {
-    connector: PipeEndpoint,
-    listener: PipeEndpoint,
+    dialer: PipeEndpoint,
+    acceptor: PipeEndpoint,
     binding_id: BindingId,
     open_identity: Option<OpenIdentity>,
     phase: PipePhase,
     offered_at: Instant,
     open_started_at: Option<Instant>,
-    connector_finished: bool,
-    listener_finished: bool,
+    dialer_finished: bool,
+    acceptor_finished: bool,
 }
 
 impl PipeEntry {
@@ -195,8 +195,7 @@ impl PipeEntry {
         pipe_id: PipeId,
         frame_name: &'static str,
     ) -> Result<(), ProtocolViolation> {
-        if self.connector == PipeEndpoint::Sdk(sender) || self.listener == PipeEndpoint::Sdk(sender)
-        {
+        if self.dialer == PipeEndpoint::Sdk(sender) || self.acceptor == PipeEndpoint::Sdk(sender) {
             return Ok(());
         }
         Err(ProtocolViolation::PipeOwnership {
@@ -207,7 +206,7 @@ impl PipeEntry {
     }
 
     fn peer_key(&self) -> Option<PeerStreamKey> {
-        match (self.connector, self.listener) {
+        match (self.dialer, self.acceptor) {
             (PipeEndpoint::Peer(key), _) | (_, PipeEndpoint::Peer(key)) => Some(key),
             (PipeEndpoint::Sdk(_), PipeEndpoint::Sdk(_)) => None,
         }
@@ -239,7 +238,7 @@ impl PipeEndpoint {
 #[derive(Debug, Clone)]
 struct RemoteOpenAttempt {
     pipe_id: PipeId,
-    address: RouteAddress,
+    destination: Destination,
     started_at: Instant,
     phase: RemoteOpenPhase,
 }
@@ -487,13 +486,13 @@ impl GatewayState {
         match operation {
             ControlOperation::Publish {
                 request_id,
-                address,
-            } => self.publish(session_id, request_id, address, now),
+                destination,
+            } => self.publish(session_id, request_id, destination, now),
             ControlOperation::Dial {
                 connection_id,
-                address,
+                destination,
                 started_at,
-            } => self.dial(session_id, connection_id, address, now, started_at),
+            } => self.dial(session_id, connection_id, destination, now, started_at),
         }
     }
 
@@ -590,7 +589,7 @@ impl GatewayState {
             PipePhase::Offered => self.pending_offer_count -= 1,
             PipePhase::Open => {
                 self.live_pipe_count -= 1;
-                if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+                if matches!(pipe.dialer, PipeEndpoint::Sdk(_)) {
                     self.originated_pipe_count -= 1;
                 }
             }
@@ -606,7 +605,7 @@ impl GatewayState {
         pipe.phase = PipePhase::Open;
         self.pending_offer_count -= 1;
         self.live_pipe_count += 1;
-        if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+        if matches!(pipe.dialer, PipeEndpoint::Sdk(_)) {
             self.originated_pipe_count += 1;
         }
         Some(pipe)
@@ -615,7 +614,7 @@ impl GatewayState {
     fn insert_open(&mut self, pipe_id: PipeId, pipe: PipeEntry) {
         debug_assert_eq!(pipe.phase, PipePhase::Open);
         self.index_peer_pipe(pipe_id, &pipe);
-        if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+        if matches!(pipe.dialer, PipeEndpoint::Sdk(_)) {
             self.originated_pipe_count += 1;
         }
         let previous = self.pipes.insert(pipe_id, pipe);

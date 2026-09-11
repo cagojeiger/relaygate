@@ -1,14 +1,14 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    AuthenticatedGatewayId, RegistrationKey, RegistrationRevision, RequestContext, RouteAddress,
+    AuthenticatedGatewayId, Destination, RegistrationKey, RegistrationRevision, RequestContext,
     RouteTableConfig, RouteTableShard, ShardId,
 };
 use tokio::time::Instant;
 
 use crate::routing::lifecycle::{RegistrationAction, RegistrationState};
 
-use super::{TestResult, gateway, listener_session, one_shard_directory, snapshot};
+use super::{TestResult, gateway, one_shard_directory, relay_session, snapshot};
 
 #[test]
 fn lost_register_response_retry_uses_only_the_current_attempt() -> TestResult {
@@ -16,7 +16,7 @@ fn lost_register_response_retry_uses_only_the_current_attempt() -> TestResult {
     let lifecycle_start = Instant::now();
     let route_table_start = std::time::Instant::now();
     let gateway_id = gateway(1);
-    let session_id = listener_session(2);
+    let session_id = relay_session(2);
     let key = RegistrationKey::new(gateway_id, session_id, ShardId::new("rt-0")?);
     let context = RequestContext::new(AuthenticatedGatewayId::from_verified_transport(gateway_id));
     let directory = one_shard_directory("rt-0:27430")?;
@@ -58,7 +58,7 @@ fn lost_register_response_retry_uses_only_the_current_attempt() -> TestResult {
     assert_eq!(current_ack.lease_id(), first_ack.lease_id());
     assert_eq!(current_ack.accepted_revision(), None);
     assert_eq!(current_ack.expires_in(), Duration::from_secs(25));
-    assert_eq!(shard.stats().mapping_count, 0);
+    assert_eq!(shard.stats().binding_count, 0);
 
     // A delayed terminal result from the first attempt cannot consume the
     // retry's pending slot or install its acknowledgement.
@@ -100,7 +100,7 @@ fn lost_register_response_retry_uses_only_the_current_attempt() -> TestResult {
             .resolve(
                 context,
                 generation,
-                &"test/11111111-1111-4111-8111-111111111111".parse::<RouteAddress>()?,
+                &"test/11111111-1111-4111-8111-111111111111".parse::<Destination>()?,
                 route_table_start + Duration::from_secs(6),
             )?
             .len(),

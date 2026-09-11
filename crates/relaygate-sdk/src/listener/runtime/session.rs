@@ -138,7 +138,7 @@ pub(super) async fn run_relay_session(
             command = commands.recv() => {
                 let Some(command) = command else { break; };
                 match command {
-                    RelayCommand::Dial { connection_id, address, access_token, response } => {
+                    RelayCommand::Dial { connection_id, destination, access_token, response } => {
                         if state.pending_dials.insert(connection_id, response).is_some() {
                             if let Some(response) = state.pending_dials.remove(&connection_id) {
                                 let _ = response.send(Err(Error::new(
@@ -153,7 +153,7 @@ pub(super) async fn run_relay_session(
                             &mut established.transport,
                             Frame::Dial {
                                 connection_id,
-                                address,
+                                destination,
                                 access_token,
                             },
                             inner.config.operation_timeout,

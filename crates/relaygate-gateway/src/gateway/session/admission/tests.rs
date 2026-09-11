@@ -32,7 +32,7 @@ fn only_single_local_unobserved_capacity_rejections_wait() -> TestResult {
     let now = std::time::Instant::now();
     let dial = |connection_id| Frame::Dial {
         connection_id,
-        address: crate::test_support::unique_address(),
+        destination: crate::test_support::unique_destination(),
         access_token: token(),
     };
     let first = state.handle_at(session, dial(1), now)?;
@@ -56,7 +56,7 @@ fn only_single_local_unobserved_capacity_rejections_wait() -> TestResult {
         session,
         Frame::Publish {
             request_id: 1,
-            address: crate::test_support::unique_address(),
+            destination: crate::test_support::unique_destination(),
             access_token: token(),
         },
         now,

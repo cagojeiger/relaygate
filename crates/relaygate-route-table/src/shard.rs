@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    BindingSet, LeaseId, MappingEntry, MappingIdentity, MappingSnapshot, RegistrationAck,
-    RegistrationKey, RegistrationRevision, RequestContext, RouteAddress, RouteTableError,
+    BindingIdentity, BindingProjection, BindingSet, BindingSnapshot, Destination, LeaseId,
+    RegistrationAck, RegistrationKey, RegistrationRevision, RequestContext, RouteTableError,
     RouteTableStats, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
 
@@ -35,7 +35,7 @@ struct RegistrationState {
     lease_id: LeaseId,
     revision: Option<RegistrationRevision>,
     deadline: Instant,
-    mappings: BTreeMap<MappingIdentity, MappingEntry>,
+    bindings: BTreeMap<BindingIdentity, BindingProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -50,7 +50,7 @@ pub struct RouteTableShard {
     directory: ShardDirectory,
     shard_id: ShardId,
     config: RouteTableConfig,
-    route_index: HashMap<RouteAddress, BTreeMap<MappingIdentity, MappingEntry>>,
+    destination_index: HashMap<Destination, BTreeMap<BindingIdentity, BindingProjection>>,
     registration_index: HashMap<RegistrationKey, RegistrationState>,
     active_lease_ids: HashSet<LeaseId>,
     expiry_index: BTreeMap<Instant, BTreeSet<ExpiryKey>>,
@@ -71,7 +71,7 @@ impl RouteTableShard {
             directory,
             shard_id,
             config,
-            route_index: HashMap::new(),
+            destination_index: HashMap::new(),
             registration_index: HashMap::new(),
             active_lease_ids: HashSet::new(),
             expiry_index: BTreeMap::new(),
@@ -92,12 +92,12 @@ impl RouteTableShard {
     pub fn stats(&self) -> RouteTableStats {
         RouteTableStats {
             registration_count: self.registration_index.len(),
-            mapping_count: self
+            binding_count: self
                 .registration_index
                 .values()
-                .map(|registration| registration.mappings.len())
+                .map(|registration| registration.bindings.len())
                 .sum(),
-            route_count: self.route_index.len(),
+            destination_count: self.destination_index.len(),
             expiry_record_count: self.expiry_index.values().map(BTreeSet::len).sum(),
         }
     }
@@ -126,7 +126,7 @@ impl RouteTableShard {
                 lease_id,
                 revision: None,
                 deadline,
-                mappings: BTreeMap::new(),
+                bindings: BTreeMap::new(),
             },
         );
         self.active_lease_ids.insert(lease_id);
@@ -143,7 +143,7 @@ impl RouteTableShard {
         key: &RegistrationKey,
         lease_id: LeaseId,
         revision: RegistrationRevision,
-        snapshot: MappingSnapshot,
+        snapshot: BindingSnapshot,
         now: Instant,
     ) -> Result<RegistrationAck, RouteTableError> {
         self.validate_authenticated_owner(context, key)?;
@@ -160,7 +160,7 @@ impl RouteTableShard {
                 ));
             }
             Some(current) if revision == current => {
-                if registration.mappings == *snapshot.as_map() {
+                if registration.bindings == *snapshot.as_map() {
                     return Ok(Self::ack(registration, now));
                 }
                 return Err(RouteTableError::FailedPrecondition(
@@ -174,25 +174,25 @@ impl RouteTableShard {
             }
             None | Some(_) => {}
         }
-        Self::validate_current_mapping_identity_stability(registration, &snapshot)?;
+        Self::validate_current_binding_identity_stability(registration, &snapshot)?;
 
-        let new_mappings = snapshot.into_map();
-        let (old_mappings, deadline) = {
+        let new_bindings = snapshot.into_map();
+        let (old_bindings, deadline) = {
             let registration = self
                 .registration_index
                 .get(key)
                 .ok_or_else(|| RouteTableError::FailedPrecondition("unknown lease".to_owned()))?;
-            (registration.mappings.clone(), registration.deadline)
+            (registration.bindings.clone(), registration.deadline)
         };
 
-        self.remove_route_mappings(&old_mappings);
-        self.insert_route_mappings(&new_mappings);
+        self.remove_bindings(&old_bindings);
+        self.insert_bindings(&new_bindings);
         let registration = self
             .registration_index
             .get_mut(key)
             .ok_or_else(|| RouteTableError::FailedPrecondition("unknown lease".to_owned()))?;
         registration.revision = Some(revision);
-        registration.mappings = new_mappings;
+        registration.bindings = new_bindings;
 
         Ok(RegistrationAck::new(
             lease_id,
@@ -263,21 +263,21 @@ impl RouteTableShard {
         &mut self,
         _context: RequestContext,
         generation: ShardDirectoryGeneration,
-        address: &RouteAddress,
+        destination: &Destination,
         now: Instant,
     ) -> Result<BindingSet, RouteTableError> {
         self.validate_generation(generation)?;
-        self.validate_route_authority(address)?;
+        self.validate_destination_authority(destination)?;
         self.expire_due(now);
 
-        let mappings = self
-            .route_index
-            .get(address)
+        let bindings = self
+            .destination_index
+            .get(destination)
             .ok_or(RouteTableError::NotFound)?;
-        if mappings.is_empty() {
+        if bindings.is_empty() {
             return Err(RouteTableError::NotFound);
         }
-        Ok(BindingSet::new(mappings.values().cloned().collect()))
+        Ok(BindingSet::new(bindings.values().cloned().collect()))
     }
 
     /// Returns the earliest active lease deadline, if one exists.
@@ -354,34 +354,34 @@ impl RouteTableShard {
     fn validate_snapshot(
         &self,
         key: &RegistrationKey,
-        snapshot: &MappingSnapshot,
+        snapshot: &BindingSnapshot,
     ) -> Result<(), RouteTableError> {
-        for mapping in snapshot.entries() {
-            let identity = mapping.identity();
+        for binding in snapshot.entries() {
+            let identity = binding.identity();
             if identity.gateway_id() != key.gateway_id()
                 || identity.relay_session_id() != key.relay_session_id()
             {
                 return Err(RouteTableError::InvalidArgument(
-                    "snapshot mapping is outside the RegistrationKey scope".to_owned(),
+                    "snapshot binding is outside the RegistrationKey scope".to_owned(),
                 ));
             }
-            self.validate_route_authority(mapping.address())?;
+            self.validate_destination_authority(binding.destination())?;
         }
         Ok(())
     }
 
-    fn validate_current_mapping_identity_stability(
+    fn validate_current_binding_identity_stability(
         registration: &RegistrationState,
-        snapshot: &MappingSnapshot,
+        snapshot: &BindingSnapshot,
     ) -> Result<(), RouteTableError> {
         for (identity, next) in snapshot.as_map() {
             if registration
-                .mappings
+                .bindings
                 .get(identity)
                 .is_some_and(|current| current != next)
             {
                 return Err(RouteTableError::FailedPrecondition(
-                    "an active MappingIdentity cannot change RouteAddress or GatewayLocator"
+                    "an active BindingIdentity cannot change Destination or GatewayLocator"
                         .to_owned(),
                 ));
             }
@@ -389,10 +389,13 @@ impl RouteTableShard {
         Ok(())
     }
 
-    fn validate_route_authority(&self, address: &RouteAddress) -> Result<(), RouteTableError> {
-        if self.directory.authority(address).id() != &self.shard_id {
+    fn validate_destination_authority(
+        &self,
+        destination: &Destination,
+    ) -> Result<(), RouteTableError> {
+        if self.directory.authority(destination).id() != &self.shard_id {
             return Err(RouteTableError::InvalidArgument(
-                "RouteAddress belongs to a different authority shard".to_owned(),
+                "Destination belongs to a different authority shard".to_owned(),
             ));
         }
         Ok(())
@@ -468,28 +471,29 @@ impl RouteTableShard {
         };
         self.active_lease_ids.remove(&registration.lease_id);
         self.remove_expiry(key, registration.lease_id, registration.deadline);
-        self.remove_route_mappings(&registration.mappings);
+        self.remove_bindings(&registration.bindings);
     }
 
-    fn insert_route_mappings(&mut self, mappings: &BTreeMap<MappingIdentity, MappingEntry>) {
-        for (identity, mapping) in mappings {
-            self.route_index
-                .entry(mapping.address().clone())
+    fn insert_bindings(&mut self, bindings: &BTreeMap<BindingIdentity, BindingProjection>) {
+        for (identity, binding) in bindings {
+            self.destination_index
+                .entry(binding.destination().clone())
                 .or_default()
-                .insert(*identity, mapping.clone());
+                .insert(*identity, binding.clone());
         }
     }
 
-    fn remove_route_mappings(&mut self, mappings: &BTreeMap<MappingIdentity, MappingEntry>) {
-        for (identity, mapping) in mappings {
-            let remove_route = if let Some(route) = self.route_index.get_mut(mapping.address()) {
-                route.remove(identity);
-                route.is_empty()
-            } else {
-                false
-            };
-            if remove_route {
-                self.route_index.remove(mapping.address());
+    fn remove_bindings(&mut self, bindings: &BTreeMap<BindingIdentity, BindingProjection>) {
+        for (identity, binding) in bindings {
+            let remove_destination =
+                if let Some(bindings) = self.destination_index.get_mut(binding.destination()) {
+                    bindings.remove(identity);
+                    bindings.is_empty()
+                } else {
+                    false
+                };
+            if remove_destination {
+                self.destination_index.remove(binding.destination());
             }
         }
     }

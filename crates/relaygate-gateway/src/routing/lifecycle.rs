@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    LeaseId, MappingSnapshot, RegistrationAck, RegistrationKey, RegistrationRevision,
+    BindingSnapshot, LeaseId, RegistrationAck, RegistrationKey, RegistrationRevision,
 };
 use tokio::time::Instant;
 
@@ -14,7 +14,7 @@ pub(super) enum RegistrationAction {
         key: RegistrationKey,
         lease_id: LeaseId,
         revision: RegistrationRevision,
-        snapshot: MappingSnapshot,
+        snapshot: BindingSnapshot,
     },
     KeepAlive {
         key: RegistrationKey,
@@ -58,7 +58,7 @@ struct LeaseState {
 pub(super) struct RegistrationState {
     key: RegistrationKey,
     desired_version: u64,
-    snapshot: Option<MappingSnapshot>,
+    snapshot: Option<BindingSnapshot>,
     lease: Option<LeaseState>,
     synced_version: Option<u64>,
     pending: Option<OperationTicket>,
@@ -76,7 +76,7 @@ impl RegistrationState {
     pub(super) fn new(
         key: RegistrationKey,
         desired_version: u64,
-        snapshot: Option<MappingSnapshot>,
+        snapshot: Option<BindingSnapshot>,
         now: Instant,
         retry_initial: Duration,
         retry_max: Duration,
@@ -102,7 +102,7 @@ impl RegistrationState {
     pub(super) fn publish(
         &mut self,
         desired_version: u64,
-        snapshot: Option<MappingSnapshot>,
+        snapshot: Option<BindingSnapshot>,
         now: Instant,
     ) {
         if desired_version <= self.desired_version {

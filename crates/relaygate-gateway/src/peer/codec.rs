@@ -157,7 +157,9 @@ fn frame_metadata(frame: &PeerFrame) -> Result<(u8, usize), PeerCodecError> {
             HANDSHAKE_REJECTED,
             checked_add(1, string_wire_len("message", message)?)?,
         ),
-        PeerFrame::Open { address, .. } => (OPEN, checked_add(80, address.canonical_key().len())?),
+        PeerFrame::Open { destination, .. } => {
+            (OPEN, checked_add(80, destination.canonical_key().len())?)
+        }
         PeerFrame::Opened { .. } => (OPENED, 8),
         PeerFrame::Failed { message, .. } => (
             FAILED,
@@ -196,78 +198,75 @@ fn checked_add(left: usize, right: usize) -> Result<usize, PeerCodecError> {
         .ok_or(PeerCodecError::LengthOverflow)
 }
 
-fn encode_payload(frame: PeerFrame, destination: &mut BytesMut) -> Result<(), PeerCodecError> {
+fn encode_payload(frame: PeerFrame, output: &mut BytesMut) -> Result<(), PeerCodecError> {
     match frame {
         PeerFrame::Hello(handshake) | PeerFrame::Welcome(handshake) => {
-            put_handshake(destination, handshake)?;
+            put_handshake(output, handshake)?;
         }
         PeerFrame::HandshakeRejected { code, message } => {
-            destination.put_u8(code as u8);
-            put_string(destination, "message", &message)?;
+            output.put_u8(code as u8);
+            put_string(output, "message", &message)?;
         }
         PeerFrame::Open {
             stream_id,
             open_identity,
-            address,
+            destination,
             relay_session_id,
             binding_id,
         } => {
-            destination.put_u64(stream_id.raw());
-            put_gateway_id(destination, open_identity.entry_gateway());
-            put_session_id(destination, open_identity.origin_session());
-            destination.put_u64(open_identity.connection_id());
-            destination.extend_from_slice(&address.canonical_key());
-            put_session_id(destination, relay_session_id);
-            put_binding_id(destination, binding_id);
+            output.put_u64(stream_id.raw());
+            put_gateway_id(output, open_identity.entry_gateway());
+            put_session_id(output, open_identity.origin_session());
+            output.put_u64(open_identity.connection_id());
+            output.extend_from_slice(&destination.canonical_key());
+            put_session_id(output, relay_session_id);
+            put_binding_id(output, binding_id);
         }
         PeerFrame::Opened { stream_id }
         | PeerFrame::Fin { stream_id }
-        | PeerFrame::Close { stream_id } => destination.put_u64(stream_id.raw()),
+        | PeerFrame::Close { stream_id } => output.put_u64(stream_id.raw()),
         PeerFrame::Failed {
             stream_id,
             code,
             observation,
             message,
         } => {
-            destination.put_u64(stream_id.raw());
-            destination.put_u8(code as u8);
-            destination.put_u8(observation as u8);
-            put_string(destination, "message", &message)?;
+            output.put_u64(stream_id.raw());
+            output.put_u8(code as u8);
+            output.put_u8(observation as u8);
+            put_string(output, "message", &message)?;
         }
         PeerFrame::Data { stream_id, payload } => {
-            destination.put_u64(stream_id.raw());
-            destination.extend_from_slice(&payload);
+            output.put_u64(stream_id.raw());
+            output.extend_from_slice(&payload);
         }
         PeerFrame::Reset {
             stream_id,
             code,
             message,
         } => {
-            destination.put_u64(stream_id.raw());
-            destination.put_u8(code as u8);
-            put_string(destination, "message", &message)?;
+            output.put_u64(stream_id.raw());
+            output.put_u8(code as u8);
+            put_string(output, "message", &message)?;
         }
         PeerFrame::Ping { nonce } | PeerFrame::Pong { nonce } => {
-            destination.put_u64(nonce);
+            output.put_u64(nonce);
         }
     }
     Ok(())
 }
 
-fn put_handshake(
-    destination: &mut BytesMut,
-    handshake: PeerHandshake,
-) -> Result<(), PeerCodecError> {
-    put_string(destination, "gateway_name", handshake.gateway_name.as_str())?;
-    put_gateway_id(destination, handshake.gateway_id);
-    put_gateway_id(destination, handshake.expected_peer_gateway_id);
-    put_gateway_id(destination, handshake.dialer_gateway_id);
-    put_peer_transport_id(destination, handshake.peer_transport_id);
+fn put_handshake(output: &mut BytesMut, handshake: PeerHandshake) -> Result<(), PeerCodecError> {
+    put_string(output, "gateway_name", handshake.gateway_name.as_str())?;
+    put_gateway_id(output, handshake.gateway_id);
+    put_gateway_id(output, handshake.expected_peer_gateway_id);
+    put_gateway_id(output, handshake.dialer_gateway_id);
+    put_peer_transport_id(output, handshake.peer_transport_id);
     Ok(())
 }
 
 fn put_string(
-    destination: &mut BytesMut,
+    output: &mut BytesMut,
     field: &'static str,
     value: &str,
 ) -> Result<(), PeerCodecError> {
@@ -276,25 +275,25 @@ fn put_string(
         actual: value.len(),
         maximum: MAX_STRING_LEN,
     })?;
-    destination.put_u16(wire_len);
-    destination.extend_from_slice(value.as_bytes());
+    output.put_u16(wire_len);
+    output.extend_from_slice(value.as_bytes());
     Ok(())
 }
 
-fn put_gateway_id(destination: &mut BytesMut, value: GatewayId) {
-    destination.extend_from_slice(value.as_uuid().as_bytes());
+fn put_gateway_id(output: &mut BytesMut, value: GatewayId) {
+    output.extend_from_slice(value.as_uuid().as_bytes());
 }
 
-fn put_session_id(destination: &mut BytesMut, value: SessionId) {
-    destination.extend_from_slice(value.as_uuid().as_bytes());
+fn put_session_id(output: &mut BytesMut, value: SessionId) {
+    output.extend_from_slice(value.as_uuid().as_bytes());
 }
 
-fn put_binding_id(destination: &mut BytesMut, value: BindingId) {
-    destination.extend_from_slice(value.as_uuid().as_bytes());
+fn put_binding_id(output: &mut BytesMut, value: BindingId) {
+    output.extend_from_slice(value.as_uuid().as_bytes());
 }
 
-fn put_peer_transport_id(destination: &mut BytesMut, value: PeerTransportId) {
-    destination.extend_from_slice(value.as_uuid().as_bytes());
+fn put_peer_transport_id(output: &mut BytesMut, value: PeerTransportId) {
+    output.extend_from_slice(value.as_uuid().as_bytes());
 }
 
 fn decode_payload(kind: u8, payload: Bytes) -> Result<PeerFrame, PeerCodecError> {
@@ -315,11 +314,11 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<PeerFrame, PeerCodecError>
                 .string("namespace")?
                 .parse()
                 .map_err(|_| PeerCodecError::InvalidField("namespace"))?;
-            let destination = reader
-                .string("destination")?
+            let name = reader
+                .string("name")?
                 .parse()
-                .map_err(|_| PeerCodecError::InvalidField("destination"))?;
-            let address = relaygate_protocol::RouteAddress::new(namespace, destination);
+                .map_err(|_| PeerCodecError::InvalidField("name"))?;
+            let destination = relaygate_protocol::Destination::new(namespace, name);
             let relay_session_id = reader.session_id("relay_session_id")?;
             let binding_id = reader.binding_id()?;
             PeerFrame::Open {
@@ -329,7 +328,7 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<PeerFrame, PeerCodecError>
                     origin_session_id,
                     connection_id,
                 ),
-                address,
+                destination,
                 relay_session_id,
                 binding_id,
             }

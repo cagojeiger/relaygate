@@ -2,9 +2,9 @@ use super::*;
 
 fn request(operation: &str, id: u64) -> Frame {
     if operation == "publish" {
-        publish(id, &unique_address())
+        publish(id, &unique_destination())
     } else {
-        dial(id, &unique_address())
+        dial(id, &unique_destination())
     }
 }
 
@@ -116,7 +116,7 @@ fn duplicate_publish_is_charged_without_replacing_binding() -> TestResult {
     });
     let owner = session(&mut state)?;
     let now = Instant::now();
-    let destination = unique_address();
+    let destination = unique_destination();
     let mut ids = Vec::new();
     for id in 1..=2 {
         let actions = state.handle_at(owner, publish(id, &destination), now)?;
@@ -149,7 +149,7 @@ fn failed_operations_do_not_refund_credit() -> TestResult {
         });
         let owner = session(&mut state)?;
         let now = Instant::now();
-        state.handle_at(owner, publish(1, &unique_address()), now)?;
+        state.handle_at(owner, publish(1, &unique_destination()), now)?;
         let operation = if publish_failure { "publish" } else { "dial" };
         let failed = state.handle_at(owner, request(operation, 2), now)?;
         assert!(frames(&failed).any(|frame| match publish_failure {
@@ -267,8 +267,8 @@ fn direct_unauthenticated_dial_is_fenced_before_authorization() -> TestResult {
         ..GatewayLimits::default()
     });
     let owner = session(&mut state)?;
-    let address = unique_address();
-    let denied = state.handle(owner, dial(2, &address))?;
+    let destination = unique_destination();
+    let denied = state.handle(owner, dial(2, &destination))?;
     assert!(frames(&denied).any(|frame| matches!(
         frame,
         Frame::DialFailed {
@@ -279,7 +279,7 @@ fn direct_unauthenticated_dial_is_fenced_before_authorization() -> TestResult {
         }
     )));
     for connection_id in [2, 1] {
-        let replayed = state.handle(owner, dial(connection_id, &address))?;
+        let replayed = state.handle(owner, dial(connection_id, &destination))?;
         assert!(frames(&replayed).any(|frame| matches!(
             frame,
             Frame::DialFailed {

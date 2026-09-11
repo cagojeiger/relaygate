@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use relaygate_protocol::{BearerToken, MAX_BEARER_TOKEN_BYTES};
 
-use crate::{Error, ErrorCode, PeerObservation, RouteAddress};
+use crate::{Destination, Error, ErrorCode, PeerObservation};
 
 /// An access token supplied for one `listen` or `dial` admission decision.
 #[derive(Clone, PartialEq, Eq)]
@@ -48,7 +48,7 @@ pub enum AccessAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessTokenRequest {
     pub action: AccessAction,
-    pub address: RouteAddress,
+    pub destination: Destination,
 }
 
 /// Failure reported by an application-owned dynamic token source.
@@ -136,7 +136,7 @@ mod tests {
 
     use super::*;
 
-    fn address() -> Result<RouteAddress, relaygate_address::AddressError> {
+    fn destination() -> Result<Destination, relaygate_destination::DestinationError> {
         "inference/stt.seoul".parse()
     }
 
@@ -156,12 +156,12 @@ mod tests {
     async fn dynamic_source_runs_for_each_supply() -> Result<(), Box<dyn std::error::Error>> {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
-        let expected = address()?;
+        let expected = destination()?;
         let source = AccessTokenSource::dynamic(move |request| {
             let observed = Arc::clone(&observed);
             let expected = expected.clone();
             async move {
-                assert_eq!(request.address, expected);
+                assert_eq!(request.destination, expected);
                 observed.fetch_add(1, Ordering::Relaxed);
                 AccessToken::new("grant").map_err(|_| AccessTokenSourceError)
             }
@@ -170,7 +170,7 @@ mod tests {
             source
                 .supply(AccessTokenRequest {
                     action,
-                    address: address()?,
+                    destination: destination()?,
                 })
                 .await?;
         }

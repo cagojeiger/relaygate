@@ -1,7 +1,7 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
-use relaygate_address::{DestinationName, NamespaceId, RouteAddress};
+use relaygate_destination::{Destination, DestinationName, Namespace};
 use relaygate_token_issuer::{Action, Permission, TokenIssuer, TokenIssuerError};
 use serde_json::{Value, json};
 
@@ -40,9 +40,9 @@ fn decode_claims(token: &str) -> TestResult<Value> {
 
 #[test]
 fn issues_exact_publish_token_with_relaygate_profile() -> TestResult {
-    let address: RouteAddress = "inference/stt.seoul".parse()?;
+    let destination: Destination = "inference/stt.seoul".parse()?;
     let issued = issuer()?.issue_at(
-        [Permission::exact(Action::Publish, &address)],
+        [Permission::exact(Action::Publish, &destination)],
         UNIX_EPOCH + Duration::from_secs(1_000),
         Duration::from_secs(300),
     )?;
@@ -68,7 +68,7 @@ fn issues_exact_publish_token_with_relaygate_profile() -> TestResult {
             "permissions": [{
                 "action": "publish",
                 "namespace": "inference",
-                "scope": { "kind": "exact", "destination": "stt.seoul" }
+                "scope": { "kind": "exact", "name": "stt.seoul" }
             }]
         })
     );
@@ -77,7 +77,7 @@ fn issues_exact_publish_token_with_relaygate_profile() -> TestResult {
 
 #[test]
 fn issues_all_supported_permission_scopes() -> TestResult {
-    let namespace: NamespaceId = "inference".parse()?;
+    let namespace: Namespace = "inference".parse()?;
     let subtree: DestinationName = "stt".parse()?;
     let issued = issuer()?.issue_at(
         [
@@ -95,7 +95,7 @@ fn issues_all_supported_permission_scopes() -> TestResult {
             {
                 "action": "dial",
                 "namespace": "inference",
-                "scope": { "kind": "subtree", "destination": "stt" }
+                "scope": { "kind": "subtree", "name": "stt" }
             },
             {
                 "action": "publish",
@@ -122,9 +122,9 @@ fn invalid_inputs_fail_before_or_during_issuance() -> TestResult {
     ));
 
     let issuer = issuer()?;
-    let address: RouteAddress = "inference/stt.seoul".parse()?;
+    let destination: Destination = "inference/stt.seoul".parse()?;
     assert!(matches!(
-        issuer.issue_exact(Action::Dial, &address, Duration::ZERO),
+        issuer.issue_exact(Action::Dial, &destination, Duration::ZERO),
         Err(TokenIssuerError::InvalidLifetime)
     ));
     assert!(matches!(
@@ -137,7 +137,7 @@ fn invalid_inputs_fail_before_or_during_issuance() -> TestResult {
     ));
     assert!(matches!(
         issuer.issue_at(
-            vec![Permission::exact(Action::Dial, &address); 129],
+            vec![Permission::exact(Action::Dial, &destination); 129],
             UNIX_EPOCH + Duration::from_secs(1),
             Duration::from_secs(1)
         ),

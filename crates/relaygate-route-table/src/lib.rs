@@ -17,8 +17,8 @@ pub use identity::{
     RelaySessionId, RequestContext, ShardDirectoryGeneration, ShardEndpoint, ShardId,
 };
 pub use model::{
-    BindingSet, MappingEntry, MappingIdentity, MappingSnapshot, RegistrationAck, RegistrationKey,
-    RouteTableStats,
+    BindingIdentity, BindingProjection, BindingSet, BindingSnapshot, RegistrationAck,
+    RegistrationKey, RouteTableStats,
 };
-pub use relaygate_address::{DestinationName, NamespaceId, RouteAddress};
+pub use relaygate_destination::{Destination, DestinationName, Namespace};
 pub use shard::{RouteTableConfig, RouteTableShard};

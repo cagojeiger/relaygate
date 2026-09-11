@@ -1,18 +1,18 @@
 use bytes::{Bytes, BytesMut};
 use relaygate_protocol::{
-    BearerToken, BindingId, ErrorCode, Frame, FrameCodec, MAX_BEARER_TOKEN_BYTES, PeerObservation,
-    PipeId, ProtocolError, RouteAddress, SessionId,
+    BearerToken, BindingId, Destination, ErrorCode, Frame, FrameCodec, MAX_BEARER_TOKEN_BYTES,
+    PeerObservation, PipeId, ProtocolError, SessionId,
 };
 use tokio_util::codec::{Decoder, Encoder};
 
-fn address() -> Result<RouteAddress, Box<dyn std::error::Error>> {
+fn destination() -> Result<Destination, Box<dyn std::error::Error>> {
     Ok("inference/stt.seoul".parse()?)
 }
 
 #[test]
 fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let session_id = SessionId::new();
-    let address = address()?;
+    let destination = destination()?;
     let access_token = BearerToken::new("secret")?;
     let binding_id = BindingId::new();
     let pipe_id = PipeId::new(session_id, 42);
@@ -25,7 +25,7 @@ fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         },
         Frame::Publish {
             request_id: 1,
-            address: address.clone(),
+            destination: destination.clone(),
             access_token: access_token.clone(),
         },
         Frame::Published {
@@ -44,13 +44,13 @@ fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         Frame::Unpublished { request_id: 3 },
         Frame::Dial {
             connection_id: 42,
-            address: address.clone(),
+            destination: destination.clone(),
             access_token,
         },
         Frame::Offer {
             pipe_id,
             binding_id,
-            address,
+            destination,
         },
         Frame::OfferAccepted { pipe_id },
         Frame::OfferRejected {
@@ -95,7 +95,7 @@ fn every_frame_round_trips() -> Result<(), Box<dyn std::error::Error>> {
 fn fragmented_frame_waits_for_complete_payload() -> Result<(), Box<dyn std::error::Error>> {
     let expected = Frame::Dial {
         connection_id: 7,
-        address: address()?,
+        destination: destination()?,
         access_token: BearerToken::new("grant")?,
     };
     let mut encoded = BytesMut::new();
@@ -133,9 +133,9 @@ fn bearer_token_is_bounded_and_redacted() -> Result<(), ProtocolError> {
     assert!(rendered.contains("REDACTED"));
     let frame = Frame::Dial {
         connection_id: 1,
-        address: "inference/stt.seoul"
+        destination: "inference/stt.seoul"
             .parse()
-            .map_err(|_| ProtocolError::InvalidRouteAddress)?,
+            .map_err(|_| ProtocolError::InvalidDestination)?,
         access_token: token,
     };
     assert!(!format!("{frame:?}").contains("must-not-appear"));

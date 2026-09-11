@@ -1,6 +1,6 @@
 //! Gateway runtime for local and one-hop relayed Pipes.
 //!
-//! The crate owns live SDK sessions, local route bindings, PUBLISH/DIAL
+//! The crate owns live SDK sessions, local bindings, PUBLISH/DIAL
 //! admission, byte relay, and cleanup. Process configuration and signal
 //! handling belong to `relaygate-server`.
 

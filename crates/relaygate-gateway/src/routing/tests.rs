@@ -1,11 +1,11 @@
 use std::{error::Error, time::Duration};
 
 use relaygate_protocol::{
-    BindingId as ProtocolBindingId, RouteAddress as ProtocolRouteAddress, SessionId,
+    BindingId as ProtocolBindingId, Destination as ProtocolDestination, SessionId,
 };
 use relaygate_route_table::{
-    BindingId, GatewayId, GatewayLocator, LeaseId, MappingEntry, MappingSnapshot, RegistrationAck,
-    RegistrationKey, RelaySessionId, RouteAddress, RouteTableConfig, RouteTableShard,
+    BindingId, BindingProjection, BindingSnapshot, Destination, GatewayId, GatewayLocator, LeaseId,
+    RegistrationAck, RegistrationKey, RelaySessionId, RouteTableConfig, RouteTableShard,
     ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
@@ -44,7 +44,7 @@ fn projection_preserves_exact_ids_and_gateway_location() -> TestResult {
         session_id,
         vec![Binding {
             id: binding_id,
-            address: protocol_destination("11111111-1111-4111-8111-111111111111")?,
+            destination: protocol_destination("11111111-1111-4111-8111-111111111111")?,
             session_id,
         }],
     )?;
@@ -53,9 +53,12 @@ fn projection_preserves_exact_ids_and_gateway_location() -> TestResult {
         .snapshot
         .as_ref()
         .ok_or("missing projected snapshot")?;
-    let entry = snapshot.entries().next().ok_or("missing mapping")?;
+    let entry = snapshot
+        .entries()
+        .next()
+        .ok_or("missing binding projection")?;
     assert_eq!(
-        entry.address().to_string(),
+        entry.destination().to_string(),
         "test/11111111-1111-4111-8111-111111111111"
     );
     assert_eq!(entry.identity().gateway_id(), gateway_id);
@@ -89,7 +92,7 @@ fn projection_rejects_a_binding_from_another_session() -> TestResult {
         protocol_session(2),
         vec![Binding {
             id: protocol_binding(3),
-            address: protocol_destination("11111111-1111-4111-8111-111111111111")?,
+            destination: protocol_destination("11111111-1111-4111-8111-111111111111")?,
             session_id: protocol_session(4),
         }],
     );
@@ -100,7 +103,7 @@ fn projection_rejects_a_binding_from_another_session() -> TestResult {
 #[test]
 fn projection_splits_one_complete_session_across_directory_shards() -> TestResult {
     let directory = two_shard_directory()?;
-    let (first_client, second_client) = clients_on_distinct_shards(&directory)?;
+    let (first_destination, second_destination) = destinations_on_distinct_shards(&directory)?;
     let session_id = protocol_session(20);
     let projected = project_session(
         &directory,
@@ -110,12 +113,12 @@ fn projection_splits_one_complete_session_across_directory_shards() -> TestResul
         vec![
             Binding {
                 id: protocol_binding(21),
-                address: protocol_destination(&first_client)?,
+                destination: protocol_destination(&first_destination)?,
                 session_id,
             },
             Binding {
                 id: protocol_binding(22),
-                address: protocol_destination(&second_client)?,
+                destination: protocol_destination(&second_destination)?,
                 session_id,
             },
         ],
@@ -127,7 +130,7 @@ fn projection_splits_one_complete_session_across_directory_shards() -> TestResul
         shard.snapshot.as_ref().is_some_and(|snapshot| {
             snapshot
                 .entries()
-                .all(|entry| directory.authority(entry.address()).id() == &shard.shard_id)
+                .all(|entry| directory.authority(entry.destination()).id() == &shard.shard_id)
         })
     }));
     Ok(())
@@ -490,7 +493,7 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
             session_id,
             vec![Binding {
                 id: protocol_binding(1_000 + value),
-                address: protocol_destination(&uuid_destination(value))?,
+                destination: protocol_destination(&uuid_destination(value))?,
                 session_id,
             }],
         )?;
@@ -503,8 +506,8 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
     let service_shutdown = CancellationToken::new();
     let service_task = tokio::spawn(service.serve(listener, service_shutdown.clone()));
 
-    let final_client = uuid_destination(64).parse::<RouteAddress>()?;
-    let resolved = wait_for_resolve(&handle, final_client.clone()).await?;
+    let final_destination = uuid_destination(64).parse::<Destination>()?;
+    let resolved = wait_for_resolve(&handle, final_destination.clone()).await?;
     assert_eq!(resolved.len(), 1);
     assert_eq!(
         resolved.entries()[0].identity().binding_id().as_uuid(),
@@ -514,7 +517,7 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
     assert_eq!(handle.current_counts().unsynced, 0);
 
     let old = handle
-        .resolve(uuid_destination(1).parse::<RouteAddress>()?)
+        .resolve(uuid_destination(1).parse::<Destination>()?)
         .await;
     assert!(matches!(
         old,
@@ -534,7 +537,7 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
         ShardId::new("rt-0")?,
         RouteTableConfig::new(Duration::from_millis(300))?,
     )?;
-    assert_eq!(restarted_shard.stats().mapping_count, 0);
+    assert_eq!(restarted_shard.stats().binding_count, 0);
     let restarted_service = RouteTableService::new(
         restarted_shard,
         RouteTableServiceConfig::new(32, 32, 8, 256 * 1024, Duration::from_secs(1))?,
@@ -543,13 +546,13 @@ async fn bounded_wake_coalesces_to_latest_snapshot_over_one_live_rt() -> TestRes
     let restarted_task =
         tokio::spawn(restarted_service.serve(restarted_listener, restarted_shutdown.clone()));
 
-    let recovered = wait_for_resolve(&handle, final_client.clone()).await?;
+    let recovered = wait_for_resolve(&handle, final_destination.clone()).await?;
     assert_eq!(recovered.len(), 1);
     assert_eq!(handle.current_counts().synced, 1);
     assert_eq!(handle.current_counts().unsynced, 0);
 
     handle.publish_session(session_id, Vec::new())?;
-    wait_for_not_found(&handle, final_client).await?;
+    wait_for_not_found(&handle, final_destination).await?;
 
     routing_shutdown.cancel();
     tokio::time::timeout(Duration::from_secs(2), runtime.wait()).await??;
@@ -592,10 +595,10 @@ async fn bind_endpoint(endpoint: std::net::SocketAddr) -> TestResult<TcpListener
 
 async fn wait_for_resolve(
     handle: &super::RoutingHandle,
-    address: RouteAddress,
+    destination: Destination,
 ) -> TestResult<relaygate_route_table::BindingSet> {
     for _ in 0..200 {
-        if let Ok(bindings) = handle.resolve(address.clone()).await {
+        if let Ok(bindings) = handle.resolve(destination.clone()).await {
             return Ok(bindings);
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -603,9 +606,9 @@ async fn wait_for_resolve(
     Err("routing did not converge to the current snapshot".into())
 }
 
-async fn wait_for_not_found(handle: &super::RoutingHandle, address: RouteAddress) -> TestResult {
+async fn wait_for_not_found(handle: &super::RoutingHandle, destination: Destination) -> TestResult {
     for _ in 0..200 {
-        match handle.resolve(address.clone()).await {
+        match handle.resolve(destination.clone()).await {
             Err(RoutingError::Transport(error)) if error.code() == ErrorCode::NotFound => {
                 return Ok(());
             }
@@ -615,31 +618,35 @@ async fn wait_for_not_found(handle: &super::RoutingHandle, address: RouteAddress
     Err("routing did not remove the empty desired snapshot".into())
 }
 
-fn registration_state(now: Instant, version: u64, address: &str) -> TestResult<RegistrationState> {
-    registration_state_with_retry(now, version, address, Duration::from_millis(10))
+fn registration_state(
+    now: Instant,
+    version: u64,
+    destination: &str,
+) -> TestResult<RegistrationState> {
+    registration_state_with_retry(now, version, destination, Duration::from_millis(10))
 }
 
 fn registration_state_with_retry(
     now: Instant,
     version: u64,
-    address: &str,
+    destination: &str,
     retry: Duration,
 ) -> TestResult<RegistrationState> {
     Ok(RegistrationState::new(
-        RegistrationKey::new(gateway(1), listener_session(2), ShardId::new("rt-0")?),
+        RegistrationKey::new(gateway(1), relay_session(2), ShardId::new("rt-0")?),
         version,
-        Some(snapshot(address)?),
+        Some(snapshot(destination)?),
         now,
         retry,
         Duration::from_secs(1),
     ))
 }
 
-fn snapshot(address: &str) -> TestResult<MappingSnapshot> {
-    Ok(MappingSnapshot::new([MappingEntry::new(
-        protocol_destination(address)?,
+fn snapshot(destination: &str) -> TestResult<BindingSnapshot> {
+    Ok(BindingSnapshot::new([BindingProjection::new(
+        protocol_destination(destination)?,
         gateway(1),
-        listener_session(2),
+        relay_session(2),
         BindingId::from_uuid(Uuid::from_u128(3)),
         GatewayLocator::new("gw-a.internal:27431")?,
     )])?)
@@ -658,37 +665,41 @@ fn registration_ack(
 
 fn one_shard_directory(endpoint: &str) -> TestResult<ShardDirectory> {
     let artifact = format!(
-        r#"{{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{{"id":"rt-0","endpoint":"{endpoint}"}}]}}"#
+        r#"{{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{{"id":"rt-0","endpoint":"{endpoint}"}}]}}"#
     );
     Ok(ShardDirectory::from_json_bytes(artifact.as_bytes())?)
 }
 
 fn two_shard_directory() -> TestResult<ShardDirectory> {
     Ok(ShardDirectory::from_json_bytes(
-        br#"{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{"id":"rt-0","endpoint":"rt-0:27430"},{"id":"rt-1","endpoint":"rt-1:27430"}]}"#,
+        br#"{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{"id":"rt-0","endpoint":"rt-0:27430"},{"id":"rt-1","endpoint":"rt-1:27430"}]}"#,
     )?)
 }
 
-fn clients_on_distinct_shards(directory: &ShardDirectory) -> TestResult<(String, String)> {
+fn destinations_on_distinct_shards(directory: &ShardDirectory) -> TestResult<(String, String)> {
     let mut by_shard = std::collections::BTreeMap::new();
     for index in 0..1_000 {
         let candidate = uuid_destination(index);
-        let address = candidate.parse::<RouteAddress>()?;
+        let destination = candidate.parse::<Destination>()?;
         by_shard
-            .entry(directory.authority(&address).id().clone())
+            .entry(directory.authority(&destination).id().clone())
             .or_insert(candidate);
         if by_shard.len() == 2 {
-            let mut clients = by_shard.into_values();
+            let mut destinations = by_shard.into_values();
             return Ok((
-                clients.next().ok_or("missing first shard client")?,
-                clients.next().ok_or("missing second shard client")?,
+                destinations
+                    .next()
+                    .ok_or("missing first shard destination")?,
+                destinations
+                    .next()
+                    .ok_or("missing second shard destination")?,
             ));
         }
     }
-    Err("failed to find clients on distinct shards".into())
+    Err("failed to find Destinations on distinct shards".into())
 }
 
-fn protocol_destination(value: &str) -> TestResult<ProtocolRouteAddress> {
+fn protocol_destination(value: &str) -> TestResult<ProtocolDestination> {
     let qualified = if value.contains('/') {
         value.to_owned()
     } else {
@@ -705,7 +716,7 @@ const fn gateway(value: u128) -> GatewayId {
     GatewayId::from_uuid(Uuid::from_u128(value))
 }
 
-const fn listener_session(value: u128) -> RelaySessionId {
+const fn relay_session(value: u128) -> RelaySessionId {
     RelaySessionId::from_uuid(Uuid::from_u128(value))
 }
 

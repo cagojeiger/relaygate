@@ -38,7 +38,7 @@ impl PeerTarget {
 pub(crate) struct PeerOpenRequest {
     target: PeerTarget,
     open_identity: OpenIdentity,
-    address: relaygate_protocol::RouteAddress,
+    destination: relaygate_protocol::Destination,
     relay_session_id: SessionId,
     binding_id: BindingId,
 }
@@ -47,14 +47,14 @@ impl PeerOpenRequest {
     pub(crate) fn new(
         target: PeerTarget,
         open_identity: OpenIdentity,
-        address: relaygate_protocol::RouteAddress,
+        destination: relaygate_protocol::Destination,
         relay_session_id: SessionId,
         binding_id: BindingId,
     ) -> Self {
         Self {
             target,
             open_identity,
-            address,
+            destination,
             relay_session_id,
             binding_id,
         }
@@ -71,8 +71,8 @@ impl PeerOpenRequest {
     }
 
     #[must_use]
-    pub(crate) fn address(&self) -> &relaygate_protocol::RouteAddress {
-        &self.address
+    pub(crate) fn destination(&self) -> &relaygate_protocol::Destination {
+        &self.destination
     }
 
     #[must_use]
@@ -216,7 +216,7 @@ pub(crate) enum PeerEvent {
     IncomingOpen {
         key: PeerStreamKey,
         open_identity: OpenIdentity,
-        address: relaygate_protocol::RouteAddress,
+        destination: relaygate_protocol::Destination,
         relay_session_id: SessionId,
         binding_id: BindingId,
     },

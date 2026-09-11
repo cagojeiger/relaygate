@@ -17,7 +17,7 @@ use tokio::{
 
 use super::{ListenerState, RelayInner, RelaySession};
 use crate::{
-    Pipe, Result, RouteAddress,
+    Destination, Pipe, Result,
     observability::{ReconnectEpisode, close_reconnect_episode},
     pipe::PipeState,
     session::{EstablishedSession, ReconnectBackoff, establish},
@@ -152,10 +152,10 @@ impl LivePipe {
 struct RelaySessionState {
     next_request_id: u64,
     pending: HashMap<u64, PendingRegistration>,
-    pending_by_address: HashMap<RouteAddress, u64>,
+    pending_by_destination: HashMap<Destination, u64>,
     token_supplies:
         FuturesUnordered<BoxFuture<'static, (u64, Result<relaygate_protocol::BearerToken>)>>,
-    registrations: HashMap<RouteAddress, Registration>,
+    registrations: HashMap<Destination, Registration>,
     pending_dials: HashMap<u64, oneshot::Sender<Result<Pipe>>>,
     pipes: HashMap<PipeId, LivePipe>,
 }
@@ -165,7 +165,7 @@ impl RelaySessionState {
         Self {
             next_request_id: 1,
             pending: HashMap::new(),
-            pending_by_address: HashMap::new(),
+            pending_by_destination: HashMap::new(),
             token_supplies: FuturesUnordered::new(),
             registrations: HashMap::new(),
             pending_dials: HashMap::new(),

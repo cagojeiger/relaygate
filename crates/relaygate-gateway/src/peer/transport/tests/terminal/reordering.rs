@@ -24,7 +24,7 @@ fn request_for(
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         open_identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );

@@ -207,7 +207,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_ADDR: gateway-a:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-a
+      RELAYGATE_DESTINATION: examples/echo-a
     depends_on:
       gateway-a:
         condition: service_healthy
@@ -217,7 +217,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_ADDR: gateway-b:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-b
+      RELAYGATE_DESTINATION: examples/echo-b
     depends_on:
       gateway-b:
         condition: service_healthy
@@ -227,7 +227,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_ADDR: gateway-c:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-c
+      RELAYGATE_DESTINATION: examples/echo-c
     depends_on:
       gateway-c:
         condition: service_healthy
@@ -237,7 +237,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_ADDR: gateway-b:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-shared
+      RELAYGATE_DESTINATION: examples/echo-shared
     depends_on:
       gateway-b:
         condition: service_healthy
@@ -247,7 +247,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_ADDR: gateway-c:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-shared
+      RELAYGATE_DESTINATION: examples/echo-shared
     depends_on:
       gateway-c:
         condition: service_healthy
@@ -257,7 +257,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_ADDR: gateway-c:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-boundary
+      RELAYGATE_DESTINATION: examples/echo-boundary
     depends_on:
       gateway-c:
         condition: service_healthy
@@ -270,7 +270,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_CONTINUITY_ADDR: gateway-a:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-c
+      RELAYGATE_DESTINATION: examples/echo-c
       RELAYGATE_CONTINUITY_STATE: /tmp/relaygate-continuity.state
     depends_on:
       gateway-a:
@@ -289,7 +289,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_CONTINUITY_ADDR: gateway-a:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-boundary
+      RELAYGATE_DESTINATION: examples/echo-boundary
       RELAYGATE_CONTINUITY_STATE: /tmp/relaygate-continuity.state
     depends_on:
       gateway-a:
@@ -308,7 +308,7 @@ services:
     environment:
       <<: *example-environment
       RELAYGATE_GATEWAYS: gateway-a:27420,gateway-b:27420,gateway-c:27420
-      RELAYGATE_ROUTE_ADDRESS: examples/echo-a
+      RELAYGATE_DESTINATION: examples/echo-a
     depends_on:
       gateway-a:
         condition: service_healthy

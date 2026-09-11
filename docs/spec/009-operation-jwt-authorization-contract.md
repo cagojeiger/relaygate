@@ -12,7 +12,7 @@ Application backend                 SDK                         Gateway
 private ES256 key                   AccessTokenSource           static public JWK
        │                                   │                           │
        └─ JWS Compact JWT ────────────────► PUBLISH / DIAL ───────────►│
-                                           action + exact RouteAddress │
+                                           action + exact Destination │
                                                                        ├─ verify
                                                                        └─ state operation
 ```
@@ -37,7 +37,7 @@ validation rule에 따라 RelayGate operation token만 별도 profile로 검증�
 | --- | --- | --- |
 | OAuth `scope` 문자열 | 비채택 | application-defined 공백 구분 문자열만으로 action, Namespace와 계층 selector를 표현하려면 RelayGate 전용 문자열 문법이 다시 필요함 |
 | RFC 9396 `authorization_details` | 비채택 | 표준 준수에는 OAuth request·grant context와 type별 검증 의미가 필요하지만 RelayGate runtime에는 그 흐름이 없음 |
-| private `permissions` claim | 채택 | 기존 exact `RouteAddress`와 `Exact/Subtree/All` 판정을 최소 JSON 구조로 직접 표현함 |
+| private `permissions` claim | 채택 | 기존 exact `Destination`와 `Exact/Subtree/All` 판정을 최소 JSON 구조로 직접 표현함 |
 
 비채택 표준의 근거는 [OAuth scope](https://www.rfc-editor.org/rfc/rfc6749.html#section-3.3),
 [RFC 9068 profile](https://www.rfc-editor.org/rfc/rfc9068.html#section-2),
@@ -130,19 +130,19 @@ permission/scope member는 `UNAUTHENTICATED`, `maxItems` 초과 grant는 `PERMIS
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "destination"],
+          "required": ["kind", "name"],
           "properties": {
             "kind": { "const": "exact" },
-            "destination": { "$ref": "#/definitions/destination" }
+            "name": { "$ref": "#/definitions/destination_name" }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "destination"],
+          "required": ["kind", "name"],
           "properties": {
             "kind": { "const": "subtree" },
-            "destination": { "$ref": "#/definitions/destination" }
+            "name": { "$ref": "#/definitions/destination_name" }
           }
         },
         {
@@ -153,7 +153,7 @@ permission/scope member는 `UNAUTHENTICATED`, `maxItems` 초과 grant는 `PERMIS
         }
       ]
     },
-    "destination": {
+    "destination_name": {
       "type": "string",
       "maxLength": 253,
       "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$"
@@ -190,12 +190,12 @@ profile을 충족하지 못해 `UNAUTHENTICATED`입니다.
     {
       "action": "publish",
       "namespace": "inference",
-      "scope": { "kind": "exact", "destination": "stt.seoul" }
+      "scope": { "kind": "exact", "name": "stt.seoul" }
     },
     {
       "action": "dial",
       "namespace": "inference",
-      "scope": { "kind": "subtree", "destination": "stt" }
+      "scope": { "kind": "subtree", "name": "stt" }
     }
   ]
 }
@@ -204,7 +204,7 @@ profile을 충족하지 못해 `UNAUTHENTICATED`입니다.
 ```text
 allow(operation) = permissions 중 하나가
   action == requested action
-  AND namespace == requested NamespaceId
+  AND namespace == requested Namespace
   AND scope.contains(requested DestinationName)
 ```
 
@@ -212,17 +212,17 @@ allow(operation) = permissions 중 하나가
 | --- | --- | --- |
 | `exact(stt.seoul)` | `stt.seoul` | `stt`, `api.stt.seoul` |
 | `subtree(stt)` | `stt`, `stt.seoul`, `stt.seoul.worker` | `sttx`, `api.stt` |
-| `all` | 같은 Namespace의 모든 DestinationName | 다른 Namespace의 모든 주소 |
+| `all` | 같은 Namespace의 모든 DestinationName | 다른 Namespace의 모든 Destination |
 
 `subtree`는 root 자체를 포함하는 whole-label descendant 판정입니다. 이 판정은 authorization에만 사용하며
-RouteTable과 local registry의 routing은 계속 exact `RouteAddress` lookup입니다.
+RouteTable과 local registry의 routing은 계속 exact `Destination` lookup입니다.
 
 ## Static trust config
 
 ```text
-requested RouteAddress.NamespaceId
-                │
-                └─► exactly one TrustedIssuer
+requested Destination
+        │
+        └─► Namespace ──► exactly one TrustedIssuer
                                   │
                                   └─► 1..2 public ES256 keys ── exact kid ──► verify
 ```
@@ -247,7 +247,7 @@ requested RouteAddress.NamespaceId
 | `kid` | 1..128 bytes | issuer 안의 current/next key 선택 |
 | `x`, `y` | valid base64url P-256 coordinate | public coordinate만 저장 |
 
-Gateway는 unverified `iss`로 trust root를 선택하지 않습니다. 먼저 요청 RouteAddress의 Namespace로 issuer
+Gateway는 unverified `iss`로 trust root를 선택하지 않습니다. 먼저 요청 Destination의 Namespace로 issuer
 entry를 선택하고, protected header의 `kid`로 그 entry 안의 key 하나를 고른 뒤 서명과 configured
 `iss`·`aud`를 검증합니다. Remote JWKS, issuer discovery와 token-supplied key material은 조회하지 않습니다.
 
@@ -260,8 +260,8 @@ PUBLISH / DIAL frame
   -> JWS header profile
   -> Namespace-configured issuer + exact kid
   -> ES256 signature + closed claims + iss/aud/nbf/exp
-  -> action + exact RouteAddress permission
-  -> current session + same action/address + monotonic expiry 재확인
+  -> action + exact Destination permission
+  -> current session + same action·Destination + monotonic expiry 재확인
   -> existing PUBLISH 또는 DIAL state operation
 ```
 
@@ -277,7 +277,7 @@ PUBLISH / DIAL frame
 | verify와 commit 성공 | auth 전용 ACK 없음 | `PUBLISH`는 기존 `Published/PublishFailed`, `DIAL`은 기존 `Opened/DialFailed` 흐름으로 진행 |
 
 Signature와 claims를 decode한 뒤 wall-clock `exp + skew`의 남은 시간을 monotonic deadline으로 변환합니다.
-따라서 crypto/claims 처리에 이미 든 시간이 grant lifetime을 늘리지 않으며, commit 직전에 같은 action·address와
+따라서 crypto/claims 처리에 이미 든 시간이 grant lifetime을 늘리지 않으며, commit 직전에 같은 action·Destination과
 monotonic expiry를 다시 확인합니다.
 
 Authorization 전에 수행하는 precheck도 operation 상태의 일부입니다. DIAL `ConnectionId` fence와 이미 차감한
@@ -321,7 +321,7 @@ token 만료만으로 종료하지 않습니다. 새 PUBLISH, Listener republish
 | `AUTH-007` | JWS·header·key·signature·registered claim·unknown/malformed claim 구조 실패는 `UNAUTHENTICATED`, valid token의 권한 불일치·permission 상한 초과는 `PERMISSION_DENIED`, verifier 포화·timeout·task failure는 각각 `RESOURCE_EXHAUSTED`·`DEADLINE_EXCEEDED`·`INTERNAL`이다. |
 | `AUTH-008` | Namespace마다 TrustedIssuer 하나를 구성하고 issuer마다 회전용 unique-kid ES256 public JWK를 1..2개 구성한다. Private key와 remote key discovery는 config에 없다. |
 | `AUTH-009` | Verification concurrency는 기본 32, 1..1,024이고 timeout은 기본 1,000 ms, 1..5,000 ms다. Crypto는 state lock 밖의 bounded blocking work로 실행한다. |
-| `AUTH-010` | Gateway는 current session, DIAL ConnectionId fence, drain과 control budget을 먼저 확인하고 verify 뒤 current session·same action/address·monotonic expiry를 재확인해 commit한다. 이미 소비한 fence와 rate budget은 authorization 실패 시 환불하지 않는다. |
+| `AUTH-010` | Gateway는 current session, DIAL ConnectionId fence, drain과 control budget을 먼저 확인하고 verify 뒤 current session·same action·Destination·monotonic expiry를 재확인해 commit한다. 이미 소비한 fence와 rate budget은 authorization 실패 시 환불하지 않는다. |
 | `AUTH-011` | Authorization 성공은 별도 ACK를 만들지 않는다. 실패 response는 operation correlation ID와 stable code를 보존하고 DIAL은 `NOT_OBSERVED`이며, registry·RT Resolve·peer OPEN 전 해당 operation만 끝내 기존 session·Binding·Pipe를 유지한다. |
 | `AUTH-012` | Raw token, decoded claim과 permission은 Gateway operation을 넘지 않으며 RT·peer·Binding·Pipe·log·metric·error에 전달하거나 보관하지 않는다. |
 | `AUTH-013` | Authorization은 admission-only다. Token expiry는 established Binding·Pipe를 종료하지 않고 새 PUBLISH, Listener republish와 새 DIAL만 다시 검증한다. |

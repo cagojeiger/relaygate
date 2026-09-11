@@ -29,7 +29,7 @@ impl RouteDependencyHealth {
 /// Local counts come from the same in-memory indexes used for routing. Optional
 /// routing fields describe the workers' latest observed dependency and convergence
 /// state; they can briefly lag a local mutation and are not sampled atomically
-/// with the local counts. They are not the RouteTable's mapping contents. Payload
+/// with the local counts. They are not the RouteTable binding projection contents. Payload
 /// and application-level delivery state are never included.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GatewaySnapshot {

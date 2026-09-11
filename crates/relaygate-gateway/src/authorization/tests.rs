@@ -8,23 +8,23 @@ use tokio::time::Instant;
 
 use super::*;
 use crate::test_support::{
-    TEST_AUDIENCE, TEST_ISSUER, TEST_JWK_X, TEST_JWK_Y, TEST_KID, TestAction, address,
-    authorization_config, bearer_token, signed_bearer_token, signed_bearer_token_with_header,
+    TEST_AUDIENCE, TEST_ISSUER, TEST_JWK_X, TEST_JWK_Y, TEST_KID, TestAction, authorization_config,
+    bearer_token, destination, signed_bearer_token, signed_bearer_token_with_header,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const MAX_TEST_PERMISSIONS: usize = 128;
 const TEST_PRIVATE_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt\nkHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n950IxEzvw/x5BMEINRMrXLBJhqzO9Bm+d6JbqA21YQmd1Kt4RzLJR1W+\n-----END PRIVATE KEY-----\n";
 
-fn operation(action: Action, address: relaygate_protocol::RouteAddress) -> ControlOperation {
+fn operation(action: Action, destination: relaygate_protocol::Destination) -> ControlOperation {
     match action {
         Action::Publish => ControlOperation::Publish {
             request_id: 1,
-            address,
+            destination,
         },
         Action::Dial => ControlOperation::Dial {
             connection_id: 1,
-            address,
+            destination,
             started_at: std::time::Instant::now(),
         },
     }
@@ -44,7 +44,7 @@ fn exact_permission(action: &str, namespace: &str, destination: &str) -> Value {
     json!({
         "action": action,
         "namespace": namespace,
-        "scope": { "kind": "exact", "destination": destination },
+        "scope": { "kind": "exact", "name": destination },
     })
 }
 
@@ -62,10 +62,10 @@ fn verify_with(
 
 #[test]
 fn authorization_failure_preserves_operation_correlation_and_observation() {
-    let address = address("worker");
+    let destination = destination("worker");
     let publish = ControlOperation::Publish {
         request_id: 41,
-        address: address.clone(),
+        destination: destination.clone(),
     };
     assert_eq!(
         publish.failure(ErrorCode::Unauthenticated),
@@ -78,7 +78,7 @@ fn authorization_failure_preserves_operation_correlation_and_observation() {
 
     let dial = ControlOperation::Dial {
         connection_id: 42,
-        address,
+        destination,
         started_at: std::time::Instant::now(),
     };
     assert_eq!(
@@ -93,8 +93,8 @@ fn authorization_failure_preserves_operation_correlation_and_observation() {
 }
 
 #[test]
-fn valid_exact_grants_authorize_only_the_claimed_action_and_address() {
-    let target = address("worker.one");
+fn valid_exact_grants_authorize_only_the_claimed_action_and_destination() {
+    let target = destination("worker.one");
     for (test_action, action) in [
         (TestAction::Publish, Action::Publish),
         (TestAction::Dial, Action::Dial),
@@ -110,7 +110,7 @@ fn valid_exact_grants_authorize_only_the_claimed_action_and_address() {
             Err(ErrorCode::PermissionDenied)
         );
         assert_eq!(
-            verify(&token, &operation(action, address("worker.two"))),
+            verify(&token, &operation(action, destination("worker.two"))),
             Err(ErrorCode::PermissionDenied)
         );
     }
@@ -118,7 +118,7 @@ fn valid_exact_grants_authorize_only_the_claimed_action_and_address() {
 
 #[test]
 fn token_issuer_exact_grants_are_accepted_by_gateway_verifier() -> TestResult {
-    let target = address("worker.issued");
+    let target = destination("worker.issued");
     let issuer =
         TokenIssuer::from_es256_pem(TEST_ISSUER, TEST_AUDIENCE, TEST_KID, TEST_PRIVATE_KEY_PEM)?;
     let token = BearerToken::new(
@@ -133,7 +133,7 @@ fn token_issuer_exact_grants_are_accepted_by_gateway_verifier() -> TestResult {
 
 #[test]
 fn jwt_profile_type_accepts_standard_media_type_equivalents() {
-    let target = address("worker");
+    let target = destination("worker");
     let operation = operation(Action::Dial, target.clone());
     let now = jsonwebtoken::get_current_timestamp();
     let token_claims = claims(
@@ -160,7 +160,7 @@ fn jwt_profile_type_accepts_standard_media_type_equivalents() {
 
 #[test]
 fn missing_or_wrong_profile_type_fails_closed() {
-    let target = address("worker");
+    let target = destination("worker");
     let operation = operation(Action::Dial, target.clone());
     let now = jsonwebtoken::get_current_timestamp();
     let token_claims = claims(
@@ -182,7 +182,7 @@ fn missing_or_wrong_profile_type_fails_closed() {
 
 #[test]
 fn unsupported_critical_header_and_missing_kid_fail_closed() {
-    let target = address("worker");
+    let target = destination("worker");
     let operation = operation(Action::Dial, target.clone());
     let now = jsonwebtoken::get_current_timestamp();
     let token_claims = claims(
@@ -215,7 +215,7 @@ fn unsupported_critical_header_and_missing_kid_fail_closed() {
 
 #[test]
 fn unsupported_algorithm_and_closed_claim_shapes_fail_closed() -> TestResult {
-    let target = address("worker");
+    let target = destination("worker");
     let operation = operation(Action::Dial, target);
     let now = jsonwebtoken::get_current_timestamp();
     let valid = claims(
@@ -304,21 +304,21 @@ fn subtree_and_all_scopes_use_whole_label_boundaries() {
     let now = jsonwebtoken::get_current_timestamp();
     for (scope, target, expected) in [
         (
-            json!({ "kind": "subtree", "destination": "worker" }),
-            address("worker"),
+            json!({ "kind": "subtree", "name": "worker" }),
+            destination("worker"),
             true,
         ),
         (
-            json!({ "kind": "subtree", "destination": "worker" }),
-            address("worker.seoul"),
+            json!({ "kind": "subtree", "name": "worker" }),
+            destination("worker.seoul"),
             true,
         ),
         (
-            json!({ "kind": "subtree", "destination": "worker" }),
-            address("workerx"),
+            json!({ "kind": "subtree", "name": "worker" }),
+            destination("workerx"),
             false,
         ),
-        (json!({ "kind": "all" }), address("anything"), true),
+        (json!({ "kind": "all" }), destination("anything"), true),
     ] {
         let token = signed_bearer_token(
             TEST_KID,
@@ -344,7 +344,7 @@ fn subtree_and_all_scopes_use_whole_label_boundaries() {
 
 #[test]
 fn issuer_audience_kid_and_time_fail_closed() -> TestResult {
-    let target = address("worker");
+    let target = destination("worker");
     let operation = operation(Action::Publish, target.clone());
     let now = jsonwebtoken::get_current_timestamp();
     let permission = exact_permission("publish", "test", "worker");
@@ -445,7 +445,7 @@ fn current_and_next_keys_are_accepted_without_crossing_namespace() -> TestResult
         now.saturating_add(300),
         vec![exact_permission("publish", "test", "worker")],
     );
-    let target = operation(Action::Publish, address("worker"));
+    let target = operation(Action::Publish, destination("worker"));
     for kid in [TEST_KID, NEXT_KID] {
         assert!(
             verify_with(
@@ -477,7 +477,7 @@ fn current_and_next_keys_are_accepted_without_crossing_namespace() -> TestResult
 
 #[test]
 fn malformed_or_oversized_permission_sets_fail_closed() -> TestResult {
-    let operation = operation(Action::Dial, address("worker"));
+    let operation = operation(Action::Dial, destination("worker"));
     let now = jsonwebtoken::get_current_timestamp();
     let token = signed_bearer_token(
         TEST_KID,
@@ -503,7 +503,7 @@ fn malformed_or_oversized_permission_sets_fail_closed() -> TestResult {
             .map(|_| exact_permission("dial", "test", "worker"))
             .collect(),
     ))?;
-    assert!(!oversized.authorizes(Action::Dial, operation.address()));
+    assert!(!oversized.authorizes(Action::Dial, operation.destination()));
     Ok(())
 }
 
@@ -512,7 +512,7 @@ fn trust_configuration_is_bounded_and_unambiguous() -> TestResult {
     assert!(Es256PublicKey::new("", TEST_JWK_X, TEST_JWK_Y).is_err());
     assert!(Es256PublicKey::new(TEST_KID, "invalid", TEST_JWK_Y).is_err());
     let key = Es256PublicKey::new(TEST_KID, TEST_JWK_X, TEST_JWK_Y)?;
-    let namespace: relaygate_address::NamespaceId = "test".parse()?;
+    let namespace: relaygate_destination::Namespace = "test".parse()?;
     assert!(TrustedIssuer::new(namespace.clone(), TEST_ISSUER, Vec::new()).is_err());
     assert!(
         TrustedIssuer::new(
@@ -552,16 +552,16 @@ fn trust_configuration_is_bounded_and_unambiguous() -> TestResult {
 async fn verification_capacity_and_deadline_are_bounded() -> TestResult {
     let authorization = Authorization::new(authorization_config(), 1);
     let held = Arc::clone(&authorization.slots).try_acquire_owned()?;
-    let address = address("worker");
-    let operation = operation(Action::Dial, address.clone());
+    let destination = destination("worker");
+    let operation = operation(Action::Dial, destination.clone());
     assert!(matches!(
-        authorization.start(bearer_token(&address, TestAction::Dial), &operation),
+        authorization.start(bearer_token(&destination, TestAction::Dial), &operation),
         Err(ErrorCode::ResourceExhausted)
     ));
     drop(held);
 
     let job = authorization
-        .start(bearer_token(&address, TestAction::Dial), &operation)
+        .start(bearer_token(&destination, TestAction::Dial), &operation)
         .map_err(|code| io::Error::other(format!("verification did not start: {code:?}")))?;
     assert!(matches!(
         job.finish(Instant::now()).await,

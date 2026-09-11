@@ -20,7 +20,7 @@ pub(crate) enum PeerFrame {
     Open {
         stream_id: StreamId,
         open_identity: OpenIdentity,
-        address: relaygate_protocol::RouteAddress,
+        destination: relaygate_protocol::Destination,
         relay_session_id: SessionId,
         binding_id: BindingId,
     },
@@ -69,14 +69,14 @@ impl fmt::Debug for PeerFrame {
             Self::Open {
                 stream_id,
                 open_identity,
-                address,
+                destination,
                 relay_session_id,
                 binding_id,
             } => formatter
                 .debug_struct("Open")
                 .field("stream_id", stream_id)
                 .field("open_identity", open_identity)
-                .field("address", address)
+                .field("destination", destination)
                 .field("relay_session_id", relay_session_id)
                 .field("binding_id", binding_id)
                 .finish(),

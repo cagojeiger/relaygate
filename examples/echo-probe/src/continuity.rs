@@ -12,20 +12,25 @@ use tokio::{
 
 use crate::{
     config::{
-        CONTINUITY_FRESHNESS, CONTINUITY_INTERVAL, ECHO_DEADLINE, ROUTE_WAIT, access_token_source,
-        continuity_state_path, environment, route_address,
+        CONTINUITY_FRESHNESS, CONTINUITY_INTERVAL, DESTINATION_WAIT, ECHO_DEADLINE,
+        access_token_source, continuity_state_path, destination, environment,
     },
     probe::{connect, dial_when_available},
 };
 
 pub(crate) async fn run_continuity() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_CONTINUITY_ADDR", "gateway-a:27420");
-    let route_address = route_address()?;
+    let destination = destination()?;
     let access_token_source = access_token_source()?;
     let state_path = continuity_state_path();
-    let connector = connect(&address).await?;
-    let mut pipe =
-        dial_when_available(&connector, &route_address, &access_token_source, ROUTE_WAIT).await?;
+    let dialer = connect(&address).await?;
+    let mut pipe = dial_when_available(
+        &dialer,
+        &destination,
+        &access_token_source,
+        DESTINATION_WAIT,
+    )
+    .await?;
     let mut sequence = 1_u64;
 
     loop {
@@ -101,7 +106,7 @@ fn write_continuity_state(path: &Path, sequence: u64) -> anyhow::Result<()> {
 }
 
 async fn wait_for_continuity_state(path: &Path) -> anyhow::Result<ContinuityState> {
-    let deadline = Instant::now() + ROUTE_WAIT;
+    let deadline = Instant::now() + DESTINATION_WAIT;
     loop {
         match read_continuity_state(path) {
             Ok(state) => return Ok(state),

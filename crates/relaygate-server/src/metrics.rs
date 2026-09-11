@@ -139,7 +139,7 @@ fn describe_metrics() {
     );
     describe_counter!(
         "relaygate_gateway_publish_results_total",
-        "Terminal RouteAddress publication results by bounded outcome and code."
+        "Terminal Destination publication results by bounded outcome and code."
     );
     describe_gauge!(
         "relaygate_gateway_draining",
@@ -155,7 +155,7 @@ fn describe_metrics() {
     );
     describe_gauge!(
         "relaygate_gateway_bindings",
-        "Current RouteAddress bindings owned by this Gateway."
+        "Current Destination bindings owned by this Gateway."
     );
     describe_gauge!(
         "relaygate_gateway_pending_offers",
@@ -262,12 +262,12 @@ fn describe_metrics() {
         "Current live registrations on this RouteTable shard."
     );
     describe_gauge!(
-        "relaygate_route_table_mappings",
-        "Current binding mappings on this RouteTable shard."
+        "relaygate_route_table_bindings",
+        "Current bindings on this RouteTable shard."
     );
     describe_gauge!(
-        "relaygate_route_table_routes",
-        "Current RouteAddresses with at least one mapping on this RouteTable shard."
+        "relaygate_route_table_destinations",
+        "Current Destinations with at least one binding on this RouteTable shard."
     );
     describe_gauge!(
         "relaygate_route_table_expiry_records",

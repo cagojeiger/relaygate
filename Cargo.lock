@@ -1253,7 +1253,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "relaygate-address"
+name = "relaygate-destination"
 version = "0.2.2"
 dependencies = [
  "serde",
@@ -1292,7 +1292,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "rcgen",
- "relaygate-address",
+ "relaygate-destination",
  "relaygate-protocol",
  "relaygate-route-table",
  "relaygate-route-table-transport",
@@ -1314,7 +1314,7 @@ name = "relaygate-protocol"
 version = "0.2.2"
 dependencies = [
  "bytes",
- "relaygate-address",
+ "relaygate-destination",
  "thiserror",
  "tokio-util",
  "uuid",
@@ -1324,7 +1324,7 @@ dependencies = [
 name = "relaygate-route-table"
 version = "0.2.2"
 dependencies = [
- "relaygate-address",
+ "relaygate-destination",
  "serde",
  "serde_json",
  "sha2",
@@ -1359,7 +1359,7 @@ dependencies = [
  "futures-util",
  "metrics",
  "metrics-util",
- "relaygate-address",
+ "relaygate-destination",
  "relaygate-protocol",
  "relaygate-transport",
  "thiserror",
@@ -1405,7 +1405,7 @@ version = "0.2.2"
 dependencies = [
  "jsonwebtoken",
  "p256",
- "relaygate-address",
+ "relaygate-destination",
  "serde",
  "serde_json",
  "thiserror",

@@ -77,8 +77,8 @@ fn observe_expired(expired: usize) {
 fn observe_shard(shard: &RouteTableShard) {
     let stats = shard.stats();
     metrics::gauge!("relaygate_route_table_registrations").set(stats.registration_count as f64);
-    metrics::gauge!("relaygate_route_table_mappings").set(stats.mapping_count as f64);
-    metrics::gauge!("relaygate_route_table_routes").set(stats.route_count as f64);
+    metrics::gauge!("relaygate_route_table_bindings").set(stats.binding_count as f64);
+    metrics::gauge!("relaygate_route_table_destinations").set(stats.destination_count as f64);
     metrics::gauge!("relaygate_route_table_expiry_records").set(stats.expiry_record_count as f64);
 }
 
@@ -121,9 +121,9 @@ fn execute(
             .map_err(TransportError::from),
         DomainRequest::Resolve {
             generation,
-            address,
+            destination,
         } => shard
-            .resolve(context, generation, &address, now)
+            .resolve(context, generation, &destination, now)
             .map(|bindings| WireResponse::resolved(&bindings))
             .map_err(TransportError::from),
     }

@@ -21,10 +21,10 @@ use std::{
 #[cfg(unix)]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(unix)]
-use relaygate_protocol::{BearerToken, ErrorCode, Frame, FrameCodec, RouteAddress};
+use relaygate_protocol::{BearerToken, Destination, ErrorCode, Frame, FrameCodec};
 #[cfg(unix)]
 use relaygate_route_table::{
-    BindingId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot, RegistrationKey,
+    BindingId, BindingProjection, BindingSnapshot, GatewayId, GatewayLocator, RegistrationKey,
     RegistrationRevision, RelaySessionId, ShardDirectory, ShardId,
 };
 #[cfg(unix)]
@@ -40,8 +40,8 @@ static NEXT_TEST_PORT: AtomicU16 = AtomicU16::new(FIRST_TEST_PORT);
 mod admission;
 #[path = "process/transport_modes.rs"]
 mod transport_modes;
-const ROUTE_A: &str = "examples/echo-a";
-const ROUTE_MISSING: &str = "examples/echo-missing";
+const DESTINATION_A: &str = "examples/echo-a";
+const DESTINATION_MISSING: &str = "examples/echo-missing";
 #[cfg(unix)]
 const TEST_ACCESS_TOKEN: &str = include_str!("fixtures/access-token.txt");
 #[cfg(unix)]
@@ -102,12 +102,12 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
 
     let client = wait_until_route_table_ready(&address, gateway_id, &mut server).await?;
     let error = match client
-        .resolve(directory.generation(), &ROUTE_A.parse()?)
+        .resolve(directory.generation(), &DESTINATION_A.parse()?)
         .await
     {
         Ok(_) => {
             return Err(io::Error::other(
-                "a READY-empty RouteTable unexpectedly resolved a missing RouteAddress",
+                "a READY-empty RouteTable unexpectedly resolved a missing Destination",
             )
             .into());
         }
@@ -115,13 +115,13 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
     };
     assert_eq!(error.code(), RouteTableErrorCode::NotFound);
 
-    let listener_session_id = RelaySessionId::new();
-    let key = RegistrationKey::new(gateway_id, listener_session_id, ShardId::new("rt-0")?);
+    let relay_session_id = RelaySessionId::new();
+    let key = RegistrationKey::new(gateway_id, relay_session_id, ShardId::new("rt-0")?);
     let registration = client.register(directory.generation(), &key).await?;
-    let snapshot = MappingSnapshot::new([MappingEntry::new(
+    let snapshot = BindingSnapshot::new([BindingProjection::new(
         "examples/echo-b".parse()?,
         gateway_id,
-        listener_session_id,
+        relay_session_id,
         BindingId::new(),
         GatewayLocator::new("127.0.0.1:27421")?,
     )])?;
@@ -142,13 +142,13 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
     assert!(metrics.contains("role=\"route_table\""));
     for metric in [
         "relaygate_route_table_registrations",
-        "relaygate_route_table_mappings",
-        "relaygate_route_table_routes",
+        "relaygate_route_table_bindings",
+        "relaygate_route_table_destinations",
         "relaygate_route_table_expiry_records",
     ] {
         assert!(
             metrics.contains(&format!("{metric}{{role=\"route_table\"}} 1")),
-            "expected {metric} to report the one current registration/mapping/route/expiry record"
+            "expected {metric} to report the one current registration/binding/destination/expiry record"
         );
     }
     assert!(metric_has_labels(
@@ -705,13 +705,13 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     )?;
 
     wait_until_healthy(&address, &mut server)?;
-    let route_address: RouteAddress = ROUTE_A.parse()?;
+    let destination: Destination = DESTINATION_A.parse()?;
     let publish_token = test_access_token()?;
     let mut listener = connect_sdk_session(&address).await?;
     listener
         .send(Frame::Publish {
             request_id: 1,
-            address: route_address.clone(),
+            destination: destination.clone(),
             access_token: publish_token.clone(),
         })
         .await?;
@@ -724,7 +724,7 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     capacity_listener
         .send(Frame::Publish {
             request_id: 1,
-            address: route_address.clone(),
+            destination: destination.clone(),
             access_token: publish_token,
         })
         .await?;
@@ -744,7 +744,7 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     let mut sdk = connect_sdk_session(&address).await?;
     sdk.send(Frame::Dial {
         connection_id: 1,
-        address: route_address.clone(),
+        destination: destination.clone(),
         access_token: test_access_token()?,
     })
     .await?;
@@ -760,10 +760,10 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
         "accepted Listener offer should complete OPEN: {opened:?}"
     );
 
-    let missing_route: RouteAddress = ROUTE_MISSING.parse()?;
+    let missing_destination: Destination = DESTINATION_MISSING.parse()?;
     sdk.send(Frame::Dial {
         connection_id: 2,
-        address: missing_route.clone(),
+        destination: missing_destination.clone(),
         access_token: test_access_token()?,
     })
     .await?;
@@ -781,7 +781,7 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     );
     sdk.send(Frame::Dial {
         connection_id: 3,
-        address: route_address,
+        destination,
         access_token: BearerToken::new(secret)?,
     })
     .await?;
@@ -1308,7 +1308,7 @@ struct ShardDirectoryArtifact {
 
 #[cfg(unix)]
 impl ShardDirectoryArtifact {
-    const BYTES: &'static [u8] = br#"{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{"id":"rt-0","endpoint":"127.0.0.1:27430"}]}"#;
+    const BYTES: &'static [u8] = br#"{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{"id":"rt-0","endpoint":"127.0.0.1:27430"}]}"#;
 
     fn create() -> io::Result<Self> {
         let nonce = SystemTime::now()

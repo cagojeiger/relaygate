@@ -75,7 +75,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- $endpoint := printf "%s.%s.%s.svc.%s:%d" $podName $serviceName $root.Release.Namespace $root.Values.clusterDomain (int $root.Values.routeTable.port) -}}
 {{- $shards = append $shards (dict "id" (printf "rt-%d" $index) "endpoint" $endpoint) -}}
 {{- end -}}
-{{- dict "format_version" 2 "authority_hash" "sha256-route-address-modulo-v2" "shards" $shards | toJson -}}
+{{- dict "format_version" 2 "authority_hash" "sha256-destination-modulo-v2" "shards" $shards | toJson -}}
 {{- end }}
 
 {{- define "relaygate.validateValues" -}}

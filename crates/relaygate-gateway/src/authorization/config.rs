@@ -1,7 +1,7 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use jsonwebtoken::DecodingKey;
-use relaygate_address::NamespaceId;
+use relaygate_destination::Namespace;
 
 use crate::GatewayError;
 
@@ -50,14 +50,14 @@ impl std::fmt::Debug for Es256PublicKey {
 /// One issuer trusted to authorize operations inside exactly one Namespace.
 #[derive(Clone)]
 pub struct TrustedIssuer {
-    pub(crate) namespace: NamespaceId,
+    pub(crate) namespace: Namespace,
     pub(crate) issuer: Arc<str>,
     pub(crate) keys: Vec<Es256PublicKey>,
 }
 
 impl TrustedIssuer {
     pub fn new(
-        namespace: NamespaceId,
+        namespace: Namespace,
         issuer: impl Into<String>,
         keys: Vec<Es256PublicKey>,
     ) -> Result<Self, GatewayError> {

@@ -12,8 +12,8 @@ use relaygate_route_table_transport::{
     RouteTableServiceConfig, TransportError,
 };
 use relaygate_sdk::{
-    AccessAction, Config as SdkConfig, ErrorCode as SdkErrorCode, Listener,
-    PeerObservation as SdkPeerObservation, Pipe, Relay, RouteAddress,
+    AccessAction, Config as SdkConfig, Destination, ErrorCode as SdkErrorCode, Listener,
+    PeerObservation as SdkPeerObservation, Pipe, Relay,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -27,12 +27,12 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 mod support;
 
-use support::{address as test_address, authorization_config, token_source};
-const CLIENT_A: &str = "11111111-1111-4111-8111-111111111111";
-const CLIENT_B: &str = "22222222-2222-4222-8222-222222222222";
-const CLIENT_C: &str = "33333333-3333-4333-8333-333333333333";
-const CLIENT_MISSING: &str = "99999999-9999-4999-8999-999999999999";
-const CLIENT_SHARED: &str = "44444444-4444-4444-8444-444444444444";
+use support::{authorization_config, destination as test_destination, token_source};
+const DESTINATION_A: &str = "11111111-1111-4111-8111-111111111111";
+const DESTINATION_B: &str = "22222222-2222-4222-8222-222222222222";
+const DESTINATION_C: &str = "33333333-3333-4333-8333-333333333333";
+const DESTINATION_MISSING: &str = "99999999-9999-4999-8999-999999999999";
+const DESTINATION_SHARED: &str = "44444444-4444-4444-8444-444444444444";
 const GATEWAY_A: &str = "gateway-a";
 const GATEWAY_B: &str = "gateway-b";
 const GATEWAY_C: &str = "gateway-c";
@@ -58,11 +58,11 @@ async fn three_gateway_case() -> TestResult {
     let listener_runtime_a = Relay::connect(sdk_config(gateway_a.sdk_address)).await?;
     let listener_runtime_b = Relay::connect(sdk_config(gateway_b.sdk_address)).await?;
     let listener_runtime_c = Relay::connect(sdk_config(gateway_c.sdk_address)).await?;
-    let listener_a = listen(&listener_runtime_a, CLIENT_A).await?;
-    let listener_b = listen(&listener_runtime_b, CLIENT_B).await?;
-    let listener_c = listen(&listener_runtime_c, CLIENT_C).await?;
-    let shared_b = listen(&listener_runtime_b, CLIENT_SHARED).await?;
-    let shared_c = listen(&listener_runtime_c, CLIENT_SHARED).await?;
+    let listener_a = listen(&listener_runtime_a, DESTINATION_A).await?;
+    let listener_b = listen(&listener_runtime_b, DESTINATION_B).await?;
+    let listener_c = listen(&listener_runtime_c, DESTINATION_C).await?;
+    let shared_b = listen(&listener_runtime_b, DESTINATION_SHARED).await?;
+    let shared_c = listen(&listener_runtime_c, DESTINATION_SHARED).await?;
 
     wait_until("all registrations synced", Duration::from_secs(2), || {
         [&gateway_a, &gateway_b, &gateway_c]
@@ -84,26 +84,26 @@ async fn three_gateway_case() -> TestResult {
     wait_for_binding_count(
         &route_observer,
         generation,
-        CLIENT_SHARED,
+        DESTINATION_SHARED,
         2,
         Duration::from_secs(2),
     )
     .await?;
 
-    let connector_a = Relay::connect(sdk_config(gateway_a.sdk_address)).await?;
-    let connector_b = Relay::connect(sdk_config(gateway_b.sdk_address)).await?;
-    let connector_c = Relay::connect(sdk_config(gateway_c.sdk_address)).await?;
+    let dialer_a = Relay::connect(sdk_config(gateway_a.sdk_address)).await?;
+    let dialer_b = Relay::connect(sdk_config(gateway_b.sdk_address)).await?;
+    let dialer_c = Relay::connect(sdk_config(gateway_c.sdk_address)).await?;
 
-    exercise_pipe(&connector_a, CLIENT_A, &listener_a, "local-a").await?;
-    exercise_pipe(&connector_b, CLIENT_B, &listener_b, "local-b").await?;
-    exercise_pipe(&connector_c, CLIENT_C, &listener_c, "local-c").await?;
+    exercise_pipe(&dialer_a, DESTINATION_A, &listener_a, "local-a").await?;
+    exercise_pipe(&dialer_b, DESTINATION_B, &listener_b, "local-b").await?;
+    exercise_pipe(&dialer_c, DESTINATION_C, &listener_c, "local-c").await?;
 
-    exercise_pipe(&connector_a, CLIENT_B, &listener_b, "a-to-b").await?;
-    exercise_pipe(&connector_a, CLIENT_C, &listener_c, "a-to-c").await?;
-    exercise_pipe(&connector_b, CLIENT_A, &listener_a, "b-to-a").await?;
-    exercise_pipe(&connector_b, CLIENT_C, &listener_c, "b-to-c").await?;
-    exercise_pipe(&connector_c, CLIENT_A, &listener_a, "c-to-a").await?;
-    exercise_pipe(&connector_c, CLIENT_B, &listener_b, "c-to-b").await?;
+    exercise_pipe(&dialer_a, DESTINATION_B, &listener_b, "a-to-b").await?;
+    exercise_pipe(&dialer_a, DESTINATION_C, &listener_c, "a-to-c").await?;
+    exercise_pipe(&dialer_b, DESTINATION_A, &listener_a, "b-to-a").await?;
+    exercise_pipe(&dialer_b, DESTINATION_C, &listener_c, "b-to-c").await?;
+    exercise_pipe(&dialer_c, DESTINATION_A, &listener_a, "c-to-a").await?;
+    exercise_pipe(&dialer_c, DESTINATION_B, &listener_b, "c-to-b").await?;
 
     wait_until(
         "three peer pairs idle on shared transports",
@@ -121,8 +121,8 @@ async fn three_gateway_case() -> TestResult {
     )
     .await?;
 
-    let (mut shared_connector, mut shared_listener, shared_owner) =
-        open_shared_pipe(&connector_a, &shared_b, &shared_c).await?;
+    let (mut shared_dialer, mut shared_acceptor, shared_owner) =
+        open_shared_pipe(&dialer_a, &shared_b, &shared_c).await?;
     let (owner, non_owner) = match shared_owner {
         SharedOwner::B => (&gateway_b, &gateway_c),
         SharedOwner::C => (&gateway_c, &gateway_b),
@@ -147,13 +147,13 @@ async fn three_gateway_case() -> TestResult {
     )
     .await?;
     assert_bidirectional(
-        &mut shared_connector,
-        &mut shared_listener,
+        &mut shared_dialer,
+        &mut shared_acceptor,
         "a-to-one-of-shared-b-c",
     )
     .await?;
-    shared_connector.close().await?;
-    shared_listener.close().await?;
+    shared_dialer.close().await?;
+    shared_acceptor.close().await?;
     wait_until(
         "shared selected Pipe cleanup",
         Duration::from_secs(2),
@@ -169,16 +169,16 @@ async fn three_gateway_case() -> TestResult {
     .await?;
 
     exercise_repeated_failure_recovery(
-        &connector_a,
+        &dialer_a,
         &listener_c,
         [&gateway_a, &gateway_b, &gateway_c],
     )
     .await?;
 
-    let (mut durable_connector, mut durable_listener) =
-        open_pipe(&connector_a, CLIENT_C, &listener_c).await?;
-    let (mut reused_connector, mut reused_listener) =
-        open_pipe(&connector_a, CLIENT_C, &listener_c).await?;
+    let (mut durable_dialer, mut durable_acceptor) =
+        open_pipe(&dialer_a, DESTINATION_C, &listener_c).await?;
+    let (mut reused_dialer, mut reused_acceptor) =
+        open_pipe(&dialer_a, DESTINATION_C, &listener_c).await?;
     wait_until(
         "a-c pair reuses its ready transport",
         Duration::from_secs(2),
@@ -194,9 +194,9 @@ async fn three_gateway_case() -> TestResult {
         },
     )
     .await?;
-    assert_bidirectional(&mut reused_connector, &mut reused_listener, "a-c-reused").await?;
-    reused_connector.close().await?;
-    reused_listener.close().await?;
+    assert_bidirectional(&mut reused_dialer, &mut reused_acceptor, "a-c-reused").await?;
+    reused_dialer.close().await?;
+    reused_acceptor.close().await?;
     wait_until(
         "only the durable a-c stream remains",
         Duration::from_secs(2),
@@ -207,7 +207,7 @@ async fn three_gateway_case() -> TestResult {
     )
     .await?;
 
-    connector_b.close();
+    dialer_b.close();
     listener_runtime_b.close();
     gateway_b.stop().await?;
     gateway_a.assert_running().await?;
@@ -215,31 +215,31 @@ async fn three_gateway_case() -> TestResult {
     wait_for_binding_count(
         &route_observer,
         generation,
-        CLIENT_SHARED,
+        DESTINATION_SHARED,
         1,
         Duration::from_secs(2),
     )
     .await?;
     exercise_pipe(
-        &connector_a,
-        CLIENT_SHARED,
+        &dialer_a,
+        DESTINATION_SHARED,
         &shared_c,
         "shared-survives-b-stop",
     )
     .await?;
     assert_bidirectional(
-        &mut durable_connector,
-        &mut durable_listener,
+        &mut durable_dialer,
+        &mut durable_acceptor,
         "a-c-after-b-stop",
     )
     .await?;
 
     drop(route_observer);
     route_table.stop().await?;
-    let failed_address = sdk_destination(CLIENT_C)?;
-    let failed_token = token_source(&failed_address, AccessAction::Dial)?;
-    let failed_open = connector_a
-        .dial(failed_address, failed_token)
+    let failed_destination = sdk_destination(DESTINATION_C)?;
+    let failed_token = token_source(&failed_destination, AccessAction::Dial)?;
+    let failed_open = dialer_a
+        .dial(failed_destination, failed_token)
         .await
         .err()
         .ok_or("remote open unexpectedly succeeded while RouteTable was unavailable")?;
@@ -256,8 +256,8 @@ async fn three_gateway_case() -> TestResult {
     )
     .await?;
     assert_bidirectional(
-        &mut durable_connector,
-        &mut durable_listener,
+        &mut durable_dialer,
+        &mut durable_acceptor,
         "a-c-after-rt-stop",
     )
     .await?;
@@ -274,25 +274,31 @@ async fn three_gateway_case() -> TestResult {
     wait_for_binding_count(
         &route_observer,
         generation,
-        CLIENT_C,
+        DESTINATION_C,
         1,
         Duration::from_secs(2),
     )
     .await?;
-    exercise_pipe(&connector_a, CLIENT_C, &listener_c, "a-c-after-rt-restart").await?;
+    exercise_pipe(
+        &dialer_a,
+        DESTINATION_C,
+        &listener_c,
+        "a-c-after-rt-restart",
+    )
+    .await?;
     drop(route_observer);
     restarted_route_table.stop().await?;
 
-    durable_connector.close().await?;
-    durable_listener.close().await?;
+    durable_dialer.close().await?;
+    durable_acceptor.close().await?;
     wait_until("durable stream cleanup", Duration::from_secs(2), || {
         gateway_a.gateway.snapshot().peer_streams == 0
             && gateway_c.gateway.snapshot().peer_streams == 0
     })
     .await?;
 
-    connector_a.close();
-    connector_c.close();
+    dialer_a.close();
+    dialer_c.close();
     listener_runtime_a.close();
     listener_runtime_c.close();
     gateway_a.stop().await?;
@@ -301,24 +307,24 @@ async fn three_gateway_case() -> TestResult {
 }
 
 async fn exercise_repeated_failure_recovery(
-    connector: &Relay,
+    dialer: &Relay,
     listener: &Listener,
     gateways: [&RunningGateway; 3],
 ) -> TestResult {
     for cycle in 0..100 {
-        let missing_address = sdk_destination(CLIENT_MISSING)?;
-        let missing_token = token_source(&missing_address, AccessAction::Dial)?;
-        let failure = connector
-            .dial(missing_address, missing_token)
+        let missing_destination = sdk_destination(DESTINATION_MISSING)?;
+        let missing_token = token_source(&missing_destination, AccessAction::Dial)?;
+        let failure = dialer
+            .dial(missing_destination, missing_token)
             .await
             .err()
-            .ok_or("missing RouteAddress unexpectedly opened a Pipe")?;
+            .ok_or("missing Destination unexpectedly opened a Pipe")?;
         assert_eq!(failure.code(), SdkErrorCode::NotFound);
         assert_eq!(failure.observation(), SdkPeerObservation::NotObserved);
 
         exercise_pipe(
-            connector,
-            CLIENT_C,
+            dialer,
+            DESTINATION_C,
             listener,
             &format!("failure-recovery-{cycle}"),
         )
@@ -345,39 +351,38 @@ async fn exercise_repeated_failure_recovery(
 }
 
 async fn listen(relay: &Relay, destination: &str) -> TestResult<Listener> {
-    let address = sdk_destination(destination)?;
-    let access_token = token_source(&address, AccessAction::Publish)?;
-    Ok(relay.listen(address, access_token).await?)
+    let destination = sdk_destination(destination)?;
+    let access_token = token_source(&destination, AccessAction::Publish)?;
+    Ok(relay.listen(destination, access_token).await?)
 }
 
 async fn dial(relay: &Relay, destination: &str) -> TestResult<Pipe> {
-    let address = sdk_destination(destination)?;
-    let access_token = token_source(&address, AccessAction::Dial)?;
-    Ok(relay.dial(address, access_token).await?)
+    let destination = sdk_destination(destination)?;
+    let access_token = token_source(&destination, AccessAction::Dial)?;
+    Ok(relay.dial(destination, access_token).await?)
 }
 
 async fn exercise_pipe(
-    connector: &Relay,
+    dialer: &Relay,
     destination: &str,
     listener: &Listener,
     marker: &str,
 ) -> TestResult {
-    let (mut connector_pipe, mut listener_pipe) =
-        open_pipe(connector, destination, listener).await?;
-    assert_bidirectional(&mut connector_pipe, &mut listener_pipe, marker).await?;
-    connector_pipe.close().await?;
-    listener_pipe.close().await?;
+    let (mut dialer_pipe, mut acceptor_pipe) = open_pipe(dialer, destination, listener).await?;
+    assert_bidirectional(&mut dialer_pipe, &mut acceptor_pipe, marker).await?;
+    dialer_pipe.close().await?;
+    acceptor_pipe.close().await?;
     Ok(())
 }
 
 async fn open_pipe(
-    connector: &Relay,
+    dialer: &Relay,
     destination: &str,
     listener: &Listener,
 ) -> TestResult<(Pipe, Pipe)> {
-    let connector_pipe = dial(connector, destination).await?;
-    let listener_pipe = listener.accept().await?;
-    Ok((connector_pipe, listener_pipe))
+    let dialer_pipe = dial(dialer, destination).await?;
+    let acceptor_pipe = listener.accept().await?;
+    Ok((dialer_pipe, acceptor_pipe))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,11 +392,11 @@ enum SharedOwner {
 }
 
 async fn open_shared_pipe(
-    connector: &Relay,
+    dialer: &Relay,
     listener_b: &Listener,
     listener_c: &Listener,
 ) -> TestResult<(Pipe, Pipe, SharedOwner)> {
-    let destination = sdk_destination(CLIENT_SHARED)?;
+    let destination = sdk_destination(DESTINATION_SHARED)?;
     let access_token = token_source(&destination, AccessAction::Dial)?;
     timeout(Duration::from_secs(2), async {
         let accepted = async {
@@ -401,32 +406,28 @@ async fn open_shared_pipe(
             }
         };
         let (opened, accepted) =
-            tokio::join!(connector.dial(destination.clone(), access_token), accepted);
-        let connector_pipe = opened?;
-        let (listener_pipe, owner) = accepted?;
-        Ok::<_, relaygate_sdk::Error>((connector_pipe, listener_pipe, owner))
+            tokio::join!(dialer.dial(destination.clone(), access_token), accepted);
+        let dialer_pipe = opened?;
+        let (acceptor_pipe, owner) = accepted?;
+        Ok::<_, relaygate_sdk::Error>((dialer_pipe, acceptor_pipe, owner))
     })
     .await
     .map_err(|_| "shared OPEN or concurrent accept timed out")?
     .map_err(Into::into)
 }
 
-async fn assert_bidirectional(
-    connector: &mut Pipe,
-    listener: &mut Pipe,
-    marker: &str,
-) -> TestResult {
-    let toward_listener = format!("connector:{marker}").into_bytes();
-    connector.write_all(&toward_listener).await?;
-    let mut received = vec![0; toward_listener.len()];
+async fn assert_bidirectional(dialer: &mut Pipe, listener: &mut Pipe, marker: &str) -> TestResult {
+    let toward_acceptor = format!("dialer:{marker}").into_bytes();
+    dialer.write_all(&toward_acceptor).await?;
+    let mut received = vec![0; toward_acceptor.len()];
     listener.read_exact(&mut received).await?;
-    assert_eq!(received, toward_listener);
+    assert_eq!(received, toward_acceptor);
 
-    let toward_connector = format!("listener:{marker}").into_bytes();
-    listener.write_all(&toward_connector).await?;
-    let mut received = vec![0; toward_connector.len()];
-    connector.read_exact(&mut received).await?;
-    assert_eq!(received, toward_connector);
+    let toward_dialer = format!("listener:{marker}").into_bytes();
+    listener.write_all(&toward_dialer).await?;
+    let mut received = vec![0; toward_dialer.len()];
+    dialer.read_exact(&mut received).await?;
+    assert_eq!(received, toward_dialer);
     Ok(())
 }
 
@@ -574,11 +575,11 @@ async fn wait_for_binding_count(
     expected: usize,
     deadline: Duration,
 ) -> TestResult {
-    let address = sdk_destination(destination)?;
+    let destination = sdk_destination(destination)?;
     let expires = Instant::now() + deadline;
     loop {
         if client
-            .resolve(generation, &address)
+            .resolve(generation, &destination)
             .await
             .is_ok_and(|bindings| bindings.len() == expected)
         {
@@ -586,7 +587,7 @@ async fn wait_for_binding_count(
         }
         if Instant::now() >= expires {
             return Err(format!(
-                "RouteTable did not converge to {expected} bindings for {address}"
+                "RouteTable did not converge to {expected} bindings for {destination}"
             )
             .into());
         }
@@ -594,8 +595,8 @@ async fn wait_for_binding_count(
     }
 }
 
-fn sdk_destination(value: &str) -> Result<RouteAddress, relaygate_address::AddressError> {
-    test_address(value)
+fn sdk_destination(value: &str) -> Result<Destination, relaygate_destination::DestinationError> {
+    test_destination(value)
 }
 
 async fn wait_until(
@@ -615,7 +616,7 @@ async fn wait_until(
 
 fn one_shard_directory(endpoint: SocketAddr) -> Vec<u8> {
     format!(
-        r#"{{"format_version":2,"authority_hash":"sha256-route-address-modulo-v2","shards":[{{"id":"{SHARD_ID}","endpoint":"{endpoint}"}}]}}"#
+        r#"{{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{{"id":"{SHARD_ID}","endpoint":"{endpoint}"}}]}}"#
     )
     .into_bytes()
 }

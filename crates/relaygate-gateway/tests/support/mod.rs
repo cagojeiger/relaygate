@@ -1,6 +1,6 @@
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use relaygate_gateway::{AuthorizationConfig, Es256PublicKey, TrustedIssuer};
-use relaygate_sdk::{AccessAction, AccessToken, AccessTokenSource, RouteAddress};
+use relaygate_sdk::{AccessAction, AccessToken, AccessTokenSource, Destination};
 use serde::Serialize;
 
 const AUDIENCE: &str = "relaygate";
@@ -40,7 +40,7 @@ struct Permission<'a> {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Scope<'a> {
-    Exact { destination: &'a str },
+    Exact { name: &'a str },
 }
 
 pub(crate) fn authorization_config()
@@ -50,17 +50,19 @@ pub(crate) fn authorization_config()
     Ok(AuthorizationConfig::new(AUDIENCE, vec![issuer])?)
 }
 
-pub(crate) fn address(name: &str) -> Result<RouteAddress, relaygate_address::AddressError> {
+pub(crate) fn destination(
+    name: &str,
+) -> Result<Destination, relaygate_destination::DestinationError> {
     format!("test/{name}").parse()
 }
 
 #[allow(dead_code)]
-pub(crate) fn unique_address() -> Result<RouteAddress, relaygate_address::AddressError> {
-    address(&uuid::Uuid::new_v4().to_string())
+pub(crate) fn unique_destination() -> Result<Destination, relaygate_destination::DestinationError> {
+    destination(&uuid::Uuid::new_v4().to_string())
 }
 
 pub(crate) fn token_source(
-    address: &RouteAddress,
+    destination: &Destination,
     action: AccessAction,
 ) -> Result<AccessTokenSource, Box<dyn std::error::Error + Send + Sync>> {
     let now = jsonwebtoken::get_current_timestamp();
@@ -76,9 +78,9 @@ pub(crate) fn token_source(
         exp: now.saturating_add(300),
         permissions: [Permission {
             action,
-            namespace: address.namespace().as_str(),
+            namespace: destination.namespace().as_str(),
             scope: Scope::Exact {
-                destination: address.destination().as_str(),
+                name: destination.name().as_str(),
             },
         }],
     };

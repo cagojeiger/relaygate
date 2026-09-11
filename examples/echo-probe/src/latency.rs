@@ -1,7 +1,7 @@
 use std::{env, time::Instant};
 
 use anyhow::{Context, ensure};
-use relaygate_sdk::{Pipe, RouteAddress};
+use relaygate_sdk::{Destination, Pipe};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -10,8 +10,8 @@ use tokio::{
 
 use crate::{
     config::{
-        ECHO_DEADLINE, ROUTE_ADDRESSES, ROUTE_WAIT, access_token_source, gateway_addresses,
-        route_address,
+        DESTINATION_WAIT, DESTINATIONS, ECHO_DEADLINE, access_token_source, destination,
+        gateway_addresses,
     },
     probe::{connect, dial_when_available},
 };
@@ -27,9 +27,9 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         None => gateway_addresses()?,
     };
     let destinations = if single.is_some() {
-        vec![route_address()?]
+        vec![destination()?]
     } else {
-        ROUTE_ADDRESSES
+        DESTINATIONS
             .iter()
             .map(|value| (*value).to_owned())
             .collect()
@@ -42,11 +42,14 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         let setup_seconds = setup.elapsed().as_secs_f64();
         for (owner, destination) in destinations.iter().enumerate() {
             // Registration convergence is a preflight, outside the timed dial and DATA samples.
-            drop(dial_when_available(&relay, destination, &access_token_source, ROUTE_WAIT).await?);
+            drop(
+                dial_when_available(&relay, destination, &access_token_source, DESTINATION_WAIT)
+                    .await?,
+            );
             let dial_started = Instant::now();
             let pipe = relay
                 .dial(
-                    destination.parse::<RouteAddress>()?,
+                    destination.parse::<Destination>()?,
                     access_token_source.clone(),
                 )
                 .await?;

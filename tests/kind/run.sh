@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # shellcheck source=tests/kind/certificates.sh
 source "$ROOT/tests/kind/certificates.sh"
-CLUSTER_NAME=${RELAYGATE_KIND_CLUSTER_NAME:-relaygate-v02-${GITHUB_RUN_ID:-$$}}
+CLUSTER_NAME=${RELAYGATE_KIND_CLUSTER_NAME:-relaygate-v03-${GITHUB_RUN_ID:-$$}}
 NODE_IMAGE=${RELAYGATE_KIND_NODE_IMAGE:-kindest/node:v1.32.2}
 ENVOY_IMAGE=${RELAYGATE_ENVOY_IMAGE:-envoyproxy/envoy:v1.33.4}
 ARTIFACTS=${RELAYGATE_KIND_ARTIFACTS:-$ROOT/target/kind-acceptance}
@@ -17,11 +17,11 @@ IMAGE_TAG=kind-${GITHUB_SHA:-local}
 GATEWAY_IMAGE=relaygate-gateway:$IMAGE_TAG
 ROUTE_TABLE_IMAGE=relaygate-route-table:$IMAGE_TAG
 GATEWAYS=127.0.0.1:28420,127.0.0.1:28421,127.0.0.1:28422
-ROUTE_A=examples/echo-a
-ROUTE_B=examples/echo-b
-ROUTE_C=examples/echo-c
-ROUTE_SHARED=examples/echo-shared
-ROUTE_BOUNDARY=examples/echo-boundary
+DESTINATION_A=examples/echo-a
+DESTINATION_B=examples/echo-b
+DESTINATION_C=examples/echo-c
+DESTINATION_SHARED=examples/echo-shared
+DESTINATION_BOUNDARY=examples/echo-boundary
 TEST_ACCESS_TOKEN=${RELAYGATE_ACCESS_TOKEN:-eyJhbGciOiJFUzI1NiIsImtpZCI6ImNvbXBvc2UtdjEiLCJ0eXAiOiJyZWxheWdhdGUtb3BlcmF0aW9uK2p3dCJ9.eyJpc3MiOiJodHRwczovL2lzc3Vlci5jb21wb3NlLmludmFsaWQiLCJhdWQiOiJyZWxheWdhdGUiLCJuYmYiOjAsImV4cCI6NDEwMjQ0NDgwMCwicGVybWlzc2lvbnMiOlt7ImFjdGlvbiI6InB1Ymxpc2giLCJuYW1lc3BhY2UiOiJleGFtcGxlcyIsInNjb3BlIjp7ImtpbmQiOiJhbGwifX0seyJhY3Rpb24iOiJkaWFsIiwibmFtZXNwYWNlIjoiZXhhbXBsZXMiLCJzY29wZSI6eyJraW5kIjoiYWxsIn19XX0.YAvjlTHeCMVpkQj-FWQUKm6PwQ_K8mQyO1OBRK_zRXwwMNiabSkPXlVWoY1KOGAXkP6xFSIwmEQp1bx2-LVBDg}
 TEMP_DIR=
 CLUSTER_CREATED=false
@@ -409,9 +409,9 @@ YAML
 start_listener() {
   local index=$1
   local address=$2
-  local route_address=$3
+  local destination=$3
   RELAYGATE_ADDR="$address" \
-    RELAYGATE_ROUTE_ADDRESS="$route_address" \
+    RELAYGATE_DESTINATION="$destination" \
     "$LISTENER" >"$ARTIFACTS/listener-$index.log" 2>&1 &
   local pid=$!
   BACKGROUND_PIDS+=("$pid")
@@ -430,7 +430,7 @@ wait_for_destination() {
   local attempt
   : >"$log"
   for ((attempt = 1; attempt <= 6; attempt++)); do
-    if "$PROBE" wait-client "$destination" >>"$log" 2>&1; then
+    if "$PROBE" wait-destination "$destination" >>"$log" 2>&1; then
       return 0
     fi
     printf 'retrying destination convergence attempt=%s\n' "$attempt" >>"$log"
@@ -501,8 +501,8 @@ wait_for_cleanup_baseline() {
       body=$(curl -fsS "http://127.0.0.1:$((28440 + index))/metrics" || true)
       for metric in \
         relaygate_route_table_registrations \
-        relaygate_route_table_mappings \
-        relaygate_route_table_routes \
+        relaygate_route_table_bindings \
+        relaygate_route_table_destinations \
         relaygate_route_table_expiry_records; do
         if awk -v metric="$metric" '$1 ~ ("^" metric "({|$)") && ($NF + 0) != 0 { found=1 } END { exit !found }' \
           <<<"$body"; then
@@ -621,30 +621,30 @@ main() {
   record_pass KIND-02 'symmetric three-participant chat'
   record_pass KIND-04 'N:M single selection and survivor failover'
 
-  start_listener a 127.0.0.1:28420 "$ROUTE_A" >/dev/null
-  start_listener b 127.0.0.1:28421 "$ROUTE_B" >/dev/null
-  start_listener shared-b 127.0.0.1:28421 "$ROUTE_SHARED" >/dev/null
-  start_listener c 127.0.0.1:28422 "$ROUTE_C" >/dev/null
-  start_listener shared-c 127.0.0.1:28422 "$ROUTE_SHARED" >/dev/null
-  start_listener boundary-c 127.0.0.1:28422 "$ROUTE_BOUNDARY" >/dev/null
-  wait_for_destination "$ROUTE_A"
-  wait_for_destination "$ROUTE_B"
-  wait_for_destination "$ROUTE_C"
-  wait_for_destination "$ROUTE_SHARED"
-  wait_for_destination "$ROUTE_BOUNDARY"
+  start_listener a 127.0.0.1:28420 "$DESTINATION_A" >/dev/null
+  start_listener b 127.0.0.1:28421 "$DESTINATION_B" >/dev/null
+  start_listener shared-b 127.0.0.1:28421 "$DESTINATION_SHARED" >/dev/null
+  start_listener c 127.0.0.1:28422 "$DESTINATION_C" >/dev/null
+  start_listener shared-c 127.0.0.1:28422 "$DESTINATION_SHARED" >/dev/null
+  start_listener boundary-c 127.0.0.1:28422 "$DESTINATION_BOUNDARY" >/dev/null
+  wait_for_destination "$DESTINATION_A"
+  wait_for_destination "$DESTINATION_B"
+  wait_for_destination "$DESTINATION_C"
+  wait_for_destination "$DESTINATION_SHARED"
+  wait_for_destination "$DESTINATION_BOUNDARY"
   assert_check_fails wrong-token env RELAYGATE_ACCESS_TOKEN=wrong-token \
-    "$PROBE" wait-client "$ROUTE_A"
+    "$PROBE" wait-destination "$DESTINATION_A"
   record_pass KIND-01 'TLS CA/name/ALPN and operation-token authorization'
 
   run_probe matrix matrix
   record_pass KIND-03 'all local and directed one-hop paths'
 
-  RELAYGATE_ADDR=127.0.0.1:28423 RELAYGATE_ROUTE_ADDRESS="$ROUTE_A" \
+  RELAYGATE_ADDR=127.0.0.1:28423 RELAYGATE_DESTINATION="$DESTINATION_A" \
     run_probe envoy single
   record_pass KIND-09 'Envoy byte passthrough with Gateway TLS termination'
 
   RELAYGATE_CONTINUITY_ADDR=127.0.0.1:28420 \
-    RELAYGATE_ROUTE_ADDRESS="$ROUTE_C" \
+    RELAYGATE_DESTINATION="$DESTINATION_C" \
     RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/rt-continuity.state" \
     "$PROBE" continuity >"$ARTIFACTS/rt-continuity.log" 2>&1 &
   RT_CONTINUITY_PID=$!
@@ -655,21 +655,21 @@ main() {
   RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/rt-continuity.state" \
     "$PROBE" continuity-check | tee "$ARTIFACTS/rt-continuity-check.log"
   stop_process "$RT_CONTINUITY_PID"
-  wait_for_destination "$ROUTE_A"
-  wait_for_destination "$ROUTE_B"
-  wait_for_destination "$ROUTE_C"
+  wait_for_destination "$DESTINATION_A"
+  wait_for_destination "$DESTINATION_B"
+  wait_for_destination "$DESTINATION_C"
   record_pass KIND-10 'RouteTable rolling restart continuity and recovery'
 
   kubectl -n "$NAMESPACE" scale statefulset/relaygate-rt --replicas=1
   kubectl -n "$NAMESPACE" wait --for=delete pod/relaygate-rt-1 --timeout=120s
-  run_probe rt-isolation expect-shard-isolation "$ROUTE_B" 1 "$ROUTE_A"
+  run_probe rt-isolation expect-shard-isolation "$DESTINATION_B" 1 "$DESTINATION_A"
   kubectl -n "$NAMESPACE" scale statefulset/relaygate-rt --replicas=2
   kubectl -n "$NAMESPACE" rollout status statefulset/relaygate-rt --timeout=180s
-  wait_for_destination "$ROUTE_B"
+  wait_for_destination "$DESTINATION_B"
   record_pass KIND-06 'RouteTable shard loss isolation and current-state recovery'
 
   RELAYGATE_CONTINUITY_ADDR=127.0.0.1:28420 \
-    RELAYGATE_ROUTE_ADDRESS="$ROUTE_B" \
+    RELAYGATE_DESTINATION="$DESTINATION_B" \
     RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/gateway-continuity.state" \
     "$PROBE" continuity >"$ARTIFACTS/gateway-old-pipe.log" 2>&1 &
   GATEWAY_PIPE_PID=$!
@@ -683,15 +683,15 @@ main() {
     return 1
   fi
   wait_for_replaced_pod relaygate-gateway-1 "$GATEWAY_1_UID" 180
-  wait_for_destination "$ROUTE_B"
+  wait_for_destination "$DESTINATION_B"
   run_probe gateway-recovery matrix
   record_pass KIND-05 'Gateway loss closes old Pipe and fresh dial recovers'
 
   kubectl -n "$NAMESPACE" rollout restart statefulset/relaygate-gateway
   kubectl -n "$NAMESPACE" rollout status statefulset/relaygate-gateway --timeout=240s
-  wait_for_destination "$ROUTE_A"
-  wait_for_destination "$ROUTE_B"
-  wait_for_destination "$ROUTE_C"
+  wait_for_destination "$DESTINATION_A"
+  wait_for_destination "$DESTINATION_B"
+  wait_for_destination "$DESTINATION_C"
   run_probe gateway-rolling matrix
   record_pass KIND-11 'Gateway rolling restart reconnect and republish'
 
@@ -700,7 +700,7 @@ main() {
   fi
 
   RELAYGATE_ADDR=127.0.0.1:28420 \
-    RELAYGATE_ROUTE_ADDRESS="$ROUTE_A" \
+    RELAYGATE_DESTINATION="$DESTINATION_A" \
     RELAYGATE_STORM_SESSIONS=100 \
     RELAYGATE_STORM_PAUSE_SECS=45 \
     "$PROBE" reconnect-storm >"$ARTIFACTS/reconnect-storm.log" 2>&1 &
@@ -730,7 +730,7 @@ main() {
   assert_no_secret_or_payload_leak
   record_pass KIND-08 'secret and payload non-disclosure'
   capture_evidence
-  printf 'RelayGate v0.2 Kind acceptance completed for %s\n' "$CLUSTER_NAME" \
+  printf 'RelayGate Kind acceptance completed for %s\n' "$CLUSTER_NAME" \
     | tee -a "$ARTIFACTS/summary.txt"
 }
 

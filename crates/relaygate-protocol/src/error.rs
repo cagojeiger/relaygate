@@ -16,8 +16,8 @@ pub enum ProtocolError {
     Truncated(&'static str),
     #[error("invalid UTF-8 in {0}")]
     InvalidUtf8(&'static str),
-    #[error("invalid namespace or destination in RouteAddress")]
-    InvalidRouteAddress,
+    #[error("invalid Destination")]
+    InvalidDestination,
     #[error("{field} is too long: {actual} bytes, maximum {maximum}")]
     FieldTooLong {
         field: &'static str,

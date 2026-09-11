@@ -28,7 +28,7 @@ CI의 `grafana_ui.cjs`는 실제 Grafana에서 세 화면 provisioning, 시간·
 | RED | GW DIAL 결과 class, operation authorization, SDK 접속·dial, publish, RT request/actor result와 duration |
 | liveness | SDK/peer heartbeat RTT와 timeout |
 | admission | non-draining + session capacity readiness |
-| USE | session slot·Binding·pending open·GW Pipe의 used/limit, 고유 Pipe, peer stream, RT mapping gauge |
+| USE | session slot·Binding·pending open·GW Pipe의 used/limit, 고유 Pipe, peer stream, RT BindingProjection gauge |
 | recovery | 진행 중 SDK reconnect, recovered/closed/aborted 종료 시간, dependency transition, lease expiry, drain |
 | cleanup | topology 종료 뒤 current gauge baseline |
 | cardinality | bounded label set |
@@ -52,9 +52,9 @@ SDK reconnect 테스트는 process-global tracing callsite 등록을 공유하�
 # Compose topology가 실행 중인 상태: 3 local + 6 directed one-hop
 docker compose run --rm --no-deps topology-probe relaygate-echo-probe latency
 
-# 특정 주소: 해당 환경의 RouteAddress, operation AccessToken과 TLS CA/server name을 설정한다.
+# 특정 Destination: 해당 환경의 Destination, operation AccessToken과 TLS CA/server name을 설정한다.
 RELAYGATE_ADDR=relaygate.example:443 \
-RELAYGATE_ROUTE_ADDRESS=inference/stt.seoul \
+RELAYGATE_DESTINATION=inference/stt.seoul \
 RELAYGATE_ACCESS_TOKEN='<signed-jwt>' \
 cargo run -p relaygate-echo-probe -- latency
 ```

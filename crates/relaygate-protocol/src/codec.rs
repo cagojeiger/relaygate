@@ -3,8 +3,8 @@ use tokio_util::codec::{Decoder, Encoder};
 use uuid::Uuid;
 
 use crate::{
-    BearerToken, BindingId, DestinationName, ErrorCode, Frame, NamespaceId, PeerObservation,
-    PipeId, ProtocolError, RouteAddress, SessionId,
+    BearerToken, BindingId, Destination, DestinationName, ErrorCode, Frame, Namespace,
+    PeerObservation, PipeId, ProtocolError, SessionId,
 };
 
 const MAGIC: [u8; 2] = *b"RG";
@@ -104,11 +104,11 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
         }
         Frame::Publish {
             request_id,
-            address,
+            destination: route_destination,
             access_token,
         } => {
             destination.put_u64(request_id);
-            put_address(destination, &address)?;
+            put_destination(destination, &route_destination)?;
             put_string(destination, "access_token", access_token.expose_secret())?;
             4
         }
@@ -144,22 +144,22 @@ fn encode_payload(frame: Frame, destination: &mut BytesMut) -> Result<u8, Protoc
         }
         Frame::Dial {
             connection_id,
-            address,
+            destination: route_destination,
             access_token,
         } => {
             destination.put_u64(connection_id);
-            put_address(destination, &address)?;
+            put_destination(destination, &route_destination)?;
             put_string(destination, "access_token", access_token.expose_secret())?;
             9
         }
         Frame::Offer {
             pipe_id,
             binding_id,
-            address,
+            destination: route_destination,
         } => {
             put_pipe_id(destination, pipe_id);
             put_binding_id(destination, binding_id);
-            put_address(destination, &address)?;
+            put_destination(destination, &route_destination)?;
             10
         }
         Frame::OfferAccepted { pipe_id } => {
@@ -244,7 +244,7 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<Frame, ProtocolError> {
         },
         4 => Frame::Publish {
             request_id: reader.u64("request_id")?,
-            address: reader.address()?,
+            destination: reader.destination()?,
             access_token: reader.access_token()?,
         },
         5 => Frame::Published {
@@ -265,13 +265,13 @@ fn decode_payload(kind: u8, payload: Bytes) -> Result<Frame, ProtocolError> {
         },
         9 => Frame::Dial {
             connection_id: reader.u64("connection_id")?,
-            address: reader.address()?,
+            destination: reader.destination()?,
             access_token: reader.access_token()?,
         },
         10 => Frame::Offer {
             pipe_id: reader.pipe_id()?,
             binding_id: reader.binding_id()?,
-            address: reader.address()?,
+            destination: reader.destination()?,
         },
         11 => Frame::OfferAccepted {
             pipe_id: reader.pipe_id()?,
@@ -345,9 +345,9 @@ fn put_binding_id(destination: &mut BytesMut, value: BindingId) {
     destination.extend_from_slice(value.as_uuid().as_bytes());
 }
 
-fn put_address(destination: &mut BytesMut, value: &RouteAddress) -> Result<(), ProtocolError> {
+fn put_destination(destination: &mut BytesMut, value: &Destination) -> Result<(), ProtocolError> {
     put_string(destination, "namespace", value.namespace().as_str())?;
-    put_string(destination, "destination", value.destination().as_str())
+    put_string(destination, "name", value.name().as_str())
 }
 
 fn put_pipe_id(destination: &mut BytesMut, value: PipeId) {
@@ -416,12 +416,12 @@ impl PayloadReader {
         self.uuid("binding_id").map(BindingId::from_uuid)
     }
 
-    fn address(&mut self) -> Result<RouteAddress, ProtocolError> {
-        let namespace = NamespaceId::new(&self.string("namespace")?)
-            .map_err(|_| ProtocolError::InvalidRouteAddress)?;
-        let destination = DestinationName::new(&self.string("destination")?)
-            .map_err(|_| ProtocolError::InvalidRouteAddress)?;
-        Ok(RouteAddress::new(namespace, destination))
+    fn destination(&mut self) -> Result<Destination, ProtocolError> {
+        let namespace = Namespace::new(&self.string("namespace")?)
+            .map_err(|_| ProtocolError::InvalidDestination)?;
+        let name = DestinationName::new(&self.string("name")?)
+            .map_err(|_| ProtocolError::InvalidDestination)?;
+        Ok(Destination::new(namespace, name))
     }
 
     fn access_token(&mut self) -> Result<BearerToken, ProtocolError> {

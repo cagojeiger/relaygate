@@ -1,5 +1,5 @@
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-use relaygate_protocol::{BearerToken, RouteAddress};
+use relaygate_protocol::{BearerToken, Destination};
 use serde::Serialize;
 
 use crate::{AuthorizationConfig, Es256PublicKey, TrustedIssuer, authorization::TOKEN_TYPE};
@@ -56,18 +56,18 @@ struct Permission<'a> {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Scope<'a> {
-    Exact { destination: &'a str },
+    Exact { name: &'a str },
 }
 
 #[allow(clippy::expect_used)]
-pub(crate) fn address(destination: &str) -> RouteAddress {
+pub(crate) fn destination(destination: &str) -> Destination {
     format!("test/{destination}")
         .parse()
-        .expect("valid test RouteAddress")
+        .expect("valid test Destination")
 }
 
-pub(crate) fn unique_address() -> RouteAddress {
-    address(&uuid::Uuid::new_v4().to_string())
+pub(crate) fn unique_destination() -> Destination {
+    destination(&uuid::Uuid::new_v4().to_string())
 }
 
 #[allow(clippy::expect_used)]
@@ -85,7 +85,7 @@ pub(crate) fn authorization_config() -> AuthorizationConfig {
 }
 
 #[allow(clippy::expect_used)]
-pub(crate) fn bearer_token(address: &RouteAddress, action: TestAction) -> BearerToken {
+pub(crate) fn bearer_token(destination: &Destination, action: TestAction) -> BearerToken {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = Claims {
         iss: TEST_ISSUER,
@@ -94,9 +94,9 @@ pub(crate) fn bearer_token(address: &RouteAddress, action: TestAction) -> Bearer
         exp: now.saturating_add(300),
         permissions: [Permission {
             action: action.as_str(),
-            namespace: address.namespace().as_str(),
+            namespace: destination.namespace().as_str(),
             scope: Scope::Exact {
-                destination: address.destination().as_str(),
+                name: destination.name().as_str(),
             },
         }],
     };

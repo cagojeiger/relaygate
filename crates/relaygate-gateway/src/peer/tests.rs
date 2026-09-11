@@ -187,7 +187,7 @@ fn peer_frame_codec_round_trips_every_frame_kind() -> Result<(), Box<dyn std::er
         PeerFrame::Open {
             stream_id,
             open_identity: OpenIdentity::new(GatewayId::new(), SessionId::new(), 7),
-            address: crate::test_support::address("echo.a"),
+            destination: crate::test_support::destination("echo.a"),
             relay_session_id: SessionId::new(),
             binding_id: BindingId::new(),
         },
@@ -386,7 +386,7 @@ fn peer_frame_codec_bounds_strings_and_rejects_empty_open_destination() -> Resul
     let empty_client = PeerFrame::Open {
         stream_id: StreamId::from_raw(0),
         open_identity: OpenIdentity::new(GatewayId::new(), SessionId::new(), 1),
-        address: crate::test_support::address("echo"),
+        destination: crate::test_support::destination("echo"),
         relay_session_id: SessionId::new(),
         binding_id: BindingId::new(),
     };

@@ -15,7 +15,7 @@ host Rust SDK -- TLS/TCP --|
 | 항목 | 구성 |
 | --- | --- |
 | cluster | 격리된 name, local image, 일회성 certificate·authorization ConfigMap |
-| SDK | host Rust process; RouteAddress와 operation token 공급 |
+| SDK | host Rust process; Destination과 operation token 공급 |
 | direct entry | local/one-hop과 fault scope 검증 |
 | Envoy entry | external L4 passthrough 검증 |
 | evidence | `target/kind-acceptance` artifact |
@@ -30,9 +30,9 @@ host Rust SDK -- TLS/TCP --|
 | `KIND-01` | TLS/session/authorization | 올바른 CA/name/ALPN으로 credential-free session 수립; valid operation token만 PUBLISH/DIAL 성공; wrong CA/name/ALPN/JWT는 route state 없이 실패 |
 | `KIND-02` | symmetric chat | 각 Relay가 listen과 dial을 함께 수행하고 다중 사용자 1:1 byte 교환 |
 | `KIND-03` | local/one-hop | 모든 local 경로와 directed remote Gateway 경로 성공, RT와 raw token은 payload/peer 경로에 없음 |
-| `KIND-04` | N:M | 같은 RouteAddress Binding 여러 개 중 dial마다 하나만 선택, fan-out 없음 |
+| `KIND-04` | N:M | 같은 Destination Binding 여러 개 중 dial마다 하나만 선택, fan-out 없음 |
 | `KIND-05` | Gateway restart | old Pipe 종료, SDK reconnect·AccessTokenSource republish, fresh dial 성공 |
-| `KIND-06` | RT shard loss | unavailable shard의 remote dial만 격리되고 local Pipe와 다른 shard 유지, 복귀 뒤 mapping 재수렴 |
+| `KIND-06` | RT shard loss | unavailable shard의 remote dial만 격리되고 local Pipe와 다른 shard 유지, 복귀 뒤 BindingProjection 재수렴 |
 | `KIND-07` | cleanup | SDK 종료 뒤 session/binding/attempt/Pipe/peer stream gauge가 baseline 복귀 |
 | `KIND-08` | secret | AccessToken, decoded claim, JWT private key, internal credential, TLS private key와 payload marker가 log·metric·error에 없음 |
 | `KIND-09` | L4/TLS passthrough | Envoy가 TLS를 종료하지 않고 SDK CA/name 검증과 Pipe byte 왕복 성공 |

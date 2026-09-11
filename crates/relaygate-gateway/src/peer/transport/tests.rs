@@ -93,7 +93,7 @@ fn actor_for_open(writer_capacity: usize) -> Result<TestActor, Box<dyn Error>> {
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         open_identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -512,7 +512,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         second_identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -546,7 +546,7 @@ async fn writer_pressure_orders_multiple_opens_and_never_reuses_failed_counter()
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         third_identity,
-        crate::test_support::address("echo.b"),
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -619,7 +619,7 @@ async fn cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport()
         .send_reset(
             stream_ids[0],
             ErrorCode::Cancelled,
-            "connector session closed".to_owned(),
+            "dialer session closed".to_owned(),
         )
         .await?;
     actor.flush_stream_queues().await;
@@ -671,7 +671,7 @@ async fn cleanup_reset_is_stream_scoped_until_commit_failure_closes_transport()
         .send_reset(
             stream_ids[1],
             ErrorCode::Cancelled,
-            "connector session closed".to_owned(),
+            "dialer session closed".to_owned(),
         )
         .await
         .err()

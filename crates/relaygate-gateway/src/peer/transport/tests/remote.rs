@@ -93,7 +93,7 @@ async fn receive_remote_open(
             .handle_frame(PeerFrame::Open {
                 stream_id,
                 open_identity,
-                address: crate::test_support::address("echo.remote"),
+                destination: crate::test_support::destination("echo.remote"),
                 relay_session_id,
                 binding_id,
             })
@@ -105,13 +105,13 @@ async fn receive_remote_open(
         Some(TransportNotice::Event(PeerEvent::IncomingOpen {
             key: incoming_key,
             open_identity: identity,
-            address,
+            destination,
             relay_session_id: session_id,
             binding_id: incoming_binding_id,
             ..
         })) if incoming_key == key
             && identity == open_identity
-            && address == crate::test_support::address("echo.remote")
+            && destination == crate::test_support::destination("echo.remote")
             && session_id == relay_session_id
             && incoming_binding_id == binding_id
     ));
@@ -198,7 +198,7 @@ async fn endpoint_bits_isolate_remote_open_replay() -> Result<(), Box<dyn Error>
             GatewayLocator::new("127.0.0.1:9999".to_owned())?,
         ),
         local_identity,
-        crate::test_support::address("echo.local"),
+        crate::test_support::destination("echo.local"),
         SessionId::new(),
         BindingId::new(),
     );
@@ -222,7 +222,7 @@ async fn endpoint_bits_isolate_remote_open_replay() -> Result<(), Box<dyn Error>
     let remote_open = PeerFrame::Open {
         stream_id: remote_stream_id,
         open_identity: remote_identity,
-        address: crate::test_support::address("echo.remote"),
+        destination: crate::test_support::destination("echo.remote"),
         relay_session_id: remote_relay_session_id,
         binding_id: remote_binding_id,
     };
@@ -233,13 +233,13 @@ async fn endpoint_bits_isolate_remote_open_replay() -> Result<(), Box<dyn Error>
         Some(TransportNotice::Event(PeerEvent::IncomingOpen {
             key,
             open_identity,
-            address,
+            destination,
             relay_session_id,
             binding_id,
             ..
         })) if key == remote_key
             && open_identity == remote_identity
-            && address == crate::test_support::address("echo.remote")
+            && destination == crate::test_support::destination("echo.remote")
             && relay_session_id == remote_relay_session_id
             && binding_id == remote_binding_id
     ));

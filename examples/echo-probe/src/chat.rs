@@ -1,10 +1,10 @@
 use anyhow::{Context, ensure};
-use relaygate_sdk::{AccessTokenSource, Listener, Pipe, Relay, RouteAddress};
+use relaygate_sdk::{AccessTokenSource, Destination, Listener, Pipe, Relay};
 use tokio::{io::AsyncReadExt, io::AsyncWriteExt, time::timeout};
 
 use crate::{
     config::{
-        ECHO_DEADLINE, ROUTE_ADDRESSES, ROUTE_WAIT, SHARED_ROUTE_ADDRESS, access_token_source,
+        DESTINATION_WAIT, DESTINATIONS, ECHO_DEADLINE, SHARED_DESTINATION, access_token_source,
         gateway_addresses,
     },
     probe::{connect, dial_when_available},
@@ -17,13 +17,11 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
     let mut listeners = Vec::with_capacity(addresses.len());
     for (index, address) in addresses.iter().enumerate() {
         let relay = connect(address).await?;
-        let route_address = parse_route_address(ROUTE_ADDRESSES[index])?;
+        let destination = parse_destination(DESTINATIONS[index])?;
         let listener = relay
-            .listen(route_address.clone(), access_token_source.clone())
+            .listen(destination.clone(), access_token_source.clone())
             .await
-            .with_context(|| {
-                format!("chat participant {index} failed to publish {route_address}")
-            })?;
+            .with_context(|| format!("chat participant {index} failed to publish {destination}"))?;
         relays.push(relay);
         listeners.push(listener);
     }
@@ -36,7 +34,7 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
             exchange(
                 &relays[from],
                 &listeners[to],
-                parse_route_address(ROUTE_ADDRESSES[to])?,
+                parse_destination(DESTINATIONS[to])?,
                 &access_token_source,
                 from,
                 to,
@@ -45,7 +43,7 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
         }
     }
 
-    let shared = parse_route_address(SHARED_ROUTE_ADDRESS)?;
+    let shared = parse_destination(SHARED_DESTINATION)?;
     let shared_one = relays[1]
         .listen(shared.clone(), access_token_source.clone())
         .await?;
@@ -65,9 +63,9 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
     let (first_outgoing, selected) = tokio::try_join!(
         dial_when_available(
             &relays[0],
-            SHARED_ROUTE_ADDRESS,
+            SHARED_DESTINATION,
             &access_token_source,
-            ROUTE_WAIT,
+            DESTINATION_WAIT,
         ),
         first_incoming
     )?;
@@ -131,9 +129,9 @@ async fn verify_shared_failover(
     let (second_outgoing, second_incoming) = tokio::try_join!(
         dial_when_available(
             caller,
-            SHARED_ROUTE_ADDRESS,
+            SHARED_DESTINATION,
             access_token_source,
-            ROUTE_WAIT,
+            DESTINATION_WAIT,
         ),
         survivor_incoming
     )?;
@@ -145,14 +143,14 @@ async fn verify_shared_failover(
 async fn exchange(
     caller: &Relay,
     listener: &Listener,
-    route_address: RouteAddress,
+    destination: Destination,
     access_token_source: &AccessTokenSource,
     from: usize,
     to: usize,
 ) -> anyhow::Result<()> {
-    let route_address = route_address.to_string();
+    let destination = destination.to_string();
     let (outgoing, incoming) = tokio::try_join!(
-        dial_when_available(caller, &route_address, access_token_source, ROUTE_WAIT),
+        dial_when_available(caller, &destination, access_token_source, DESTINATION_WAIT,),
         async { Ok::<_, anyhow::Error>(listener.accept().await?) }
     )?;
     exchange_pipes(outgoing, incoming, from, to, 0).await
@@ -188,8 +186,8 @@ async fn exchange_pipes(
     .context("chat Pipe timed out")?
 }
 
-fn parse_route_address(value: &str) -> anyhow::Result<RouteAddress> {
+fn parse_destination(value: &str) -> anyhow::Result<Destination> {
     value
         .parse()
-        .with_context(|| format!("invalid RouteAddress {value:?}"))
+        .with_context(|| format!("invalid Destination {value:?}"))
 }
