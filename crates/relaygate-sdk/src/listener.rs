@@ -240,15 +240,6 @@ impl Relay {
         access_token_source: AccessTokenSource,
     ) -> Result<Pipe> {
         let deadline = self.inner.config.operation_deadline()?;
-        let access_token = timeout_at(
-            deadline,
-            access_token_source.supply(AccessTokenRequest {
-                action: AccessAction::Dial,
-                destination: destination.clone(),
-            }),
-        )
-        .await
-        .map_err(|_| Error::deadline(PeerObservation::NotObserved))??;
         let mut current = self.inner.current.subscribe();
         loop {
             if self.inner.cancel.is_cancelled() {
@@ -256,6 +247,15 @@ impl Relay {
             }
             let session = current.borrow().clone();
             if let Some(session) = session {
+                let access_token = timeout_at(
+                    deadline,
+                    access_token_source.supply(AccessTokenRequest {
+                        action: AccessAction::Dial,
+                        destination: destination.clone(),
+                    }),
+                )
+                .await
+                .map_err(|_| Error::deadline(PeerObservation::NotObserved))??;
                 let mut next_connection_id =
                     timeout_at(deadline, session.next_connection_id.lock())
                         .await

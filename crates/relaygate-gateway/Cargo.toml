@@ -8,10 +8,12 @@ publish = false
 autotests = false
 
 [dependencies]
+base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 jsonwebtoken.workspace = true
 metrics.workspace = true
+p256.workspace = true
 relaygate-destination.workspace = true
 relaygate-protocol.workspace = true
 relaygate-route-table.workspace = true

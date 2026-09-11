@@ -1286,11 +1286,13 @@ dependencies = [
 name = "relaygate-gateway"
 version = "0.2.2"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "futures-util",
  "jsonwebtoken",
  "metrics",
  "metrics-util",
+ "p256",
  "rcgen",
  "relaygate-destination",
  "relaygate-protocol",

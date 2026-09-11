@@ -1,5 +1,6 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::DecodingKey;
 use relaygate_destination::Namespace;
 
@@ -29,13 +30,36 @@ impl Es256PublicKey {
         if kid.is_empty() || kid.len() > MAX_KEY_ID_BYTES {
             return Err(invalid("ES256 key kid must be 1..=128 bytes"));
         }
-        let decoding_key = DecodingKey::from_ec_components(x.as_ref(), y.as_ref())
+        let x = x.as_ref();
+        let y = y.as_ref();
+        validate_p256_point(x, y)?;
+        let decoding_key = DecodingKey::from_ec_components(x, y)
             .map_err(|_| invalid("ES256 public key coordinates are invalid"))?;
         Ok(Self {
             kid: kid.into(),
             decoding_key,
         })
     }
+}
+
+fn validate_p256_point(x: &str, y: &str) -> Result<(), GatewayError> {
+    let x = URL_SAFE_NO_PAD
+        .decode(x)
+        .map_err(|_| invalid("ES256 public key coordinates are invalid"))?;
+    let y = URL_SAFE_NO_PAD
+        .decode(y)
+        .map_err(|_| invalid("ES256 public key coordinates are invalid"))?;
+    if x.len() != 32 || y.len() != 32 {
+        return Err(invalid("ES256 public key coordinates are invalid"));
+    }
+
+    let mut point = Vec::with_capacity(65);
+    point.push(0x04);
+    point.extend_from_slice(&x);
+    point.extend_from_slice(&y);
+    p256::PublicKey::from_sec1_bytes(&point)
+        .map(|_| ())
+        .map_err(|_| invalid("ES256 public key coordinates are invalid"))
 }
 
 impl std::fmt::Debug for Es256PublicKey {

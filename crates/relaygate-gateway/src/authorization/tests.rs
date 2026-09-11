@@ -511,6 +511,9 @@ fn malformed_or_oversized_permission_sets_fail_closed() -> TestResult {
 fn trust_configuration_is_bounded_and_unambiguous() -> TestResult {
     assert!(Es256PublicKey::new("", TEST_JWK_X, TEST_JWK_Y).is_err());
     assert!(Es256PublicKey::new(TEST_KID, "invalid", TEST_JWK_Y).is_err());
+    assert!(Es256PublicKey::new(TEST_KID, "AA", TEST_JWK_Y).is_err());
+    let zero_coordinate = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    assert!(Es256PublicKey::new(TEST_KID, zero_coordinate, zero_coordinate).is_err());
     let key = Es256PublicKey::new(TEST_KID, TEST_JWK_X, TEST_JWK_Y)?;
     let namespace: relaygate_destination::Namespace = "test".parse()?;
     assert!(TrustedIssuer::new(namespace.clone(), TEST_ISSUER, Vec::new()).is_err());

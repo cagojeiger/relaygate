@@ -24,6 +24,7 @@ repository = "https://github.com/cagojeiger/relaygate"
 
 [workspace.dependencies]
 anyhow = "1"
+base64 = "0.22"
 bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }

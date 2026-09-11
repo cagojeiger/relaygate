@@ -263,7 +263,14 @@ fn duration_from_nanos(nanos: u128) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error as StdError, time::Duration};
+    use std::{
+        error::Error as StdError,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     use bytes::Bytes;
     use futures_util::{SinkExt, StreamExt};
@@ -546,6 +553,127 @@ mod tests {
 
         relay.close();
         let _ = send_shutdown.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dial_supplies_token_only_after_replacement_session_is_ready() -> TestResult {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let destination: Destination = "inference/stt.seoul".parse()?;
+        let expected_destination = destination.clone();
+        let (close_first_tx, close_first_rx) = oneshot::channel();
+        let (second_hello_tx, second_hello_rx) = oneshot::channel();
+        let (welcome_second_tx, welcome_second_rx) = oneshot::channel();
+        let (observed_token_tx, observed_token_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (first_stream, _) = listener.accept().await?;
+            let mut first = Framed::new(first_stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                first
+                    .next()
+                    .await
+                    .ok_or("SDK closed before first HELLO")??,
+                Frame::Hello
+            ) {
+                return Err::<(), Box<dyn StdError + Send + Sync>>(
+                    "SDK first frame was not HELLO".into(),
+                );
+            }
+            first
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await?;
+            close_first_rx
+                .await
+                .map_err(|_| "first-session close trigger was dropped")?;
+            drop(first);
+
+            let (second_stream, _) = listener.accept().await?;
+            let mut second = Framed::new(second_stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                second
+                    .next()
+                    .await
+                    .ok_or("SDK closed before replacement HELLO")??,
+                Frame::Hello
+            ) {
+                return Err("SDK replacement first frame was not HELLO".into());
+            }
+            let _ = second_hello_tx.send(());
+            welcome_second_rx
+                .await
+                .map_err(|_| "replacement WELCOME trigger was dropped")?;
+            second
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await?;
+            let dial = second
+                .next()
+                .await
+                .ok_or("SDK closed before replacement DIAL")??;
+            let (connection_id, access_token) = match dial {
+                Frame::Dial {
+                    connection_id,
+                    destination,
+                    access_token,
+                } if destination == expected_destination => (connection_id, access_token),
+                _ => return Err("SDK did not DIAL the expected Destination".into()),
+            };
+            let _ = observed_token_tx.send(access_token.expose_secret().to_owned());
+            second
+                .send(Frame::DialFailed {
+                    connection_id,
+                    code: relaygate_protocol::ErrorCode::Unavailable,
+                    observation: relaygate_protocol::PeerObservation::Observed,
+                    message: "test rejection".to_owned(),
+                })
+                .await?;
+            Ok::<(), Box<dyn StdError + Send + Sync>>(())
+        });
+
+        let relay = Relay::connect(
+            Config::new_insecure_for_tests(address.to_string())
+                .with_operation_timeout(Duration::from_secs(2))
+                .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+        )
+        .await?;
+        close_first_tx
+            .send(())
+            .map_err(|_| "fake Gateway stopped before first-session close")?;
+        timeout(Duration::from_secs(1), second_hello_rx).await??;
+
+        let supplies = Arc::new(AtomicUsize::new(0));
+        let observed_supplies = Arc::clone(&supplies);
+        let source = AccessTokenSource::dynamic(move |_| {
+            let observed_supplies = Arc::clone(&observed_supplies);
+            async move {
+                observed_supplies.fetch_add(1, Ordering::SeqCst);
+                AccessToken::new("fresh-grant").map_err(|_| crate::AccessTokenSourceError)
+            }
+        });
+        let dial_relay = relay.clone();
+        let dial = tokio::spawn(async move { dial_relay.dial(destination, source).await });
+
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(supplies.load(Ordering::SeqCst), 0);
+        welcome_second_tx
+            .send(())
+            .map_err(|_| "fake Gateway stopped before replacement WELCOME")?;
+        assert_eq!(
+            timeout(Duration::from_secs(1), observed_token_rx).await??,
+            "fresh-grant"
+        );
+        assert_eq!(supplies.load(Ordering::SeqCst), 1);
+        let error = timeout(Duration::from_secs(1), dial)
+            .await??
+            .expect_err("fake Gateway rejects the test DIAL");
+        assert_eq!(error.code(), ErrorCode::Unavailable);
+
+        relay.close();
         server.await??;
         Ok(())
     }
