@@ -62,6 +62,36 @@ SDK는 jitter가 포함된 bounded backoff로 재연결하고 live Listener를 �
 고급 transport는 `Config::with_transport(transport)`를 사용합니다. CA·인증서 검증 이름·클라이언트 인증은
 `ClientTlsConfig`에서 함께 설정하며 `with_ca_certificate`로 덮어쓰지 않습니다.
 
+## Token 발급 helper
+
+Backend는 호출자를 인증하고 operation을 허가한 뒤 server-side helper로 JWT를 생성합니다.
+
+```rust,no_run
+use std::time::Duration;
+
+use relaygate_address::RouteAddress;
+use relaygate_token_issuer::{Action, TokenIssuer};
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let private_key = std::fs::read("/run/secrets/relaygate-issuer.pem")?;
+let issuer = TokenIssuer::from_es256_pem(
+    "https://issuer.example",
+    "relaygate",
+    "issuer-key-v1",
+    private_key,
+)?;
+let address: RouteAddress = "inference/stt.seoul".parse()?;
+
+// Application authorization must succeed before this call.
+let token = issuer.issue_exact(Action::Dial, &address, Duration::from_secs(300))?;
+# let _ = token;
+# Ok(())
+# }
+```
+
+Helper는 unencrypted P-256 PKCS#8 PEM을 읽고 canonical header·claim을 생성합니다. 로그인, permission 정책,
+HTTP endpoint, key 보관·회전과 token cache는 application backend가 소유합니다.
+
 ## 검증
 
 | 범위 | 명령 |
@@ -103,6 +133,7 @@ crates/
 ├── relaygate-protocol/              SDK-GW wire
 ├── relaygate-transport/             TLS/mTLS adapter
 ├── relaygate-sdk/                   public Relay, Listener, Pipe API
+├── relaygate-token-issuer/          server-side operation JWT helper
 ├── relaygate-gateway/               Binding, dial, relay, cleanup
 ├── relaygate-route-table/           memory-only current-state shard
 ├── relaygate-route-table-transport/ GW-RT bounded transport/auth

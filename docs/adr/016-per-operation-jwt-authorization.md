@@ -51,3 +51,4 @@ Gateway는 private key, token issuer, refresh token, revocation database와 JWKS
 - [RFC 8725](../rfc/rfc-8725-jwt-best-current-practices.md)
 - [SPEC 002](../spec/002-sdk-pipe-contract.md)
 - [SPEC 009](../spec/009-operation-jwt-authorization-contract.md)
+- [ADR 017](017-server-side-token-issuer-helper.md)

@@ -2,6 +2,7 @@ use std::{io, sync::Arc, time::Duration};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use relaygate_protocol::{BearerToken, ErrorCode};
+use relaygate_token_issuer::{Action as IssuerAction, TokenIssuer};
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
@@ -13,6 +14,7 @@ use crate::test_support::{
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const MAX_TEST_PERMISSIONS: usize = 128;
+const TEST_PRIVATE_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt\nkHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L\n950IxEzvw/x5BMEINRMrXLBJhqzO9Bm+d6JbqA21YQmd1Kt4RzLJR1W+\n-----END PRIVATE KEY-----\n";
 
 fn operation(action: Action, address: relaygate_protocol::RouteAddress) -> ControlOperation {
     match action {
@@ -112,6 +114,21 @@ fn valid_exact_grants_authorize_only_the_claimed_action_and_address() {
             Err(ErrorCode::PermissionDenied)
         );
     }
+}
+
+#[test]
+fn token_issuer_exact_grants_are_accepted_by_gateway_verifier() -> TestResult {
+    let target = address("worker.issued");
+    let issuer =
+        TokenIssuer::from_es256_pem(TEST_ISSUER, TEST_AUDIENCE, TEST_KID, TEST_PRIVATE_KEY_PEM)?;
+    let token = BearerToken::new(
+        issuer
+            .issue_exact(IssuerAction::Dial, &target, Duration::from_secs(300))?
+            .into_string(),
+    )?;
+
+    assert!(verify(&token, &operation(Action::Dial, target)).is_ok());
+    Ok(())
 }
 
 #[test]

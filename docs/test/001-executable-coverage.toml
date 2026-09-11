@@ -45,6 +45,7 @@ rust = [
   "authorization::tests::unsupported_critical_header_and_missing_kid_fail_closed",
   "authorization::tests::unsupported_algorithm_and_closed_claim_shapes_fail_closed",
   "authorization::tests::valid_exact_grants_authorize_only_the_claimed_action_and_address",
+  "authorization::tests::token_issuer_exact_grants_are_accepted_by_gateway_verifier",
   "authorization::tests::subtree_and_all_scopes_use_whole_label_boundaries",
   "authorization::tests::issuer_audience_kid_and_time_fail_closed",
   "authorization::tests::current_and_next_keys_are_accepted_without_crossing_namespace",
@@ -60,6 +61,9 @@ rust = [
   "sdk_gateway_path_uses_tls_before_operation_authorization",
   "operation_denial_does_not_end_the_relay_session",
   "gateway_metrics_expose_current_state_and_red_signals_without_secrets",
+  "issues_exact_publish_token_with_relaygate_profile",
+  "issues_all_supported_permission_scopes",
+  "invalid_inputs_fail_before_or_during_issuance",
 ]
 
 [[case]]

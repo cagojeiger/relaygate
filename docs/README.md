@@ -30,6 +30,7 @@ dial 1회 ──► eligible Binding 1개 ──► Pipe 1개
 | 구성요소 | 소유 상태·동작 |
 | --- | --- |
 | SDK | Gateway TLS 검증, operation token 공급, session 재연결, Listener 재등록, Pipe API |
+| Token issuer helper | application이 승인한 permission의 canonical ES256 JWT 생성 |
 | Gateway | JWT grant 검증, local Binding, dial 선택, RT 등록·조회, one-hop relay, bounded cleanup |
 | RouteTable | shard별 lease 기반 `RouteAddress -> BindingSet` current state |
 | Transport | SDK TLS와 내부 mTLS handshake |
@@ -42,7 +43,7 @@ dial 1회 ──► eligible Binding 1개 ──► Pipe 1개
 | 영역 | 문서 |
 | --- | --- |
 | 책임 경계 | [ADR 001](adr/001-relaygate-responsibility-boundary.md) |
-| SDK·주소·접근 | [ADR 002](adr/002-symmetric-relay-session.md), [ADR 015](adr/015-hierarchical-route-address.md), [ADR 016](adr/016-per-operation-jwt-authorization.md) |
+| SDK·주소·접근 | [ADR 002](adr/002-symmetric-relay-session.md), [ADR 015](adr/015-hierarchical-route-address.md), [ADR 016](adr/016-per-operation-jwt-authorization.md), [ADR 017](adr/017-server-side-token-issuer-helper.md) |
 | control·data plane | [ADR 005](adr/005-current-state-routing-topology.md), [ADR 006](adr/006-soft-state-registration-lifecycle.md), [ADR 007](adr/007-one-hop-peer-multiplexing.md) |
 | 생존·운영 | [ADR 008](adr/008-transport-liveness-and-idle-retirement.md), [ADR 009](adr/009-operational-health-boundaries.md), [ADR 010](adr/010-bounded-gateway-drain-and-reconnect-jitter.md) |
 | transport·certificate | [ADR 011](adr/011-sdk-transport-and-l4-boundary.md), [ADR 012](adr/012-public-edge-webpki-trust.md), [ADR 013](adr/013-cert-manager-internal-leaf-certificates.md), [ADR 014](adr/014-explicit-internal-transport-mode.md) |

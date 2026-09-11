@@ -39,7 +39,7 @@ async callback(action, RouteAddress) -> PUBLISH 또는 DIAL
 | `SDK-015` | dynamic AccessTokenSource는 `AccessAction`과 exact RouteAddress를 받아 application-owned future를 실행한다. |
 | `SDK-016` | Listener는 AccessTokenSource를 보관하고 initial publish와 republish마다 다시 호출한다. |
 | `SDK-017` | dial은 API 호출당 AccessTokenSource를 정확히 한 번 resolve하며 committed operation을 SDK가 replay하지 않는다. |
-| `SDK-018` | SDK는 token cache, singleflight, refresh token, private key, token issuer를 소유하지 않는다. |
+| `SDK-018` | SDK runtime은 token cache, singleflight, refresh token, private key와 token issuer를 소유하지 않는다. Backend가 필요하면 `relaygate-token-issuer`로 AccessToken을 생성해 `AccessTokenSource`에 공급한다. |
 
 Token source 실패와 deadline은 해당 operation의 `UNAVAILABLE` 또는 `DEADLINE_EXCEEDED/NOT_OBSERVED`입니다.
 Initial listen은 오류로 반환합니다. 이미 반환된 Listener의 republish token source 실패는 `SUSPENDED`로 두고

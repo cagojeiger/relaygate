@@ -8,6 +8,7 @@ members = [
     "crates/relaygate-route-table-transport",
     "crates/relaygate-sdk",
     "crates/relaygate-server",
+    "crates/relaygate-token-issuer",
     "crates/relaygate-transport",
     "examples/echo-listener",
     "examples/echo-probe",
@@ -29,12 +30,14 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 metrics = "0.24.6"
 metrics-util = "0.20.4"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
 relaygate-address = { path = "crates/relaygate-address" }
 relaygate-gateway = { path = "crates/relaygate-gateway" }
 relaygate-protocol = { path = "crates/relaygate-protocol" }
 relaygate-route-table = { path = "crates/relaygate-route-table" }
 relaygate-route-table-transport = { path = "crates/relaygate-route-table-transport" }
 relaygate-sdk = { path = "crates/relaygate-sdk" }
+relaygate-token-issuer = { path = "crates/relaygate-token-issuer" }
 relaygate-transport = { path = "crates/relaygate-transport" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"

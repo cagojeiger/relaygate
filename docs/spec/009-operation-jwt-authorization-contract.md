@@ -26,6 +26,7 @@ private ES256 key                   AccessTokenSource           static public JW
 | private claim | `permissions` |
 | protected operation | 새 `PUBLISH`, 새 `DIAL` |
 | session handshake | `HELLO/WELCOME`은 credential-free이며 session identity를 grant하지 않음 |
+| producer helper | `relaygate-token-issuer`는 backend가 이 profile의 JWS를 만들 때 쓰는 선택 라이브러리 |
 | 비채택 | OAuth 2.0 access token, RFC 9068 JWT access-token profile, RFC 9396 Rich Authorization Requests |
 
 RelayGate token은 OAuth access token이라고 주장하지 않습니다. RFC 9068의 `at+jwt` type과 Authorization
@@ -298,9 +299,10 @@ Failure message는 token·claim·key 정보를 포함하지 않는 고정 문자
 | 주체 | 소유 |
 | --- | --- |
 | application/backend | private key, token 발급·갱신·revocation 정책, permission 정책 |
+| `relaygate-token-issuer` | application/backend가 이미 결정한 grant를 canonical RelayGate operation JWT로 serialize/sign |
 | SDK | static/dynamic `AccessTokenSource`, operation별 공급, Listener republish 시 재공급 |
 | Gateway | static public trust config, bounded verification, operation admission |
-| RelayGate가 소유하지 않음 | OAuth authorization server, refresh token, token cache, revocation DB, JWKS fetch, subject identity, `jti` replay cache |
+| RelayGate runtime이 소유하지 않음 | OAuth authorization server, refresh token, token cache, revocation DB, JWKS fetch, subject identity, `jti` replay cache, private key |
 
 Raw token, decoded claims와 permission은 operation 검증을 넘겨 RT·peer Gateway로 전달하거나
 Binding·Pipe·log·metric·error에 보관하지 않습니다. Authorization은 admission-only이므로 commit된 Binding·Pipe는
@@ -323,8 +325,9 @@ token 만료만으로 종료하지 않습니다. 새 PUBLISH, Listener republish
 | `AUTH-011` | Authorization 성공은 별도 ACK를 만들지 않는다. 실패 response는 operation correlation ID와 stable code를 보존하고 DIAL은 `NOT_OBSERVED`이며, registry·RT Resolve·peer OPEN 전 해당 operation만 끝내 기존 session·Binding·Pipe를 유지한다. |
 | `AUTH-012` | Raw token, decoded claim과 permission은 Gateway operation을 넘지 않으며 RT·peer·Binding·Pipe·log·metric·error에 전달하거나 보관하지 않는다. |
 | `AUTH-013` | Authorization은 admission-only다. Token expiry는 established Binding·Pipe를 종료하지 않고 새 PUBLISH, Listener republish와 새 DIAL만 다시 검증한다. |
-| `AUTH-014` | RelayGate는 OAuth authorization server, token cache, refresh, revocation DB, JWKS fetch, issuer helper, subject identity, replay cache, private key와 token 발급을 소유하지 않는다. |
+| `AUTH-014` | RelayGate runtime은 OAuth authorization server, token cache, refresh, revocation DB, JWKS fetch, subject identity, replay cache, private key와 token 발급 정책을 소유하지 않는다. |
 | `AUTH-015` | Authorization config 누락·unknown field·unsupported version/algorithm·범위 위반은 Gateway listener를 열기 전 startup failure다. |
+| `AUTH-016` | `relaygate-token-issuer`는 canonical producer header와 closed permission claim을 생성하되, application 사용자 인증·정책 판단·키 보관을 대신하지 않는다. |
 
 ## 표준 참고
 

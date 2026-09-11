@@ -68,7 +68,8 @@ dial 1회 --> eligible Binding 1개 --> Pipe 1개 --> Relay endpoint 2개
 | 값 | 생성 | lifetime·보관 |
 | --- | --- | --- |
 | RouteAddress | application | application lifetime |
-| JWT private key·token 발급·갱신 | application/backend | RelayGate 외부 |
+| JWT private key·token 발급·갱신 | application/backend | RelayGate runtime 외부 |
+| operation token helper | `relaygate-token-issuer` | backend 선택 라이브러리 |
 | issuer·audience·ES256 public JWK | operator | Gateway static config |
 | certificate | operator/platform | external Secret/config |
 | SessionId·BindingId·PipeId | RelayGate runtime | incarnation lifetime |
