@@ -25,14 +25,14 @@ CI의 `grafana_ui.cjs`는 실제 Grafana에서 세 화면 provisioning, 시간·
 
 | 범주 | 증거 |
 | --- | --- |
-| RED | GW DIAL 결과 class, SDK 접속·dial, publish, RT request/actor result와 duration |
+| RED | GW DIAL 결과 class, operation authorization, SDK 접속·dial, publish, RT request/actor result와 duration |
 | liveness | SDK/peer heartbeat RTT와 timeout |
 | admission | non-draining + session capacity readiness |
-| USE | session slot·Binding·pending open·GW Pipe의 used/limit, 고유 Pipe, peer stream, RT mapping gauge |
+| USE | session slot·Binding·pending open·GW Pipe의 used/limit, 고유 Pipe, peer stream, RT BindingProjection gauge |
 | recovery | 진행 중 SDK reconnect, recovered/closed/aborted 종료 시간, dependency transition, lease expiry, drain |
 | cleanup | topology 종료 뒤 current gauge baseline |
 | cardinality | bounded label set |
-| redaction | payload와 secret marker 0건 |
+| redaction | AccessToken·decoded claim·private key·payload marker 0건 |
 | logging | component/event/outcome/code lifecycle event |
 
 SDK reconnect 테스트는 process-global tracing callsite 등록을 공유하므로 같은 helper를 호출하는
@@ -52,9 +52,10 @@ SDK reconnect 테스트는 process-global tracing callsite 등록을 공유하�
 # Compose topology가 실행 중인 상태: 3 local + 6 directed one-hop
 docker compose run --rm --no-deps topology-probe relaygate-echo-probe latency
 
-# 특정 주소: 해당 환경의 ClusterToken과 TLS CA/server name을 함께 설정한다.
+# 특정 Destination: 해당 환경의 Destination, operation AccessToken과 TLS CA/server name을 설정한다.
 RELAYGATE_ADDR=relaygate.example:443 \
-RELAYGATE_DESTINATION_ID=11111111-1111-4111-8111-111111111111 \
+RELAYGATE_DESTINATION=inference/stt.seoul \
+RELAYGATE_ACCESS_TOKEN='<signed-jwt>' \
 cargo run -p relaygate-echo-probe -- latency
 ```
 
@@ -81,6 +82,7 @@ echo goodput은 성공한 왕복 payload bytes / 측정 구간이며 streaming �
 | `OBS-012` | SDK observability contract tests | 중첩 reconnect 2→1→0, close/drop cleanup, polled dial 취소 1회 기록 |
 | `OBS-008` | Compose `latency` + JSON validator | 9개 경로, 요청 sample 전부 완료, byte 수와 RTT 분위수 일치 |
 | `OBS-002` | Compose traffic 종료 후 metric 검사 | GW session·binding·pending·Pipe·stream과 RT mapping이 0으로 복귀 |
+| `OBS-003`, `OBS-005`, `OBS-006` | Gateway authorization unit/integration + metrics scrape | publish/dial authorization 결과·시간의 bounded label, raw token·claim 0건 |
 
 CI는 `relaygate-data-rtt` artifact에 고정 workload의 측정 결과를 보관합니다. 장기 RSS 누수·heap 소유권·최대 동시
 사용자 수는 이 짧은 probe의 합격 범위 밖이며 반복 부하·profile로 검증합니다.

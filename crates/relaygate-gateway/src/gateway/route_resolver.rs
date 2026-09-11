@@ -1,17 +1,17 @@
 use futures_util::future::BoxFuture;
 use relaygate_protocol::ErrorCode;
-use relaygate_route_table::{BindingSet, DestinationId};
+use relaygate_route_table::{BindingSet, Destination};
 
 use crate::routing::{RoutingError, RoutingHandle};
 
 /// Request-local RouteTable lookup used by the Gateway OPEN path.
 ///
 /// Registration publication deliberately remains on `RoutingHandle`; this
-/// port owns only `DestinationId -> current BindingSet` resolution.
+/// port owns only `Destination -> current BindingSet` resolution.
 pub(super) trait RouteResolver: Send + Sync {
     fn resolve(
         &self,
-        destination_id: DestinationId,
+        destination: Destination,
     ) -> BoxFuture<'_, Result<BindingSet, RouteResolveFailure>>;
 }
 
@@ -41,10 +41,10 @@ impl RouteResolveFailure {
 impl RouteResolver for RoutingHandle {
     fn resolve(
         &self,
-        destination_id: DestinationId,
+        destination: Destination,
     ) -> BoxFuture<'_, Result<BindingSet, RouteResolveFailure>> {
         Box::pin(async move {
-            RoutingHandle::resolve(self, destination_id)
+            RoutingHandle::resolve(self, destination)
                 .await
                 .map_err(RouteResolveFailure::from_routing)
         })

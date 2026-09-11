@@ -85,7 +85,7 @@ jobs:
             --set gateway.replicaCount=1 \
             --set routeTable.shardCount=1 \
             --set metrics.enabled=false \
-            --set credentials.existingSecret=minimal-credentials \
+            --set authorization.existingConfigMap=minimal-authorization \
             > target/helm/minimal.yaml
           helm template load-balancer deploy/helm/relaygate \
             --namespace relaygate-test \
@@ -203,6 +203,8 @@ jobs:
           grep -Fq "value: \"rt-\$(POD_INDEX)\"" target/helm/default.yaml
           grep -Fq '"id":"rt-0"' target/helm/default.yaml
           grep -Fq '"id":"rt-1"' target/helm/default.yaml
+          grep -Fq '"format_version":2' target/helm/default.yaml
+          grep -Fq '"authority_hash":"sha256-destination-modulo-v2"' target/helm/default.yaml
           grep -Fq 'relaygate-rt-0.relaygate-rt.relaygate.svc.cluster.local:27430' target/helm/default.yaml
           grep -Fq 'relaygate-rt-1.relaygate-rt.relaygate.svc.cluster.local:27430' target/helm/default.yaml
           grep -Fq 'immutable: true' target/helm/default.yaml
@@ -215,8 +217,13 @@ jobs:
             echo "Helm chart still rendered removed internal credentials"
             exit 1
           fi
-          test "$(grep -c 'key: "cluster-token"' target/helm/default.yaml)" -eq 1
-          test "$(grep -c 'key: "next-cluster-token"' target/helm/default.yaml)" -eq 1
+          grep -Fq 'name: RELAYGATE_AUTH_CONFIG_PATH' target/helm/default.yaml
+          grep -Fq 'name: "relaygate-authorization"' target/helm/default.yaml
+          grep -Fq 'key: "authorization.json"' target/helm/default.yaml
+          if grep -Eq 'cluster-token|next-cluster-token|RELAYGATE_CLUSTER_TOKEN' target/helm/default.yaml; then
+            echo "Helm chart still rendered removed session credentials"
+            exit 1
+          fi
           if grep -Eq 'relaygate.io/.*-reload:|reloader.stakater.com/' target/helm/default.yaml; then
             echo "Helm defaults contain platform restart policy"
             exit 1
@@ -430,15 +437,15 @@ jobs:
           fi
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set credentials.existingSecret=invalid..name >/dev/null 2>&1; then
-            echo "Helm schema accepted an invalid Secret reference"
+            --set authorization.existingConfigMap=invalid..name >/dev/null 2>&1; then
+            echo "Helm schema accepted an invalid authorization ConfigMap reference"
             exit 1
           fi
           long_dns_label=$(printf 'a%.0s' {1..64})
           if helm template invalid deploy/helm/relaygate \
             --kube-version 1.32.0 \
-            --set "credentials.existingSecret=${long_dns_label}" >/dev/null 2>&1; then
-            echo "Helm chart accepted a Secret reference with an oversized DNS label"
+            --set "authorization.existingConfigMap=${long_dns_label}" >/dev/null 2>&1; then
+            echo "Helm chart accepted an authorization ConfigMap reference with an oversized DNS label"
             exit 1
           fi
           if helm template invalid deploy/helm/relaygate \
@@ -540,7 +547,8 @@ jobs:
         run: |
           docker compose up --build -d --wait \
             rt-0 rt-1 gateway-a gateway-b gateway-c \
-            listener-a listener-b listener-c continuity-ac continuity-a-zero
+            listener-a listener-b listener-c listener-shared-b listener-shared-c \
+            listener-boundary-c continuity-ac continuity-a-zero
 
       - name: Verify all local and directed remote paths
         run: |
@@ -599,7 +607,7 @@ jobs:
           prometheus_has 'sum(relaygate_gateway_peer_transport_closed_total) > 0'
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 22222222-2222-4222-8222-222222222222
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-b
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
 
       - name: Measure established Pipe DATA RTT
@@ -622,15 +630,16 @@ jobs:
         run: |
           docker compose stop rt-0
           docker compose run --rm --no-deps topology-probe \
-            relaygate-echo-probe expect-shard-isolation 11111111-1111-4111-8111-111111111111 0 22222222-2222-4222-8222-222222222222
+            relaygate-echo-probe expect-shard-isolation examples/echo-a 0 examples/echo-b
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
       - name: Verify rt-0 current-state recovery
         run: |
           docker compose up -d rt-0
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 11111111-1111-4111-8111-111111111111
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 44444444-4444-4444-8444-444444444444
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-a
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-shared
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-boundary
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
@@ -639,16 +648,15 @@ jobs:
         run: |
           docker compose stop rt-1
           docker compose run --rm --no-deps topology-probe \
-            relaygate-echo-probe expect-shard-isolation 22222222-2222-4222-8222-222222222222 1 11111111-1111-4111-8111-111111111111
+            relaygate-echo-probe expect-shard-isolation examples/echo-b 1 examples/echo-a
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
       - name: Verify rt-1 current-state recovery
         run: |
           docker compose up -d rt-1
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 22222222-2222-4222-8222-222222222222
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 33333333-3333-4333-8333-333333333333
-          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-client 55555555-5555-4555-8555-555555555555
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-b
+          docker compose run --rm --no-deps topology-probe relaygate-echo-probe wait-destination examples/echo-c
           docker compose run --rm --no-deps topology-probe relaygate-echo-probe matrix
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
@@ -684,12 +692,14 @@ jobs:
 
       - name: Verify logical cleanup baseline
         run: |
-          docker compose stop listener-a listener-b listener-c continuity-ac continuity-a-zero
+          docker compose stop \
+            listener-a listener-b listener-c listener-shared-b listener-shared-c \
+            listener-boundary-c continuity-ac continuity-a-zero
           for metric in \
             relaygate_gateway_sessions relaygate_gateway_bindings \
             relaygate_gateway_pending_offers relaygate_gateway_live_pipes \
             relaygate_gateway_originated_pipes relaygate_gateway_remote_dial_attempts \
-            relaygate_gateway_peer_streams relaygate_route_table_mappings; do
+            relaygate_gateway_peer_streams relaygate_route_table_bindings; do
             matched=false
             for _ in {1..60}; do
               if curl -fsSG --data-urlencode "query=sum($metric{cluster=\"compose\",namespace=\"relaygate\"}) == 0" \

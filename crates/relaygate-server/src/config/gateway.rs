@@ -48,9 +48,14 @@ impl GatewayRuntimeConfig {
         }
         let bind_address =
             env::var("RELAYGATE_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned());
-        let cluster_token = env::var("RELAYGATE_CLUSTER_TOKEN")
-            .context("RELAYGATE_CLUSTER_TOKEN is required for Gateway mode")?;
-        let mut gateway = GatewayConfig::new(cluster_token);
+        for removed in ["RELAYGATE_CLUSTER_TOKEN", "RELAYGATE_NEXT_CLUSTER_TOKEN"] {
+            if env::var_os(removed).is_some() {
+                anyhow::bail!(
+                    "{removed} is no longer supported; configure operation authorization"
+                );
+            }
+        }
+        let mut gateway = super::authorization::apply_from_env()?;
         if super::transport::sdk_tls_enabled()? {
             let certificate_path = env::var("RELAYGATE_SDK_TLS_CERT_PATH")
                 .context("RELAYGATE_SDK_TLS_CERT_PATH is required for Gateway mode")?;
@@ -66,10 +71,6 @@ impl GatewayRuntimeConfig {
             )?;
             gateway = gateway.with_sdk_tls(tls);
         }
-        if let Ok(next) = env::var("RELAYGATE_NEXT_CLUSTER_TOKEN") {
-            gateway = gateway.with_next_cluster_token(next);
-        }
-
         if let Some(capacity) = optional_usize("RELAYGATE_WRITER_QUEUE_CAPACITY")? {
             gateway = gateway.with_writer_queue_capacity(capacity);
         }

@@ -38,7 +38,7 @@ impl PeerTarget {
 pub(crate) struct PeerOpenRequest {
     target: PeerTarget,
     open_identity: OpenIdentity,
-    destination_id: String,
+    destination: relaygate_protocol::Destination,
     relay_session_id: SessionId,
     binding_id: BindingId,
 }
@@ -47,24 +47,17 @@ impl PeerOpenRequest {
     pub(crate) fn new(
         target: PeerTarget,
         open_identity: OpenIdentity,
-        destination_id: impl Into<String>,
+        destination: relaygate_protocol::Destination,
         relay_session_id: SessionId,
         binding_id: BindingId,
-    ) -> Result<Self, PeerFailure> {
-        let destination_id = destination_id.into();
-        if destination_id.is_empty() {
-            return Err(PeerFailure::not_observed(
-                ErrorCode::InvalidArgument,
-                "peer OPEN DestinationId must not be empty",
-            ));
-        }
-        Ok(Self {
+    ) -> Self {
+        Self {
             target,
             open_identity,
-            destination_id,
+            destination,
             relay_session_id,
             binding_id,
-        })
+        }
     }
 
     #[must_use]
@@ -78,8 +71,8 @@ impl PeerOpenRequest {
     }
 
     #[must_use]
-    pub(crate) fn destination_id(&self) -> &str {
-        &self.destination_id
+    pub(crate) fn destination(&self) -> &relaygate_protocol::Destination {
+        &self.destination
     }
 
     #[must_use]
@@ -223,7 +216,7 @@ pub(crate) enum PeerEvent {
     IncomingOpen {
         key: PeerStreamKey,
         open_identity: OpenIdentity,
-        destination_id: String,
+        destination: relaygate_protocol::Destination,
         relay_session_id: SessionId,
         binding_id: BindingId,
     },

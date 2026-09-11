@@ -4,13 +4,16 @@ use std::{
 };
 
 use bytes::Bytes;
-use relaygate_protocol::{BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId};
-use relaygate_route_table::{DestinationId as RouteDestinationId, GatewayId, GatewayLocator};
+use relaygate_protocol::{
+    BindingId, Destination, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
+};
+use relaygate_route_table::{GatewayId, GatewayLocator};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     GatewaySnapshot,
+    authorization::{ControlOperation, VerifiedAuthorization},
     peer::{OpenIdentity, PeerStreamKey},
     rate_limit::TokenBucket,
     registry::{Binding, LocalRegistry},
@@ -63,7 +66,7 @@ impl Delivery {
                 && let Frame::Offer { pipe_id, .. } = frame
             {
                 return Some(DeliveryFailure::OfferQueueFull {
-                    listener: self.target,
+                    acceptor: self.target,
                     pipe_id,
                 });
             }
@@ -77,7 +80,7 @@ impl Delivery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeliveryFailure {
     OfferQueueFull {
-        listener: SessionId,
+        acceptor: SessionId,
         pipe_id: PipeId,
     },
     SessionUnavailable(SessionId),
@@ -92,13 +95,13 @@ pub(crate) enum GatewayAction {
     },
     ResolveRoute {
         open_identity: OpenIdentity,
-        destination_id: RouteDestinationId,
+        destination: Destination,
     },
     OpenPeer {
         open_identity: OpenIdentity,
         gateway_id: GatewayId,
         gateway_locator: GatewayLocator,
-        destination_id: String,
+        destination: Destination,
         relay_session_id: SessionId,
         binding_id: BindingId,
     },
@@ -174,15 +177,15 @@ enum PipePhase {
 
 #[derive(Debug, Clone)]
 struct PipeEntry {
-    connector: PipeEndpoint,
-    listener: PipeEndpoint,
+    dialer: PipeEndpoint,
+    acceptor: PipeEndpoint,
     binding_id: BindingId,
     open_identity: Option<OpenIdentity>,
     phase: PipePhase,
     offered_at: Instant,
     open_started_at: Option<Instant>,
-    connector_finished: bool,
-    listener_finished: bool,
+    dialer_finished: bool,
+    acceptor_finished: bool,
 }
 
 impl PipeEntry {
@@ -192,8 +195,7 @@ impl PipeEntry {
         pipe_id: PipeId,
         frame_name: &'static str,
     ) -> Result<(), ProtocolViolation> {
-        if self.connector == PipeEndpoint::Sdk(sender) || self.listener == PipeEndpoint::Sdk(sender)
-        {
+        if self.dialer == PipeEndpoint::Sdk(sender) || self.acceptor == PipeEndpoint::Sdk(sender) {
             return Ok(());
         }
         Err(ProtocolViolation::PipeOwnership {
@@ -204,7 +206,7 @@ impl PipeEntry {
     }
 
     fn peer_key(&self) -> Option<PeerStreamKey> {
-        match (self.connector, self.listener) {
+        match (self.dialer, self.acceptor) {
             (PipeEndpoint::Peer(key), _) | (_, PipeEndpoint::Peer(key)) => Some(key),
             (PipeEndpoint::Sdk(_), PipeEndpoint::Sdk(_)) => None,
         }
@@ -236,7 +238,7 @@ impl PipeEndpoint {
 #[derive(Debug, Clone)]
 struct RemoteOpenAttempt {
     pipe_id: PipeId,
-    destination_id: String,
+    destination: Destination,
     started_at: Instant,
     phase: RemoteOpenPhase,
 }
@@ -337,32 +339,58 @@ impl GatewayState {
         session_id: SessionId,
         frame: Frame,
     ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
-        self.handle_at(session_id, frame, Instant::now())
+        let frame = match ControlOperation::take(frame) {
+            Ok((operation, _)) => {
+                if let Some(actions) =
+                    self.prepare_authorization(session_id, &operation, Instant::now())
+                {
+                    return Ok(actions);
+                }
+                return Ok(self.authorization_failed(
+                    session_id,
+                    &operation,
+                    ErrorCode::Unauthenticated,
+                ));
+            }
+            Err(frame) => frame,
+        };
+        self.apply_frame(session_id, frame)
     }
 
+    #[cfg(test)]
     pub(crate) fn handle_at(
         &mut self,
         session_id: SessionId,
         frame: Frame,
         now: Instant,
     ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
+        match ControlOperation::take(frame) {
+            Ok((mut operation, _)) => {
+                if let ControlOperation::Dial { started_at, .. } = &mut operation {
+                    *started_at = now;
+                }
+                Ok(self
+                    .prepare_authorization(session_id, &operation, now)
+                    .unwrap_or_else(|| self.apply_control_at(session_id, operation, now)))
+            }
+            Err(frame) => self.apply_frame(session_id, frame),
+        }
+    }
+
+    fn apply_frame(
+        &mut self,
+        session_id: SessionId,
+        frame: Frame,
+    ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
         if !self.sessions.contains_key(&session_id) {
             return Ok(Vec::new());
         }
 
         let actions = match frame {
-            Frame::Publish {
-                request_id,
-                destination_id,
-            } => self.publish(session_id, request_id, destination_id, now),
             Frame::Unpublish {
                 request_id,
                 binding_id,
             } => self.unpublish(session_id, request_id, binding_id),
-            Frame::Dial {
-                connection_id,
-                destination_id,
-            } => self.dial(session_id, connection_id, destination_id, now),
             Frame::OfferAccepted { pipe_id } => {
                 Self::send_actions(self.offer_accepted(session_id, pipe_id)?)
             }
@@ -388,7 +416,9 @@ impl GatewayState {
                 .into_iter()
                 .collect(),
             Frame::Pong { .. } => Vec::new(),
-            Frame::Hello { .. }
+            Frame::Hello
+            | Frame::Publish { .. }
+            | Frame::Dial { .. }
             | Frame::Welcome { .. }
             | Frame::SessionRejected { .. }
             | Frame::Published { .. }
@@ -399,6 +429,93 @@ impl GatewayState {
             | Frame::DialFailed { .. } => Vec::new(),
         };
         Ok(actions)
+    }
+
+    pub(crate) fn prepare_authorization(
+        &mut self,
+        session_id: SessionId,
+        operation: &ControlOperation,
+        now: Instant,
+    ) -> Option<Vec<GatewayAction>> {
+        let Some(session) = self.sessions.get_mut(&session_id) else {
+            return Some(Vec::new());
+        };
+        if let ControlOperation::Dial { connection_id, .. } = operation {
+            observe_dial_request();
+            if session
+                .highest_connection_id
+                .is_some_and(|highest| *connection_id <= highest)
+            {
+                return Some(self.authorization_failed(
+                    session_id,
+                    operation,
+                    ErrorCode::ProtocolError,
+                ));
+            }
+            session.highest_connection_id = Some(*connection_id);
+        }
+        if self.draining {
+            return Some(self.authorization_failed(session_id, operation, ErrorCode::Unavailable));
+        }
+        (!self.admit_control(session_id, operation.name(), now))
+            .then(|| self.authorization_failed(session_id, operation, ErrorCode::ResourceExhausted))
+    }
+
+    pub(crate) fn commit_authorized(
+        &mut self,
+        session_id: SessionId,
+        operation: ControlOperation,
+        verified: VerifiedAuthorization,
+        now: Instant,
+    ) -> Vec<GatewayAction> {
+        if !self.sessions.contains_key(&session_id) {
+            return Vec::new();
+        }
+        if !verified.authorizes(&operation, now.into()) {
+            return self.authorization_failed(session_id, &operation, ErrorCode::Unauthenticated);
+        }
+        self.apply_control_at(session_id, operation, now)
+    }
+
+    fn apply_control_at(
+        &mut self,
+        session_id: SessionId,
+        operation: ControlOperation,
+        now: Instant,
+    ) -> Vec<GatewayAction> {
+        match operation {
+            ControlOperation::Publish {
+                request_id,
+                destination,
+            } => self.publish(session_id, request_id, destination, now),
+            ControlOperation::Dial {
+                connection_id,
+                destination,
+                started_at,
+            } => self.dial(session_id, connection_id, destination, now, started_at),
+        }
+    }
+
+    pub(crate) fn authorization_failed(
+        &self,
+        session_id: SessionId,
+        operation: &ControlOperation,
+        code: ErrorCode,
+    ) -> Vec<GatewayAction> {
+        if let ControlOperation::Dial { started_at, .. } = operation {
+            observe_dial_result(Some(*started_at), Some(code));
+        } else {
+            metrics::counter!(
+                "relaygate_gateway_publish_results_total",
+                "outcome" => "error",
+                "code" => error_code_name(code),
+            )
+            .increment(1);
+        }
+        self.to(session_id, operation.failure(code))
+            .map(GatewayAction::SendSdkFrame)
+            .into_iter()
+            .collect()
     }
 
     pub(crate) fn snapshot(&self) -> GatewaySnapshot {
@@ -472,7 +589,7 @@ impl GatewayState {
             PipePhase::Offered => self.pending_offer_count -= 1,
             PipePhase::Open => {
                 self.live_pipe_count -= 1;
-                if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+                if matches!(pipe.dialer, PipeEndpoint::Sdk(_)) {
                     self.originated_pipe_count -= 1;
                 }
             }
@@ -488,7 +605,7 @@ impl GatewayState {
         pipe.phase = PipePhase::Open;
         self.pending_offer_count -= 1;
         self.live_pipe_count += 1;
-        if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+        if matches!(pipe.dialer, PipeEndpoint::Sdk(_)) {
             self.originated_pipe_count += 1;
         }
         Some(pipe)
@@ -497,7 +614,7 @@ impl GatewayState {
     fn insert_open(&mut self, pipe_id: PipeId, pipe: PipeEntry) {
         debug_assert_eq!(pipe.phase, PipePhase::Open);
         self.index_peer_pipe(pipe_id, &pipe);
-        if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+        if matches!(pipe.dialer, PipeEndpoint::Sdk(_)) {
             self.originated_pipe_count += 1;
         }
         let previous = self.pipes.insert(pipe_id, pipe);

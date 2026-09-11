@@ -10,8 +10,8 @@
 
 ```text
 Relay runtime 1 ── current RelaySession 0..1
-Relay::listen(DestinationId) ──► Listener
-Relay::dial(DestinationId)   ──► Pipe
+Relay::listen(Destination, token source) ──► Listener
+Relay::dial(Destination, token source)   ──► Pipe
 Listener::accept()           ──► Pipe
 
 Destination * ◄── Binding ──► * RelaySession

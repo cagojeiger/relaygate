@@ -1,0 +1,1 @@
+{"version":1,"audience":"relaygate","clock_skew_seconds":30,"issuers":[{"namespace":"examples","issuer":"https://issuer.compose.invalid","keys":[{"kid":"compose-v1","kty":"EC","crv":"P-256","alg":"ES256","use":"sig","x":"w7JAoU_gJbZJvV-zCOvU9yFJq0FNC_edCMRM78P8eQQ","y":"wQg1EytcsEmGrM70Gb53oluoDbVhCZ3Uq3hHMslHVb4"}]}],"verification":{"concurrency":32,"timeout_ms":1000}}

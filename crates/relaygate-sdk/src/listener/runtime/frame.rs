@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{LivePipe, Registration, RelayFrameAction, RelaySessionState};
 use crate::{
-    DestinationId, Error, ErrorCode, PeerObservation,
+    Error, ErrorCode, PeerObservation,
     listener::{ListenerStatus, RelayInner, is_current_desired},
     pipe::{PipeState, to_wire_code},
     session::{SessionOutbound, WireTransport, send_bounded},
@@ -32,8 +32,8 @@ pub(super) async fn handle_relay_frame(
                 return RelayFrameAction::Continue;
             };
             session
-                .pending_by_client
-                .remove(&pending.state.destination_id);
+                .pending_by_destination
+                .remove(&pending.state.destination);
             pending.state.finish_registration_attempt();
             if is_current_desired(inner, &pending.state) && pending.state.activate() {
                 tracing::debug!(
@@ -41,12 +41,12 @@ pub(super) async fn handle_relay_frame(
                     event = "sdk.listener.active",
                     session_id = %session_id.as_uuid(),
                     request_id,
-                    destination_id = %pending.state.destination_id,
+                    destination = %pending.state.destination,
                     binding_id = %binding_id.as_uuid(),
                     "Listener registration is active"
                 );
                 session.registrations.insert(
-                    pending.state.destination_id,
+                    pending.state.destination.clone(),
                     Registration {
                         state: pending.state,
                         binding_id,
@@ -83,8 +83,8 @@ pub(super) async fn handle_relay_frame(
                 return RelayFrameAction::Continue;
             };
             session
-                .pending_by_client
-                .remove(&pending.state.destination_id);
+                .pending_by_destination
+                .remove(&pending.state.destination);
             pending.state.finish_registration_attempt();
             if !is_current_desired(inner, &pending.state)
                 || *pending.state.status.borrow() == ListenerStatus::Closed
@@ -109,15 +109,7 @@ pub(super) async fn handle_relay_frame(
                     .state
                     .set_status(ListenerStatus::Suspended, Some(error));
                 pending.state.drain_unaccepted(false).await;
-                let delay = inner.config.reconnect_initial;
-                let cancel = inner.cancel.clone();
-                let inner_reconcile = inner.reconcile.clone();
-                tokio::spawn(async move {
-                    tokio::select! {
-                        _ = cancel.cancelled() => {}
-                        _ = tokio::time::sleep(delay) => inner_reconcile.notify_one(),
-                    }
-                });
+                inner.schedule_reconcile();
             } else {
                 inner.fail_initial_listener(&pending.state, error);
                 return RelayFrameAction::Reconcile;
@@ -126,9 +118,8 @@ pub(super) async fn handle_relay_frame(
         Frame::Offer {
             pipe_id,
             binding_id,
-            destination_id,
+            destination,
         } => {
-            let destination_id = DestinationId::from_wire(destination_id);
             if let Some(existing) = session.pipes.get(&pipe_id) {
                 if !existing.state.is_finished()
                     && send_bounded(
@@ -144,7 +135,7 @@ pub(super) async fn handle_relay_frame(
                 }
                 return RelayFrameAction::Continue;
             }
-            let Some(registration) = session.registrations.get(&destination_id) else {
+            let Some(registration) = session.registrations.get(&destination) else {
                 return listener_frame_action(
                     send_bounded(
                         transport,
@@ -166,7 +157,7 @@ pub(super) async fn handle_relay_frame(
                         Frame::OfferRejected {
                             pipe_id,
                             code: WireErrorCode::FailedPrecondition,
-                            message: "Listener binding incarnation is stale".to_owned(),
+                            message: "Binding incarnation is stale".to_owned(),
                         },
                         inner.config.operation_timeout,
                         session_cancel,
@@ -195,7 +186,7 @@ pub(super) async fn handle_relay_frame(
                 tracing::error!(
                     component = "sdk",
                     event = "sdk.listener_queue.invariant_failed",
-                    destination_id = %destination_id,
+                    destination = %destination,
                     "Listener incoming queue compaction could not preserve live Pipes"
                 );
                 return RelayFrameAction::Stop;
@@ -234,7 +225,7 @@ pub(super) async fn handle_relay_frame(
                     }
                 };
                 if !desired
-                    .get(&destination_id)
+                    .get(&destination)
                     .is_some_and(|current| Arc::ptr_eq(current, &registration.state))
                     || *registration.state.status.borrow() != ListenerStatus::Active
                 {
@@ -262,9 +253,9 @@ pub(super) async fn handle_relay_frame(
                     tracing::debug!(
                         component = "sdk",
                         event = "sdk.pipe.admitted",
-                        destination_id = %destination_id,
+                        destination = %destination,
                         binding_id = %binding_id.as_uuid(),
-                        connector_session_id = %pipe_id.origin_session_id().as_uuid(),
+                        dialer_session_id = %pipe_id.origin_session_id().as_uuid(),
                         connection_id = pipe_id.connection_id(),
                         "Listener admitted a Pipe"
                     );

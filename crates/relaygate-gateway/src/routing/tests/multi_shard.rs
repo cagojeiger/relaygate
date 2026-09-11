@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use relaygate_route_table::{
-    DestinationId, GatewayLocator, RegistrationKey, RegistrationRevision, RouteTableConfig,
+    Destination, GatewayLocator, RegistrationKey, RegistrationRevision, RouteTableConfig,
     RouteTableShard, ShardDirectory, ShardId,
 };
 use relaygate_route_table_transport::{
@@ -76,27 +76,27 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
     )?;
     let handle = runtime.handle();
     let session_id = protocol_session(2_000);
-    let clients = clients_by_shard(&directory)?;
-    let client_0 = clients.get("rt-0").ok_or("missing rt-0 client")?;
-    let client_1 = clients.get("rt-1").ok_or("missing rt-1 client")?;
+    let destinations = destinations_by_shard(&directory)?;
+    let destination_0 = destinations.get("rt-0").ok_or("missing rt-0 Destination")?;
+    let destination_1 = destinations.get("rt-1").ok_or("missing rt-1 Destination")?;
 
     handle.publish_session(
         session_id,
         vec![
             Binding {
                 id: protocol_binding(3_000),
-                destination_id: client_0.as_str().parse()?,
+                destination: destination_0.clone(),
                 session_id,
             },
             Binding {
                 id: protocol_binding(3_001),
-                destination_id: client_1.as_str().parse()?,
+                destination: destination_1.clone(),
                 session_id,
             },
         ],
     )?;
-    wait_for_resolve(&handle, client_0.clone()).await?;
-    wait_for_resolve(&handle, client_1.clone()).await?;
+    wait_for_resolve(&handle, destination_0.clone()).await?;
+    wait_for_resolve(&handle, destination_1.clone()).await?;
     wait_for_counts(&handle, 2, 0).await?;
     assert_eq!(
         handle.current_counts().dependency_health,
@@ -122,24 +122,24 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         Some(RegistrationRevision::FIRST)
     );
 
-    let replacement_0 = client_for_shard(&directory, "rt-0", "replacement")?;
+    let replacement_0 = destination_for_shard(&directory, "rt-0", "replacement")?;
     handle.publish_session(
         session_id,
         vec![
             Binding {
                 id: protocol_binding(3_002),
-                destination_id: replacement_0.as_str().parse()?,
+                destination: replacement_0.clone(),
                 session_id,
             },
             Binding {
                 id: protocol_binding(3_001),
-                destination_id: client_1.as_str().parse()?,
+                destination: destination_1.clone(),
                 session_id,
             },
         ],
     )?;
     wait_for_resolve(&handle, replacement_0.clone()).await?;
-    wait_for_not_found(&handle, client_0.clone()).await?;
+    wait_for_not_found(&handle, destination_0.clone()).await?;
     wait_for_counts(&handle, 2, 0).await?;
 
     let changed_0 = lease_client_0.register(generation, &key_0).await?;
@@ -162,10 +162,10 @@ async fn one_session_keeps_independent_lease_lifecycles_across_two_shards() -> T
         handle.current_counts().dependency_health,
         RouteDependencyHealth::Degraded
     );
-    wait_for_resolve(&handle, client_1.clone()).await?;
+    wait_for_resolve(&handle, destination_1.clone()).await?;
 
     handle.publish_session(session_id, Vec::new())?;
-    wait_for_not_found(&handle, client_1.clone()).await?;
+    wait_for_not_found(&handle, destination_1.clone()).await?;
     wait_for_counts(&handle, 0, 0).await?;
 
     routing_shutdown.cancel();
@@ -228,19 +228,19 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
         routing_shutdown.clone(),
     )?;
     let handle = runtime.handle();
-    let healthy_client = client_for_shard(&directory, "rt-1", "healthy")?;
+    let healthy_destination = destination_for_shard(&directory, "rt-1", "healthy")?;
     let session_id = protocol_session(5_000);
 
     handle.publish_session(
         session_id,
         vec![Binding {
             id: protocol_binding(6_000),
-            destination_id: healthy_client.as_str().parse()?,
+            destination: healthy_destination.clone(),
             session_id,
         }],
     )?;
-    wait_for_resolve(&handle, healthy_client.clone()).await?;
-    let broken_destination = clients_by_shard(&directory)?["rt-0"].clone();
+    wait_for_resolve(&handle, healthy_destination.clone()).await?;
+    let broken_destination = destinations_by_shard(&directory)?["rt-0"].clone();
     timeout(Duration::from_secs(5), async {
         loop {
             let _ = handle.resolve(broken_destination.clone()).await;
@@ -253,7 +253,7 @@ async fn terminal_shard_does_not_block_unaffected_shard_resolve() -> TestResult 
     .await?;
     wait_for_health(&handle, RouteDependencyHealth::Terminal).await?;
 
-    let resolved = handle.resolve(healthy_client).await?;
+    let resolved = handle.resolve(healthy_destination).await?;
     assert_eq!(resolved.len(), 1);
 
     routing_shutdown.cancel();
@@ -320,43 +320,39 @@ fn two_live_shard_directory(
     endpoint_1: std::net::SocketAddr,
 ) -> TestResult<ShardDirectory> {
     let artifact = format!(
-        r#"{{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{{"id":"rt-0","endpoint":"{endpoint_0}"}},{{"id":"rt-1","endpoint":"{endpoint_1}"}}]}}"#
+        r#"{{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{{"id":"rt-0","endpoint":"{endpoint_0}"}},{{"id":"rt-1","endpoint":"{endpoint_1}"}}]}}"#
     );
     Ok(ShardDirectory::from_json_bytes(artifact.as_bytes())?)
 }
 
-fn clients_by_shard(directory: &ShardDirectory) -> TestResult<BTreeMap<String, DestinationId>> {
-    let mut clients = BTreeMap::new();
+fn destinations_by_shard(directory: &ShardDirectory) -> TestResult<BTreeMap<String, Destination>> {
+    let mut destinations = BTreeMap::new();
     for index in 0..10_000 {
-        let destination_id = DestinationId::new(format!("00000000-0000-4000-8000-{index:012x}"))?;
-        clients
-            .entry(
-                directory
-                    .authority(&destination_id)
-                    .id()
-                    .as_str()
-                    .to_owned(),
-            )
-            .or_insert(destination_id);
-        if clients.len() == directory.shards().len() {
-            return Ok(clients);
+        let destination =
+            format!("test/00000000-0000-4000-8000-{index:012x}").parse::<Destination>()?;
+        destinations
+            .entry(directory.authority(&destination).id().as_str().to_owned())
+            .or_insert(destination);
+        if destinations.len() == directory.shards().len() {
+            return Ok(destinations);
         }
     }
-    Err("failed to find one DestinationId per shard".into())
+    Err("failed to find one Destination per shard".into())
 }
 
-fn client_for_shard(
+fn destination_for_shard(
     directory: &ShardDirectory,
     shard_id: &str,
     prefix: &str,
-) -> TestResult<DestinationId> {
+) -> TestResult<Destination> {
     for index in 0..10_000 {
         let prefix_byte = prefix.as_bytes().first().copied().unwrap_or_default();
         let suffix = (u128::from(prefix_byte) << 32) | index;
-        let destination_id = DestinationId::new(format!("00000000-0000-4000-8000-{suffix:012x}"))?;
-        if directory.authority(&destination_id).id().as_str() == shard_id {
-            return Ok(destination_id);
+        let destination =
+            format!("test/00000000-0000-4000-8000-{suffix:012x}").parse::<Destination>()?;
+        if directory.authority(&destination).id().as_str() == shard_id {
+            return Ok(destination);
         }
     }
-    Err(format!("failed to find DestinationId for {shard_id}").into())
+    Err(format!("failed to find Destination for {shard_id}").into())
 }

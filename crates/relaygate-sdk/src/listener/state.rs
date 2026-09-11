@@ -11,12 +11,13 @@ use tokio_util::sync::CancellationToken;
 
 use super::{ListenerStatus, RelaySession};
 use crate::{
-    Config, DestinationId, Error, ErrorCode, PeerObservation, Pipe, lifetime::RuntimeLifetime,
+    AccessTokenSource, Config, Destination, Error, ErrorCode, PeerObservation, Pipe,
+    lifetime::RuntimeLifetime,
 };
 
 pub(super) struct RelayInner {
     pub(super) config: Config,
-    pub(super) desired: StdMutex<HashMap<DestinationId, Arc<ListenerState>>>,
+    pub(super) desired: StdMutex<HashMap<Destination, Arc<ListenerState>>>,
     pub(super) current: watch::Sender<Option<Arc<RelaySession>>>,
     pub(super) reconcile: Arc<Notify>,
     pub(super) cancel: CancellationToken,
@@ -24,7 +25,8 @@ pub(super) struct RelayInner {
 }
 
 pub(super) struct ListenerState {
-    pub(super) destination_id: DestinationId,
+    pub(super) destination: Destination,
+    pub(super) access_token_source: AccessTokenSource,
     pub(super) status: watch::Sender<ListenerStatus>,
     pub(super) last_error: StdMutex<Option<Error>>,
     pub(super) incoming_tx: mpsc::Sender<Pipe>,
@@ -42,6 +44,18 @@ pub(super) enum ListenerLifecycle {
 }
 
 impl RelayInner {
+    pub(super) fn schedule_reconcile(&self) {
+        let delay = self.config.reconnect_initial;
+        let cancel = self.cancel.clone();
+        let reconcile = Arc::clone(&self.reconcile);
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                _ = tokio::time::sleep(delay) => reconcile.notify_one(),
+            }
+        });
+    }
+
     pub(super) fn desired_is_converged(&self) -> bool {
         self.desired.lock().is_ok_and(|desired| {
             desired
@@ -60,10 +74,10 @@ impl RelayInner {
             }
         };
         if desired
-            .get(&state.destination_id)
+            .get(&state.destination)
             .is_some_and(|current| Arc::ptr_eq(current, state))
         {
-            desired.remove(&state.destination_id);
+            desired.remove(&state.destination);
             self.reconcile.notify_one();
         }
     }
@@ -114,10 +128,10 @@ impl RelayInner {
             }
         };
         if desired
-            .get(&state.destination_id)
+            .get(&state.destination)
             .is_some_and(|current| Arc::ptr_eq(current, state))
         {
-            desired.remove(&state.destination_id);
+            desired.remove(&state.destination);
         }
         self.reconcile.notify_one();
     }
@@ -131,7 +145,7 @@ impl ListenerState {
                 tracing::debug!(
                     component = "sdk",
                     event = "sdk.listener.status_changed",
-                    destination_id = %self.destination_id,
+                    destination = %self.destination,
                     previous = ?previous,
                     status = ?status,
                     error_code = ?error.code(),
@@ -142,7 +156,7 @@ impl ListenerState {
                 tracing::debug!(
                     component = "sdk",
                     event = "sdk.listener.status_changed",
-                    destination_id = %self.destination_id,
+                    destination = %self.destination,
                     previous = ?previous,
                     status = ?status,
                     "Listener status changed"
@@ -373,7 +387,7 @@ impl ListenerState {
 pub(super) fn is_current_desired(inner: &RelayInner, state: &Arc<ListenerState>) -> bool {
     match inner.desired.lock() {
         Ok(desired) => desired
-            .get(&state.destination_id)
+            .get(&state.destination)
             .is_some_and(|current| Arc::ptr_eq(current, state)),
         Err(_) => {
             tracing::error!(
@@ -384,5 +398,65 @@ pub(super) fn is_current_desired(inner: &RelayInner, state: &Arc<ListenerState>)
             inner.cancel.cancel();
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{Arc, Mutex as StdMutex},
+        time::Duration,
+    };
+
+    use tokio::{
+        sync::{mpsc, watch},
+        time::Instant,
+    };
+
+    use super::{ListenerLifecycle, ListenerState};
+    use crate::{AccessToken, AccessTokenSource, Destination, Error, ListenerStatus};
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+    #[test]
+    fn precommit_session_end_keeps_initial_listener_retryable_with_original_deadline() -> TestResult
+    {
+        let destination: Destination = "inference/stt.seoul".parse()?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (status, _) = watch::channel(ListenerStatus::Registering);
+        let (incoming_tx, incoming_rx) = mpsc::channel(1);
+        let state = Arc::new(ListenerState {
+            destination,
+            access_token_source: AccessTokenSource::static_token(AccessToken::new("grant")?),
+            status,
+            last_error: StdMutex::new(None),
+            incoming_tx,
+            incoming_rx: tokio::sync::Mutex::new(incoming_rx),
+            initial_deadline: deadline,
+            lifecycle: StdMutex::new(ListenerLifecycle::Pending),
+            registration_committed: StdMutex::new(false),
+        });
+
+        state.handle_precommit_session_end(Error::unavailable(
+            "RelaySession ended before managed PUBLISH commit",
+        ));
+
+        assert_eq!(*state.status.borrow(), ListenerStatus::Registering);
+        assert_eq!(state.initial_deadline, deadline);
+        assert_eq!(
+            *state
+                .lifecycle
+                .lock()
+                .map_err(|_| "lifecycle lock poisoned")?,
+            ListenerLifecycle::Pending
+        );
+        assert!(state.last_error().is_none());
+
+        assert!(state.begin_registration_commit());
+        assert!(state.activate());
+        assert_eq!(*state.status.borrow(), ListenerStatus::Active);
+        assert!(state.promote_returned());
+        assert!(state.was_returned());
+        Ok(())
     }
 }

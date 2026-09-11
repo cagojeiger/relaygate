@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    BindingId, DestinationId, GatewayId, GatewayLocator, LeaseId, RegistrationRevision,
+    BindingId, Destination, GatewayId, GatewayLocator, LeaseId, RegistrationRevision,
     RelaySessionId, RouteTableError, ShardId,
 };
 
@@ -46,13 +46,13 @@ impl RegistrationKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MappingIdentity {
+pub struct BindingIdentity {
     gateway_id: GatewayId,
     relay_session_id: RelaySessionId,
     binding_id: BindingId,
 }
 
-impl MappingIdentity {
+impl BindingIdentity {
     #[must_use]
     pub const fn new(
         gateway_id: GatewayId,
@@ -83,35 +83,35 @@ impl MappingIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MappingEntry {
-    destination_id: DestinationId,
-    identity: MappingIdentity,
+pub struct BindingProjection {
+    destination: Destination,
+    identity: BindingIdentity,
     gateway_locator: GatewayLocator,
 }
 
-impl MappingEntry {
+impl BindingProjection {
     #[must_use]
     pub const fn new(
-        destination_id: DestinationId,
+        destination: Destination,
         gateway_id: GatewayId,
         relay_session_id: RelaySessionId,
         binding_id: BindingId,
         gateway_locator: GatewayLocator,
     ) -> Self {
         Self {
-            destination_id,
-            identity: MappingIdentity::new(gateway_id, relay_session_id, binding_id),
+            destination,
+            identity: BindingIdentity::new(gateway_id, relay_session_id, binding_id),
             gateway_locator,
         }
     }
 
     #[must_use]
-    pub fn destination_id(&self) -> &DestinationId {
-        &self.destination_id
+    pub fn destination(&self) -> &Destination {
+        &self.destination
     }
 
     #[must_use]
-    pub const fn identity(&self) -> MappingIdentity {
+    pub const fn identity(&self) -> BindingIdentity {
         self.identity
     }
 
@@ -121,40 +121,41 @@ impl MappingEntry {
     }
 }
 
-/// A non-empty, complete current mapping snapshot for one registration.
+/// A non-empty, complete current binding snapshot for one registration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MappingSnapshot {
-    entries: BTreeMap<MappingIdentity, MappingEntry>,
+pub struct BindingSnapshot {
+    entries: BTreeMap<BindingIdentity, BindingProjection>,
 }
 
-impl MappingSnapshot {
-    pub fn new(entries: impl IntoIterator<Item = MappingEntry>) -> Result<Self, RouteTableError> {
+impl BindingSnapshot {
+    pub fn new(
+        entries: impl IntoIterator<Item = BindingProjection>,
+    ) -> Result<Self, RouteTableError> {
         let mut by_identity = BTreeMap::new();
-        let mut by_session_client = std::collections::HashSet::new();
+        let mut by_session_destination = std::collections::HashSet::new();
 
         for entry in entries {
             let identity = entry.identity();
-            let session_client = (
+            let session_destination = (
                 identity.gateway_id(),
                 identity.relay_session_id(),
-                entry.destination_id().clone(),
+                entry.destination().clone(),
             );
-            if !by_session_client.insert(session_client) {
+            if !by_session_destination.insert(session_destination) {
                 return Err(RouteTableError::InvalidArgument(
-                    "snapshot contains duplicate DestinationId scope for one RelaySession"
-                        .to_owned(),
+                    "snapshot contains duplicate Destination scope for one RelaySession".to_owned(),
                 ));
             }
             if by_identity.insert(identity, entry).is_some() {
                 return Err(RouteTableError::InvalidArgument(
-                    "snapshot contains a duplicate MappingIdentity".to_owned(),
+                    "snapshot contains a duplicate BindingIdentity".to_owned(),
                 ));
             }
         }
 
         if by_identity.is_empty() {
             return Err(RouteTableError::InvalidArgument(
-                "Update snapshot must contain at least one mapping".to_owned(),
+                "Update snapshot must contain at least one binding".to_owned(),
             ));
         }
         Ok(Self {
@@ -172,47 +173,47 @@ impl MappingSnapshot {
         self.entries.is_empty()
     }
 
-    pub fn entries(&self) -> impl ExactSizeIterator<Item = &MappingEntry> {
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = &BindingProjection> {
         self.entries.values()
     }
 
-    pub(crate) fn as_map(&self) -> &BTreeMap<MappingIdentity, MappingEntry> {
+    pub(crate) fn as_map(&self) -> &BTreeMap<BindingIdentity, BindingProjection> {
         &self.entries
     }
 
-    pub(crate) fn into_map(self) -> BTreeMap<MappingIdentity, MappingEntry> {
+    pub(crate) fn into_map(self) -> BTreeMap<BindingIdentity, BindingProjection> {
         self.entries
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingSet {
-    entries: Vec<MappingEntry>,
+    entries: Vec<BindingProjection>,
 }
 
 impl BindingSet {
-    pub(crate) fn new(entries: Vec<MappingEntry>) -> Self {
+    pub(crate) fn new(entries: Vec<BindingProjection>) -> Self {
         Self { entries }
     }
 
     /// Reconstructs a Resolve result at a validated transport boundary.
-    pub fn from_entries(entries: Vec<MappingEntry>) -> Result<Self, RouteTableError> {
+    pub fn from_entries(entries: Vec<BindingProjection>) -> Result<Self, RouteTableError> {
         let Some(first) = entries.first() else {
             return Err(RouteTableError::InvalidArgument(
-                "BindingSet must contain at least one mapping".to_owned(),
+                "BindingSet must contain at least one binding".to_owned(),
             ));
         };
-        let destination_id = first.destination_id();
+        let destination = first.destination();
         let mut identities = HashSet::with_capacity(entries.len());
         for entry in &entries {
-            if entry.destination_id() != destination_id {
+            if entry.destination() != destination {
                 return Err(RouteTableError::InvalidArgument(
-                    "BindingSet mappings must share one DestinationId".to_owned(),
+                    "BindingSet bindings must share one Destination".to_owned(),
                 ));
             }
             if !identities.insert(entry.identity()) {
                 return Err(RouteTableError::InvalidArgument(
-                    "BindingSet contains a duplicate MappingIdentity".to_owned(),
+                    "BindingSet contains a duplicate BindingIdentity".to_owned(),
                 ));
             }
         }
@@ -231,7 +232,7 @@ impl BindingSet {
 
     /// Returns the current entries. Their order has no routing meaning.
     #[must_use]
-    pub fn entries(&self) -> &[MappingEntry] {
+    pub fn entries(&self) -> &[BindingProjection] {
         &self.entries
     }
 }
@@ -285,7 +286,7 @@ impl RegistrationAck {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteTableStats {
     pub registration_count: usize,
-    pub mapping_count: usize,
-    pub route_count: usize,
+    pub binding_count: usize,
+    pub destination_count: usize,
     pub expiry_record_count: usize,
 }

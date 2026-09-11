@@ -3,9 +3,9 @@ use std::{collections::HashSet, sync::Arc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::{DestinationId, RouteTableError, ShardDirectoryGeneration, ShardEndpoint, ShardId};
+use crate::{Destination, RouteTableError, ShardDirectoryGeneration, ShardEndpoint, ShardId};
 
-pub const AUTHORITY_HASH_SHA256_MODULO_V1: &str = "sha256-modulo-v1";
+pub const AUTHORITY_HASH_SHA256_MODULO_V2: &str = "sha256-destination-modulo-v2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShardRecord {
@@ -55,14 +55,14 @@ impl ShardDirectory {
             RouteTableError::InvalidArgument(format!("invalid ShardDirectory JSON: {error}"))
         })?;
 
-        if document.format_version != 1 {
+        if document.format_version != 2 {
             return Err(RouteTableError::InvalidArgument(
-                "ShardDirectory format_version must be 1".to_owned(),
+                "ShardDirectory format_version must be 2".to_owned(),
             ));
         }
-        if document.authority_hash != AUTHORITY_HASH_SHA256_MODULO_V1 {
+        if document.authority_hash != AUTHORITY_HASH_SHA256_MODULO_V2 {
             return Err(RouteTableError::InvalidArgument(format!(
-                "ShardDirectory authority_hash must be {AUTHORITY_HASH_SHA256_MODULO_V1}"
+                "ShardDirectory authority_hash must be {AUTHORITY_HASH_SHA256_MODULO_V2}"
             )));
         }
         if document.shards.is_empty() {
@@ -115,8 +115,8 @@ impl ShardDirectory {
     }
 
     #[must_use]
-    pub fn authority(&self, destination_id: &DestinationId) -> &ShardRecord {
-        let digest = Sha256::digest(destination_id.as_bytes());
+    pub fn authority(&self, destination: &Destination) -> &ShardRecord {
+        let digest = Sha256::digest(destination.canonical_key());
         let mut prefix = [0_u8; 8];
         prefix.copy_from_slice(&digest[..8]);
         let value = u64::from_be_bytes(prefix);

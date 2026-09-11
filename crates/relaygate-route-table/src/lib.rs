@@ -10,15 +10,15 @@ mod identity;
 mod model;
 mod shard;
 
-pub use directory::{AUTHORITY_HASH_SHA256_MODULO_V1, ShardDirectory, ShardRecord};
+pub use directory::{AUTHORITY_HASH_SHA256_MODULO_V2, ShardDirectory, ShardRecord};
 pub use error::{ErrorCode, RouteTableError};
 pub use identity::{
-    AuthenticatedGatewayId, BindingId, DestinationId, GatewayId, GatewayLocator, LeaseId,
-    RegistrationRevision, RelaySessionId, RequestContext, ShardDirectoryGeneration, ShardEndpoint,
-    ShardId,
+    AuthenticatedGatewayId, BindingId, GatewayId, GatewayLocator, LeaseId, RegistrationRevision,
+    RelaySessionId, RequestContext, ShardDirectoryGeneration, ShardEndpoint, ShardId,
 };
 pub use model::{
-    BindingSet, MappingEntry, MappingIdentity, MappingSnapshot, RegistrationAck, RegistrationKey,
-    RouteTableStats,
+    BindingIdentity, BindingProjection, BindingSet, BindingSnapshot, RegistrationAck,
+    RegistrationKey, RouteTableStats,
 };
+pub use relaygate_destination::{Destination, DestinationName, Namespace};
 pub use shard::{RouteTableConfig, RouteTableShard};

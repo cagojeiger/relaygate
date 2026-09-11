@@ -16,5 +16,6 @@ RFC 원문 ──► 일반 개념 색인 ──► ADR 결정 ──► SPEC �
 | multiplexing | [4254](rfc-4254-ssh-channel.md), [9000](rfc-9000-quic-streams.md) | channel/stream ID, flow control, terminal state |
 | connection | [9293](rfc-9293-tcp-connection-roles.md) | active/passive open, byte stream, FIN/RST |
 | mapping | [9299](rfc-9299-lisp-architecture.md), [9301](rfc-9301-lisp-control-plane.md) | identifier-to-locator register/resolve |
+| operation grant | [7515](rfc-7515-json-web-signature.md), [7517](rfc-7517-json-web-key.md), [7518](rfc-7518-json-web-algorithms.md), [7519](rfc-7519-json-web-token.md), [8725](rfc-8725-jwt-best-current-practices.md) | JWS header, static public JWK, JWT claim, ES256, explicit `typ` 검증 |
 
 각 문서는 RFC의 목적, 핵심 개념, 표준 고유 영역과 필요한 원문 절만 기록합니다.

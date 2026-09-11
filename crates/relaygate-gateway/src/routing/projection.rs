@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use relaygate_protocol::{BindingId as ProtocolBindingId, SessionId};
 use relaygate_route_table::{
-    BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot,
-    RelaySessionId, ShardDirectory, ShardId,
+    BindingId, BindingProjection, BindingSnapshot, GatewayId, GatewayLocator, RelaySessionId,
+    ShardDirectory, ShardId,
 };
 
 use crate::registry::Binding;
@@ -13,7 +13,7 @@ use super::RoutingError;
 #[derive(Debug, Clone)]
 pub(super) struct ProjectedShardSnapshot {
     pub(super) shard_id: ShardId,
-    pub(super) snapshot: Option<MappingSnapshot>,
+    pub(super) snapshot: Option<BindingSnapshot>,
 }
 
 /// Projects one complete local RelaySession snapshot into every configured
@@ -38,13 +38,13 @@ pub(super) fn project_session(
                 "binding belongs to a different RelaySession".to_owned(),
             ));
         }
-        let destination_id = DestinationId::new(binding.destination_id.to_string())?;
-        let shard_id = directory.authority(&destination_id).id();
+        let destination = binding.destination;
+        let shard_id = directory.authority(&destination).id();
         let entries = by_shard.get_mut(shard_id).ok_or_else(|| {
             RoutingError::InvalidProjection("authority shard is absent from directory".to_owned())
         })?;
-        entries.push(MappingEntry::new(
-            destination_id,
+        entries.push(BindingProjection::new(
+            destination,
             gateway_id,
             relay_session_id,
             project_binding_id(binding.id),
@@ -58,7 +58,7 @@ pub(super) fn project_session(
             let snapshot = if entries.is_empty() {
                 None
             } else {
-                Some(MappingSnapshot::new(entries)?)
+                Some(BindingSnapshot::new(entries)?)
             };
             Ok(ProjectedShardSnapshot { shard_id, snapshot })
         })

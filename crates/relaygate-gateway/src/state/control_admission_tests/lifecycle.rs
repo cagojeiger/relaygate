@@ -4,17 +4,10 @@ use relaygate_protocol::PipeId;
 fn offer(
     state: &mut GatewayState,
     caller: SessionId,
-    destination: DestinationId,
+    destination: &Destination,
     now: Instant,
 ) -> Result<PipeId, Box<dyn Error>> {
-    let actions = state.handle_at(
-        caller,
-        Frame::Dial {
-            connection_id: 1,
-            destination_id: destination,
-        },
-        now,
-    )?;
+    let actions = state.handle_at(caller, dial(1, destination), now)?;
     frames(&actions)
         .find_map(|frame| match frame {
             Frame::Offer { pipe_id, .. } => Some(*pipe_id),
@@ -43,9 +36,9 @@ fn rate_rejection_cancel_disconnect_and_late_accept_orders_preserve_siblings() -
                         let healthy = session(&mut state)?;
                         let victim = session(&mut state)?;
                         let now = Instant::now();
-                        let destination = DestinationId::new();
-                        state.handle_at(owner, publish(1, destination), now)?;
-                        let healthy_pipe = offer(&mut state, healthy, destination, now)?;
+                        let destination = unique_destination();
+                        state.handle_at(owner, publish(1, &destination), now)?;
+                        let healthy_pipe = offer(&mut state, healthy, &destination, now)?;
                         state.handle_at(
                             owner,
                             Frame::OfferAccepted {
@@ -53,20 +46,17 @@ fn rate_rejection_cancel_disconnect_and_late_accept_orders_preserve_siblings() -
                             },
                             now,
                         )?;
-                        state.handle_at(victim, publish(1, DestinationId::new()), now)?;
-                        let pending = offer(&mut state, victim, destination, now)?;
+                        state.handle_at(victim, publish(1, &unique_destination()), now)?;
+                        let pending = offer(&mut state, victim, &destination, now)?;
                         assert!(!state.control_rate.has_capacity(now));
                         let mut removed = false;
                         for event in order {
                             match event {
                                 0 => {
                                     let frame = if publish_rejection {
-                                        publish(2, DestinationId::new())
+                                        publish(2, &unique_destination())
                                     } else {
-                                        Frame::Dial {
-                                            connection_id: 2,
-                                            destination_id: destination,
-                                        }
+                                        dial(2, &destination)
                                     };
                                     let actions = state.handle_at(victim, frame, now)?;
                                     if removed {
@@ -165,18 +155,11 @@ fn cancelling_a_rate_rejected_dial_does_not_cancel_another_pipe() -> TestResult 
     let owner = session(&mut state)?;
     let caller = session(&mut state)?;
     let now = Instant::now();
-    let destination = DestinationId::new();
-    state.handle_at(owner, publish(1, destination), now)?;
-    let active = offer(&mut state, caller, destination, now)?;
+    let destination = unique_destination();
+    state.handle_at(owner, publish(1, &destination), now)?;
+    let active = offer(&mut state, caller, &destination, now)?;
     state.handle_at(owner, Frame::OfferAccepted { pipe_id: active }, now)?;
-    let failed = state.handle_at(
-        caller,
-        Frame::Dial {
-            connection_id: 2,
-            destination_id: destination,
-        },
-        now,
-    )?;
+    let failed = state.handle_at(caller, dial(2, &destination), now)?;
     assert!(frames(&failed).any(|frame| matches!(
         frame,
         Frame::DialFailed {

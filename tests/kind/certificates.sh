@@ -1,5 +1,24 @@
 #!/usr/bin/env bash
 
+run_with_timeout() {
+  local seconds=$1
+  shift
+
+  "$@" &
+  local command_pid=$!
+  (
+    sleep "$seconds"
+    kill -TERM "$command_pid" >/dev/null 2>&1 || true
+  ) &
+  local watchdog_pid=$!
+  local result_code=0
+
+  wait "$command_pid" || result_code=$?
+  kill "$watchdog_pid" >/dev/null 2>&1 || true
+  wait "$watchdog_pid" >/dev/null 2>&1 || true
+  return "$result_code"
+}
+
 install_certificate_controllers() {
   helm upgrade --install cert-manager cert-manager \
     --repo https://charts.jetstack.io --version v1.21.1 \
@@ -60,8 +79,8 @@ wait_for_served_certificate() {
   local diagnostics="$ARTIFACTS/certificate-edge-probe.log"
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     printf 'address=%s attempt=%s expected=%s\n' "$address" "$attempt" "$expected" >"$diagnostics"
-    if served_serial=$(timeout 3 openssl s_client -connect "$address" \
-      -servername relaygate-gateway.internal -alpn relaygate/2 \
+    if served_serial=$(run_with_timeout 3 openssl s_client -connect "$address" \
+      -servername relaygate-gateway.internal -alpn relaygate/3 \
       -CAfile "$CERTIFICATES/ca.crt" -verify_return_error </dev/null 2>>"$diagnostics" |
       openssl x509 -noout -serial 2>>"$diagnostics"); then
       if [[ "$served_serial" == "$expected" ]]; then

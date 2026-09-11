@@ -3,6 +3,7 @@ use std::{
     io,
     net::TcpListener,
     process::{Child, Command, ExitStatus, Output, Stdio},
+    sync::atomic::{AtomicU16, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -20,27 +21,29 @@ use std::{
 #[cfg(unix)]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(unix)]
-use relaygate_protocol::{ClusterToken, ErrorCode, Frame, FrameCodec};
+use relaygate_protocol::{BearerToken, Destination, ErrorCode, Frame, FrameCodec};
 #[cfg(unix)]
 use relaygate_route_table::{
-    BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry, MappingSnapshot,
-    RegistrationKey, RegistrationRevision, RelaySessionId, ShardDirectory, ShardId,
+    BindingId, BindingProjection, BindingSnapshot, GatewayId, GatewayLocator, RegistrationKey,
+    RegistrationRevision, RelaySessionId, ShardDirectory, ShardId,
 };
 #[cfg(unix)]
 use relaygate_route_table_transport::{
     ErrorCode as RouteTableErrorCode, GatewayName, RouteTableClient, RouteTableClientConfig,
 };
-
 const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
-const TEST_CLUSTER_TOKEN: &str = "relaygate-process-test-token";
+const FIRST_TEST_PORT: u16 = 20_000;
+static NEXT_TEST_PORT: AtomicU16 = AtomicU16::new(FIRST_TEST_PORT);
 
 #[cfg(unix)]
 #[path = "process/admission.rs"]
 mod admission;
 #[path = "process/transport_modes.rs"]
 mod transport_modes;
-const DESTINATION_A: &str = "11111111-1111-4111-8111-111111111111";
-const DESTINATION_MISSING: &str = "99999999-9999-4999-8999-999999999999";
+const DESTINATION_A: &str = "examples/echo-a";
+const DESTINATION_MISSING: &str = "examples/echo-missing";
+#[cfg(unix)]
+const TEST_ACCESS_TOKEN: &str = include_str!("fixtures/access-token.txt");
 #[cfg(unix)]
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -55,11 +58,7 @@ const PEER_CONNECT_TIMEOUT: Duration = Duration::from_millis(100);
 #[test]
 fn server_boots_health_checks_and_exits_on_sigterm() -> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
-    let mut server = ChildGuard::spawn(
-        server_command()
-            .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_CLUSTER_TOKEN", TEST_CLUSTER_TOKEN),
-    )?;
+    let mut server = ChildGuard::spawn(server_command().env("RELAYGATE_BIND_ADDR", &address))?;
 
     wait_until_healthy(&address, &mut server)?;
 
@@ -103,15 +102,12 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
 
     let client = wait_until_route_table_ready(&address, gateway_id, &mut server).await?;
     let error = match client
-        .resolve(
-            directory.generation(),
-            &DestinationId::new("11111111-1111-4111-8111-111111111111")?,
-        )
+        .resolve(directory.generation(), &DESTINATION_A.parse()?)
         .await
     {
         Ok(_) => {
             return Err(io::Error::other(
-                "a READY-empty RouteTable unexpectedly resolved a missing DestinationId",
+                "a READY-empty RouteTable unexpectedly resolved a missing Destination",
             )
             .into());
         }
@@ -119,13 +115,13 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
     };
     assert_eq!(error.code(), RouteTableErrorCode::NotFound);
 
-    let listener_session_id = RelaySessionId::new();
-    let key = RegistrationKey::new(gateway_id, listener_session_id, ShardId::new("rt-0")?);
+    let relay_session_id = RelaySessionId::new();
+    let key = RegistrationKey::new(gateway_id, relay_session_id, ShardId::new("rt-0")?);
     let registration = client.register(directory.generation(), &key).await?;
-    let snapshot = MappingSnapshot::new([MappingEntry::new(
-        DestinationId::new("22222222-2222-4222-8222-222222222222")?,
+    let snapshot = BindingSnapshot::new([BindingProjection::new(
+        "examples/echo-b".parse()?,
         gateway_id,
-        listener_session_id,
+        relay_session_id,
         BindingId::new(),
         GatewayLocator::new("127.0.0.1:27421")?,
     )])?;
@@ -146,13 +142,13 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
     assert!(metrics.contains("role=\"route_table\""));
     for metric in [
         "relaygate_route_table_registrations",
-        "relaygate_route_table_mappings",
-        "relaygate_route_table_routes",
+        "relaygate_route_table_bindings",
+        "relaygate_route_table_destinations",
         "relaygate_route_table_expiry_records",
     ] {
         assert!(
             metrics.contains(&format!("{metric}{{role=\"route_table\"}} 1")),
-            "expected {metric} to report the one current registration/mapping/route/expiry record"
+            "expected {metric} to report the one current registration/binding/destination/expiry record"
         );
     }
     assert!(metric_has_labels(
@@ -273,7 +269,6 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_CLUSTER_TOKEN", TEST_CLUSTER_TOKEN)
             .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_GATEWAY_NAME", "gw-a")
@@ -325,7 +320,6 @@ fn distributed_peer_accept_failure_exits_process_nonzero_within_bound() -> Resul
     let mut server = ChildGuard::spawn_captured(
         server_command_with_open_file_limit(PROCESS_NOFILE_LIMIT)
             .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_CLUSTER_TOKEN", TEST_CLUSTER_TOKEN)
             .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_GATEWAY_NAME", "gw-a")
@@ -431,13 +425,22 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         "RELAYGATE_RT_SHARD_DIRECTORY_PATH is required for distributed Gateway mode",
     );
 
-    let missing_cluster_token = server_command()
+    let missing_authorization_config = server_command()
         .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
-        .env_remove("RELAYGATE_CLUSTER_TOKEN")
+        .env_remove("RELAYGATE_AUTH_CONFIG_PATH")
         .output()?;
     assert_unsuccessful_output(
-        &missing_cluster_token,
-        "RELAYGATE_CLUSTER_TOKEN is required for Gateway mode",
+        &missing_authorization_config,
+        "RELAYGATE_AUTH_CONFIG_PATH is required",
+    );
+
+    let removed_cluster_token = server_command()
+        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+        .env("RELAYGATE_CLUSTER_TOKEN", "removed")
+        .output()?;
+    assert_unsuccessful_output(
+        &removed_cluster_token,
+        "RELAYGATE_CLUSTER_TOKEN is no longer supported",
     );
 
     let zero_capacity = server_command()
@@ -557,20 +560,17 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
 
 #[cfg(unix)]
 #[test]
-fn json_logs_expose_stable_startup_and_snapshot_fields_without_secrets()
--> Result<(), Box<dyn Error>> {
+fn json_logs_expose_stable_startup_and_snapshot_fields() -> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
-    let secret = "must-not-appear-in-observability-output";
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_CLUSTER_TOKEN", secret)
             .env("RELAYGATE_LOG", "info")
             .env("RELAYGATE_LOG_FORMAT", "json")
             .env("RELAYGATE_STATS_INTERVAL_MS", "250"),
     )?;
 
-    wait_until_healthy_with_token(&address, secret, &mut server)?;
+    wait_until_healthy(&address, &mut server)?;
 
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
@@ -589,8 +589,10 @@ fn json_logs_expose_stable_startup_and_snapshot_fields_without_secrets()
     );
 
     let (stdout, stderr) = server.read_captured()?;
-    assert!(!stdout.contains(secret));
-    assert!(!stderr.contains(secret));
+    assert!(
+        stderr.is_empty(),
+        "server wrote unexpected stderr: {stderr}"
+    );
     let records = stdout
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)
@@ -637,7 +639,6 @@ fn default_json_logs_do_not_emit_gateway_snapshots() -> Result<(), Box<dyn Error
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_CLUSTER_TOKEN", TEST_CLUSTER_TOKEN)
             .env("RELAYGATE_LOG", "info")
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
@@ -691,7 +692,6 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_CLUSTER_TOKEN", secret)
             .env("RELAYGATE_MAX_BINDINGS", "1")
             .env("RELAYGATE_MAX_SESSIONS", "17")
             .env("RELAYGATE_MAX_PENDING_HANDSHAKES", "7")
@@ -704,13 +704,15 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
-    wait_until_healthy_with_token(&address, secret, &mut server)?;
-    let destination_id = DESTINATION_A.parse()?;
-    let mut listener = connect_sdk_session(&address, secret).await?;
+    wait_until_healthy(&address, &mut server)?;
+    let destination: Destination = DESTINATION_A.parse()?;
+    let publish_token = test_access_token()?;
+    let mut listener = connect_sdk_session(&address).await?;
     listener
         .send(Frame::Publish {
             request_id: 1,
-            destination_id,
+            destination: destination.clone(),
+            access_token: publish_token.clone(),
         })
         .await?;
     let registered = tokio::time::timeout(Duration::from_secs(1), listener.next()).await?;
@@ -718,11 +720,12 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
         matches!(registered, Some(Ok(Frame::Published { request_id: 1, .. }))),
         "Listener should register before the successful OPEN metric case: {registered:?}"
     );
-    let mut capacity_listener = connect_sdk_session(&address, secret).await?;
+    let mut capacity_listener = connect_sdk_session(&address).await?;
     capacity_listener
         .send(Frame::Publish {
             request_id: 1,
-            destination_id,
+            destination: destination.clone(),
+            access_token: publish_token,
         })
         .await?;
     let exhausted = tokio::time::timeout(Duration::from_secs(1), capacity_listener.next()).await?;
@@ -738,10 +741,11 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
         "binding limit should reject another valid Listener registration: {exhausted:?}"
     );
 
-    let mut sdk = connect_sdk_session(&address, secret).await?;
+    let mut sdk = connect_sdk_session(&address).await?;
     sdk.send(Frame::Dial {
         connection_id: 1,
-        destination_id,
+        destination: destination.clone(),
+        access_token: test_access_token()?,
     })
     .await?;
     let offer = tokio::time::timeout(Duration::from_secs(1), listener.next()).await?;
@@ -756,9 +760,11 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
         "accepted Listener offer should complete OPEN: {opened:?}"
     );
 
+    let missing_destination: Destination = DESTINATION_MISSING.parse()?;
     sdk.send(Frame::Dial {
         connection_id: 2,
-        destination_id: DESTINATION_MISSING.parse()?,
+        destination: missing_destination.clone(),
+        access_token: test_access_token()?,
     })
     .await?;
     let result = tokio::time::timeout(Duration::from_secs(1), sdk.next()).await?;
@@ -772,6 +778,24 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
             }))
         ),
         "missing local binding should produce terminal OPEN_FAILED: {result:?}"
+    );
+    sdk.send(Frame::Dial {
+        connection_id: 3,
+        destination,
+        access_token: BearerToken::new(secret)?,
+    })
+    .await?;
+    let unauthorized = tokio::time::timeout(Duration::from_secs(1), sdk.next()).await?;
+    assert!(
+        matches!(
+            unauthorized,
+            Some(Ok(Frame::DialFailed {
+                connection_id: 3,
+                code: ErrorCode::Unauthenticated,
+                ..
+            }))
+        ),
+        "invalid bearer token should fail DIAL authorization: {unauthorized:?}"
     );
     let body = wait_for_metrics(
         &metrics_address,
@@ -850,6 +874,16 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
     ));
     assert!(metric_has_labels(
         &body,
+        "relaygate_gateway_authorization_results_total",
+        &[
+            "operation=\"dial\"",
+            "outcome=\"error\"",
+            "code=\"unauthenticated\""
+        ]
+    ));
+    assert!(body.contains("relaygate_gateway_authorization_duration_seconds_bucket"));
+    assert!(metric_has_labels(
+        &body,
         "relaygate_gateway_dial_results_total",
         &[
             "role=\"gateway\"",
@@ -893,6 +927,8 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
         "metrics-enabled server shutdown failed"
     );
     let (stdout, stderr) = server.read_captured()?;
+    assert!(!stdout.contains(secret));
+    assert!(!stderr.contains(secret));
     assert!(
         stderr.is_empty(),
         "server wrote unexpected stderr: {stderr}"
@@ -945,11 +981,9 @@ async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets(
 -> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
-    let secret = "must-not-appear-heartbeat-key";
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_CLUSTER_TOKEN", secret)
             .env("RELAYGATE_LOG", "debug")
             .env("RELAYGATE_LOG_FORMAT", "json")
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
@@ -958,8 +992,8 @@ async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets(
             .env("RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS", "40"),
     )?;
 
-    wait_until_healthy_with_token(&address, secret, &mut server)?;
-    let mut sdk = connect_sdk_session(&address, secret).await?;
+    wait_until_healthy(&address, &mut server)?;
+    let mut sdk = connect_sdk_session(&address).await?;
     let heartbeat = tokio::time::timeout(Duration::from_secs(1), sdk.next()).await?;
     assert!(
         matches!(heartbeat, Some(Ok(Frame::Ping { .. }))),
@@ -980,7 +1014,6 @@ async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets(
         "relaygate_gateway_heartbeat_timeouts_total",
         &["role=\"gateway\"", "transport=\"sdk\""]
     ));
-    assert!(!metrics.contains(secret));
 
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
@@ -995,8 +1028,10 @@ async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets(
     assert!(exit_status.success(), "Gateway shutdown failed");
 
     let (stdout, stderr) = server.read_captured()?;
-    assert!(!stdout.contains(secret));
-    assert!(!stderr.contains(secret));
+    assert!(
+        stderr.is_empty(),
+        "Gateway wrote unexpected stderr: {stderr}"
+    );
     let records = stdout
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)
@@ -1031,6 +1066,7 @@ fn server_command_with_open_file_limit(limit: usize) -> Command {
 fn clean_server_command(mut command: Command) -> Command {
     for name in [
         "RELAYGATE_BIND_ADDR",
+        "RELAYGATE_AUTH_CONFIG_PATH",
         "RELAYGATE_INSECURE_TEST_TRANSPORT",
         "RELAYGATE_SDK_TRANSPORT",
         "RELAYGATE_INTERNAL_TRANSPORT",
@@ -1087,23 +1123,30 @@ fn clean_server_command(mut command: Command) -> Command {
         command.env_remove(name);
     }
     command.env("RELAYGATE_LOG", "warn");
-    command.env("RELAYGATE_CLUSTER_TOKEN", TEST_CLUSTER_TOKEN);
+    command.env("RELAYGATE_AUTH_CONFIG_PATH", authorization_config_path());
     command.env("RELAYGATE_INSECURE_TEST_TRANSPORT", "true");
     command
+}
+
+fn authorization_config_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/authorization.json"
+    )
+}
+
+#[cfg(unix)]
+fn test_access_token() -> Result<BearerToken, Box<dyn Error>> {
+    Ok(BearerToken::new(TEST_ACCESS_TOKEN.trim())?)
 }
 
 #[cfg(unix)]
 async fn connect_sdk_session(
     address: &str,
-    cluster_token: &str,
 ) -> Result<tokio_util::codec::Framed<tokio::net::TcpStream, FrameCodec>, Box<dyn Error>> {
     let stream = tokio::net::TcpStream::connect(address).await?;
     let mut framed = tokio_util::codec::Framed::new(stream, FrameCodec::default());
-    framed
-        .send(Frame::Hello {
-            cluster_token: ClusterToken::new(cluster_token),
-        })
-        .await?;
+    framed.send(Frame::Hello).await?;
     let welcome = tokio::time::timeout(Duration::from_secs(1), framed.next()).await?;
     assert!(
         matches!(welcome, Some(Ok(Frame::Welcome { .. }))),
@@ -1131,21 +1174,21 @@ fn assert_unsuccessful_output(output: &Output, expected: &str) {
 }
 
 fn unused_loopback_address() -> io::Result<String> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let address = listener.local_addr()?;
-    drop(listener);
-    Ok(address.to_string())
+    loop {
+        let port = NEXT_TEST_PORT.fetch_add(1, Ordering::Relaxed);
+        let address = format!("127.0.0.1:{port}");
+        match TcpListener::bind(&address) {
+            Ok(listener) => {
+                drop(listener);
+                return Ok(address);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn wait_until_healthy(address: &str, server: &mut ChildGuard) -> Result<(), Box<dyn Error>> {
-    wait_until_healthy_with_token(address, TEST_CLUSTER_TOKEN, server)
-}
-
-fn wait_until_healthy_with_token(
-    address: &str,
-    cluster_token: &str,
-    server: &mut ChildGuard,
-) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + STARTUP_DEADLINE;
 
     loop {
@@ -1157,10 +1200,7 @@ fn wait_until_healthy_with_token(
             .into());
         }
 
-        let check = server_command()
-            .args(["check", address])
-            .env("RELAYGATE_CLUSTER_TOKEN", cluster_token)
-            .output()?;
+        let check = server_command().args(["check", address]).output()?;
         if check.status.success() {
             return Ok(());
         }
@@ -1268,7 +1308,7 @@ struct ShardDirectoryArtifact {
 
 #[cfg(unix)]
 impl ShardDirectoryArtifact {
-    const BYTES: &'static [u8] = br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"127.0.0.1:27430"}]}"#;
+    const BYTES: &'static [u8] = br#"{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{"id":"rt-0","endpoint":"127.0.0.1:27430"}]}"#;
 
     fn create() -> io::Result<Self> {
         let nonce = SystemTime::now()

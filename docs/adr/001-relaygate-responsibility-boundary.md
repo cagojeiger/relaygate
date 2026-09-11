@@ -2,11 +2,11 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Superseded by [ADR 018](018-operation-authorized-relay-boundary.md) |
 | 입력 | `listen(DestinationId)`, `dial(DestinationId)`, opaque bytes |
 | 출력 | terminal result 또는 full-duplex Pipe 1개 |
 
-## 결정
+## 이전 결정
 
 ```text
 Application A                                      Application B

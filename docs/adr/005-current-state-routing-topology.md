@@ -3,15 +3,15 @@
 | 항목 | 결정 |
 | --- | --- |
 | 상태 | Accepted |
-| 목적 | `DestinationId`의 live Binding 위치 조회 |
+| 목적 | `Destination`의 live Binding 위치 조회 |
 | 확장 축 | route key를 여러 shard로 분할 |
 
 ## 결정
 
 ```text
 ShardDirectoryGeneration             = SHA-256(exact directory bytes)
-Authority(generation, DestinationId)  = logical shard 1개
-Mappings(DestinationId)               = live Binding 0..N
+Authority(generation, canonical Destination) = logical shard 1개
+BindingSet(Destination)                      = live Binding 0..N
 ```
 
 ```mermaid
@@ -24,7 +24,7 @@ flowchart LR
 | 축 | 현재 모델 |
 | --- | --- |
 | mapping system | identifier-to-locator control plane |
-| authority | deterministic hash가 Destination별 shard 하나를 선택 |
+| authority | canonical Destination hash가 Destination별 shard 하나를 선택 |
 | directory | 모든 process가 동일한 불변 artifact와 generation 사용 |
 | shard endpoint | logical shard마다 stable endpoint 하나 |
 | Gateway state | owned Binding 등록, remote dial마다 resolve |
@@ -39,7 +39,7 @@ flowchart LR
 | scale | route key와 mapping 용량을 shard로 분산 |
 | consistency | mixed generation을 명시적 실패로 처리 |
 | Gateway memory | 작은 directory와 local Binding만 필수 |
-| recovery | current Gateway state로 RT mapping 재구축 |
+| recovery | current Gateway state로 RT BindingProjection 재구축 |
 
 ## 참고
 

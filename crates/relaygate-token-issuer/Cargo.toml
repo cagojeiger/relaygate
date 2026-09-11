@@ -1,0 +1,22 @@
+[package]
+name = "relaygate-token-issuer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Server-side RelayGate operation token construction and ES256 signing"
+publish = false
+
+[dependencies]
+jsonwebtoken.workspace = true
+p256.workspace = true
+relaygate-destination.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

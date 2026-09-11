@@ -49,12 +49,9 @@ fn invalid_endpoints_are_rejected_without_echoing_input() -> Result<()> {
 }
 
 #[test]
-fn endpoint_config_requires_token_and_redacts_it() -> Result<()> {
+fn endpoint_config_validates_transport_without_session_credential() -> Result<()> {
     let config = crate::Config::new("localhost:443")?;
-    assert!(config.validate().is_err());
-    let config = config.cluster_token("private-token");
     config.validate()?;
-    assert!(!format!("{config:?}").contains("private-token"));
     assert!(
         crate::Config::new("tcp://localhost:80")?
             .with_ca_certificate(b"invalid")
@@ -72,10 +69,8 @@ fn endpoint_config_requires_token_and_redacts_it() -> Result<()> {
 fn ca_helper_rejects_explicit_transport_instead_of_replacing_identity() -> Result<()> {
     let tls =
         ClientTlsConfig::with_webpki_roots("custom.example.com").map_err(|_| invalid_endpoint())?;
-    let config = crate::Config::with_transport(
-        "token",
-        GatewayTransportConfig::tls_tcp("127.0.0.1:443", tls),
-    );
+    let config =
+        crate::Config::with_transport(GatewayTransportConfig::tls_tcp("127.0.0.1:443", tls));
     let error = config
         .with_ca_certificate(b"irrelevant")
         .err()

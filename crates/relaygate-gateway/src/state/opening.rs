@@ -1,98 +1,72 @@
 use std::time::Instant;
 
 use relaygate_protocol::{
-    BindingId, DestinationId, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
+    BindingId, Destination, ErrorCode, Frame, PeerObservation, PipeId, SessionId,
 };
-use relaygate_route_table::DestinationId as RouteDestinationId;
 
 use crate::{peer::OpenIdentity, registry::Binding};
 
 use super::{
     GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipeEntry, PipePhase,
-    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase, observe_dial_request,
-    observe_dial_result,
+    ProtocolViolation, RemoteOpenAttempt, RemoteOpenPhase, observe_dial_result,
 };
 
 impl GatewayState {
     pub(super) fn dial(
         &mut self,
-        connector: SessionId,
+        dialer: SessionId,
         connection_id: u64,
-        destination_id: DestinationId,
+        destination: Destination,
         now: Instant,
+        started_at: Instant,
     ) -> Vec<GatewayAction> {
-        let Some(session) = self.sessions.get_mut(&connector) else {
-            return Vec::new();
-        };
-        if session
-            .highest_connection_id
-            .is_some_and(|highest| connection_id <= highest)
-        {
+        if !self.sessions.contains_key(&dialer) {
             return Vec::new();
         }
-        session.highest_connection_id = Some(connection_id);
-        observe_dial_request();
 
         if self.draining {
             return self.new_open_failed(
-                connector,
+                dialer,
                 connection_id,
                 ErrorCode::Unavailable,
                 PeerObservation::NotObserved,
                 "Gateway is draining",
-                now,
+                started_at,
             );
         }
 
-        if !self.admit_control(connector, "dial", now) {
-            return self.new_open_failed(
-                connector,
-                connection_id,
-                ErrorCode::ResourceExhausted,
-                PeerObservation::NotObserved,
-                "Gateway PUBLISH/DIAL rate limit reached",
-                now,
-            );
-        }
         if self.live_pipe_count() >= self.limits.max_live_pipes {
             return self.new_open_failed(
-                connector,
+                dialer,
                 connection_id,
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
                 "Gateway live Pipe limit reached",
-                now,
+                started_at,
             );
         }
         if self.pending_capacity_reached() {
             return self.new_open_failed(
-                connector,
+                dialer,
                 connection_id,
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
                 "Gateway pending open limit reached",
-                now,
+                started_at,
             );
         }
 
-        let pipe_id = PipeId::new(connector, connection_id);
+        let pipe_id = PipeId::new(dialer, connection_id);
         let self_publishes_destination = self
             .registry
-            .contains_session_destination(connector, destination_id);
-        if let Some(binding) = self.registry.select_excluding(destination_id, connector) {
-            return self.offer_local_at(
-                connector,
-                pipe_id,
-                binding,
-                destination_id,
-                now,
-                Some(now),
-            );
+            .contains_session_destination(dialer, &destination);
+        if let Some(binding) = self.registry.select_excluding(&destination, dialer) {
+            return self.offer_local_at(pipe_id, binding, now, Some(started_at));
         }
 
         let Some(gateway_id) = self.gateway_id else {
             return self.new_open_failed(
-                connector,
+                dialer,
                 connection_id,
                 if self_publishes_destination {
                     ErrorCode::FailedPrecondition
@@ -105,61 +79,51 @@ impl GatewayState {
                 } else {
                     "no live Binding exists"
                 },
-                now,
+                started_at,
             );
         };
         if self.remote_open_attempts.len() >= self.limits.max_remote_dial_attempts {
             return self.new_open_failed(
-                connector,
+                dialer,
                 connection_id,
                 ErrorCode::ResourceExhausted,
                 PeerObservation::NotObserved,
                 "Gateway remote DIAL admission limit reached",
-                now,
+                started_at,
             );
         }
-        let Ok(route_destination_id) = RouteDestinationId::new(destination_id.to_string()) else {
-            return self.new_open_failed(
-                connector,
-                connection_id,
-                ErrorCode::InvalidArgument,
-                PeerObservation::NotObserved,
-                "DestinationId is invalid",
-                now,
-            );
-        };
-        let open_identity = OpenIdentity::new(gateway_id, connector, connection_id);
+        let open_identity = OpenIdentity::new(gateway_id, dialer, connection_id);
         let previous = self.remote_open_attempts.insert(
             open_identity,
             RemoteOpenAttempt {
                 pipe_id,
-                destination_id: destination_id.to_string(),
-                started_at: now,
+                destination: destination.clone(),
+                started_at,
                 phase: RemoteOpenPhase::Resolving,
             },
         );
         debug_assert!(previous.is_none());
         vec![GatewayAction::ResolveRoute {
             open_identity,
-            destination_id: route_destination_id,
+            destination,
         }]
     }
 
     pub(super) fn offer_local_at(
         &mut self,
-        connector: SessionId,
         pipe_id: PipeId,
         binding: Binding,
-        destination_id: DestinationId,
         now: Instant,
         open_started_at: Option<Instant>,
     ) -> Vec<GatewayAction> {
+        let dialer = pipe_id.origin_session_id();
+        let destination = binding.destination.clone();
         let listener_is_live = self.sessions.contains_key(&binding.session_id);
         if !listener_is_live {
             self.registry.remove_owned(binding.session_id, binding.id);
             observe_dial_result(open_started_at, Some(ErrorCode::Unavailable));
             let mut actions = self.open_failed(
-                connector,
+                dialer,
                 pipe_id.connection_id(),
                 ErrorCode::Unavailable,
                 PeerObservation::NotObserved,
@@ -172,11 +136,11 @@ impl GatewayState {
         tracing::debug!(
             component = "gateway",
             event = "gateway.offer.created",
-            connector_session_id = %connector.as_uuid(),
+            dialer_session_id = %dialer.as_uuid(),
             relay_session_id = %binding.session_id.as_uuid(),
             connection_id = pipe_id.connection_id(),
             binding_id = %binding.id.as_uuid(),
-            destination_id = %destination_id,
+            destination = %destination,
             pending_offers = self.pending_offer_count() + 1,
             live_pipes = self.live_pipe_count(),
             "Pipe offer created"
@@ -184,15 +148,15 @@ impl GatewayState {
         self.insert_offer(
             pipe_id,
             PipeEntry {
-                connector: PipeEndpoint::Sdk(connector),
-                listener: PipeEndpoint::Sdk(binding.session_id),
+                dialer: PipeEndpoint::Sdk(dialer),
+                acceptor: PipeEndpoint::Sdk(binding.session_id),
                 binding_id: binding.id,
                 open_identity: None,
                 phase: PipePhase::Offered,
                 offered_at: now,
                 open_started_at,
-                connector_finished: false,
-                listener_finished: false,
+                dialer_finished: false,
+                acceptor_finished: false,
             },
         );
         self.to(
@@ -200,7 +164,7 @@ impl GatewayState {
             Frame::Offer {
                 pipe_id,
                 binding_id: binding.id,
-                destination_id,
+                destination,
             },
         )
         .map(GatewayAction::SendSdkFrame)
@@ -210,7 +174,7 @@ impl GatewayState {
 
     pub(super) fn open_failed(
         &self,
-        connector: SessionId,
+        dialer: SessionId,
         connection_id: u64,
         code: ErrorCode,
         observation: PeerObservation,
@@ -219,14 +183,14 @@ impl GatewayState {
         tracing::debug!(
             component = "gateway",
             event = "gateway.dial.failed",
-            relay_session_id = %connector.as_uuid(),
+            relay_session_id = %dialer.as_uuid(),
             connection_id,
             error_code = ?code,
             observation = ?observation,
             "Dial attempt failed"
         );
         self.to(
-            connector,
+            dialer,
             Frame::DialFailed {
                 connection_id,
                 code,
@@ -241,7 +205,7 @@ impl GatewayState {
 
     fn new_open_failed(
         &self,
-        connector: SessionId,
+        dialer: SessionId,
         connection_id: u64,
         code: ErrorCode,
         observation: PeerObservation,
@@ -249,19 +213,19 @@ impl GatewayState {
         started_at: Instant,
     ) -> Vec<GatewayAction> {
         observe_dial_result(Some(started_at), Some(code));
-        self.open_failed(connector, connection_id, code, observation, message)
+        self.open_failed(dialer, connection_id, code, observation, message)
     }
 
     pub(super) fn offer_accepted(
         &mut self,
-        listener: SessionId,
+        acceptor: SessionId,
         pipe_id: PipeId,
     ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
         let phase = {
             let Some(pipe) = self.pipes.get(&pipe_id) else {
                 return Ok(Vec::new());
             };
-            pipe.ensure_sdk_owner(listener, pipe_id, "OFFER_ACCEPTED")?;
+            pipe.ensure_sdk_owner(acceptor, pipe_id, "OFFER_ACCEPTED")?;
             pipe.phase
         };
         if phase != PipePhase::Offered {
@@ -274,7 +238,7 @@ impl GatewayState {
                 return Ok(Vec::new());
             };
             let message = "Gateway live Pipe limit reached during admission";
-            let mut actions = self.connector_failure(
+            let mut actions = self.dialer_failure(
                 &pipe,
                 pipe_id,
                 ErrorCode::ResourceExhausted,
@@ -282,7 +246,7 @@ impl GatewayState {
                 message,
             );
             actions.extend(self.endpoint_reset(
-                pipe.listener,
+                pipe.acceptor,
                 pipe_id,
                 ErrorCode::ResourceExhausted,
                 message,
@@ -295,20 +259,20 @@ impl GatewayState {
         tracing::debug!(
             component = "gateway",
             event = "gateway.pipe.opened",
-            connector_session_id = %pipe_id.origin_session_id().as_uuid(),
-            relay_session_id = %listener.as_uuid(),
+            dialer_session_id = %pipe_id.origin_session_id().as_uuid(),
+            relay_session_id = %acceptor.as_uuid(),
             connection_id = pipe_id.connection_id(),
             binding_id = %pipe.binding_id.as_uuid(),
             pending_offers = self.pending_offer_count(),
             live_pipes = self.live_pipe_count(),
             "Pipe opened"
         );
-        Ok(self.connector_opened(&pipe, pipe_id))
+        Ok(self.dialer_opened(&pipe, pipe_id))
     }
 
     pub(super) fn offer_rejected(
         &mut self,
-        listener: SessionId,
+        acceptor: SessionId,
         pipe_id: PipeId,
         code: ErrorCode,
         message: String,
@@ -316,7 +280,7 @@ impl GatewayState {
         let Some(pipe) = self.pipes.get(&pipe_id) else {
             return Ok(Vec::new());
         };
-        pipe.ensure_sdk_owner(listener, pipe_id, "OFFER_REJECTED")?;
+        pipe.ensure_sdk_owner(acceptor, pipe_id, "OFFER_REJECTED")?;
         if pipe.phase != PipePhase::Offered {
             return Ok(
                 self.protocol_reset(pipe_id, "OFFER_REJECTED is not valid after the Pipe opened")
@@ -325,16 +289,16 @@ impl GatewayState {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Ok(Vec::new());
         };
-        Ok(self.connector_failure(&pipe, pipe_id, code, PeerObservation::NotObserved, &message))
+        Ok(self.dialer_failure(&pipe, pipe_id, code, PeerObservation::NotObserved, &message))
     }
 
     pub(crate) fn offer_delivery_rejected(
         &mut self,
-        listener: SessionId,
+        acceptor: SessionId,
         pipe_id: PipeId,
     ) -> Vec<GatewayAction> {
         let matches_pending_offer = self.pipes.get(&pipe_id).is_some_and(|pipe| {
-            pipe.phase == PipePhase::Offered && pipe.listener == PipeEndpoint::Sdk(listener)
+            pipe.phase == PipePhase::Offered && pipe.acceptor == PipeEndpoint::Sdk(acceptor)
         });
         if !matches_pending_offer {
             return Vec::new();
@@ -345,13 +309,13 @@ impl GatewayState {
         tracing::warn!(
             component = "gateway",
             event = "gateway.offer.admission_rejected",
-            relay_session_id = %listener.as_uuid(),
+            relay_session_id = %acceptor.as_uuid(),
             connection_id = pipe_id.connection_id(),
             error_code = ?ErrorCode::ResourceExhausted,
             observation = ?PeerObservation::NotObserved,
-            "Listener writer queue was full before OFFER admission"
+            "Acceptor writer queue was full before OFFER admission"
         );
-        self.connector_failure(
+        self.dialer_failure(
             &pipe,
             pipe_id,
             ErrorCode::ResourceExhausted,
@@ -362,19 +326,19 @@ impl GatewayState {
 
     pub(super) fn cancel(
         &mut self,
-        connector: SessionId,
+        dialer: SessionId,
         pipe_id: PipeId,
     ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
         if !self.pipes.contains_key(&pipe_id) {
-            return Ok(self.cancel_remote_attempt(connector, pipe_id));
+            return Ok(self.cancel_remote_attempt(dialer, pipe_id));
         }
         let Some(pipe) = self.pipes.get(&pipe_id) else {
             return Ok(Vec::new());
         };
-        pipe.ensure_sdk_owner(connector, pipe_id, "CANCEL")?;
-        if pipe.connector != PipeEndpoint::Sdk(connector) {
+        pipe.ensure_sdk_owner(dialer, pipe_id, "CANCEL")?;
+        if pipe.dialer != PipeEndpoint::Sdk(dialer) {
             return Err(ProtocolViolation::PipeOwnership {
-                sender: connector,
+                sender: dialer,
                 pipe_id,
                 frame_name: "CANCEL",
             });
@@ -386,10 +350,10 @@ impl GatewayState {
             observe_dial_result(pipe.open_started_at, Some(ErrorCode::Cancelled));
         }
         Ok(self.endpoint_reset(
-            pipe.listener,
+            pipe.acceptor,
             pipe_id,
             ErrorCode::Cancelled,
-            "Connector cancelled the Pipe",
+            "Dialer cancelled the Pipe",
         ))
     }
 
@@ -408,12 +372,12 @@ impl GatewayState {
                 let Some(pipe) = self.remove_pipe(pipe_id) else {
                     return Vec::new();
                 };
-                self.connector_failure(
+                self.dialer_failure(
                     &pipe,
                     pipe_id,
                     ErrorCode::Unavailable,
                     PeerObservation::NotObserved,
-                    "selected ListenerBinding was removed before admission",
+                    "selected Binding was removed before admission",
                 )
             })
             .collect()
@@ -435,19 +399,19 @@ impl GatewayState {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
-            if let Some(listener) = pipe.listener.sdk_session() {
-                expired_listeners.insert(listener);
+            if let Some(acceptor) = pipe.acceptor.sdk_session() {
+                expired_listeners.insert(acceptor);
             }
-            actions.extend(self.connector_failure(
+            actions.extend(self.dialer_failure(
                 &pipe,
                 pipe_id,
                 ErrorCode::DeadlineExceeded,
                 PeerObservation::MaybeObserved,
-                "Listener did not answer OFFER before the Gateway deadline",
+                "Acceptor did not answer OFFER before the Gateway deadline",
             ));
         }
-        for listener in expired_listeners {
-            actions.extend(self.remove_session(listener));
+        for acceptor in expired_listeners {
+            actions.extend(self.remove_session(acceptor));
         }
         actions
     }
@@ -458,11 +422,11 @@ impl GatewayState {
             >= self.limits.max_pending_offers
     }
 
-    pub(super) fn connector_opened(&self, pipe: &PipeEntry, pipe_id: PipeId) -> Vec<GatewayAction> {
+    pub(super) fn dialer_opened(&self, pipe: &PipeEntry, pipe_id: PipeId) -> Vec<GatewayAction> {
         observe_dial_result(pipe.open_started_at, None);
-        match pipe.connector {
-            PipeEndpoint::Sdk(connector) => self
-                .to(connector, Frame::Opened { pipe_id })
+        match pipe.dialer {
+            PipeEndpoint::Sdk(dialer) => self
+                .to(dialer, Frame::Opened { pipe_id })
                 .map(GatewayAction::SendSdkFrame)
                 .into_iter()
                 .collect(),
@@ -470,7 +434,7 @@ impl GatewayState {
         }
     }
 
-    pub(super) fn connector_failure(
+    pub(super) fn dialer_failure(
         &self,
         pipe: &PipeEntry,
         pipe_id: PipeId,
@@ -478,17 +442,13 @@ impl GatewayState {
         observation: PeerObservation,
         message: &str,
     ) -> Vec<GatewayAction> {
-        if matches!(pipe.connector, PipeEndpoint::Sdk(_)) {
+        if matches!(pipe.dialer, PipeEndpoint::Sdk(_)) {
             observe_dial_result(pipe.open_started_at, Some(code));
         }
-        match pipe.connector {
-            PipeEndpoint::Sdk(connector) => self.open_failed(
-                connector,
-                pipe_id.connection_id(),
-                code,
-                observation,
-                message,
-            ),
+        match pipe.dialer {
+            PipeEndpoint::Sdk(dialer) => {
+                self.open_failed(dialer, pipe_id.connection_id(), code, observation, message)
+            }
             PipeEndpoint::Peer(key) => vec![
                 PeerDelivery::Failed {
                     key,

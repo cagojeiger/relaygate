@@ -13,8 +13,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Config, DestinationId, Error, ErrorCode, PeerObservation, Pipe, Result,
-    lifetime::RuntimeLifetime, session::establish,
+    AccessAction, AccessTokenRequest, AccessTokenSource, Config, Destination, Error, ErrorCode,
+    PeerObservation, Pipe, Result, lifetime::RuntimeLifetime, session::establish,
 };
 
 use self::{
@@ -56,7 +56,8 @@ pub(super) struct RelaySession {
 pub(super) enum RelayCommand {
     Dial {
         connection_id: u64,
-        destination_id: DestinationId,
+        destination: Destination,
+        access_token: relaygate_protocol::BearerToken,
         response: oneshot::Sender<Result<Pipe>>,
     },
 }
@@ -99,7 +100,7 @@ impl std::fmt::Debug for Listener {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Listener")
-            .field("destination_id", &self.state.destination_id)
+            .field("destination", &self.state.destination)
             .field("status", &self.status())
             .finish()
     }
@@ -129,14 +130,19 @@ impl Relay {
         })
     }
 
-    /// Creates one desired Listener for a Destination and waits until its initial
+    /// Creates one desired Listener for a destination and waits until its initial
     /// Gateway-local binding is active.
-    pub async fn listen(&self, destination_id: DestinationId) -> Result<Listener> {
+    pub async fn listen(
+        &self,
+        destination: Destination,
+        access_token_source: AccessTokenSource,
+    ) -> Result<Listener> {
         let deadline = self.inner.config.operation_deadline()?;
         let (incoming_tx, incoming_rx) = mpsc::channel(self.inner.config.listener_queue_capacity);
         let (status, _) = watch::channel(ListenerStatus::Registering);
         let state = Arc::new(ListenerState {
-            destination_id,
+            destination: destination.clone(),
+            access_token_source,
             status,
             last_error: StdMutex::new(None),
             incoming_tx,
@@ -154,14 +160,14 @@ impl Relay {
                     "Listener registry lock is poisoned",
                 )
             })?;
-            if desired.contains_key(&destination_id) {
+            if desired.contains_key(&destination) {
                 return Err(Error::new(
                     ErrorCode::AlreadyExists,
                     PeerObservation::NotObserved,
-                    "a non-closed Listener already owns this Destination in the Relay",
+                    "a non-closed Listener already owns this destination in the Relay",
                 ));
             }
-            desired.insert(destination_id, Arc::clone(&state));
+            desired.insert(destination, Arc::clone(&state));
         }
 
         let mut guard = ListenGuard {
@@ -218,12 +224,21 @@ impl Relay {
         }
     }
 
-    /// Opens one Pipe to a Destination. A committed dial is never replayed.
-    pub async fn dial(&self, destination_id: DestinationId) -> Result<Pipe> {
-        crate::observability::observe("dial", self.dial_inner(destination_id)).await
+    /// Opens one Pipe to a destination. A committed dial is never replayed.
+    pub async fn dial(
+        &self,
+        destination: Destination,
+        access_token_source: AccessTokenSource,
+    ) -> Result<Pipe> {
+        crate::observability::observe("dial", self.dial_inner(destination, access_token_source))
+            .await
     }
 
-    async fn dial_inner(&self, destination_id: DestinationId) -> Result<Pipe> {
+    async fn dial_inner(
+        &self,
+        destination: Destination,
+        access_token_source: AccessTokenSource,
+    ) -> Result<Pipe> {
         let deadline = self.inner.config.operation_deadline()?;
         let mut current = self.inner.current.subscribe();
         loop {
@@ -232,6 +247,15 @@ impl Relay {
             }
             let session = current.borrow().clone();
             if let Some(session) = session {
+                let access_token = timeout_at(
+                    deadline,
+                    access_token_source.supply(AccessTokenRequest {
+                        action: AccessAction::Dial,
+                        destination: destination.clone(),
+                    }),
+                )
+                .await
+                .map_err(|_| Error::deadline(PeerObservation::NotObserved))??;
                 let mut next_connection_id =
                     timeout_at(deadline, session.next_connection_id.lock())
                         .await
@@ -250,7 +274,8 @@ impl Relay {
                     deadline,
                     session.commands.send(RelayCommand::Dial {
                         connection_id,
-                        destination_id,
+                        destination: destination.clone(),
+                        access_token: access_token.clone(),
                         response: response_tx,
                     }),
                 )
@@ -323,8 +348,8 @@ impl Relay {
 
 impl Listener {
     #[must_use]
-    pub fn destination_id(&self) -> DestinationId {
-        self.state.destination_id
+    pub fn destination(&self) -> &Destination {
+        &self.state.destination
     }
 
     #[must_use]

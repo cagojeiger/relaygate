@@ -2,11 +2,11 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Superseded by [ADR 019](019-registration-snapshot-lifecycle.md) |
 | truth | Gateway의 live RelaySession과 Binding |
 | RT state | active lease에 연결된 memory-only projection |
 
-## 결정
+## 이전 결정
 
 ```mermaid
 stateDiagram-v2

@@ -187,10 +187,10 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
     let first_request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b.clone()),
         OpenIdentity::new(gateway_a, SessionId::new(), 1),
-        "echo.b",
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
-    )?;
+    );
     let first_key = handle_a.open(first_request).await?;
     let opened = next_event(&mut events_a).await?;
     assert!(matches!(opened, PeerEvent::Opened { key, .. } if key == first_key));
@@ -233,10 +233,10 @@ async fn active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazi
     let second_request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b),
         OpenIdentity::new(gateway_a, SessionId::new(), 2),
-        "echo.b",
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
-    )?;
+    );
     let second_key = handle_a.open(second_request).await?;
     assert_ne!(
         first_key.peer_transport_id(),
@@ -326,10 +326,10 @@ async fn zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazi
     let first_request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b.clone()),
         OpenIdentity::new(gateway_a, SessionId::new(), 1),
-        "echo.b",
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
-    )?;
+    );
     let first_key = handle_a.open(first_request).await?;
     let opened = next_event(&mut events_a).await?;
     assert!(matches!(opened, PeerEvent::Opened { key, .. } if key == first_key));
@@ -372,10 +372,10 @@ async fn zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazi
     let second_request = PeerOpenRequest::new(
         PeerTarget::new(gateway_b, locator_b),
         OpenIdentity::new(gateway_a, SessionId::new(), 2),
-        "echo.b",
+        crate::test_support::destination("echo.b"),
         SessionId::new(),
         BindingId::new(),
-    )?;
+    );
     let second_key = handle_a.open(second_request).await?;
     assert_ne!(
         first_key.peer_transport_id(),

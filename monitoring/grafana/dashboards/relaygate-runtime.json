@@ -1032,7 +1032,7 @@
             "w": 12,
             "h": 7
           },
-          "description": "선택한 shard가 현재 보유한 registration, binding mapping, logical route와 expiry index의 합계다. All은 전체 shard 합계이며 영속 데이터량이 아니라 soft-state current state다.",
+          "description": "선택한 shard가 현재 보유한 registration, binding, logical route와 expiry index의 합계다. All은 전체 shard 합계이며 영속 데이터량이 아니라 soft-state current state다.",
           "id": 12,
           "options": {
             "legend": {
@@ -1054,14 +1054,14 @@
               "instant": false
             },
             {
-              "expr": "sum(relaygate_route_table_mappings{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
+              "expr": "sum(relaygate_route_table_bindings{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
               "legendFormat": "매핑",
               "refId": "B",
               "range": true,
               "instant": false
             },
             {
-              "expr": "sum(relaygate_route_table_routes{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
+              "expr": "sum(relaygate_route_table_destinations{cluster=~\"$cluster\",namespace=~\"$namespace\",instance=~\"$route_table\"})",
               "legendFormat": "Destination",
               "refId": "C",
               "range": true,

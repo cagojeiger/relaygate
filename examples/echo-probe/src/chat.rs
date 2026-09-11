@@ -1,23 +1,25 @@
 use anyhow::{Context, ensure};
-use relaygate_sdk::{DestinationId, Listener, Pipe, Relay};
+use relaygate_sdk::{AccessTokenSource, Destination, Listener, Pipe, Relay};
 use tokio::{io::AsyncReadExt, io::AsyncWriteExt, time::timeout};
 
 use crate::{
     config::{
-        DESTINATION_IDS, ECHO_DEADLINE, ROUTE_WAIT, SHARED_DESTINATION_ID, gateway_addresses,
+        DESTINATION_WAIT, DESTINATIONS, ECHO_DEADLINE, SHARED_DESTINATION, access_token_source,
+        gateway_addresses,
     },
     probe::{connect, dial_when_available},
 };
 
 pub(crate) async fn run_chat() -> anyhow::Result<()> {
+    let access_token_source = access_token_source()?;
     let addresses = gateway_addresses()?;
     let mut relays = Vec::with_capacity(addresses.len());
     let mut listeners = Vec::with_capacity(addresses.len());
     for (index, address) in addresses.iter().enumerate() {
         let relay = connect(address).await?;
-        let destination = parse_destination(DESTINATION_IDS[index])?;
+        let destination = parse_destination(DESTINATIONS[index])?;
         let listener = relay
-            .listen(destination)
+            .listen(destination.clone(), access_token_source.clone())
             .await
             .with_context(|| format!("chat participant {index} failed to publish {destination}"))?;
         relays.push(relay);
@@ -32,7 +34,8 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
             exchange(
                 &relays[from],
                 &listeners[to],
-                parse_destination(DESTINATION_IDS[to])?,
+                parse_destination(DESTINATIONS[to])?,
+                &access_token_source,
                 from,
                 to,
             )
@@ -40,9 +43,13 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
         }
     }
 
-    let shared = parse_destination(SHARED_DESTINATION_ID)?;
-    let shared_one = relays[1].listen(shared).await?;
-    let shared_two = relays[2].listen(shared).await?;
+    let shared = parse_destination(SHARED_DESTINATION)?;
+    let shared_one = relays[1]
+        .listen(shared.clone(), access_token_source.clone())
+        .await?;
+    let shared_two = relays[2]
+        .listen(shared, access_token_source.clone())
+        .await?;
     let first_incoming = async {
         tokio::select! {
             pipe = shared_one.accept() => {
@@ -54,7 +61,12 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
         }
     };
     let (first_outgoing, selected) = tokio::try_join!(
-        dial_when_available(&relays[0], SHARED_DESTINATION_ID, ROUTE_WAIT),
+        dial_when_available(
+            &relays[0],
+            SHARED_DESTINATION,
+            &access_token_source,
+            DESTINATION_WAIT,
+        ),
         first_incoming
     )?;
     match selected {
@@ -65,8 +77,8 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
                 first_pipe,
                 shared_one,
                 shared_two,
-                1,
-                2,
+                &access_token_source,
+                (1, 2),
             )
             .await?;
         }
@@ -77,8 +89,8 @@ pub(crate) async fn run_chat() -> anyhow::Result<()> {
                 first_pipe,
                 shared_two,
                 shared_one,
-                2,
-                1,
+                &access_token_source,
+                (2, 1),
             )
             .await?;
         }
@@ -106,15 +118,21 @@ async fn verify_shared_failover(
     first_incoming: Pipe,
     selected: Listener,
     survivor: Listener,
-    selected_owner: usize,
-    survivor_owner: usize,
+    access_token_source: &AccessTokenSource,
+    owners: (usize, usize),
 ) -> anyhow::Result<()> {
+    let (selected_owner, survivor_owner) = owners;
     exchange_pipes(first_outgoing, first_incoming, 0, selected_owner, 0).await?;
     selected.close().await?;
 
     let survivor_incoming = async { Ok::<_, anyhow::Error>(survivor.accept().await?) };
     let (second_outgoing, second_incoming) = tokio::try_join!(
-        dial_when_available(caller, SHARED_DESTINATION_ID, ROUTE_WAIT),
+        dial_when_available(
+            caller,
+            SHARED_DESTINATION,
+            access_token_source,
+            DESTINATION_WAIT,
+        ),
         survivor_incoming
     )?;
     exchange_pipes(second_outgoing, second_incoming, 0, survivor_owner, 1).await?;
@@ -125,13 +143,14 @@ async fn verify_shared_failover(
 async fn exchange(
     caller: &Relay,
     listener: &Listener,
-    destination: DestinationId,
+    destination: Destination,
+    access_token_source: &AccessTokenSource,
     from: usize,
     to: usize,
 ) -> anyhow::Result<()> {
     let destination = destination.to_string();
     let (outgoing, incoming) = tokio::try_join!(
-        dial_when_available(caller, &destination, ROUTE_WAIT),
+        dial_when_available(caller, &destination, access_token_source, DESTINATION_WAIT,),
         async { Ok::<_, anyhow::Error>(listener.accept().await?) }
     )?;
     exchange_pipes(outgoing, incoming, from, to, 0).await
@@ -167,8 +186,8 @@ async fn exchange_pipes(
     .context("chat Pipe timed out")?
 }
 
-fn parse_destination(value: &str) -> anyhow::Result<DestinationId> {
+fn parse_destination(value: &str) -> anyhow::Result<Destination> {
     value
         .parse()
-        .with_context(|| format!("invalid UUIDv4 DestinationId {value:?}"))
+        .with_context(|| format!("invalid Destination {value:?}"))
 }

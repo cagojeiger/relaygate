@@ -7,12 +7,13 @@ use std::{
 };
 
 use anyhow::{Context, ensure};
-use relaygate_sdk::{DestinationId, ErrorCode, PeerObservation};
+use relaygate_sdk::{Destination, ErrorCode, PeerObservation};
 use tokio::task::JoinSet;
 
 use crate::{
     config::{
-        DESTINATION_IDS, environment, overload_duration, overload_sessions, overload_workers,
+        access_token_source, destination, environment, overload_duration, overload_sessions,
+        overload_workers,
     },
     probe::{assert_echo, connect},
 };
@@ -41,10 +42,11 @@ impl OverloadAccounting {
 
 pub(crate) async fn run() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_ADDR", "gateway-a:27420");
-    let destination_id = environment("RELAYGATE_DESTINATION_ID", DESTINATION_IDS[2]);
-    let destination_id: DestinationId = destination_id
+    let destination = destination()?;
+    let destination: Destination = destination
         .parse()
-        .with_context(|| format!("invalid UUIDv4 DestinationId {destination_id:?}"))?;
+        .with_context(|| format!("invalid Destination {destination:?}"))?;
+    let access_token_source = access_token_source()?;
     let duration = overload_duration()?;
     let worker_count = overload_workers()?;
     let session_count = overload_sessions()?;
@@ -59,6 +61,8 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     let mut workers = JoinSet::new();
     for worker in 0..worker_count {
         let relay = relays[worker % relays.len()].clone();
+        let destination = destination.clone();
+        let access_token_source = access_token_source.clone();
         let stop = Arc::clone(&stop);
         workers.spawn(async move {
             let mut accounting = OverloadAccounting::default();
@@ -66,7 +70,10 @@ pub(crate) async fn run() -> anyhow::Result<()> {
             let mut sequence = 0_u64;
             while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
                 accounting.attempted += 1;
-                match relay.dial(destination_id).await {
+                match relay
+                    .dial(destination.clone(), access_token_source.clone())
+                    .await
+                {
                     Ok(pipe) => {
                         let payload =
                             format!("relaygate overload worker={worker} sequence={sequence}");

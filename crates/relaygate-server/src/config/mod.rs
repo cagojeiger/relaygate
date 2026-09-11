@@ -1,3 +1,4 @@
+mod authorization;
 mod gateway;
 mod route_table;
 mod transport;

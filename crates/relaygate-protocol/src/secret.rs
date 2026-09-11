@@ -1,14 +1,20 @@
-/// Bearer secret used only to admit an SDK session into one RelayGate trust domain.
-///
-/// `Debug` deliberately redacts the value so frame or state diagnostics cannot
-/// accidentally print credentials.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ClusterToken(String);
+pub const MAX_BEARER_TOKEN_BYTES: usize = 4096;
 
-impl ClusterToken {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+/// Bounded operation credential carried only by `PUBLISH` and `DIAL`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BearerToken(String);
+
+impl BearerToken {
+    pub fn new(value: impl Into<String>) -> Result<Self, crate::ProtocolError> {
+        let value = value.into();
+        if value.len() > MAX_BEARER_TOKEN_BYTES {
+            return Err(crate::ProtocolError::FieldTooLong {
+                field: "access_token",
+                actual: value.len(),
+                maximum: MAX_BEARER_TOKEN_BYTES,
+            });
+        }
+        Ok(Self(value))
     }
 
     #[must_use]
@@ -17,8 +23,8 @@ impl ClusterToken {
     }
 }
 
-impl std::fmt::Debug for ClusterToken {
+impl std::fmt::Debug for BearerToken {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("ClusterToken([REDACTED])")
+        formatter.write_str("BearerToken([REDACTED])")
     }
 }

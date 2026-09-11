@@ -3,14 +3,14 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    AuthenticatedGatewayId, BindingId, DestinationId, GatewayId, GatewayLocator, MappingEntry,
-    MappingSnapshot, RegistrationKey, RelaySessionId, RequestContext, RouteTableConfig,
+    AuthenticatedGatewayId, BindingId, BindingProjection, BindingSnapshot, Destination, GatewayId,
+    GatewayLocator, RegistrationKey, RelaySessionId, RequestContext, RouteTableConfig,
     RouteTableError, RouteTableShard, ShardDirectory, ShardId,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-pub const ONE_SHARD_DIRECTORY: &[u8] = br#"{"format_version":1,"authority_hash":"sha256-modulo-v1","shards":[{"id":"rt-0","endpoint":"http://rt-0:8080"}]}"#;
+pub const ONE_SHARD_DIRECTORY: &[u8] = br#"{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{"id":"rt-0","endpoint":"http://rt-0:8080"}]}"#;
 
 pub fn directory() -> Result<ShardDirectory, RouteTableError> {
     ShardDirectory::from_json_bytes(ONE_SHARD_DIRECTORY)
@@ -51,18 +51,20 @@ pub fn key(
     ))
 }
 
-pub fn client(value: &str) -> Result<DestinationId, RouteTableError> {
-    DestinationId::new(test_destination(value))
+pub fn destination(value: &str) -> Result<Destination, RouteTableError> {
+    format!("test/{}", test_destination(value))
+        .parse()
+        .map_err(Into::into)
 }
 
-pub fn mapping(
-    destination_id: &str,
+pub fn projection(
+    destination_value: &str,
     gateway_id: GatewayId,
     relay_session_id: RelaySessionId,
     binding_id: BindingId,
-) -> Result<MappingEntry, RouteTableError> {
-    Ok(MappingEntry::new(
-        client(destination_id)?,
+) -> Result<BindingProjection, RouteTableError> {
+    Ok(BindingProjection::new(
+        destination(destination_value)?,
         gateway_id,
         relay_session_id,
         binding_id,
@@ -85,7 +87,7 @@ fn test_destination(label: &str) -> String {
 }
 
 pub fn snapshot(
-    entries: impl IntoIterator<Item = MappingEntry>,
-) -> Result<MappingSnapshot, RouteTableError> {
-    MappingSnapshot::new(entries)
+    entries: impl IntoIterator<Item = BindingProjection>,
+) -> Result<BindingSnapshot, RouteTableError> {
+    BindingSnapshot::new(entries)
 }

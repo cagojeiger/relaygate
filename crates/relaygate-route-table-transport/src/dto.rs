@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use relaygate_route_table::{
-    BindingId, BindingSet, DestinationId, GatewayId, GatewayLocator, LeaseId, MappingEntry,
-    MappingSnapshot, RegistrationAck, RegistrationKey, RegistrationRevision, RelaySessionId,
-    RequestContext, RouteTableError, ShardDirectoryGeneration, ShardId,
+    BindingId, BindingProjection, BindingSet, BindingSnapshot, Destination, GatewayId,
+    GatewayLocator, LeaseId, RegistrationAck, RegistrationKey, RegistrationRevision,
+    RelaySessionId, RequestContext, RouteTableError, ShardDirectoryGeneration, ShardId,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -26,7 +26,7 @@ pub(crate) enum WireRequest {
         key: WireRegistrationKey,
         lease_id: String,
         revision: u64,
-        snapshot: Vec<WireMappingEntry>,
+        snapshot: Vec<WireBindingProjection>,
     },
     KeepAlive {
         generation: String,
@@ -40,7 +40,7 @@ pub(crate) enum WireRequest {
     },
     Resolve {
         generation: String,
-        destination_id: String,
+        destination: String,
     },
 }
 
@@ -94,7 +94,7 @@ impl WireRequest {
         key: &RegistrationKey,
         lease_id: LeaseId,
         revision: RegistrationRevision,
-        snapshot: &MappingSnapshot,
+        snapshot: &BindingSnapshot,
     ) -> Self {
         Self::Update {
             generation: generation.to_string(),
@@ -103,7 +103,7 @@ impl WireRequest {
             revision: revision.get(),
             snapshot: snapshot
                 .entries()
-                .map(WireMappingEntry::from_domain)
+                .map(WireBindingProjection::from_domain)
                 .collect(),
         }
     }
@@ -132,13 +132,10 @@ impl WireRequest {
         }
     }
 
-    pub(crate) fn resolve(
-        generation: ShardDirectoryGeneration,
-        destination_id: &DestinationId,
-    ) -> Self {
+    pub(crate) fn resolve(generation: ShardDirectoryGeneration, destination: &Destination) -> Self {
         Self::Resolve {
             generation: generation.to_string(),
-            destination_id: destination_id.as_str().to_owned(),
+            destination: destination.to_string(),
         }
     }
 
@@ -157,14 +154,14 @@ impl WireRequest {
             } => {
                 let entries = snapshot
                     .into_iter()
-                    .map(WireMappingEntry::into_domain)
+                    .map(WireBindingProjection::into_domain)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(DomainRequest::Update {
                     generation: parse_generation(&generation)?,
                     key: key.into_domain()?,
                     lease_id: parse_uuid(&lease_id, "LeaseId").map(LeaseId::from_uuid)?,
                     revision: RegistrationRevision::new(revision)?,
-                    snapshot: MappingSnapshot::new(entries)?,
+                    snapshot: BindingSnapshot::new(entries)?,
                 })
             }
             Self::KeepAlive {
@@ -187,10 +184,12 @@ impl WireRequest {
             }),
             Self::Resolve {
                 generation,
-                destination_id,
+                destination,
             } => Ok(DomainRequest::Resolve {
                 generation: parse_generation(&generation)?,
-                destination_id: DestinationId::new(destination_id)?,
+                destination: destination
+                    .parse::<Destination>()
+                    .map_err(RouteTableError::from)?,
             }),
         }
     }
@@ -226,7 +225,7 @@ pub(crate) enum DomainRequest {
         key: RegistrationKey,
         lease_id: LeaseId,
         revision: RegistrationRevision,
-        snapshot: MappingSnapshot,
+        snapshot: BindingSnapshot,
     },
     KeepAlive {
         generation: ShardDirectoryGeneration,
@@ -240,7 +239,7 @@ pub(crate) enum DomainRequest {
     },
     Resolve {
         generation: ShardDirectoryGeneration,
-        destination_id: DestinationId,
+        destination: Destination,
     },
 }
 
@@ -255,7 +254,7 @@ pub(crate) enum WireResponse {
     Updated { ack: WireRegistrationAck },
     KeptAlive { ack: WireRegistrationAck },
     Deregistered,
-    Resolved { entries: Vec<WireMappingEntry> },
+    Resolved { entries: Vec<WireBindingProjection> },
 }
 
 impl WireResponse {
@@ -282,7 +281,7 @@ impl WireResponse {
             entries: bindings
                 .entries()
                 .iter()
-                .map(WireMappingEntry::from_domain)
+                .map(WireBindingProjection::from_domain)
                 .collect(),
         }
     }
@@ -316,19 +315,19 @@ impl WireRegistrationKey {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct WireMappingEntry {
-    destination_id: String,
+pub(crate) struct WireBindingProjection {
+    destination: String,
     gateway_id: String,
     relay_session_id: String,
     binding_id: String,
     gateway_locator: String,
 }
 
-impl WireMappingEntry {
-    fn from_domain(entry: &MappingEntry) -> Self {
+impl WireBindingProjection {
+    fn from_domain(entry: &BindingProjection) -> Self {
         let identity = entry.identity();
         Self {
-            destination_id: entry.destination_id().as_str().to_owned(),
+            destination: entry.destination().to_string(),
             gateway_id: identity.gateway_id().to_string(),
             relay_session_id: identity.relay_session_id().to_string(),
             binding_id: identity.binding_id().to_string(),
@@ -336,9 +335,11 @@ impl WireMappingEntry {
         }
     }
 
-    fn into_domain(self) -> Result<MappingEntry, TransportError> {
-        Ok(MappingEntry::new(
-            DestinationId::new(self.destination_id)?,
+    fn into_domain(self) -> Result<BindingProjection, TransportError> {
+        Ok(BindingProjection::new(
+            self.destination
+                .parse::<Destination>()
+                .map_err(RouteTableError::from)?,
             parse_uuid(&self.gateway_id, "GatewayId").map(GatewayId::from_uuid)?,
             parse_uuid(&self.relay_session_id, "RelaySessionId").map(RelaySessionId::from_uuid)?,
             parse_uuid(&self.binding_id, "BindingId").map(BindingId::from_uuid)?,
@@ -452,7 +453,7 @@ pub(crate) fn response_deregistered(response: WireResponse) -> Result<(), Transp
 
 pub(crate) fn response_bindings(
     response: WireResponse,
-    expected_destination_id: &DestinationId,
+    expected_destination: &Destination,
 ) -> Result<BindingSet, TransportError> {
     let WireResponse::Resolved { entries } = response else {
         return Err(TransportError::protocol(
@@ -464,7 +465,7 @@ pub(crate) fn response_bindings(
         .map(|entry| {
             entry.into_domain().map_err(|error| {
                 TransportError::protocol(format!(
-                    "invalid MappingEntry in RouteTable response: {error}"
+                    "invalid BindingProjection in RouteTable response: {error}"
                 ))
             })
         })
@@ -474,9 +475,9 @@ pub(crate) fn response_bindings(
             "invalid BindingSet in RouteTable response: {error}"
         ))
     })?;
-    if bindings.entries()[0].destination_id() != expected_destination_id {
+    if bindings.entries()[0].destination() != expected_destination {
         return Err(TransportError::protocol(
-            "RouteTable Resolve response has a mismatched DestinationId",
+            "RouteTable Resolve response has a mismatched Destination",
         ));
     }
     Ok(bindings)
@@ -591,11 +592,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_generation_precedes_destination_id_validation() {
+    fn resolve_generation_precedes_destination_validation() {
         let authenticated = GatewayId::from_uuid(Uuid::from_u128(1));
         let request = WireRequest::Resolve {
             generation: ShardDirectoryGeneration::from_bytes([2; 32]).to_string(),
-            destination_id: String::new(),
+            destination: String::new(),
         };
 
         let error = request

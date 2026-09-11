@@ -27,7 +27,7 @@ PeerTransport
 | pair arbitration | 방향별 slot을 독립적으로 유지 |
 | duplicate | 같은 방향 candidate를 local에서 직렬화·정리 |
 | multiplexing | 여러 Pipe를 독립 RelayStream으로 전달 |
-| StreamId | initiator bit + 방향별 monotonic counter |
+| StreamId | Dialer/Acceptor bit + 방향별 monotonic counter |
 | identity | mTLS context와 logical Gateway handshake를 함께 검증 |
 | terminal scope | stream 종료는 sibling stream 유지, transport loss는 소속 stream 종료 |
 

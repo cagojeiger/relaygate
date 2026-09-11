@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use relaygate_route_table::{DestinationId, GatewayLocator, ShardDirectoryGeneration};
+use relaygate_route_table::{Destination, GatewayLocator, ShardDirectoryGeneration};
 use relaygate_route_table_transport::{
     ErrorCode, GatewayName, RouteTableClient, RouteTableClientConfig, RouteTableServiceConfig,
 };
@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::{
-    TestResult, client_for_shard, clients_by_shard, connect_lease_client, gateway,
+    TestResult, connect_lease_client, destination_for_shard, destinations_by_shard, gateway,
     protocol_binding, protocol_session, spawn_service, two_live_shard_directory, wait_for_counts,
     wait_for_resolve,
 };
@@ -85,22 +85,22 @@ async fn keep_alive_partition_case() -> TestResult {
     let handle = runtime.handle();
     let session_id = protocol_session(4_001);
     let unrelated_session_id = protocol_session(4_004);
-    let clients = clients_by_shard(&directory)?;
-    let client_0 = clients.get("rt-0").ok_or("missing rt-0 client")?;
-    let client_1 = clients.get("rt-1").ok_or("missing rt-1 client")?;
-    let unrelated_client_0 = client_for_shard(&directory, "rt-0", "unrelated")?;
+    let destinations = destinations_by_shard(&directory)?;
+    let destination_0 = destinations.get("rt-0").ok_or("missing rt-0 Destination")?;
+    let destination_1 = destinations.get("rt-1").ok_or("missing rt-1 Destination")?;
+    let unrelated_destination_0 = destination_for_shard(&directory, "rt-0", "unrelated")?;
 
     handle.publish_session(
         session_id,
         vec![
             Binding {
                 id: protocol_binding(4_002),
-                destination_id: client_0.as_str().parse()?,
+                destination: destination_0.clone(),
                 session_id,
             },
             Binding {
                 id: protocol_binding(4_003),
-                destination_id: client_1.as_str().parse()?,
+                destination: destination_1.clone(),
                 session_id,
             },
         ],
@@ -109,25 +109,25 @@ async fn keep_alive_partition_case() -> TestResult {
         unrelated_session_id,
         vec![Binding {
             id: protocol_binding(4_005),
-            destination_id: unrelated_client_0.as_str().parse()?,
+            destination: unrelated_destination_0.clone(),
             session_id: unrelated_session_id,
         }],
     )?;
-    wait_for_resolve(&handle, client_0.clone()).await?;
-    wait_for_resolve(&handle, client_1.clone()).await?;
-    wait_for_resolve(&handle, unrelated_client_0.clone()).await?;
+    wait_for_resolve(&handle, destination_0.clone()).await?;
+    wait_for_resolve(&handle, destination_1.clone()).await?;
+    wait_for_resolve(&handle, unrelated_destination_0.clone()).await?;
     wait_for_counts(&handle, 3, 0).await?;
 
     proxy.arm();
     proxy.wait_until_response_dropped().await?;
     wait_for_counts(&handle, 1, 2).await?;
-    wait_for_resolve(&handle, client_1.clone()).await?;
+    wait_for_resolve(&handle, destination_1.clone()).await?;
 
     let direct_rt_0 =
         connect_lease_client(target_0, gateway_name, gateway_id, client_config).await?;
     assert_eq!(
         direct_rt_0
-            .resolve(directory.generation(), client_0)
+            .resolve(directory.generation(), destination_0)
             .await?
             .entries()
             .len(),
@@ -135,20 +135,25 @@ async fn keep_alive_partition_case() -> TestResult {
     );
     assert_eq!(
         direct_rt_0
-            .resolve(directory.generation(), &unrelated_client_0)
+            .resolve(directory.generation(), &unrelated_destination_0)
             .await?
             .entries()
             .len(),
         1
     );
-    wait_for_direct_not_found(&direct_rt_0, directory.generation(), client_0).await?;
-    wait_for_direct_not_found(&direct_rt_0, directory.generation(), &unrelated_client_0).await?;
+    wait_for_direct_not_found(&direct_rt_0, directory.generation(), destination_0).await?;
+    wait_for_direct_not_found(
+        &direct_rt_0,
+        directory.generation(),
+        &unrelated_destination_0,
+    )
+    .await?;
 
     proxy.release();
     wait_for_counts(&handle, 3, 0).await?;
-    wait_for_resolve(&handle, client_0.clone()).await?;
-    wait_for_resolve(&handle, client_1.clone()).await?;
-    wait_for_resolve(&handle, unrelated_client_0).await?;
+    wait_for_resolve(&handle, destination_0.clone()).await?;
+    wait_for_resolve(&handle, destination_1.clone()).await?;
+    wait_for_resolve(&handle, unrelated_destination_0).await?;
     assert_eq!(proxy.dropped_responses(), 1);
 
     routing_shutdown.cancel();
@@ -164,18 +169,14 @@ async fn keep_alive_partition_case() -> TestResult {
 async fn wait_for_direct_not_found(
     client: &RouteTableClient,
     generation: ShardDirectoryGeneration,
-    destination_id: &DestinationId,
+    destination: &Destination,
 ) -> TestResult {
     for _ in 0..400 {
-        match client.resolve(generation, destination_id).await {
+        match client.resolve(generation, destination).await {
             Err(error) if error.code() == ErrorCode::NotFound => return Ok(()),
             Ok(_) => tokio::time::sleep(Duration::from_millis(5)).await,
             Err(error) => return Err(error.into()),
         }
     }
-    Err(format!(
-        "{} did not expire during the held partition",
-        destination_id.as_str()
-    )
-    .into())
+    Err(format!("{} did not expire during the held partition", destination).into())
 }

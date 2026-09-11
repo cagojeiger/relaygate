@@ -2,11 +2,11 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted, implemented |
+| 상태 | Superseded by [ADR 016](016-per-operation-jwt-authorization.md) |
 | credential | current 1개 + next 0..1개 |
 | 권한 단위 | RelayGate trust domain |
 
-## 결정
+## 이전 결정
 
 ```text
 Configured transport ready (TLS by default)
@@ -19,7 +19,7 @@ Configured transport ready (TLS by default)
 | --- | --- |
 | session admission | Gateway가 ClusterToken으로 trust-domain membership 확인 |
 | Destination access | admitted session은 모든 Destination에 listen·dial |
-| Destination 주소 | 공개 routing identifier |
+| Destination | 공개 routing key |
 | peer identity·authorization | Pipe 위 application protocol |
 | token 공급 | application config와 Kubernetes Secret |
 | token 보관 | operator의 external secret system |

@@ -3,14 +3,14 @@ use std::{
     sync::RwLock,
 };
 
-use relaygate_route_table::{MappingSnapshot, RelaySessionId, ShardId};
+use relaygate_route_table::{BindingSnapshot, RelaySessionId, ShardId};
 
 use super::super::{RoutingError, projection::ProjectedShardSnapshot};
 
 #[derive(Debug, Clone)]
 struct DesiredShardEntry {
     version: u64,
-    snapshot: MappingSnapshot,
+    snapshot: BindingSnapshot,
 }
 
 #[derive(Debug, Default)]
@@ -78,5 +78,5 @@ impl DesiredStore {
 
 pub(super) struct ShardDesiredView {
     pub(super) store_version: u64,
-    pub(super) sessions: HashMap<RelaySessionId, (u64, Option<MappingSnapshot>)>,
+    pub(super) sessions: HashMap<RelaySessionId, (u64, Option<BindingSnapshot>)>,
 }

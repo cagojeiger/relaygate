@@ -29,10 +29,8 @@ async fn main() -> Result<()> {
             runtime::route_table::serve(config, shutdown).await
         }
         Command::CheckGateway { address } => {
-            let cluster_token = env::var("RELAYGATE_CLUSTER_TOKEN")
-                .context("RELAYGATE_CLUSTER_TOKEN is required for Gateway readiness checks")?;
             if !config::sdk_tls_enabled()? {
-                check_insecure_for_tests(address, cluster_token, DEFAULT_CHECK_DEADLINE)
+                check_insecure_for_tests(address, DEFAULT_CHECK_DEADLINE)
                     .await
                     .context("Gateway SDK admission readiness check failed")
             } else {
@@ -52,7 +50,7 @@ async fn main() -> Result<()> {
                             .context("RELAYGATE_SDK_TLS_CA_PATH is not valid Unicode");
                     }
                 };
-                check(address, cluster_token, &tls, DEFAULT_CHECK_DEADLINE)
+                check(address, &tls, DEFAULT_CHECK_DEADLINE)
                     .await
                     .context("Gateway SDK admission readiness check failed")
             }

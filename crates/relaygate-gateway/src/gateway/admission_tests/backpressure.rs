@@ -4,28 +4,27 @@ use relaygate_protocol::{ErrorCode, PeerObservation};
 #[tokio::test]
 async fn rejection_burst_with_slow_reader_preserves_session_and_sibling() -> TestResult {
     let gateway = Gateway::new(
-        GatewayConfig::new(TOKEN)
+        GatewayConfig::new(authorization_config())
             .with_writer_queue_capacity(1)
             .with_session_control_rate_limit(1, 1),
     )?;
     let (client, cancel, task) = start_session(&gateway, 1024)?;
     let mut client = Framed::new(client, FrameCodec::default());
-    client
-        .send(Frame::Hello {
-            cluster_token: ClusterToken::new(TOKEN),
-        })
-        .await?;
+    client.send(Frame::Hello).await?;
     assert!(matches!(
         client.next().await,
         Some(Ok(Frame::Welcome { .. }))
     ));
     let (mut writer, mut reader) = client.split();
+    let destination = unique_destination();
+    let access_token = bearer_token(&destination, TestAction::Dial);
     let producer = tokio::spawn(async move {
         for connection_id in 1..=512 {
             writer
                 .send(Frame::Dial {
                     connection_id,
-                    destination_id: DestinationId::new(),
+                    destination: destination.clone(),
+                    access_token: access_token.clone(),
                 })
                 .await?;
         }
@@ -35,11 +34,7 @@ async fn rejection_burst_with_slow_reader_preserves_session_and_sibling() -> Tes
     tokio::time::sleep(Duration::from_millis(20)).await;
     let (sibling, sibling_cancel, sibling_task) = start_session(&gateway, 1024)?;
     let mut sibling = Framed::new(sibling, FrameCodec::default());
-    sibling
-        .send(Frame::Hello {
-            cluster_token: ClusterToken::new(TOKEN),
-        })
-        .await?;
+    sibling.send(Frame::Hello).await?;
     assert!(matches!(
         timeout(Duration::from_secs(1), sibling.next()).await?,
         Some(Ok(Frame::Welcome { .. }))

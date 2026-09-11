@@ -2,7 +2,7 @@
 
 | 경계 | 결정 |
 | --- | --- |
-| SDK ↔ Gateway | TLS와 ClusterToken 유지 |
+| SDK ↔ Gateway | TLS와 PUBLISH/DIAL JWT grant 유지 |
 | GW ↔ GW·RT 기본값 | `mtls` |
 | 격리된 테스트 설치 | `plaintext` 명시 선택 |
 | 내부 인증 | mTLS: 신뢰 CA + Gateway 역할 DNS SAN, plaintext: 인증 없음 |

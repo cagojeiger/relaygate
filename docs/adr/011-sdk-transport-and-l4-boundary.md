@@ -10,7 +10,7 @@
 ## 결정
 
 ```text
-SDK <-> GW : TLS/TCP + server authentication + ClusterToken
+SDK <-> GW : TLS/TCP + server authentication + operation JWT grant
 GW  <-> GW : mTLS/TCP + logical Gateway handshake
 GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 
@@ -23,7 +23,7 @@ public L4
 | --- | --- |
 | public SDK API | `Relay.listen/dial`, `Listener.accept`, `Pipe` |
 | transport config | `Config::new(endpoint)`, 특수 환경은 `Config::with_transport` |
-| TLS verification | certificate chain, server name, `relaygate/2` ALPN |
+| TLS verification | certificate chain, server name, `relaygate/3` ALPN |
 | edge termination | RelayGate Gateway process |
 | internal identity | mTLS certificate와 logical handshake의 일치 |
 | certificate load | process startup, platform이 갱신 적용을 위한 rollout 관리 |

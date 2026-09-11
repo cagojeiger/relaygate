@@ -175,7 +175,15 @@ fn describe_metrics() {
     );
     describe_counter!(
         "relaygate_gateway_sdk_transport_rejections_total",
-        "SDK transports rejected by connection rate, session capacity, handshake capacity or ClusterToken."
+        "SDK transports rejected by connection rate, session capacity, or handshake capacity."
+    );
+    describe_counter!(
+        "relaygate_gateway_authorization_results_total",
+        "Terminal PUBLISH and DIAL authorization verification results."
+    );
+    describe_histogram!(
+        "relaygate_gateway_authorization_duration_seconds",
+        "Time spent verifying one PUBLISH or DIAL access token."
     );
     describe_counter!(
         "relaygate_gateway_control_rejections_total",
@@ -254,12 +262,12 @@ fn describe_metrics() {
         "Current live registrations on this RouteTable shard."
     );
     describe_gauge!(
-        "relaygate_route_table_mappings",
-        "Current binding mappings on this RouteTable shard."
+        "relaygate_route_table_bindings",
+        "Current bindings on this RouteTable shard."
     );
     describe_gauge!(
-        "relaygate_route_table_routes",
-        "Current Destinations with at least one mapping on this RouteTable shard."
+        "relaygate_route_table_destinations",
+        "Current Destinations with at least one binding on this RouteTable shard."
     );
     describe_gauge!(
         "relaygate_route_table_expiry_records",

@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use futures_util::{future::BoxFuture, stream::FuturesUnordered};
 use relaygate_protocol::{BindingId, PipeId};
 use tokio::{
     sync::{Mutex, mpsc, oneshot},
@@ -16,7 +17,7 @@ use tokio::{
 
 use super::{ListenerState, RelayInner, RelaySession};
 use crate::{
-    DestinationId, Pipe, Result,
+    Destination, Pipe, Result,
     observability::{ReconnectEpisode, close_reconnect_episode},
     pipe::PipeState,
     session::{EstablishedSession, ReconnectBackoff, establish},
@@ -151,8 +152,10 @@ impl LivePipe {
 struct RelaySessionState {
     next_request_id: u64,
     pending: HashMap<u64, PendingRegistration>,
-    pending_by_client: HashMap<DestinationId, u64>,
-    registrations: HashMap<DestinationId, Registration>,
+    pending_by_destination: HashMap<Destination, u64>,
+    token_supplies:
+        FuturesUnordered<BoxFuture<'static, (u64, Result<relaygate_protocol::BearerToken>)>>,
+    registrations: HashMap<Destination, Registration>,
     pending_dials: HashMap<u64, oneshot::Sender<Result<Pipe>>>,
     pipes: HashMap<PipeId, LivePipe>,
 }
@@ -162,7 +165,8 @@ impl RelaySessionState {
         Self {
             next_request_id: 1,
             pending: HashMap::new(),
-            pending_by_client: HashMap::new(),
+            pending_by_destination: HashMap::new(),
+            token_supplies: FuturesUnordered::new(),
             registrations: HashMap::new(),
             pending_dials: HashMap::new(),
             pipes: HashMap::new(),

@@ -3,6 +3,11 @@ use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[allow(clippy::expect_used)]
+fn token() -> relaygate_protocol::BearerToken {
+    relaygate_protocol::BearerToken::new("admission-test-token").expect("bounded test token")
+}
+
 fn rejection() -> Frame {
     Frame::DialFailed {
         connection_id: 1,
@@ -27,7 +32,8 @@ fn only_single_local_unobserved_capacity_rejections_wait() -> TestResult {
     let now = std::time::Instant::now();
     let dial = |connection_id| Frame::Dial {
         connection_id,
-        destination_id: relaygate_protocol::DestinationId::new(),
+        destination: crate::test_support::unique_destination(),
+        access_token: token(),
     };
     let first = state.handle_at(session, dial(1), now)?;
     assert!(!is_local_rejection(&first, session));
@@ -50,7 +56,8 @@ fn only_single_local_unobserved_capacity_rejections_wait() -> TestResult {
         session,
         Frame::Publish {
             request_id: 1,
-            destination_id: relaygate_protocol::DestinationId::new(),
+            destination: crate::test_support::unique_destination(),
+            access_token: token(),
         },
         now,
     )?;

@@ -2,7 +2,7 @@ use std::{error::Error, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use rcgen::{CertifiedKey, generate_simple_self_signed};
-use relaygate_protocol::{ClusterToken, Frame, FrameCodec};
+use relaygate_protocol::{Frame, FrameCodec};
 use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
 use tokio::{
     io::AsyncReadExt,
@@ -12,6 +12,7 @@ use tokio::{
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use super::{Gateway, GatewayConfig};
+use crate::test_support::authorization_config;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -27,7 +28,7 @@ async fn connection_rate_rejects_before_tls_preserves_sessions_and_recovers() ->
     let client_tls =
         ClientTlsConfig::server_authenticated("relaygate.test", certificate.as_bytes())?;
     let gateway = Gateway::new(
-        GatewayConfig::new("test-token")
+        GatewayConfig::new(authorization_config())
             .with_sdk_tls(tls)
             .with_sdk_connection_rate_limit(1, 2)
             .with_max_sessions(8)
@@ -47,11 +48,7 @@ async fn connection_rate_rejects_before_tls_preserves_sessions_and_recovers() ->
                 client_tls.connect_boxed(socket).await?,
                 FrameCodec::default(),
             );
-            client
-                .send(Frame::Hello {
-                    cluster_token: ClusterToken::new("test-token"),
-                })
-                .await?;
+            client.send(Frame::Hello).await?;
             assert!(matches!(
                 client.next().await,
                 Some(Ok(Frame::Welcome { .. }))

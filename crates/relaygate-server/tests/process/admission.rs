@@ -1,10 +1,8 @@
 use super::*;
 
 use tokio::io::AsyncReadExt;
-use tokio_util::codec::Framed;
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sdk_admission_rejection_metrics_distinguish_capacity_and_credentials()
+async fn sdk_admission_rejection_metrics_distinguish_transport_capacity()
 -> Result<(), Box<dyn Error>> {
     let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
@@ -16,7 +14,7 @@ async fn sdk_admission_rejection_metrics_distinguish_capacity_and_credentials()
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
             .env("RELAYGATE_METRICS_INTERVAL_MS", "10"),
     )?;
-    wait_until_healthy_with_token(&address, TEST_CLUSTER_TOKEN, &mut server)?;
+    wait_until_healthy(&address, &mut server)?;
     wait_handshake_usage(&metrics_address, &mut server, 0)?;
     let stalled = tokio::net::TcpStream::connect(&address).await?;
     wait_handshake_usage(&metrics_address, &mut server, 1)?;
@@ -25,31 +23,8 @@ async fn sdk_admission_rejection_metrics_distinguish_capacity_and_credentials()
     drop(stalled);
     wait_handshake_usage(&metrics_address, &mut server, 0)?;
 
-    let invalid_token = "must-not-appear-in-admission-metrics";
-    let mut invalid = Framed::new(
-        tokio::net::TcpStream::connect(&address).await?,
-        FrameCodec::default(),
-    );
-    invalid
-        .send(Frame::Hello {
-            cluster_token: ClusterToken::new(invalid_token),
-        })
-        .await?;
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(1), invalid.next()).await?,
-        Some(Ok(Frame::SessionRejected {
-            code: ErrorCode::Unauthenticated,
-            ..
-        }))
-    ));
-    drop(invalid);
-    let body = assert_rejection(&metrics_address, &mut server, "cluster_token")?;
-    assert!(!body.contains(invalid_token));
-    assert!(!body.contains(TEST_CLUSTER_TOKEN));
-    wait_handshake_usage(&metrics_address, &mut server, 0)?;
-
-    let first = connect_sdk_session(&address, TEST_CLUSTER_TOKEN).await?;
-    let second = connect_sdk_session(&address, TEST_CLUSTER_TOKEN).await?;
+    let first = connect_sdk_session(&address).await?;
+    let second = connect_sdk_session(&address).await?;
     assert_socket_rejected(&address).await?;
     assert_rejection(&metrics_address, &mut server, "session_limit")?;
     drop((first, second));
@@ -117,10 +92,10 @@ async fn connection_rate_environment_rejects_and_reports_without_session_state()
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
             .env("RELAYGATE_METRICS_INTERVAL_MS", "10"),
     )?;
-    wait_until_healthy_with_token(&address, TEST_CLUSTER_TOKEN, &mut server)?;
+    wait_until_healthy(&address, &mut server)?;
     // Probe admission already spent the initial burst; recover between attempts.
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    let mut active = connect_sdk_session(&address, TEST_CLUSTER_TOKEN).await?;
+    let mut active = connect_sdk_session(&address).await?;
     // A refill may admit one of these sockets. Verify rejection over the burst,
     // rather than assuming a specific socket arrives before the next refill.
     futures_util::future::try_join_all((0..16).map(|_| async {

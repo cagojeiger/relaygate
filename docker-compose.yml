@@ -21,6 +21,12 @@ x-directory-volume: &directory-volume
   target: /etc/relaygate/shard-directory.json
   read_only: true
 
+x-authorization-volume: &authorization-volume
+  type: bind
+  source: ./deploy/docker/authorization.test.json
+  target: /etc/relaygate/authorization.json
+  read_only: true
+
 x-tls-volume: &tls-volume
   type: volume
   source: relaygate-tls
@@ -30,8 +36,8 @@ x-tls-volume: &tls-volume
 x-gateway-environment: &gateway-environment
   RELAYGATE_BIND_ADDR: 0.0.0.0:27420
   RELAYGATE_PEER_BIND_ADDR: 0.0.0.0:27421
-  RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
   RELAYGATE_RT_SHARD_DIRECTORY_PATH: /etc/relaygate/shard-directory.json
+  RELAYGATE_AUTH_CONFIG_PATH: /etc/relaygate/authorization.json
   RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
   RELAYGATE_SDK_TLS_CERT_PATH: /etc/relaygate/tls/gateway.crt
   RELAYGATE_SDK_TLS_KEY_PATH: /etc/relaygate/tls/gateway.key
@@ -56,6 +62,7 @@ x-gateway: &gateway
   command: ["relaygate-server", "gateway"]
   volumes:
     - *directory-volume
+    - *authorization-volume
     - *tls-volume
   depends_on:
     tls-init:
@@ -104,6 +111,13 @@ x-listener: &listener
   volumes:
     - *tls-volume
   stop_grace_period: 5s
+
+x-example-environment: &example-environment
+  # Public test fixture only; production tokens are issued by the application backend.
+  RELAYGATE_ACCESS_TOKEN: ${RELAYGATE_ACCESS_TOKEN:-eyJhbGciOiJFUzI1NiIsImtpZCI6ImNvbXBvc2UtdjEiLCJ0eXAiOiJyZWxheWdhdGUtb3BlcmF0aW9uK2p3dCJ9.eyJpc3MiOiJodHRwczovL2lzc3Vlci5jb21wb3NlLmludmFsaWQiLCJhdWQiOiJyZWxheWdhdGUiLCJuYmYiOjAsImV4cCI6NDEwMjQ0NDgwMCwicGVybWlzc2lvbnMiOlt7ImFjdGlvbiI6InB1Ymxpc2giLCJuYW1lc3BhY2UiOiJleGFtcGxlcyIsInNjb3BlIjp7ImtpbmQiOiJhbGwifX0seyJhY3Rpb24iOiJkaWFsIiwibmFtZXNwYWNlIjoiZXhhbXBsZXMiLCJzY29wZSI6eyJraW5kIjoiYWxsIn19XX0.YAvjlTHeCMVpkQj-FWQUKm6PwQ_K8mQyO1OBRK_zRXwwMNiabSkPXlVWoY1KOGAXkP6xFSIwmEQp1bx2-LVBDg}
+  RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
+  RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
+  RELAYGATE_LOG: relaygate_sdk=info
 
 services:
   tls-init:
@@ -191,12 +205,9 @@ services:
   listener-a:
     <<: *listener
     environment:
+      <<: *example-environment
       RELAYGATE_ADDR: gateway-a:27420
-      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
-      RELAYGATE_DESTINATIONS: 11111111-1111-4111-8111-111111111111
-      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
-      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
-      RELAYGATE_LOG: relaygate_sdk=info
+      RELAYGATE_DESTINATION: examples/echo-a
     depends_on:
       gateway-a:
         condition: service_healthy
@@ -204,12 +215,9 @@ services:
   listener-b:
     <<: *listener
     environment:
+      <<: *example-environment
       RELAYGATE_ADDR: gateway-b:27420
-      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
-      RELAYGATE_DESTINATIONS: 22222222-2222-4222-8222-222222222222,44444444-4444-4444-8444-444444444444
-      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
-      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
-      RELAYGATE_LOG: relaygate_sdk=info
+      RELAYGATE_DESTINATION: examples/echo-b
     depends_on:
       gateway-b:
         condition: service_healthy
@@ -217,12 +225,39 @@ services:
   listener-c:
     <<: *listener
     environment:
+      <<: *example-environment
       RELAYGATE_ADDR: gateway-c:27420
-      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
-      RELAYGATE_DESTINATIONS: 33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555
-      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
-      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
-      RELAYGATE_LOG: relaygate_sdk=info
+      RELAYGATE_DESTINATION: examples/echo-c
+    depends_on:
+      gateway-c:
+        condition: service_healthy
+
+  listener-shared-b:
+    <<: *listener
+    environment:
+      <<: *example-environment
+      RELAYGATE_ADDR: gateway-b:27420
+      RELAYGATE_DESTINATION: examples/echo-shared
+    depends_on:
+      gateway-b:
+        condition: service_healthy
+
+  listener-shared-c:
+    <<: *listener
+    environment:
+      <<: *example-environment
+      RELAYGATE_ADDR: gateway-c:27420
+      RELAYGATE_DESTINATION: examples/echo-shared
+    depends_on:
+      gateway-c:
+        condition: service_healthy
+
+  listener-boundary-c:
+    <<: *listener
+    environment:
+      <<: *example-environment
+      RELAYGATE_ADDR: gateway-c:27420
+      RELAYGATE_DESTINATION: examples/echo-boundary
     depends_on:
       gateway-c:
         condition: service_healthy
@@ -233,13 +268,10 @@ services:
     volumes:
       - *tls-volume
     environment:
+      <<: *example-environment
       RELAYGATE_CONTINUITY_ADDR: gateway-a:27420
-      RELAYGATE_CONTINUITY_DESTINATION_ID: 33333333-3333-4333-8333-333333333333
+      RELAYGATE_DESTINATION: examples/echo-c
       RELAYGATE_CONTINUITY_STATE: /tmp/relaygate-continuity.state
-      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
-      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
-      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
-      RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-a:
         condition: service_healthy
@@ -255,19 +287,16 @@ services:
     volumes:
       - *tls-volume
     environment:
+      <<: *example-environment
       RELAYGATE_CONTINUITY_ADDR: gateway-a:27420
-      RELAYGATE_CONTINUITY_DESTINATION_ID: 55555555-5555-4555-8555-555555555555
+      RELAYGATE_DESTINATION: examples/echo-boundary
       RELAYGATE_CONTINUITY_STATE: /tmp/relaygate-continuity.state
-      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
-      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
-      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
-      RELAYGATE_LOG: relaygate_sdk=info
     depends_on:
       gateway-a:
         condition: service_healthy
       gateway-c:
         condition: service_healthy
-      listener-c:
+      listener-boundary-c:
         condition: service_started
     stop_grace_period: 5s
 
@@ -277,11 +306,9 @@ services:
     volumes:
       - *tls-volume
     environment:
+      <<: *example-environment
       RELAYGATE_GATEWAYS: gateway-a:27420,gateway-b:27420,gateway-c:27420
-      RELAYGATE_CLUSTER_TOKEN: relaygate-local-cluster-token
-      RELAYGATE_SDK_TLS_CA_PATH: /etc/relaygate/tls/ca.crt
-      RELAYGATE_SDK_TLS_SERVER_NAME: relaygate-gateway.internal
-      RELAYGATE_LOG: relaygate_sdk=info
+      RELAYGATE_DESTINATION: examples/echo-a
     depends_on:
       gateway-a:
         condition: service_healthy
@@ -294,6 +321,10 @@ services:
       listener-b:
         condition: service_started
       listener-c:
+        condition: service_started
+      listener-shared-b:
+        condition: service_started
+      listener-shared-c:
         condition: service_started
 
   prometheus:

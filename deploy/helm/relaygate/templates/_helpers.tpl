@@ -75,7 +75,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- $endpoint := printf "%s.%s.%s.svc.%s:%d" $podName $serviceName $root.Release.Namespace $root.Values.clusterDomain (int $root.Values.routeTable.port) -}}
 {{- $shards = append $shards (dict "id" (printf "rt-%d" $index) "endpoint" $endpoint) -}}
 {{- end -}}
-{{- dict "format_version" 1 "authority_hash" "sha256-modulo-v1" "shards" $shards | toJson -}}
+{{- dict "format_version" 2 "authority_hash" "sha256-destination-modulo-v2" "shards" $shards | toJson -}}
 {{- end }}
 
 {{- define "relaygate.validateValues" -}}
@@ -83,7 +83,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- fail "the Helm release name must be an RFC 1035 label so generated Service names are valid" }}
 {{- end }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "clusterDomain" "value" .Values.clusterDomain) }}
-{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "credentials.existingSecret" "value" .Values.credentials.existingSecret) }}
+{{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "authorization.existingConfigMap" "value" .Values.authorization.existingConfigMap) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.edge.existingSecret" "value" .Values.tls.edge.existingSecret) }}
 {{- include "relaygate.validateDnsSubdomainLabels" (dict "name" "tls.edge.serverName" "value" .Values.tls.edge.serverName) }}
 {{- range $name := list "trustSecret" "gatewaySecret" "routeTableSecret" }}
@@ -144,7 +144,7 @@ app.kubernetes.io/part-of: "relaygate"
 {{- end }}
 
 {{- define "relaygate.validateGatewayExtraEnv" -}}
-{{- $managed := list "POD_NAME" "POD_NAMESPACE" "RELAYGATE_BIND_ADDR" "RELAYGATE_PEER_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_GATEWAY_NAME" "RELAYGATE_GATEWAY_LOCATOR" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_CLUSTER_TOKEN" "RELAYGATE_NEXT_CLUSTER_TOKEN" "RELAYGATE_SDK_TLS_CA_PATH" "RELAYGATE_SDK_TLS_CERT_PATH" "RELAYGATE_SDK_TLS_KEY_PATH" "RELAYGATE_SDK_TLS_SERVER_NAME" "RELAYGATE_INTERNAL_TLS_CA_PATH" "RELAYGATE_INTERNAL_TLS_CERT_PATH" "RELAYGATE_INTERNAL_TLS_KEY_PATH" "RELAYGATE_PEER_TLS_SERVER_NAME" "RELAYGATE_RT_TLS_SERVER_NAME" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_DRAIN_TIMEOUT_MS" "RELAYGATE_STATS_INTERVAL_MS" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
+{{- $managed := list "POD_NAME" "POD_NAMESPACE" "RELAYGATE_BIND_ADDR" "RELAYGATE_PEER_BIND_ADDR" "RELAYGATE_RT_SHARD_DIRECTORY_PATH" "RELAYGATE_GATEWAY_NAME" "RELAYGATE_GATEWAY_LOCATOR" "RELAYGATE_AUTH_CONFIG_PATH" "RELAYGATE_INTERNAL_GATEWAY_KEYS" "RELAYGATE_SDK_TLS_CA_PATH" "RELAYGATE_SDK_TLS_CERT_PATH" "RELAYGATE_SDK_TLS_KEY_PATH" "RELAYGATE_SDK_TLS_SERVER_NAME" "RELAYGATE_INTERNAL_TLS_CA_PATH" "RELAYGATE_INTERNAL_TLS_CERT_PATH" "RELAYGATE_INTERNAL_TLS_KEY_PATH" "RELAYGATE_PEER_TLS_SERVER_NAME" "RELAYGATE_RT_TLS_SERVER_NAME" "RELAYGATE_LOG" "RELAYGATE_LOG_FORMAT" "RELAYGATE_DRAIN_TIMEOUT_MS" "RELAYGATE_STATS_INTERVAL_MS" "RELAYGATE_METRICS_BIND_ADDR" "RELAYGATE_METRICS_INTERVAL_MS" -}}
 {{- range .Values.gateway.extraEnv }}
 {{- if or (has .name $managed) (has .name (list "RELAYGATE_INTERNAL_TRANSPORT" "RELAYGATE_INSECURE_TEST_TRANSPORT" "RELAYGATE_RT_TRUSTED_LOCAL")) }}
 {{- fail (printf "gateway.extraEnv cannot override chart-managed variable %s" .name) }}
