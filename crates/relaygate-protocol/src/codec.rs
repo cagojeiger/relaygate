@@ -13,14 +13,20 @@ const HEADER_LEN: usize = 8;
 const MAX_STRING_LEN: usize = u16::MAX as usize;
 /// HELLO carries no credential or payload; PUBLISH and DIAL carry authorization.
 pub const MAX_HELLO_FRAME_LEN: usize = 0;
+/// Default maximum encoded frame payload length, in bytes.
 pub const DEFAULT_MAX_FRAME_LEN: usize = 1024 * 1024;
 
+/// Length-delimited codec for SDK–Gateway [`Frame`] values.
+///
+/// The configured limit applies to the frame payload and excludes the fixed
+/// wire header.
 #[derive(Debug, Clone)]
 pub struct FrameCodec {
     max_frame_len: usize,
 }
 
 impl FrameCodec {
+    /// Creates a codec that accepts payloads up to `max_frame_len` bytes.
     #[must_use]
     pub const fn new(max_frame_len: usize) -> Self {
         Self { max_frame_len }

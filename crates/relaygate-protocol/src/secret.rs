@@ -1,3 +1,4 @@
+/// Maximum UTF-8 byte length of an operation bearer token.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 4096;
 
 /// Bounded operation credential carried only by `PUBLISH` and `DIAL`.
@@ -5,6 +6,10 @@ pub const MAX_BEARER_TOKEN_BYTES: usize = 4096;
 pub struct BearerToken(String);
 
 impl BearerToken {
+    /// Creates a token when its UTF-8 byte length is within the wire limit.
+    ///
+    /// Returns [`ProtocolError::FieldTooLong`](crate::ProtocolError::FieldTooLong)
+    /// when `value` exceeds [`MAX_BEARER_TOKEN_BYTES`].
     pub fn new(value: impl Into<String>) -> Result<Self, crate::ProtocolError> {
         let value = value.into();
         if value.len() > MAX_BEARER_TOKEN_BYTES {
@@ -17,6 +22,9 @@ impl BearerToken {
         Ok(Self(value))
     }
 
+    /// Exposes the credential text for authorization or wire encoding.
+    ///
+    /// Callers should avoid logging or otherwise persisting the returned value.
     #[must_use]
     pub fn expose_secret(&self) -> &str {
         &self.0

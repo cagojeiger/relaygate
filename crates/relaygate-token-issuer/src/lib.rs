@@ -1,8 +1,5 @@
-//! Server-side construction and signing of RelayGate operation tokens.
-//!
-//! This crate only encodes an authorization decision already made by an
-//! application. Caller authentication, policy, HTTP, key storage and key
-//! rotation remain application responsibilities.
+#![doc = include_str!("../README.md")]
+#![deny(missing_docs)]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -27,7 +24,9 @@ pub const OPERATION_TOKEN_TYPE: &str = "relaygate-operation+jwt";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
+    /// Publish a listener at the authorized destination.
     Publish,
+    /// Dial a listener at the authorized destination.
     Dial,
 }
 
@@ -257,22 +256,45 @@ impl std::fmt::Debug for TokenIssuer {
 /// Configuration or issuance failure that does not expose key material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TokenIssuerError {
+    /// A required text field is empty or exceeds its byte limit.
     #[error("{field} must contain 1..={maximum} bytes")]
-    InvalidText { field: &'static str, maximum: usize },
+    InvalidText {
+        /// Name of the invalid configuration field.
+        field: &'static str,
+        /// Maximum accepted UTF-8 byte length.
+        maximum: usize,
+    },
+    /// The supplied key is not an unencrypted P-256 PKCS#8 PEM private key.
     #[error("ES256 private key must be an unencrypted P-256 PKCS#8 PEM key")]
     InvalidPrivateKey,
+    /// No permission was supplied for the operation token.
     #[error("operation token must contain at least one permission")]
     EmptyPermissions,
+    /// The permission count exceeds the closed token-profile limit.
     #[error("operation token contains {actual} permissions, maximum {maximum}")]
-    TooManyPermissions { actual: usize, maximum: usize },
+    TooManyPermissions {
+        /// Number of permissions supplied by the application.
+        actual: usize,
+        /// Maximum number accepted by the token profile.
+        maximum: usize,
+    },
+    /// The requested not-before time precedes the Unix epoch.
     #[error("token not-before time must be at or after the Unix epoch")]
     InvalidNotBefore,
+    /// The requested lifetime has no whole second or overflows its timestamp.
     #[error("token lifetime must contain at least one whole second")]
     InvalidLifetime,
+    /// Compact-JWT serialization or ES256 signing failed.
     #[error("operation token signing failed")]
     SigningFailed,
+    /// The resulting compact JWT exceeds the token-profile size limit.
     #[error("operation token is {actual} bytes, maximum {maximum}")]
-    TokenTooLong { actual: usize, maximum: usize },
+    TokenTooLong {
+        /// Encoded token length in bytes.
+        actual: usize,
+        /// Maximum encoded length accepted by the token profile.
+        maximum: usize,
+    },
 }
 
 fn validate_text(value: &str, maximum: usize, field: &'static str) -> Result<(), TokenIssuerError> {

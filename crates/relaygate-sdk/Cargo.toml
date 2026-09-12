@@ -3,7 +3,11 @@ name = "relaygate-sdk"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Public Rust SDK for RelayGate Relay, Listener and Pipe sessions"
+readme = "README.md"
+publish = false
 
 [features]
 default = []

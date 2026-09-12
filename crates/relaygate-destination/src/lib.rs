@@ -1,6 +1,7 @@
 //! Canonical logical destinations shared across RelayGate layers.
 //!
 //! This crate owns representation and validation, not routing or authorization.
+#![deny(missing_docs)]
 
 mod destination;
 mod error;

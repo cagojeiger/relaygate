@@ -13,16 +13,19 @@ pub struct Destination {
 }
 
 impl Destination {
+    /// Constructs a destination from an already validated namespace and name.
     #[must_use]
     pub const fn new(namespace: Namespace, name: DestinationName) -> Self {
         Self { namespace, name }
     }
 
+    /// Returns the destination's namespace.
     #[must_use]
     pub const fn namespace(&self) -> &Namespace {
         &self.namespace
     }
 
+    /// Returns the name within the destination's namespace.
     #[must_use]
     pub const fn name(&self) -> &DestinationName {
         &self.name

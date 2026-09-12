@@ -7,16 +7,19 @@ macro_rules! opaque_uuid {
         pub struct $name(Uuid);
 
         impl $name {
+            /// Creates a fresh UUIDv4 identifier.
             #[must_use]
             pub fn new() -> Self {
                 Self(Uuid::new_v4())
             }
 
+            /// Wraps an existing UUID as this identifier type.
             #[must_use]
             pub const fn from_uuid(value: Uuid) -> Self {
                 Self(value)
             }
 
+            /// Returns the underlying UUID value.
             #[must_use]
             pub const fn as_uuid(self) -> Uuid {
                 self.0
@@ -68,6 +71,7 @@ pub struct PipeId {
 }
 
 impl PipeId {
+    /// Combines an origin session incarnation and its session-local connection ID.
     #[must_use]
     pub const fn new(origin_session_id: SessionId, connection_id: u64) -> Self {
         Self {
@@ -76,11 +80,13 @@ impl PipeId {
         }
     }
 
+    /// Returns the session incarnation that originated this Pipe.
     #[must_use]
     pub const fn origin_session_id(self) -> SessionId {
         self.origin_session_id
     }
 
+    /// Returns the connection counter assigned within the origin session.
     #[must_use]
     pub const fn connection_id(self) -> u64 {
         self.connection_id
