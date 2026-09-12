@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -12,8 +12,8 @@ use tokio::task::JoinSet;
 
 use crate::{
     config::{
-        access_token_source, destination, environment, overload_duration, overload_sessions,
-        overload_workers,
+        DESTINATION_WAIT, access_token_source, destination, environment, overload_duration,
+        overload_sessions, overload_workers,
     },
     probe::{assert_echo, connect},
 };
@@ -43,7 +43,7 @@ impl OverloadAccounting {
 pub(crate) async fn run() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_ADDR", "gateway-a:27420");
     let destination = destination()?;
-    let destination: Destination = destination
+    let overload_destination: Destination = destination
         .parse()
         .with_context(|| format!("invalid Destination {destination:?}"))?;
     let access_token_source = access_token_source()?;
@@ -55,13 +55,17 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     for _ in 0..session_count {
         relays.push(connect(&address).await?);
     }
+    let established_pipe = relays[0]
+        .dial(overload_destination.clone(), access_token_source.clone())
+        .await
+        .context("failed to establish the same-Relay continuity Pipe before overload")?;
 
     let deadline = Instant::now() + duration;
     let stop = Arc::new(AtomicBool::new(false));
     let mut workers = JoinSet::new();
     for worker in 0..worker_count {
         let relay = relays[worker % relays.len()].clone();
-        let destination = destination.clone();
+        let destination = overload_destination.clone();
         let access_token_source = access_token_source.clone();
         let stop = Arc::clone(&stop);
         workers.spawn(async move {
@@ -75,16 +79,12 @@ pub(crate) async fn run() -> anyhow::Result<()> {
                     .await
                 {
                     Ok(pipe) => {
-                        let payload =
-                            format!("relaygate overload worker={worker} sequence={sequence}");
-                        if let Err(error) = assert_echo(pipe, payload.as_bytes()).await {
-                            accounting.other_failures += 1;
-                            first_unexpected = Some(format!(
-                                "worker={worker} sequence={sequence}: echo failed: {error:#}"
-                            ));
-                            stop.store(true, Ordering::Relaxed);
-                            break;
-                        }
+                        // Keep this phase focused on control admission. Echoing every
+                        // admitted Pipe adds DATA responses to the same bounded session
+                        // writer queue and can mask the control-rate boundary under test.
+                        // The pre-existing same-Relay Pipe and fresh recovery Pipe
+                        // below, plus orchestrator sibling Pipes, verify DATA instead.
+                        drop(pipe);
                         accounting.succeeded += 1;
                     }
                     Err(error) if is_expected_overload(error.code(), error.observation()) => {
@@ -115,25 +115,67 @@ pub(crate) async fn run() -> anyhow::Result<()> {
             first_unexpected = unexpected;
         }
     }
+
+    let result = async {
+        println!(
+            "relaygate overload result workers={worker_count} sessions={session_count} attempted={} succeeded={} resource_exhausted_not_observed={} other_failures={} duration_seconds={}",
+            total.attempted,
+            total.succeeded,
+            total.resource_exhausted_not_observed,
+            total.other_failures,
+            duration.as_secs(),
+        );
+        ensure!(total.is_exact(), "overload completion accounting mismatch");
+        ensure!(total.attempted > 0, "overload probe made no attempts");
+        ensure!(total.succeeded > 0, "overload probe completed no Pipes");
+        ensure!(
+            total.resource_exhausted_not_observed > 0,
+            "overload probe did not observe RESOURCE_EXHAUSTED/NOT_OBSERVED"
+        );
+        if let Some(error) = first_unexpected {
+            anyhow::bail!(
+                "unexpected overload failure ({count} total): {error}",
+                count = total.other_failures
+            );
+        }
+        ensure!(
+            total.other_failures == 0,
+            "overload probe observed {} unexpected failures",
+            total.other_failures
+        );
+
+        assert_echo(
+            established_pipe,
+            b"relaygate overload established Pipe continuity",
+        )
+        .await
+        .context("same-Relay established Pipe did not survive control overload")?;
+        println!("relaygate overload established Pipe continuity verified");
+
+        let recovery_admission_rejections = AtomicU64::new(0);
+        assert_echo(
+            crate::soak_dial::dial(
+                &relays[0],
+                &destination,
+                &access_token_source,
+                DESTINATION_WAIT,
+                &recovery_admission_rejections,
+            )
+            .await?,
+            b"relaygate overload recovery",
+        )
+        .await?;
+        println!(
+            "relaygate overload recovery verified recovery_admission_rejections={}",
+            recovery_admission_rejections.load(Ordering::Relaxed)
+        );
+        Ok(())
+    }
+    .await;
     for relay in relays {
         relay.close();
     }
-
-    println!(
-        "relaygate overload result workers={worker_count} sessions={session_count} attempted={} succeeded={} resource_exhausted_not_observed={} other_failures={} duration_seconds={}",
-        total.attempted,
-        total.succeeded,
-        total.resource_exhausted_not_observed,
-        total.other_failures,
-        duration.as_secs(),
-    );
-    ensure!(total.is_exact(), "overload completion accounting mismatch");
-    ensure!(total.attempted > 0, "overload probe made no attempts");
-    ensure!(total.succeeded > 0, "overload probe completed no Pipes");
-    if let Some(error) = first_unexpected {
-        anyhow::bail!("unexpected overload failure: {error}");
-    }
-    Ok(())
+    result
 }
 
 const fn is_expected_overload(code: ErrorCode, observation: PeerObservation) -> bool {
