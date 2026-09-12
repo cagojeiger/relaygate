@@ -20,7 +20,7 @@ use crate::config::{
     soak_duration, storm_pause, storm_sessions,
 };
 
-const STORM_PIPE_BATCH_SIZE: usize = 64;
+const STORM_PIPE_BATCH_SIZE: usize = 32;
 
 pub(crate) async fn run_single() -> anyhow::Result<()> {
     let address = environment("RELAYGATE_ADDR", "gateway:27420");
