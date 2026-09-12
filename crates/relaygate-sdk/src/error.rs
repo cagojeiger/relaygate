@@ -5,17 +5,29 @@ use relaygate_protocol::{ErrorCode as WireErrorCode, PeerObservation as WirePeer
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ErrorCode {
+    /// An input or configuration value was invalid.
     InvalidArgument,
+    /// The supplied operation credential could not authenticate the caller.
     Unauthenticated,
+    /// The authenticated caller is not authorized for the operation.
     PermissionDenied,
+    /// The requested destination or resource was not found.
     NotFound,
+    /// The operation conflicts with the current state.
     FailedPrecondition,
+    /// A required session or service is temporarily unavailable.
     Unavailable,
+    /// The operation did not finish before its deadline.
     DeadlineExceeded,
+    /// A bounded local or Gateway resource was exhausted.
     ResourceExhausted,
+    /// The operation or owning runtime was cancelled.
     Cancelled,
+    /// A peer violated the RelayGate wire contract.
     ProtocolError,
+    /// RelayGate encountered an internal failure.
     Internal,
+    /// The requested registration already exists.
     AlreadyExists,
 }
 
@@ -26,8 +38,11 @@ pub enum ErrorCode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PeerObservation {
+    /// The operation was not committed to the peer.
     NotObserved,
+    /// The SDK cannot determine whether the peer observed the operation.
     MaybeObserved,
+    /// The peer observed and answered the operation.
     Observed,
 }
 
@@ -40,6 +55,7 @@ pub struct Error {
     message: String,
 }
 
+/// SDK result type using [`Error`] for terminal operation failures.
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
@@ -55,6 +71,7 @@ impl Error {
         }
     }
 
+    /// Returns the stable SDK failure category.
     #[must_use]
     pub const fn code(&self) -> ErrorCode {
         self.code
@@ -67,6 +84,7 @@ impl Error {
         self.observation
     }
 
+    /// Returns an unstructured diagnostic; branch on [`Self::code`] instead.
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message

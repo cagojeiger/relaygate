@@ -514,6 +514,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Verify crate package archives
+        run: .github/scripts/check-crate-packages.sh
+
       - name: Verify SDK observability isolation
         run: |
           for _ in {1..20}; do
@@ -689,6 +692,34 @@ jobs:
           prometheus_has 'sum(relaygate_gateway_route_dependency{state="READY"}) == 3'
           prometheus_has 'sum(relaygate_gateway_route_registrations_unsynced) == 0'
           prometheus_has 'sum(relaygate_gateway_route_dependency_transitions_total{previous="degraded",current="ready"}) > 0'
+
+      - name: Verify bounded overload preserves established Pipes
+        run: |
+          prometheus_has() {
+            expression="$1"
+            for _ in {1..30}; do
+              if curl -fsSG --data-urlencode "query=${expression}" \
+                http://127.0.0.1:29090/api/v1/query |
+                jq -e '.data.result | length > 0' >/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "Prometheus expression did not converge: ${expression}" >&2
+            return 1
+          }
+
+          docker compose run --rm --no-deps \
+            -e RELAYGATE_ADDR=gateway-a:27420 \
+            -e RELAYGATE_DESTINATION=examples/echo-b \
+            -e RELAYGATE_OVERLOAD_DURATION_SECS=3 \
+            -e RELAYGATE_OVERLOAD_WORKERS=256 \
+            -e RELAYGATE_OVERLOAD_SESSIONS=1 \
+            topology-probe relaygate-echo-probe overload | tee overload.log
+          grep -Eq 'resource_exhausted_not_observed=[1-9][0-9]*' overload.log
+          prometheus_has 'sum(relaygate_gateway_control_rejections_total{operation="dial",scope="session"}) > 0'
+          docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
+          docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
       - name: Verify logical cleanup baseline
         run: |

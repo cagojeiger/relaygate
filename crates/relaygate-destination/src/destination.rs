@@ -13,16 +13,19 @@ pub struct Destination {
 }
 
 impl Destination {
+    /// Combines validated components without revalidating them.
     #[must_use]
     pub const fn new(namespace: Namespace, name: DestinationName) -> Self {
         Self { namespace, name }
     }
 
+    /// Borrows the exact-match routing namespace.
     #[must_use]
     pub const fn namespace(&self) -> &Namespace {
         &self.namespace
     }
 
+    /// Borrows the namespace-local exact-match name.
     #[must_use]
     pub const fn name(&self) -> &DestinationName {
         &self.name

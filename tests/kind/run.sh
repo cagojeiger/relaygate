@@ -489,6 +489,7 @@ wait_for_cleanup_baseline() {
         relaygate_gateway_bindings \
         relaygate_gateway_pending_offers \
         relaygate_gateway_live_pipes \
+        relaygate_gateway_originated_pipes \
         relaygate_gateway_remote_dial_attempts \
         relaygate_gateway_peer_streams; do
         if awk -v metric="$metric" '$1 ~ ("^" metric "({|$)") && ($NF + 0) != 0 { found=1 } END { exit !found }' \
@@ -599,6 +600,10 @@ main() {
     --set metrics.intervalMs=1000 \
     --set gateway.drainTimeoutMs=10000 \
     --set gateway.terminationGracePeriodSeconds=20 \
+    --set-string 'gateway.extraEnv[0].name=RELAYGATE_SESSION_CONTROL_RATE_PER_SECOND' \
+    --set-string 'gateway.extraEnv[0].value=128' \
+    --set-string 'gateway.extraEnv[1].name=RELAYGATE_SESSION_CONTROL_BURST' \
+    --set-string 'gateway.extraEnv[1].value=128' \
     "${certificate_args[@]}" \
     --wait --timeout 180s
   apply_host_access
@@ -718,6 +723,31 @@ main() {
     RELAYGATE_SOAK_CONCURRENCY=${RELAYGATE_SOAK_CONCURRENCY:-64} \
     run_probe soak soak
   record_pass KIND-13 'bounded Pipe soak'
+
+  RELAYGATE_CONTINUITY_ADDR=127.0.0.1:28420 \
+    RELAYGATE_DESTINATION="$DESTINATION_C" \
+    RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/overload-continuity.state" \
+    "$PROBE" continuity >"$ARTIFACTS/overload-continuity.log" 2>&1 &
+  OVERLOAD_CONTINUITY_PID=$!
+  BACKGROUND_PIDS+=("$OVERLOAD_CONTINUITY_PID")
+  wait_for_file "$TEMP_DIR/overload-continuity.state"
+  RELAYGATE_ADDR=127.0.0.1:28420 \
+    RELAYGATE_DESTINATION="$DESTINATION_B" \
+    RELAYGATE_OVERLOAD_DURATION_SECS=3 \
+    RELAYGATE_OVERLOAD_WORKERS=256 \
+    RELAYGATE_OVERLOAD_SESSIONS=1 \
+  run_probe overload overload
+  grep -Eq 'resource_exhausted_not_observed=[1-9][0-9]*' "$ARTIFACTS/overload.log"
+  curl -fsS http://127.0.0.1:28430/metrics | awk '
+    $1 ~ /^relaygate_gateway_control_rejections_total\{/ &&
+    $1 ~ /operation="dial"/ &&
+    $1 ~ /scope="session"/ &&
+    ($2 + 0) > 0 { found=1 }
+    END { exit !found }
+  '
+  RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/overload-continuity.state" \
+    "$PROBE" continuity-check | tee "$ARTIFACTS/overload-continuity-check.log"
+  record_pass KIND-15 'bounded control overload preserves established Pipe and recovers'
 
   local pid
   for pid in "${BACKGROUND_PIDS[@]}"; do

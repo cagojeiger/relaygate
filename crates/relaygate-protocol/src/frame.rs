@@ -2,6 +2,7 @@ use bytes::Bytes;
 
 use crate::{BearerToken, BindingId, Destination, PipeId, SessionId};
 
+/// Stable wire error codes whose discriminants are part of protocol version 3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ErrorCode {
@@ -12,9 +13,12 @@ pub enum ErrorCode {
     FailedPrecondition = 5,
     Unavailable = 6,
     DeadlineExceeded = 7,
+    /// Covers admission, capacity, queue, and size limits.
     ResourceExhausted = 8,
     Cancelled = 9,
+    /// A peer violated the wire protocol or state-machine contract.
     ProtocolError = 10,
+    /// A local invariant or task failed without a peer protocol violation.
     Internal = 11,
     AlreadyExists = 12,
 }
@@ -39,11 +43,17 @@ impl ErrorCode {
     }
 }
 
+/// Whether a peer may have observed a failed control operation.
+///
+/// This is control-operation metadata, not an application payload receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PeerObservation {
+    /// The operation did not reach the peer's observable state.
     NotObserved = 1,
+    /// The sender cannot determine whether the peer observed the operation.
     MaybeObserved = 2,
+    /// The peer observed or committed the operation before failure.
     Observed = 3,
 }
 
@@ -58,6 +68,10 @@ impl PeerObservation {
     }
 }
 
+/// Wire messages exchanged within one SDK–Gateway session.
+///
+/// Credentials are operation-scoped and appear only in [`Frame::Publish`] and
+/// [`Frame::Dial`]; application data remains opaque in [`Frame::Data`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
     Hello,
@@ -94,6 +108,7 @@ pub enum Frame {
         destination: Destination,
         access_token: BearerToken,
     },
+    /// Offers an incoming Pipe to the session that owns a selected binding.
     Offer {
         pipe_id: PipeId,
         binding_id: BindingId,
@@ -107,6 +122,7 @@ pub enum Frame {
         code: ErrorCode,
         message: String,
     },
+    /// Confirms that a Pipe is established for the dialing session.
     Opened {
         pipe_id: PipeId,
     },
@@ -120,12 +136,15 @@ pub enum Frame {
         pipe_id: PipeId,
         payload: Bytes,
     },
+    /// Half-closes the sender's write direction of a Pipe.
     Fin {
         pipe_id: PipeId,
     },
+    /// Closes a Pipe normally in both directions.
     Close {
         pipe_id: PipeId,
     },
+    /// Terminates a Pipe with an error.
     Reset {
         pipe_id: PipeId,
         code: ErrorCode,
@@ -137,6 +156,7 @@ pub enum Frame {
     Pong {
         nonce: u64,
     },
+    /// Cancels a pending Pipe establishment attempt.
     Cancel {
         pipe_id: PipeId,
     },

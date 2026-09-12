@@ -64,6 +64,10 @@ failure는 current session을 끝내고 bounded backoff 재연결을 계속합�
 `PUBLISHED/OFFER`는 current state를 유지하며 `REMOVED` Binding은 terminal입니다. Gateway의 initial
 PUBLISH 실패 응답은 `Relay::listen`의 `Err`이고, 이미 반환된 Listener의 영구적인 PUBLISH 실패는 Listener만
 `BLOCKED`로 만듭니다.
+Public status subscription은 SDK 소유 wrapper로 latest-state/coalescing 의미를 가집니다. `current()`는
+현재 값을 반환하고 subscription cursor를 소비하며, `changed()`는 그 이후 변경에서 latest state를 반환합니다.
+Relay `ACTIVE`는 current `HELLO/WELCOME` transport session 설치를 뜻하며 Listener `ACTIVE/BLOCKED/SUSPENDED`와
+독립입니다. Relay `CLOSED`와 Listener `CLOSED`는 terminal이며 `ACTIVE`로 역행하지 않습니다.
 
 ## Authorization과 Pipe 상태
 
@@ -159,6 +163,7 @@ SDK session 생성 전 connection-rate budget 부족 또는 transport·handshake
 | `STATE-007` | remote DIAL rejection은 request scope이며 모든 terminal path가 admission을 반환한다. |
 | `STATE-008` | OFFER pre-commit failure는 request scope다. 직접 반환하는 단일 admission 거절은 요청 session의 읽기 루프에서 bounded writer 대기를 적용한다. 전달 deadline·closed 및 그 밖의 writer uncertainty는 session scope다. |
 | `STATE-009` | SDK resource admission 실패는 operation/Pipe scope다. Listener queue 포화는 해당 OFFER를 즉시 거절하고, Pipe buffer 초과는 해당 Pipe만 RESET한다. 점유는 cancel·drop·terminal cleanup 뒤 기준값으로 수렴한다. |
+| `STATE-010` | Relay와 Listener public status는 latest-state snapshot/subscription으로 관측되며 terminal `CLOSED` 이후 non-terminal 상태를 publish하지 않는다. |
 
 PUBLISH의 `RESOURCE_EXHAUSTED`, DIAL의 `RESOURCE_EXHAUSTED/NOT_OBSERVED`가 요청자에게 보내는 단일
 action이면 기존 writer queue의 공간을 기다립니다. 대기 상한은 현재 heartbeat의 다음 deadline이며 cancellation은

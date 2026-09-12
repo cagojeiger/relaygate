@@ -23,36 +23,42 @@ pub struct ResourceLimits {
 }
 
 impl ResourceLimits {
+    /// Sets the number of incoming Pipes that may wait for one Listener.
     #[must_use]
     pub const fn with_max_pending_pipes_per_listener(mut self, maximum: usize) -> Self {
         self.max_pending_pipes_per_listener = maximum;
         self
     }
 
+    /// Sets the number of live Pipes owned by one Listener.
     #[must_use]
     pub const fn with_max_live_pipes_per_listener(mut self, maximum: usize) -> Self {
         self.max_live_pipes_per_listener = maximum;
         self
     }
 
+    /// Sets the total number of live Pipes owned by one Relay.
     #[must_use]
     pub const fn with_max_live_pipes_per_relay(mut self, maximum: usize) -> Self {
         self.max_live_pipes_per_relay = maximum;
         self
     }
 
+    /// Sets the maximum number of inbound frames buffered by one Pipe.
     #[must_use]
     pub const fn with_max_buffered_frames_per_pipe(mut self, maximum: usize) -> Self {
         self.max_buffered_frames_per_pipe = maximum;
         self
     }
 
+    /// Sets the maximum number of inbound payload bytes buffered by one Pipe.
     #[must_use]
     pub const fn with_max_buffered_bytes_per_pipe(mut self, maximum: usize) -> Self {
         self.max_buffered_bytes_per_pipe = maximum;
         self
     }
 
+    /// Sets the total inbound payload bytes buffered by one Relay.
     #[must_use]
     pub const fn with_max_buffered_bytes_per_relay(mut self, maximum: usize) -> Self {
         self.max_buffered_bytes_per_relay = maximum;
@@ -135,12 +141,14 @@ impl Config {
         }
     }
 
+    /// Sets the deadline for establishing the initial Gateway session.
     #[must_use]
     pub const fn with_connect_timeout(mut self, value: Duration) -> Self {
         self.connect_timeout = value;
         self
     }
 
+    /// Sets the deadline for one `listen` or `dial` control operation.
     #[must_use]
     pub const fn with_operation_timeout(mut self, value: Duration) -> Self {
         self.operation_timeout = value;
@@ -163,6 +171,10 @@ impl Config {
         self
     }
 
+    /// Sets the initial and maximum managed-reconnect delays.
+    ///
+    /// Configuration validation requires both values to be positive and the
+    /// maximum to be at least the initial delay.
     #[must_use]
     pub const fn with_reconnect_backoff(mut self, initial: Duration, maximum: Duration) -> Self {
         self.reconnect_initial = initial;
@@ -170,12 +182,14 @@ impl Config {
         self
     }
 
+    /// Sets the bounded number of frames queued for the Gateway writer.
     #[must_use]
     pub const fn with_outbound_capacity(mut self, value: usize) -> Self {
         self.outbound_capacity = value;
         self
     }
 
+    /// Replaces the process-local resource limits for this Relay.
     #[must_use]
     pub const fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
         self.resource_limits = limits;

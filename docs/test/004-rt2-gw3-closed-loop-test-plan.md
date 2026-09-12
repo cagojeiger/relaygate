@@ -33,7 +33,7 @@ host Rust SDK -- TLS/TCP --|
 | `KIND-04` | N:M | 같은 Destination Binding 여러 개 중 dial마다 하나만 선택, fan-out 없음 |
 | `KIND-05` | Gateway restart | old Pipe 종료, SDK reconnect·AccessTokenSource republish, fresh dial 성공 |
 | `KIND-06` | RT shard loss | unavailable shard의 remote dial만 격리되고 local Pipe와 다른 shard 유지, 복귀 뒤 BindingProjection 재수렴 |
-| `KIND-07` | cleanup | SDK 종료 뒤 session/binding/attempt/Pipe/peer stream gauge가 baseline 복귀 |
+| `KIND-07` | cleanup | SDK 종료 뒤 session/binding/attempt/Pipe/originated Pipe/peer stream gauge가 baseline 복귀 |
 | `KIND-08` | secret | AccessToken, decoded claim, JWT private key, internal credential, TLS private key와 payload marker가 log·metric·error에 없음 |
 | `KIND-09` | L4/TLS passthrough | Envoy가 TLS를 종료하지 않고 SDK CA/name 검증과 Pipe byte 왕복 성공 |
 | `KIND-10` | RT rolling restart | shard를 하나씩 교체하는 동안 established Pipe 진행, 재등록 뒤 모든 exact route 복구 |
@@ -41,8 +41,9 @@ host Rust SDK -- TLS/TCP --|
 | `KIND-12` | reconnect storm | 100개 RelaySession 동시 단절 뒤 재연결이 bounded하고 최종 Listener와 dial 복구 |
 | `KIND-13` | bounded soak | 최소 60초·64 worker Pipe 왕복 성공; known `NOT_OBSERVED` transient dial만 deadline 안 재시도; 종료 뒤 current gauge baseline 복귀 |
 | `KIND-14` | certificate 재발급 | edge·internal leaf 재발급, 해당 role Pod 교체, Listener 재등록·fresh dial 복구, edge 제공 serial 일치 |
+| `KIND-15` | bounded overload | 정상 matrix 한 Relay의 약 104 control operation을 수용하는 테스트 전용 session control budget 128에서, 3초·256 worker·1 Relay session이 session-scope control rejection과 `RESOURCE_EXHAUSTED/NOT_OBSERVED`를 관측한다. 부하 phase의 admitted Pipe는 즉시 닫아 control admission만 측정하고, unexpected failure 없이 일부 DIAL 성공, 같은 Relay의 pre-existing Pipe와 별도 sibling session Pipe의 DATA continuity 유지, 같은 Relay의 fresh dial·echo 복구를 각각 검증한다. |
 
 ## Stop condition
 
-모든 ID는 command output, Pod state, metric snapshot과 log redaction search evidence를 남깁니다. Rolling/storm/soak은
+모든 ID는 command output, Pod state, metric snapshot과 log redaction search evidence를 남깁니다. Rolling/storm/soak/overload는
 fresh authorized dial 성공과 cleanup baseline 수렴까지 완료합니다.
