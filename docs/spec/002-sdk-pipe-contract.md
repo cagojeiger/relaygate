@@ -7,7 +7,10 @@
 | `Relay::connect(Config)` | active Relay |
 | `Relay::listen(Destination, AccessTokenSource)` | active Listener |
 | `Relay::dial(Destination, AccessTokenSource)` | established Pipe |
+| `Relay::status()` / `Relay::subscribe_status()` | latest Relay status snapshot/subscription |
+| `Relay::wait_ready()` | current Relay session active 또는 closed error |
 | `Listener::accept()` | distinct incoming Pipe |
+| `Listener::status()` / `Listener::subscribe_status()` | latest Listener status snapshot/subscription |
 | `Listener::close()` | 해당 Listener 종료 |
 | `Relay::close()` | 전체 SDK runtime 종료 |
 
@@ -62,6 +65,7 @@ async callback(action, Destination) -> PUBLISH 또는 DIAL
 | `SDK-018` | SDK runtime은 token cache, singleflight, refresh token, private key와 token issuer를 소유하지 않는다. Backend가 필요하면 `relaygate-token-issuer`로 AccessToken을 생성해 `AccessTokenSource`에 공급한다. |
 | `SDK-019` | returned Listener의 republish token source 실패는 Relay당 하나의 bounded exponential backoff+jitter timer로 병합한다. timer가 준비되기 전 다른 reconcile trigger는 suspended Listener를 재시도하지 않는다. 전체 Listener가 다시 active이면 backoff를 초기화하고 대기 중 timer를 무효화한다. |
 | `SDK-020` | Relay live Pipe 상한은 outgoing DIAL의 pending 단계부터 returned Pipe 수명까지와 incoming Pipe를 함께 계산하고 모든 실패·cancel·drop·terminal 경로에서 점유를 반환한다. |
+| `SDK-022` | Relay와 Listener status subscription은 SDK 소유 wrapper이며 raw watch channel을 노출하지 않는다. `current()`는 latest snapshot을 반환하고 subscription cursor를 소비하며, `changed()`는 그 이후 coalescing된 latest state를 반환한다. Relay `ACTIVE`는 current `HELLO/WELCOME` transport session 설치를 뜻하며 Listener republish/`BLOCKED`와 분리된다. Relay `CLOSED`는 terminal이고 `ACTIVE`로 역행하지 않는다. |
 
 Token source 실패와 deadline은 해당 operation의 `UNAVAILABLE` 또는 `DEADLINE_EXCEEDED/NOT_OBSERVED`입니다.
 Initial listen의 PUBLISH가 commit되기 전 session이 끝나면 원래 deadline 안에서 재시도합니다. commit 뒤
@@ -70,6 +74,10 @@ session이 끝나면 `MAYBE_OBSERVED` 오류로 반환합니다. Gateway의 init
 bounded delay 뒤 다시 공급을 요청합니다. 이미 반환된 Listener의 영구적인 PUBLISH 실패(`INVALID_ARGUMENT`,
 `UNAUTHENTICATED`, `PERMISSION_DENIED`, `FAILED_PRECONDITION`, `ALREADY_EXISTS`)는 Listener를
 `BLOCKED`로 만듭니다. Application은 새로운 token source 또는 새 Relay/Listener를 구성해 회복합니다.
+모든 returned Listener가 `ACTIVE` 또는 `BLOCKED`로 settled되면 reconnect episode는 종료됩니다. 하나 이상
+`BLOCKED`가 있으면 Relay session은 `ACTIVE`여도 episode outcome은 degraded입니다. reconnect 중 permanent
+republish failure로 `BLOCKED`가 publish된 Listener가 즉시 drop되어 desired set에서 제거되어도 해당 episode는
+recovered가 아니라 degraded로 종료됩니다.
 
 ## Relay runtime
 

@@ -29,19 +29,70 @@ use self::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ListenerStatus {
+    /// The Listener is publishing or republishing its binding.
     Registering,
+    /// The Listener has a current Gateway binding and can receive Pipes.
     Active,
+    /// The returned Listener is waiting for a transient republish recovery.
     Suspended,
+    /// Republish failed permanently; recreate the Listener with new inputs.
     Blocked,
+    /// The Listener is terminal.
     Closed,
 }
 
+/// Current state of the shared Relay session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RelayStatus {
+    /// A current HELLO/WELCOME transport session is installed.
+    Active,
+    /// No current session is installed and managed reconnect is running.
+    Reconnecting,
+    /// The Relay runtime is terminal.
+    Closed,
+}
+
+/// Subscription to the latest Relay status.
+///
+/// This is a coalescing subscription: slow consumers observe the latest status
+/// after each change, not every intermediate transition. Calling [`current`]
+/// consumes the current version, so a later [`changed`] call waits for a newer
+/// status.
+///
+/// [`current`]: Self::current
+/// [`changed`]: Self::changed
+pub struct RelayStatusSubscription {
+    status: watch::Receiver<RelayStatus>,
+}
+
+/// Subscription to the latest Listener status.
+///
+/// This is a coalescing subscription: slow consumers observe the latest status
+/// after each change, not every intermediate transition. Calling [`current`]
+/// consumes the current version, so a later [`changed`] call waits for a newer
+/// status.
+///
+/// [`current`]: Self::current
+/// [`changed`]: Self::changed
+pub struct ListenerStatusSubscription {
+    status: watch::Receiver<ListenerStatus>,
+}
+
+/// A shared application session to one RelayGate Gateway.
+///
+/// A Relay manages reconnect and republishes each desired [`Listener`]. Pipes
+/// remain session-scoped and are never replayed across reconnects.
 #[derive(Clone)]
 pub struct Relay {
     inner: Arc<RelayInner>,
     _lifetime: Arc<RuntimeLifetime>,
 }
 
+/// A desired publication for one [`Destination`].
+///
+/// The SDK keeps the publication desired across managed Relay reconnects until
+/// the Listener is closed or dropped.
 pub struct Listener {
     inner: Arc<RelayInner>,
     _lifetime: Arc<RuntimeLifetime>,
@@ -117,10 +168,12 @@ impl Relay {
         config.validate()?;
         let established = establish(&config).await?;
         let (current, _) = watch::channel(None);
+        let (status, _) = watch::channel(RelayStatus::Active);
         let cancel = CancellationToken::new();
         let lifetime = Arc::new(RuntimeLifetime::new(cancel.clone()));
         let inner = Arc::new(RelayInner {
             resources: RelayResources::new(config.resource_limits),
+            reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
             republish_retry_epoch: Arc::new(AtomicU64::new(0)),
             republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
                 config.reconnect_initial,
@@ -129,11 +182,18 @@ impl Relay {
             config,
             desired: StdMutex::new(HashMap::new()),
             current,
+            status,
             reconcile: Arc::new(Notify::new()),
             cancel,
             lifetime: Arc::downgrade(&lifetime),
         });
-        tokio::spawn(relay_supervisor(Arc::clone(&inner), established));
+        let (ready_tx, ready_rx) = oneshot::channel();
+        tokio::spawn(relay_supervisor(
+            Arc::clone(&inner),
+            established,
+            Some(ready_tx),
+        ));
+        ready_rx.await.map_err(|_| Error::closed())?;
         Ok(Self {
             inner,
             _lifetime: lifetime,
@@ -369,17 +429,72 @@ impl Relay {
         self.inner.cancel.cancel();
         self.inner.close_all();
     }
+
+    /// Returns the latest shared Relay session status.
+    #[must_use]
+    pub fn status(&self) -> RelayStatus {
+        *self.inner.status.borrow()
+    }
+
+    /// Subscribes to coalesced Relay status changes.
+    #[must_use]
+    pub fn subscribe_status(&self) -> RelayStatusSubscription {
+        RelayStatusSubscription {
+            status: self.inner.status.subscribe(),
+        }
+    }
+
+    /// Waits until a current Relay session is active.
+    ///
+    /// Returns an error with [`ErrorCode::Cancelled`] when the Relay has
+    /// already closed.
+    ///
+    /// [`ErrorCode::Cancelled`]: crate::ErrorCode::Cancelled
+    pub async fn wait_ready(&self) -> Result<()> {
+        let mut status = self.inner.status.subscribe();
+        let mut current = self.inner.current.subscribe();
+        loop {
+            match *status.borrow() {
+                RelayStatus::Active if current.borrow().is_some() => return Ok(()),
+                RelayStatus::Active => {}
+                RelayStatus::Closed => return Err(Error::closed()),
+                RelayStatus::Reconnecting => {}
+            }
+            tokio::select! {
+                changed = status.changed() => {
+                    if changed.is_err() {
+                        return Err(Error::closed());
+                    }
+                }
+                changed = current.changed() => {
+                    if changed.is_err() {
+                        return Err(Error::closed());
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Listener {
+    /// Returns the destination owned by this Listener.
     #[must_use]
     pub fn destination(&self) -> &Destination {
         &self.state.destination
     }
 
+    /// Returns this Listener's latest status.
     #[must_use]
     pub fn status(&self) -> ListenerStatus {
         *self.state.status.borrow()
+    }
+
+    /// Subscribes to coalesced Listener status changes.
+    #[must_use]
+    pub fn subscribe_status(&self) -> ListenerStatusSubscription {
+        ListenerStatusSubscription {
+            status: self.state.status.subscribe(),
+        }
     }
 
     /// Returns one incoming Pipe exactly once.
@@ -456,6 +571,38 @@ impl Listener {
     }
 }
 
+impl RelayStatusSubscription {
+    /// Returns the latest status and marks it as observed.
+    #[must_use]
+    pub fn current(&mut self) -> RelayStatus {
+        *self.status.borrow_and_update()
+    }
+
+    /// Waits for a newer status and returns the latest value.
+    ///
+    /// Returns `None` when the Relay runtime has dropped the sender.
+    pub async fn changed(&mut self) -> Option<RelayStatus> {
+        self.status.changed().await.ok()?;
+        Some(*self.status.borrow_and_update())
+    }
+}
+
+impl ListenerStatusSubscription {
+    /// Returns the latest status and marks it as observed.
+    #[must_use]
+    pub fn current(&mut self) -> ListenerStatus {
+        *self.status.borrow_and_update()
+    }
+
+    /// Waits for a newer status and returns the latest value.
+    ///
+    /// Returns `None` when the Listener state has dropped the sender.
+    pub async fn changed(&mut self) -> Option<ListenerStatus> {
+        self.status.changed().await.ok()?;
+        Some(*self.status.borrow_and_update())
+    }
+}
+
 impl Drop for Listener {
     fn drop(&mut self) {
         self.inner.drop_listener(&self.state);
@@ -499,5 +646,56 @@ impl Listener {
         timeout(self.inner.config.operation_timeout, operation)
             .await
             .map_err(|_| Error::deadline(PeerObservation::MaybeObserved))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{error::Error as StdError, time::Duration};
+
+    use futures_util::{SinkExt, StreamExt};
+    use relaygate_protocol::{DEFAULT_MAX_FRAME_LEN, Frame, FrameCodec, SessionId};
+    use tokio::{net::TcpListener, sync::oneshot, time::timeout};
+    use tokio_util::codec::Framed;
+
+    use super::{Relay, RelayStatus};
+    use crate::Config;
+
+    type TestResult<T = ()> = std::result::Result<T, Box<dyn StdError + Send + Sync>>;
+
+    #[tokio::test]
+    async fn connect_returns_after_initial_current_session_is_installed() -> TestResult {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut transport = Framed::new(stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                transport.next().await.ok_or("SDK closed before HELLO")??,
+                Frame::Hello
+            ) {
+                return Err::<(), Box<dyn StdError + Send + Sync>>(
+                    "SDK first frame was not HELLO".into(),
+                );
+            }
+            transport
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await?;
+            let _ = shutdown_rx.await;
+            Ok::<(), Box<dyn StdError + Send + Sync>>(())
+        });
+
+        let relay = Relay::connect(Config::new_insecure_for_tests(address.to_string())).await?;
+        assert_eq!(relay.status(), RelayStatus::Active);
+        assert!(relay.inner.current.borrow().is_some());
+        timeout(Duration::from_secs(1), relay.wait_ready()).await??;
+
+        relay.close();
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
     }
 }

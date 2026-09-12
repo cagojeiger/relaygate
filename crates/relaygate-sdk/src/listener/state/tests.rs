@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{ListenerLifecycle, ListenerState, RelayInner};
 use crate::{
-    AccessToken, AccessTokenSource, Config, Destination, Error, ListenerStatus,
+    AccessToken, AccessTokenSource, Config, Destination, Error, ListenerStatus, RelayStatus,
     lifetime::RuntimeLifetime, resource::RelayResources, session::ReconnectBackoff,
 };
 
@@ -62,6 +62,37 @@ fn precommit_session_end_keeps_initial_listener_retryable_with_original_deadline
     Ok(())
 }
 
+#[test]
+fn cancelled_relay_status_transition_closes_instead_of_resurrecting() {
+    let config = Config::new_insecure_for_tests("127.0.0.1:1");
+    let limits = config.resource_limits;
+    let (current, _) = watch::channel::<Option<Arc<RelaySession>>>(None);
+    let (status, _) = watch::channel(RelayStatus::Active);
+    let cancel = CancellationToken::new();
+    let inner = RelayInner {
+        resources: RelayResources::new(limits),
+        reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+        republish_retry_epoch: Arc::new(AtomicU64::new(0)),
+        republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
+            config.reconnect_initial,
+            config.reconnect_maximum,
+        ))),
+        config,
+        desired: StdMutex::new(HashMap::new()),
+        current,
+        status,
+        reconcile: Arc::new(Notify::new()),
+        cancel: cancel.clone(),
+        lifetime: Weak::<RuntimeLifetime>::new(),
+    };
+
+    cancel.cancel();
+    inner.set_relay_status(RelayStatus::Reconnecting);
+    assert_eq!(*inner.status.borrow(), RelayStatus::Closed);
+    inner.set_relay_status(RelayStatus::Active);
+    assert_eq!(*inner.status.borrow(), RelayStatus::Closed);
+}
+
 #[tokio::test(start_paused = true)]
 async fn repeated_republish_failures_share_one_bounded_retry_timer() -> TestResult {
     let initial = Duration::from_secs(10);
@@ -70,14 +101,17 @@ async fn repeated_republish_failures_share_one_bounded_retry_timer() -> TestResu
         Config::new_insecure_for_tests("127.0.0.1:1").with_reconnect_backoff(initial, maximum);
     let limits = config.resource_limits;
     let (current, _) = watch::channel::<Option<Arc<RelaySession>>>(None);
+    let (status, _) = watch::channel(RelayStatus::Reconnecting);
     let cancel = CancellationToken::new();
     let inner = RelayInner {
         resources: RelayResources::new(limits),
+        reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
         republish_retry_epoch: Arc::new(AtomicU64::new(0)),
         republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(initial, maximum))),
         config,
         desired: StdMutex::new(HashMap::new()),
         current,
+        status,
         reconcile: Arc::new(Notify::new()),
         cancel: cancel.clone(),
         lifetime: Weak::<RuntimeLifetime>::new(),

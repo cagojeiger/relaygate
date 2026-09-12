@@ -9,6 +9,10 @@ use crate::{Destination, Error, ErrorCode, PeerObservation};
 pub struct AccessToken(BearerToken);
 
 impl AccessToken {
+    /// Validates and wraps a bearer token supplied by the application.
+    ///
+    /// The token is rejected when it is empty or exceeds the wire limit. Its
+    /// contents are redacted from the [`Debug`](std::fmt::Debug) output.
     pub fn new(value: impl Into<String>) -> Result<Self, AccessTokenError> {
         let value = value.into();
         if value.is_empty() {
@@ -31,23 +35,37 @@ impl std::fmt::Debug for AccessToken {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+/// Validation failure returned while constructing an [`AccessToken`].
 pub enum AccessTokenError {
+    /// The supplied token was empty.
     #[error("access token must not be empty")]
     Empty,
+    /// The supplied token exceeded the protocol byte limit.
     #[error("access token is {actual} bytes, maximum {maximum}")]
-    TooLong { actual: usize, maximum: usize },
+    TooLong {
+        /// Actual token length in bytes.
+        actual: usize,
+        /// Maximum token length accepted by the protocol.
+        maximum: usize,
+    },
 }
 
+/// Admission operation for which an application token is requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AccessAction {
+    /// Publish a destination through [`crate::Relay::listen`].
     Publish,
+    /// Open a Pipe through [`crate::Relay::dial`].
     Dial,
 }
 
+/// Context passed to an application-owned dynamic token source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessTokenRequest {
+    /// Operation being authorized.
     pub action: AccessAction,
+    /// Destination being published or dialed.
     pub destination: Destination,
 }
 
@@ -76,11 +94,21 @@ enum AccessTokenSourceInner {
 pub struct AccessTokenSource(AccessTokenSourceInner);
 
 impl AccessTokenSource {
+    /// Reuses one already-issued token for every admission attempt.
+    ///
+    /// This is appropriate only when the application owns a token whose
+    /// lifetime covers reconnect and Listener republish. For renewable tokens,
+    /// use [`Self::dynamic`].
     #[must_use]
     pub fn static_token(token: AccessToken) -> Self {
         Self(AccessTokenSourceInner::Static(token))
     }
 
+    /// Calls an application-owned provider for each admission attempt.
+    ///
+    /// RelayGate does not issue or refresh application credentials. The
+    /// callback should obtain a token from the application's backend and must
+    /// not persist raw token material in RelayGate state.
     pub fn dynamic<F, Fut>(callback: F) -> Self
     where
         F: Fn(AccessTokenRequest) -> Fut + Send + Sync + 'static,
