@@ -4,7 +4,7 @@ use rcgen::{CertifiedKey, generate_simple_self_signed};
 use relaygate_gateway::{Gateway, GatewayConfig};
 use relaygate_sdk::{
     AccessAction, AccessToken, AccessTokenSource, ClientTlsConfig, Config, GatewayTransportConfig,
-    ListenerStatus, Relay,
+    ListenerStatus, Relay, ResourceLimits,
 };
 use relaygate_transport::ServerTlsConfig;
 use tokio::{
@@ -18,13 +18,16 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 mod support;
 
-use support::{authorization_config, token_source, unique_destination};
+use support::{access_token, authorization_config, token_source, unique_destination};
 
 #[path = "public_sdk/control_admission.rs"]
 mod control_admission;
 
 #[path = "public_sdk/endpoint.rs"]
 mod endpoint;
+
+#[path = "public_sdk/resource_limits.rs"]
+mod resource_limits;
 
 #[tokio::test]
 async fn sdk_gateway_path_uses_tls_before_operation_authorization() -> TestResult {

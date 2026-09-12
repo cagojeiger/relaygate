@@ -139,6 +139,8 @@ SDK session 생성 전 connection-rate budget 부족 또는 transport·handshake
 | OFFER uncertain | selected RelaySession | sibling session·Binding | reconnect; caller 새 dial |
 | OFFER pre-commit full | 해당 dial | selected session·Binding·Pipe | 부하 감소 뒤 새 dial |
 | PUBLISH/DIAL rate 초과 | 해당 요청, DIAL은 `NOT_OBSERVED` | session·기존 Binding·Pipe, 정리 메시지 | budget refill 뒤 새 operation; DIAL은 새 ConnectionId |
+| SDK Listener/Relay Pipe 상한 | 해당 OFFER/DIAL | RelaySession·Listener·기존/sibling Pipe | 기존 Pipe 종료 뒤 새 dial |
+| SDK Pipe/Relay inbound buffer 상한 | 해당 Pipe | RelaySession·Listener·sibling Pipe | application 소비 속도·상한 조정 뒤 새 Pipe |
 | GW–GW loss | 해당 transport의 stream/Pipe | local Binding·다른 transport | 다음 dial이 transport 생성 |
 | GW–RT loss | remote resolve·sync | local Binding·established Pipe | worker reconnect + snapshot |
 | RT restart | 해당 shard lease·BindingProjection | Gateway local Binding·Pipe | Gateway 재등록 |
@@ -156,6 +158,7 @@ SDK session 생성 전 connection-rate budget 부족 또는 transport·handshake
 | `STATE-006` | cleanup 반복 적용은 같은 empty/current-state 결과로 수렴한다. |
 | `STATE-007` | remote DIAL rejection은 request scope이며 모든 terminal path가 admission을 반환한다. |
 | `STATE-008` | OFFER pre-commit failure는 request scope다. 직접 반환하는 단일 admission 거절은 요청 session의 읽기 루프에서 bounded writer 대기를 적용한다. 전달 deadline·closed 및 그 밖의 writer uncertainty는 session scope다. |
+| `STATE-009` | SDK resource admission 실패는 operation/Pipe scope다. Listener queue 포화는 해당 OFFER를 즉시 거절하고, Pipe buffer 초과는 해당 Pipe만 RESET한다. 점유는 cancel·drop·terminal cleanup 뒤 기준값으로 수렴한다. |
 
 PUBLISH의 `RESOURCE_EXHAUSTED`, DIAL의 `RESOURCE_EXHAUSTED/NOT_OBSERVED`가 요청자에게 보내는 단일
 action이면 기존 writer queue의 공간을 기다립니다. 대기 상한은 현재 heartbeat의 다음 deadline이며 cancellation은

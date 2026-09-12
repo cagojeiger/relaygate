@@ -23,6 +23,7 @@ rust = [
   "session::tests::initial_unexpected_non_welcome_frame_returns_protocol_error",
   "session::tests::returned_listener_republishes_after_unexpected_runtime_frame",
   "session::tests::reconnect_backoff_uses_bounded_jitter_and_resets",
+  "listener::state::tests::repeated_republish_failures_share_one_bounded_retry_timer",
   "session::tests::pending_probe_requires_matching_pong",
 ]
 
@@ -33,6 +34,13 @@ rust = [
   "state::tests::publish_is_idempotent_but_unpublish_then_publish_creates_a_new_binding",
   "state::tests::offer_timeout_closes_the_unresponsive_relay_and_preserves_sibling_binding",
   "same_destination_selects_one_of_multiple_relays",
+  "resource::tests::live_pipe_slots_are_shared_by_incoming_and_outgoing_pipes",
+  "pipe::tests::terminal_pipe_releases_its_live_slot_while_the_handle_is_retained",
+  "resource_limits::listener_live_pipe_limit_rejects_only_the_excess_dial_and_recovers_after_cleanup",
+  "resource_limits::listener_pending_pipe_limit_recovers_after_application_accepts_the_queued_pipe",
+  "resource_limits::pipe_byte_limit_resets_only_the_overflowed_pipe_and_preserves_sibling",
+  "listener::runtime::frame::tests::full_listener_queue_rejects_offer_immediately_and_preserves_session_frames",
+  "resource_limits::local_dial_capacity_rejection_still_supplies_the_token_exactly_once",
 ]
 
 [[case]]
@@ -42,6 +50,7 @@ rust = [
   "bearer_token_is_bounded_and_redacted",
   "access_token::tests::access_token_is_bounded_and_redacted",
   "access_token::tests::dynamic_source_runs_for_each_supply",
+  "resource_limits::local_dial_capacity_rejection_still_supplies_the_token_exactly_once",
   "authorization::tests::authorization_failure_preserves_operation_correlation_and_observation",
   "authorization::tests::jwt_profile_type_accepts_standard_media_type_equivalents",
   "authorization::tests::missing_or_wrong_profile_type_fails_closed",
@@ -76,6 +85,16 @@ rust = [
   "session_frame_buffers_grow_beyond_their_initial_capacity",
   "pipe::tests::owned_halves_can_read_and_write_concurrently",
   "pipe::tests::async_shutdown_sends_one_fin_and_keeps_the_read_half_alive",
+  "pipe::tests::buffered_byte_capacity_is_returned_after_read_and_drop",
+  "pipe::tests::partial_read_keeps_the_current_frame_charged_to_the_pipe_limit",
+  "pipe::tests::empty_data_frame_releases_its_frame_capacity",
+  "pipe::tests::terminal_failure_releases_unread_buffer_capacity_immediately",
+  "pipe::tests::dropped_read_half_rejects_later_data_without_buffering",
+  "pipe::tests::terminal_pipe_releases_its_live_slot_while_the_handle_is_retained",
+  "resource::tests::byte_reservations_return_capacity_on_every_drop_path",
+  "resource::tests::relay_byte_budget_is_shared_and_released_across_pipes",
+  "resource::tests::resource_metrics_report_bounded_limits_usage_rejections_and_cleanup",
+  "resource_limits::pipe_byte_limit_resets_only_the_overflowed_pipe_and_preserves_sibling",
   "peer::transport::tests::capacity::saturated_stream_and_aggregate_buffers_are_released_on_transport_loss",
 ]
 
@@ -140,6 +159,8 @@ rust = [
   "peer::transport::tests::terminal::reordering::opened_terminal_reordering_converges_once",
   "routing::runtime::tests::stale_epoch::worker_reconnect_epoch_ignores_late_update_completion",
   "operation_denial_does_not_end_the_relay_session",
+  "resource_limits::pipe_byte_limit_resets_only_the_overflowed_pipe_and_preserves_sibling",
+  "listener::runtime::frame::tests::full_listener_queue_rejects_offer_immediately_and_preserves_session_frames",
 ]
 
 [[case]]
@@ -240,6 +261,10 @@ rust = [
   "state::observation_tests::snapshot_reports_configured_limits_without_allocating_capacity",
   "observability::contract_tests::reconnect_gauge_tracks_overlapping_episodes_and_all_exit_paths",
   "observability::contract_tests::sdk_operation_metrics_include_errors_and_dropped_polled_futures",
+  "resource::tests::byte_reservations_return_capacity_on_every_drop_path",
+  "resource::tests::live_pipe_slots_are_shared_by_incoming_and_outgoing_pipes",
+  "resource::tests::relay_byte_budget_is_shared_and_released_across_pipes",
+  "resource::tests::resource_metrics_report_bounded_limits_usage_rejections_and_cleanup",
   "latency::tests::latency_percentiles_use_nearest_rank_and_preserve_empty_results",
   "authorization::tests::verification_capacity_and_deadline_are_bounded",
   "rt_one_gateway_three_forms_a_closed_current_state_relay",

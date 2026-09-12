@@ -117,6 +117,8 @@ payload와 free-form error body는 redaction합니다. DATA RTT와 payload goodp
 | RT convergence | `relaygate_gateway_route_registrations_unsynced` | pending registration 수 |
 | peer state | `relaygate_gateway_peer_transports_connecting`, `relaygate_gateway_peer_transports_ready` | connecting·reusable transport 수 |
 | liveness failure | `relaygate_gateway_heartbeat_timeouts_total{transport}` | SDK/peer timeout 누계 |
+| SDK process 자원 | `relaygate_sdk_resource_used/limit{resource}` | `live_pipes|buffered_bytes` 현재 점유·설정 상한 |
+| SDK process 포화 | `relaygate_sdk_resource_rejections_total{resource}` | Listener/Relay/Pipe 단위 상한 거절 누계 |
 
 ### RED와 latency
 
@@ -224,3 +226,4 @@ lifecycle log가 담당합니다.
 | `OBS-011` | 고유 Pipe와 GW-local Pipe state를 구분하며 resource used/limit 집계 기준을 일치시킨다. |
 | `OBS-012` | SDK 계측은 error·polled future cancel·reconnect 미완료와 종료를 구분한다. |
 | `OBS-013` | 결과 분류와 gauge/rate 단위를 유지하고 실제 PromQL 기대값으로 검증한다. |
+| `OBS-014` | SDK live Pipe·buffered byte 점유는 cleanup 뒤 기준값으로 수렴하고 resource rejection은 bounded `resource` label로 구분한다. |

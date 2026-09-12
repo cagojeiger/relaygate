@@ -20,6 +20,7 @@ use crate::{
     Destination, Pipe, Result,
     observability::{ReconnectEpisode, close_reconnect_episode},
     pipe::PipeState,
+    resource::LivePipeReservation,
     session::{EstablishedSession, ReconnectBackoff, establish},
 };
 
@@ -135,6 +136,11 @@ struct Registration {
     binding_id: BindingId,
 }
 
+struct PendingDial {
+    response: oneshot::Sender<Result<Pipe>>,
+    resources: LivePipeReservation,
+}
+
 struct LivePipe {
     state: Arc<PipeState>,
     listener: Option<Weak<ListenerState>>,
@@ -156,7 +162,7 @@ struct RelaySessionState {
     token_supplies:
         FuturesUnordered<BoxFuture<'static, (u64, Result<relaygate_protocol::BearerToken>)>>,
     registrations: HashMap<Destination, Registration>,
-    pending_dials: HashMap<u64, oneshot::Sender<Result<Pipe>>>,
+    pending_dials: HashMap<u64, PendingDial>,
     pipes: HashMap<PipeId, LivePipe>,
 }
 

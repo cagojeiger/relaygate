@@ -65,6 +65,13 @@ pub(crate) fn token_source(
     destination: &Destination,
     action: AccessAction,
 ) -> Result<AccessTokenSource, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(access_token(destination, action)?.into())
+}
+
+pub(crate) fn access_token(
+    destination: &Destination,
+    action: AccessAction,
+) -> Result<AccessToken, Box<dyn std::error::Error + Send + Sync>> {
     let now = jsonwebtoken::get_current_timestamp();
     let action = match action {
         AccessAction::Publish => "publish",
@@ -88,5 +95,5 @@ pub(crate) fn token_source(
     header.typ = Some(TOKEN_TYPE.to_owned());
     header.kid = Some(KID.to_owned());
     let encoded = encode(&header, &claims, &EncodingKey::from_ec_der(PRIVATE_KEY_DER))?;
-    Ok(AccessToken::new(encoded)?.into())
+    Ok(AccessToken::new(encoded)?)
 }

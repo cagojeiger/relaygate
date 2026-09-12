@@ -1,9 +1,77 @@
 use std::time::Duration;
 
 use relaygate_protocol::DEFAULT_MAX_FRAME_LEN;
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 use crate::{Error, ErrorCode, GatewayTransportConfig, PeerObservation, Result};
+
+const MIB: usize = 1024 * 1024;
+
+/// Process-local resource bounds for one [`crate::Relay`].
+///
+/// These limits protect a cooperative SDK process. Gateway admission remains
+/// the authoritative cluster-side limit for untrusted clients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceLimits {
+    pub(crate) max_pending_pipes_per_listener: usize,
+    pub(crate) max_live_pipes_per_listener: usize,
+    pub(crate) max_live_pipes_per_relay: usize,
+    pub(crate) max_buffered_frames_per_pipe: usize,
+    pub(crate) max_buffered_bytes_per_pipe: usize,
+    pub(crate) max_buffered_bytes_per_relay: usize,
+}
+
+impl ResourceLimits {
+    #[must_use]
+    pub const fn with_max_pending_pipes_per_listener(mut self, maximum: usize) -> Self {
+        self.max_pending_pipes_per_listener = maximum;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_live_pipes_per_listener(mut self, maximum: usize) -> Self {
+        self.max_live_pipes_per_listener = maximum;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_live_pipes_per_relay(mut self, maximum: usize) -> Self {
+        self.max_live_pipes_per_relay = maximum;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_buffered_frames_per_pipe(mut self, maximum: usize) -> Self {
+        self.max_buffered_frames_per_pipe = maximum;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_buffered_bytes_per_pipe(mut self, maximum: usize) -> Self {
+        self.max_buffered_bytes_per_pipe = maximum;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_buffered_bytes_per_relay(mut self, maximum: usize) -> Self {
+        self.max_buffered_bytes_per_relay = maximum;
+        self
+    }
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_pending_pipes_per_listener: 64,
+            max_live_pipes_per_listener: 10_000,
+            max_live_pipes_per_relay: 20_000,
+            max_buffered_frames_per_pipe: 64,
+            max_buffered_bytes_per_pipe: MIB,
+            max_buffered_bytes_per_relay: 64 * MIB,
+        }
+    }
+}
 
 /// Runtime limits, TLS identity and reconnect policy for one Relay.
 #[derive(Clone)]
@@ -15,10 +83,8 @@ pub struct Config {
     pub(crate) heartbeat_response_timeout: Duration,
     pub(crate) reconnect_initial: Duration,
     pub(crate) reconnect_maximum: Duration,
-    pub(crate) offer_timeout: Duration,
     pub(crate) outbound_capacity: usize,
-    pub(crate) listener_queue_capacity: usize,
-    pub(crate) pipe_inbound_capacity: usize,
+    pub(crate) resource_limits: ResourceLimits,
     pub(crate) max_frame_len: usize,
 }
 
@@ -63,10 +129,8 @@ impl Config {
             heartbeat_response_timeout: Duration::from_secs(20),
             reconnect_initial: Duration::from_millis(100),
             reconnect_maximum: Duration::from_secs(5),
-            offer_timeout: Duration::from_millis(250),
             outbound_capacity: 256,
-            listener_queue_capacity: 64,
-            pipe_inbound_capacity: 64,
+            resource_limits: ResourceLimits::default(),
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
         }
     }
@@ -107,26 +171,14 @@ impl Config {
     }
 
     #[must_use]
-    pub const fn with_offer_timeout(mut self, value: Duration) -> Self {
-        self.offer_timeout = value;
-        self
-    }
-
-    #[must_use]
     pub const fn with_outbound_capacity(mut self, value: usize) -> Self {
         self.outbound_capacity = value;
         self
     }
 
     #[must_use]
-    pub const fn with_listener_queue_capacity(mut self, value: usize) -> Self {
-        self.listener_queue_capacity = value;
-        self
-    }
-
-    #[must_use]
-    pub const fn with_pipe_inbound_capacity(mut self, value: usize) -> Self {
-        self.pipe_inbound_capacity = value;
+    pub const fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
+        self.resource_limits = limits;
         self
     }
 
@@ -136,7 +188,6 @@ impl Config {
             || self.operation_timeout.is_zero()
             || self.heartbeat_idle_interval.is_zero()
             || self.heartbeat_response_timeout.is_zero()
-            || self.offer_timeout.is_zero()
             || self.reconnect_initial.is_zero()
             || self.reconnect_maximum < self.reconnect_initial
         {
@@ -156,19 +207,33 @@ impl Config {
             ),
             ("reconnect_initial", self.reconnect_initial),
             ("reconnect_maximum", self.reconnect_maximum),
-            ("offer_timeout", self.offer_timeout),
         ] {
             deadline_from_now(name, duration)?;
         }
-        if self.outbound_capacity == 0
-            || self.listener_queue_capacity == 0
-            || self.pipe_inbound_capacity == 0
-            || self.max_frame_len < 1024
+        let limits = self.resource_limits;
+        if self.outbound_capacity == 0 || self.max_frame_len < 1024 {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                PeerObservation::NotObserved,
+                "outbound capacity must be positive and max_frame_len must be at least 1024",
+            ));
+        }
+        if limits.max_pending_pipes_per_listener == 0
+            || limits.max_live_pipes_per_listener == 0
+            || limits.max_live_pipes_per_relay == 0
+            || limits.max_buffered_frames_per_pipe == 0
+            || limits.max_buffered_bytes_per_pipe == 0
+            || limits.max_buffered_bytes_per_relay == 0
+            || limits.max_live_pipes_per_listener > limits.max_live_pipes_per_relay
+            || limits.max_buffered_bytes_per_pipe > limits.max_buffered_bytes_per_relay
+            || limits.max_pending_pipes_per_listener > Semaphore::MAX_PERMITS
+            || limits.max_live_pipes_per_relay > Semaphore::MAX_PERMITS
+            || limits.max_buffered_frames_per_pipe > Semaphore::MAX_PERMITS
         {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
                 PeerObservation::NotObserved,
-                "queue capacities must be positive and max_frame_len must be at least 1024",
+                "SDK resource limits must be positive, ordered, and within runtime bounds",
             ));
         }
         Ok(())
@@ -193,10 +258,8 @@ impl std::fmt::Debug for Config {
             )
             .field("reconnect_initial", &self.reconnect_initial)
             .field("reconnect_maximum", &self.reconnect_maximum)
-            .field("offer_timeout", &self.offer_timeout)
             .field("outbound_capacity", &self.outbound_capacity)
-            .field("listener_queue_capacity", &self.listener_queue_capacity)
-            .field("pipe_inbound_capacity", &self.pipe_inbound_capacity)
+            .field("resource_limits", &self.resource_limits)
             .field("max_frame_len", &self.max_frame_len)
             .finish()
     }
@@ -210,4 +273,40 @@ fn deadline_from_now(name: &str, duration: Duration) -> Result<Instant> {
             format!("{name} is too large to form a monotonic deadline"),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_limits_are_positive_and_hierarchically_ordered() {
+        let valid = Config::new_insecure_for_tests("127.0.0.1:1");
+        assert!(valid.validate().is_ok());
+
+        let zero = valid
+            .clone()
+            .with_resource_limits(ResourceLimits::default().with_max_buffered_bytes_per_pipe(0));
+        assert!(zero.validate().is_err());
+
+        let inverted = valid.with_resource_limits(
+            ResourceLimits::default()
+                .with_max_live_pipes_per_listener(3)
+                .with_max_live_pipes_per_relay(2),
+        );
+        assert!(inverted.validate().is_err());
+
+        for limits in [
+            ResourceLimits::default()
+                .with_max_pending_pipes_per_listener(Semaphore::MAX_PERMITS + 1),
+            ResourceLimits::default().with_max_buffered_frames_per_pipe(Semaphore::MAX_PERMITS + 1),
+        ] {
+            assert!(
+                Config::new_insecure_for_tests("127.0.0.1:1")
+                    .with_resource_limits(limits)
+                    .validate()
+                    .is_err()
+            );
+        }
+    }
 }

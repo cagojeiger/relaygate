@@ -46,10 +46,11 @@ pub(super) async fn run_relay_session(
             break;
         }
         needs_reconcile = false;
-        if inner.desired_is_converged()
-            && let Some(episode) = reconnect_episode.take()
-        {
-            episode.recover();
+        if inner.desired_is_converged() {
+            inner.reset_republish_backoff();
+            if let Some(episode) = reconnect_episode.take() {
+                episode.recover();
+            }
         }
         let registration_deadline = state
             .pending
@@ -138,10 +139,11 @@ pub(super) async fn run_relay_session(
             command = commands.recv() => {
                 let Some(command) = command else { break; };
                 match command {
-                    RelayCommand::Dial { connection_id, destination, access_token, response } => {
-                        if state.pending_dials.insert(connection_id, response).is_some() {
-                            if let Some(response) = state.pending_dials.remove(&connection_id) {
-                                let _ = response.send(Err(Error::new(
+                    RelayCommand::Dial { connection_id, destination, access_token, response, resources } => {
+                        let pending = super::PendingDial { response, resources };
+                        if state.pending_dials.insert(connection_id, pending).is_some() {
+                            if let Some(pending) = state.pending_dials.remove(&connection_id) {
+                                let _ = pending.response.send(Err(Error::new(
                                     ErrorCode::AlreadyExists,
                                     PeerObservation::NotObserved,
                                     "ConnectionId is already in flight",
@@ -170,9 +172,9 @@ pub(super) async fn run_relay_session(
             cancelled = cancellations.recv() => {
                 let Some(pipe_id) = cancelled else { continue; };
                 let mut removed = false;
-                if let Some(response) = state.pending_dials.remove(&pipe_id.connection_id()) {
+                if let Some(pending) = state.pending_dials.remove(&pipe_id.connection_id()) {
                     removed = true;
-                    let _ = response.send(Err(Error::new(
+                    let _ = pending.response.send(Err(Error::new(
                         ErrorCode::Cancelled,
                         PeerObservation::MaybeObserved,
                         "committed DIAL was cancelled",
