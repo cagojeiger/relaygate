@@ -32,11 +32,14 @@ RouteTable은 memory-only current state를 유지합니다. 새 연결은 새 `d
 ## Rust SDK
 
 ```rust,no_run
-use relaygate_sdk::{AccessToken, AccessTokenSource, Config, Relay, Destination};
+use relaygate_sdk::{AccessToken, AccessTokenSource, Config, Destination, Relay, ResourceLimits};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let gateway_host = std::env::var("RELAYGATE_GATEWAY_HOST")?;
-let config = Config::new(format!("{gateway_host}:443"))?;
+let limits = ResourceLimits::default()
+    .with_max_live_pipes_per_listener(1_000)
+    .with_max_live_pipes_per_relay(2_000);
+let config = Config::new(format!("{gateway_host}:443"))?.with_resource_limits(limits);
 let relay = Relay::connect(config).await?;
 
 let destination: Destination = "inference/stt.seoul".parse()?;

@@ -24,8 +24,8 @@ pub(super) async fn cleanup_relay_session(
         registration_timed_out = timed_out_request.is_some(),
         "Relay session ended"
     );
-    for response in state.pending_dials.into_values() {
-        let _ = response.send(Err(Error::maybe_observed(
+    for pending in state.pending_dials.into_values() {
+        let _ = pending.response.send(Err(Error::maybe_observed(
             "RelaySession transport ended after DIAL commit",
         )));
     }

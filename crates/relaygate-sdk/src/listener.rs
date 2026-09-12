@@ -2,10 +2,10 @@ mod runtime;
 mod state;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex as StdMutex, Weak},
+    sync::{Arc, Mutex as StdMutex, Weak, atomic::AtomicU64},
 };
 
-use relaygate_protocol::{PipeId, SessionId};
+use relaygate_protocol::{BearerToken, PipeId, SessionId};
 use tokio::{
     sync::{Mutex, Notify, mpsc, oneshot, watch},
     time::{sleep_until, timeout, timeout_at},
@@ -14,7 +14,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     AccessAction, AccessTokenRequest, AccessTokenSource, Config, Destination, Error, ErrorCode,
-    PeerObservation, Pipe, Result, lifetime::RuntimeLifetime, session::establish,
+    PeerObservation, Pipe, Result,
+    lifetime::RuntimeLifetime,
+    resource::{LivePipeReservation, RelayResources},
+    session::{ReconnectBackoff, establish},
 };
 
 use self::{
@@ -59,6 +62,7 @@ pub(super) enum RelayCommand {
         destination: Destination,
         access_token: relaygate_protocol::BearerToken,
         response: oneshot::Sender<Result<Pipe>>,
+        resources: LivePipeReservation,
     },
 }
 
@@ -116,6 +120,12 @@ impl Relay {
         let cancel = CancellationToken::new();
         let lifetime = Arc::new(RuntimeLifetime::new(cancel.clone()));
         let inner = Arc::new(RelayInner {
+            resources: RelayResources::new(config.resource_limits),
+            republish_retry_epoch: Arc::new(AtomicU64::new(0)),
+            republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
+                config.reconnect_initial,
+                config.reconnect_maximum,
+            ))),
             config,
             desired: StdMutex::new(HashMap::new()),
             current,
@@ -138,7 +148,8 @@ impl Relay {
         access_token_source: AccessTokenSource,
     ) -> Result<Listener> {
         let deadline = self.inner.config.operation_deadline()?;
-        let (incoming_tx, incoming_rx) = mpsc::channel(self.inner.config.listener_queue_capacity);
+        let limits = self.inner.config.resource_limits;
+        let (incoming_tx, incoming_rx) = mpsc::channel(limits.max_pending_pipes_per_listener);
         let (status, _) = watch::channel(ListenerStatus::Registering);
         let state = Arc::new(ListenerState {
             destination: destination.clone(),
@@ -150,6 +161,10 @@ impl Relay {
             initial_deadline: deadline,
             lifecycle: StdMutex::new(ListenerLifecycle::Pending),
             registration_committed: StdMutex::new(false),
+            live_pipe_slots: self
+                .inner
+                .resources
+                .listener_slots(limits.max_live_pipes_per_listener),
         });
         {
             let mut desired = self.inner.desired.lock().map_err(|_| {
@@ -241,21 +256,30 @@ impl Relay {
     ) -> Result<Pipe> {
         let deadline = self.inner.config.operation_deadline()?;
         let mut current = self.inner.current.subscribe();
+        let mut supplied_access_token: Option<BearerToken> = None;
         loop {
             if self.inner.cancel.is_cancelled() {
                 return Err(Error::closed());
             }
             let session = current.borrow().clone();
             if let Some(session) = session {
-                let access_token = timeout_at(
-                    deadline,
-                    access_token_source.supply(AccessTokenRequest {
-                        action: AccessAction::Dial,
-                        destination: destination.clone(),
-                    }),
-                )
-                .await
-                .map_err(|_| Error::deadline(PeerObservation::NotObserved))??;
+                let access_token = match supplied_access_token.as_ref() {
+                    Some(access_token) => access_token.clone(),
+                    None => {
+                        let access_token = timeout_at(
+                            deadline,
+                            access_token_source.supply(AccessTokenRequest {
+                                action: AccessAction::Dial,
+                                destination: destination.clone(),
+                            }),
+                        )
+                        .await
+                        .map_err(|_| Error::deadline(PeerObservation::NotObserved))??;
+                        supplied_access_token = Some(access_token.clone());
+                        access_token
+                    }
+                };
+                let resources = self.inner.resources.try_reserve_outgoing()?;
                 let mut next_connection_id =
                     timeout_at(deadline, session.next_connection_id.lock())
                         .await
@@ -277,6 +301,7 @@ impl Relay {
                         destination: destination.clone(),
                         access_token: access_token.clone(),
                         response: response_tx,
+                        resources,
                     }),
                 )
                 .await;

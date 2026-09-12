@@ -1,10 +1,13 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex as StdMutex, Weak},
+    sync::{
+        Arc, Mutex as StdMutex, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use tokio::{
-    sync::{Notify, mpsc, watch},
+    sync::{Notify, Semaphore, mpsc, watch},
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
@@ -12,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use super::{ListenerStatus, RelaySession};
 use crate::{
     AccessTokenSource, Config, Destination, Error, ErrorCode, PeerObservation, Pipe,
-    lifetime::RuntimeLifetime,
+    lifetime::RuntimeLifetime, resource::RelayResources, session::ReconnectBackoff,
 };
 
 pub(super) struct RelayInner {
@@ -22,6 +25,9 @@ pub(super) struct RelayInner {
     pub(super) reconcile: Arc<Notify>,
     pub(super) cancel: CancellationToken,
     pub(super) lifetime: Weak<RuntimeLifetime>,
+    pub(super) resources: RelayResources,
+    pub(super) republish_retry_epoch: Arc<AtomicU64>,
+    pub(super) republish_backoff: Arc<StdMutex<ReconnectBackoff>>,
 }
 
 pub(super) struct ListenerState {
@@ -34,6 +40,7 @@ pub(super) struct ListenerState {
     pub(super) initial_deadline: Instant,
     pub(super) lifecycle: StdMutex<ListenerLifecycle>,
     pub(super) registration_committed: StdMutex<bool>,
+    pub(super) live_pipe_slots: Arc<Semaphore>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,16 +51,71 @@ pub(super) enum ListenerLifecycle {
 }
 
 impl RelayInner {
+    pub(super) fn republish_retry_is_ready(&self) -> bool {
+        self.republish_retry_epoch.load(Ordering::Acquire) & 1 == 0
+    }
+
     pub(super) fn schedule_reconcile(&self) {
-        let delay = self.config.reconnect_initial;
+        let Ok(ready_epoch) =
+            self.republish_retry_epoch
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                    (epoch & 1 == 0).then(|| epoch.wrapping_add(1))
+                })
+        else {
+            return;
+        };
+        let scheduled_epoch = ready_epoch.wrapping_add(1);
+        let delay = match self.republish_backoff.lock() {
+            Ok(mut backoff) => backoff.next_delay(),
+            Err(_) => {
+                let _ = self.republish_retry_epoch.compare_exchange(
+                    scheduled_epoch,
+                    scheduled_epoch.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                self.cancel.cancel();
+                return;
+            }
+        };
         let cancel = self.cancel.clone();
         let reconcile = Arc::clone(&self.reconcile);
+        let epoch = Arc::clone(&self.republish_retry_epoch);
         tokio::spawn(async move {
-            tokio::select! {
-                _ = cancel.cancelled() => {}
-                _ = tokio::time::sleep(delay) => reconcile.notify_one(),
+            let should_notify = tokio::select! {
+                _ = cancel.cancelled() => false,
+                _ = tokio::time::sleep(delay) => true,
+            };
+            let current = epoch.compare_exchange(
+                scheduled_epoch,
+                scheduled_epoch.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if should_notify && current.is_ok() {
+                reconcile.notify_one();
             }
         });
+    }
+
+    pub(super) fn reset_republish_backoff(&self) {
+        match self.republish_backoff.lock() {
+            Ok(mut backoff) => {
+                backoff.reset();
+                let _ = self.republish_retry_epoch.fetch_update(
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                    |epoch| {
+                        Some(if epoch & 1 == 1 {
+                            epoch.wrapping_add(1)
+                        } else {
+                            epoch
+                        })
+                    },
+                );
+            }
+            Err(_) => self.cancel.cancel(),
+        }
     }
 
     pub(super) fn desired_is_converged(&self) -> bool {
@@ -402,61 +464,4 @@ pub(super) fn is_current_desired(inner: &RelayInner, state: &Arc<ListenerState>)
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        sync::{Arc, Mutex as StdMutex},
-        time::Duration,
-    };
-
-    use tokio::{
-        sync::{mpsc, watch},
-        time::Instant,
-    };
-
-    use super::{ListenerLifecycle, ListenerState};
-    use crate::{AccessToken, AccessTokenSource, Destination, Error, ListenerStatus};
-
-    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-    #[test]
-    fn precommit_session_end_keeps_initial_listener_retryable_with_original_deadline() -> TestResult
-    {
-        let destination: Destination = "inference/stt.seoul".parse()?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let (status, _) = watch::channel(ListenerStatus::Registering);
-        let (incoming_tx, incoming_rx) = mpsc::channel(1);
-        let state = Arc::new(ListenerState {
-            destination,
-            access_token_source: AccessTokenSource::static_token(AccessToken::new("grant")?),
-            status,
-            last_error: StdMutex::new(None),
-            incoming_tx,
-            incoming_rx: tokio::sync::Mutex::new(incoming_rx),
-            initial_deadline: deadline,
-            lifecycle: StdMutex::new(ListenerLifecycle::Pending),
-            registration_committed: StdMutex::new(false),
-        });
-
-        state.handle_precommit_session_end(Error::unavailable(
-            "RelaySession ended before managed PUBLISH commit",
-        ));
-
-        assert_eq!(*state.status.borrow(), ListenerStatus::Registering);
-        assert_eq!(state.initial_deadline, deadline);
-        assert_eq!(
-            *state
-                .lifecycle
-                .lock()
-                .map_err(|_| "lifecycle lock poisoned")?,
-            ListenerLifecycle::Pending
-        );
-        assert!(state.last_error().is_none());
-
-        assert!(state.begin_registration_commit());
-        assert!(state.activate());
-        assert_eq!(*state.status.borrow(), ListenerStatus::Active);
-        assert!(state.promote_returned());
-        assert!(state.was_returned());
-        Ok(())
-    }
-}
+mod tests;

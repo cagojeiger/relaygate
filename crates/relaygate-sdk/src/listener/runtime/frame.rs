@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use relaygate_protocol::{ErrorCode as WireErrorCode, Frame, PipeId, SessionId};
-use tokio::{sync::mpsc, time::timeout};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{LivePipe, Registration, RelayFrameAction, RelaySessionState};
@@ -9,8 +9,12 @@ use crate::{
     Error, ErrorCode, PeerObservation,
     listener::{ListenerStatus, RelayInner, is_current_desired},
     pipe::{PipeState, to_wire_code},
+    resource::{ResourceLimitKind, resource_exhausted},
     session::{SessionOutbound, WireTransport, send_bounded},
 };
+
+#[cfg(test)]
+mod tests;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_relay_frame(
@@ -191,26 +195,60 @@ pub(super) async fn handle_relay_frame(
                 );
                 return RelayFrameAction::Stop;
             }
-            let permit = timeout(
-                inner.config.offer_timeout,
-                registration.state.incoming_tx.reserve(),
-            )
-            .await;
-            let Ok(Ok(permit)) = permit else {
-                return listener_frame_action(
-                    send_bounded(
-                        transport,
-                        Frame::OfferRejected {
-                            pipe_id,
-                            code: WireErrorCode::ResourceExhausted,
-                            message: "Listener incoming queue is full".to_owned(),
-                        },
-                        inner.config.operation_timeout,
-                        session_cancel,
-                    )
-                    .await,
-                );
+            let permit = match registration.state.incoming_tx.try_reserve() {
+                Ok(permit) => permit,
+                Err(error) => {
+                    let error = match error {
+                        mpsc::error::TrySendError::Full(()) => resource_exhausted(
+                            ResourceLimitKind::ListenerPendingPipes,
+                            PeerObservation::Observed,
+                        ),
+                        mpsc::error::TrySendError::Closed(()) => Error::new(
+                            ErrorCode::Unavailable,
+                            PeerObservation::Observed,
+                            "Listener incoming queue is closed",
+                        ),
+                    };
+                    return listener_frame_action(
+                        send_bounded(
+                            transport,
+                            Frame::OfferRejected {
+                                pipe_id,
+                                code: to_wire_code(error.code()),
+                                message: error.message().to_owned(),
+                            },
+                            inner.config.operation_timeout,
+                            session_cancel,
+                        )
+                        .await,
+                    );
+                }
             };
+            let live = match inner
+                .resources
+                .try_reserve_incoming(&registration.state.live_pipe_slots)
+            {
+                Ok(live) => live,
+                Err(error) => {
+                    return listener_frame_action(
+                        send_bounded(
+                            transport,
+                            Frame::OfferRejected {
+                                pipe_id,
+                                code: to_wire_code(error.code()),
+                                message: error.message().to_owned(),
+                            },
+                            inner.config.operation_timeout,
+                            session_cancel,
+                        )
+                        .await,
+                    );
+                }
+            };
+            let pipe_resources = inner.resources.pipe_resources(
+                live,
+                inner.config.resource_limits.max_buffered_bytes_per_pipe,
+            );
             let admitted = {
                 let desired = match inner.desired.lock() {
                     Ok(desired) => desired,
@@ -238,9 +276,10 @@ pub(super) async fn handle_relay_frame(
                     let (pipe, state) = PipeState::pair_with_lifetime(
                         pipe_id,
                         outbound.clone(),
-                        inner.config.pipe_inbound_capacity,
+                        inner.config.resource_limits.max_buffered_frames_per_pipe,
                         abandoned.clone(),
                         lifetime,
+                        pipe_resources,
                     );
                     session.pipes.insert(
                         pipe_id,
@@ -290,7 +329,7 @@ pub(super) async fn handle_relay_frame(
             }
         }
         Frame::Opened { pipe_id } if pipe_id.origin_session_id() == session_id => {
-            let Some(response) = session.pending_dials.remove(&pipe_id.connection_id()) else {
+            let Some(pending) = session.pending_dials.remove(&pipe_id.connection_id()) else {
                 return RelayFrameAction::Continue;
             };
             let Some(lifetime) = inner.lifetime.upgrade() else {
@@ -299,11 +338,15 @@ pub(super) async fn handle_relay_frame(
             let (pipe, state) = PipeState::pair_with_lifetime(
                 pipe_id,
                 outbound.clone(),
-                inner.config.pipe_inbound_capacity,
+                inner.config.resource_limits.max_buffered_frames_per_pipe,
                 abandoned.clone(),
                 lifetime,
+                inner.resources.pipe_resources(
+                    pending.resources,
+                    inner.config.resource_limits.max_buffered_bytes_per_pipe,
+                ),
             );
-            if response.send(Ok(pipe)).is_ok() {
+            if pending.response.send(Ok(pipe)).is_ok() {
                 session.pipes.insert(
                     pipe_id,
                     LivePipe {
@@ -329,8 +372,8 @@ pub(super) async fn handle_relay_frame(
             observation,
             message,
         } => {
-            if let Some(response) = session.pending_dials.remove(&connection_id) {
-                let _ = response.send(Err(Error::new(
+            if let Some(pending) = session.pending_dials.remove(&connection_id) {
+                let _ = pending.response.send(Err(Error::new(
                     ErrorCode::from_wire(code),
                     PeerObservation::from_wire(observation),
                     message,
@@ -400,9 +443,9 @@ pub(super) async fn handle_relay_frame(
                     return RelayFrameAction::Stop;
                 }
             } else if pipe_id.origin_session_id() == session_id
-                && let Some(response) = session.pending_dials.remove(&pipe_id.connection_id())
+                && let Some(pending) = session.pending_dials.remove(&pipe_id.connection_id())
             {
-                let _ = response.send(Err(Error::new(
+                let _ = pending.response.send(Err(Error::new(
                     ErrorCode::from_wire(code),
                     PeerObservation::Observed,
                     message,

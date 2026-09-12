@@ -248,6 +248,11 @@ impl ReconnectBackoff {
     pub(crate) fn reset(&mut self) {
         self.current = self.initial;
     }
+
+    #[cfg(test)]
+    pub(crate) const fn current_delay(&self) -> Duration {
+        self.current
+    }
 }
 
 fn duration_from_nanos(nanos: u128) -> Duration {

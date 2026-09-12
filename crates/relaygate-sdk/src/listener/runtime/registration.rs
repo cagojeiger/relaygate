@@ -68,13 +68,13 @@ pub(super) async fn reconcile_registrations(
     }
 
     for state in desired.values() {
+        let status = *state.status.borrow();
         if !is_current_desired(inner, state) {
             continue;
         }
-        if matches!(
-            *state.status.borrow(),
-            ListenerStatus::Blocked | ListenerStatus::Closed
-        ) || session.registrations.contains_key(&state.destination)
+        if matches!(status, ListenerStatus::Blocked | ListenerStatus::Closed)
+            || (status == ListenerStatus::Suspended && !inner.republish_retry_is_ready())
+            || session.registrations.contains_key(&state.destination)
             || session
                 .pending_by_destination
                 .contains_key(&state.destination)

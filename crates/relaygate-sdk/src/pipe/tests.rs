@@ -7,7 +7,139 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
 use super::PipeState;
-use crate::{Error, ErrorCode, PeerObservation, session::session_outbound_channel};
+use crate::{
+    Error, ErrorCode, PeerObservation, config::ResourceLimits, resource::RelayResources,
+    session::session_outbound_channel,
+};
+
+#[tokio::test]
+async fn buffered_byte_capacity_is_returned_after_read_and_drop()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _receiver) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 1);
+    let (mut pipe, state) =
+        PipeState::pair_with_resource_limits(pipe_id, outbound, 2, abandoned, 4, 6);
+
+    state.push_data(Bytes::from_static(b"data"))?;
+    assert_eq!(state.buffered_bytes(), (4, 4));
+    let error = state
+        .push_data(Bytes::from_static(b"x"))
+        .err()
+        .ok_or("Pipe byte budget accepted excess DATA")?;
+    assert_eq!(error.code(), ErrorCode::ResourceExhausted);
+    assert_eq!(state.buffered_bytes(), (4, 4));
+
+    let mut received = [0_u8; 4];
+    pipe.read_exact(&mut received).await?;
+    assert_eq!(&received, b"data");
+    assert_eq!(state.buffered_bytes(), (0, 0));
+
+    state.push_data(Bytes::from_static(b"more"))?;
+    assert_eq!(state.buffered_bytes(), (4, 4));
+    drop(pipe);
+    assert_eq!(state.buffered_bytes(), (0, 0));
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_read_keeps_the_current_frame_charged_to_the_pipe_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _receiver) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 27);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+
+    state.push_data(Bytes::from_static(b"ab"))?;
+    let mut first = [0_u8; 1];
+    pipe.read_exact(&mut first).await?;
+    assert_eq!(&first, b"a");
+
+    let error = state
+        .push_data(Bytes::from_static(b"c"))
+        .err()
+        .ok_or("Pipe frame budget ignored the partially read current frame")?;
+    assert_eq!(error.code(), ErrorCode::ResourceExhausted);
+
+    pipe.read_exact(&mut first).await?;
+    assert_eq!(&first, b"b");
+    state.push_data(Bytes::from_static(b"c"))?;
+    pipe.read_exact(&mut first).await?;
+    assert_eq!(&first, b"c");
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_data_frame_releases_its_frame_capacity() -> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _receiver) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 28);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+
+    state.push_data(Bytes::new())?;
+    let mut byte = [0_u8; 1];
+    state.push_data(Bytes::from_static(b"x"))?;
+    pipe.read_exact(&mut byte).await?;
+    assert_eq!(&byte, b"x");
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_failure_releases_unread_buffer_capacity_immediately()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _receiver) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 29);
+    let (_pipe, state) =
+        PipeState::pair_with_resource_limits(pipe_id, outbound, 2, abandoned, 4, 4);
+
+    state.push_data(Bytes::from_static(b"data"))?;
+    assert_eq!(state.buffered_bytes(), (4, 4));
+    assert!(state.fail(Error::unavailable("session failed")));
+    assert_eq!(state.buffered_bytes(), (0, 0));
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropped_read_half_rejects_later_data_without_buffering()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _receiver) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 30);
+    let (pipe, state) = PipeState::pair_with_resource_limits(pipe_id, outbound, 1, abandoned, 4, 4);
+    let (reader, _writer) = pipe.into_split();
+
+    drop(reader);
+    let error = state
+        .push_data(Bytes::from_static(b"data"))
+        .err()
+        .ok_or("dropped read half accepted later DATA")?;
+    assert_eq!(error.code(), ErrorCode::ResourceExhausted);
+    assert_eq!(state.buffered_bytes(), (0, 0));
+    Ok(())
+}
+
+#[test]
+fn terminal_pipe_releases_its_live_slot_while_the_handle_is_retained()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = ResourceLimits {
+        max_live_pipes_per_listener: 1,
+        max_live_pipes_per_relay: 1,
+        ..ResourceLimits::default()
+    };
+    let resources = RelayResources::new(limits);
+    let pipe_resources = resources.pipe_resources(resources.try_reserve_outgoing()?, usize::MAX);
+    let (outbound, _receiver) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 31);
+    let (_retained_pipe, state) =
+        PipeState::pair_inner(pipe_id, outbound, 1, abandoned, None, pipe_resources);
+
+    assert!(resources.try_reserve_outgoing().is_err());
+    assert!(state.fail(Error::unavailable("session failed")));
+    assert!(resources.try_reserve_outgoing().is_ok());
+    Ok(())
+}
 
 #[tokio::test]
 async fn dropped_pipe_uses_the_current_pipe_terminal_lane() -> Result<(), Box<dyn std::error::Error>>
@@ -248,7 +380,11 @@ async fn fin_racing_after_empty_poll_does_not_discard_accepted_data()
     let pipe_id = PipeId::new(SessionId::new(), 25);
     let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
     let state_for_race = state.clone();
-    pipe.reader.after_inbound_pending = Some(Box::new(move || {
+    pipe.reader
+        .buffer
+        .lock()
+        .map_err(|_| "Pipe read buffer lock poisoned")?
+        .after_inbound_pending = Some(Box::new(move || {
         assert!(
             state_for_race
                 .push_data(Bytes::from_static(b"accepted-before-fin"))
@@ -273,7 +409,11 @@ async fn remote_fin_final_drain_does_not_treat_cooperative_pending_as_eof()
     let pipe_id = PipeId::new(SessionId::new(), 26);
     let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
     let state_for_race = state.clone();
-    pipe.reader.after_inbound_pending = Some(Box::new(move || {
+    pipe.reader
+        .buffer
+        .lock()
+        .map_err(|_| "Pipe read buffer lock poisoned")?
+        .after_inbound_pending = Some(Box::new(move || {
         assert!(
             state_for_race
                 .push_data(Bytes::from_static(b"accepted-before-fin"))

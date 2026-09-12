@@ -33,6 +33,7 @@ mod lifetime;
 mod listener;
 mod observability;
 mod pipe;
+mod resource;
 mod session;
 mod transport;
 
@@ -40,7 +41,7 @@ pub use access_token::{
     AccessAction, AccessToken, AccessTokenError, AccessTokenRequest, AccessTokenSource,
     AccessTokenSourceError,
 };
-pub use config::Config;
+pub use config::{Config, ResourceLimits};
 pub use error::{Error, ErrorCode, PeerObservation, Result};
 pub use listener::{Listener, ListenerStatus, Relay};
 pub use pipe::{Pipe, PipeReadHalf, PipeWriteHalf};

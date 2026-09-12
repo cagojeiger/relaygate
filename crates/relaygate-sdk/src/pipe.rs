@@ -1,15 +1,18 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
 use bytes::Bytes;
 use futures_util::{future::poll_fn, task::AtomicWaker};
 use relaygate_protocol::{ErrorCode as WireErrorCode, PipeId};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
 use crate::{
-    Error, ErrorCode, PeerObservation, Result, lifetime::RuntimeLifetime, session::SessionOutbound,
+    Error, ErrorCode, PeerObservation, Result,
+    lifetime::RuntimeLifetime,
+    resource::{BufferedBytes, PipeResources, ResourceLimitKind, resource_exhausted},
+    session::SessionOutbound,
 };
 
 mod io;
@@ -27,13 +30,16 @@ enum Terminal {
 
 pub(crate) struct PipeState {
     id: PipeId,
-    inbound: mpsc::Sender<Bytes>,
+    inbound: mpsc::Sender<BufferedChunk>,
+    read_buffer: Arc<Mutex<PipeReadBuffer>>,
     remote_fin: AtomicBool,
     local_fin: AtomicBool,
     terminal: watch::Sender<Option<Terminal>>,
     read_waker: AtomicWaker,
     write_waker: AtomicWaker,
     abandoned: mpsc::UnboundedSender<PipeId>,
+    buffered_frames: Arc<Semaphore>,
+    resources: PipeResources,
 }
 
 struct PipeOwner {
@@ -46,11 +52,23 @@ struct PipeWriter {
 }
 
 struct PipeReader {
-    inbound: mpsc::Receiver<Bytes>,
+    buffer: Arc<Mutex<PipeReadBuffer>>,
+}
+
+struct PipeReadBuffer {
+    inbound: mpsc::Receiver<BufferedChunk>,
     current: Bytes,
+    current_bytes: Option<BufferedBytes>,
+    current_frame: Option<OwnedSemaphorePermit>,
     read_eof: bool,
     #[cfg(test)]
     after_inbound_pending: Option<Box<dyn FnOnce() + Send>>,
+}
+
+struct BufferedChunk {
+    payload: Bytes,
+    bytes: BufferedBytes,
+    frame: OwnedSemaphorePermit,
 }
 
 /// One ordered, opaque, bidirectional byte stream.
@@ -111,7 +129,36 @@ impl PipeState {
         inbound_capacity: usize,
         abandoned: mpsc::UnboundedSender<PipeId>,
     ) -> (Pipe, Arc<Self>) {
-        Self::pair_inner(id, outbound, inbound_capacity, abandoned, None)
+        Self::pair_inner(
+            id,
+            outbound,
+            inbound_capacity,
+            abandoned,
+            None,
+            PipeResources::for_tests(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pair_with_resource_limits(
+        id: PipeId,
+        outbound: SessionOutbound,
+        inbound_capacity: usize,
+        abandoned: mpsc::UnboundedSender<PipeId>,
+        max_buffered_bytes_per_pipe: usize,
+        max_buffered_bytes_per_relay: usize,
+    ) -> (Pipe, Arc<Self>) {
+        Self::pair_inner(
+            id,
+            outbound,
+            inbound_capacity,
+            abandoned,
+            None,
+            PipeResources::with_test_limits(
+                max_buffered_bytes_per_pipe,
+                max_buffered_bytes_per_relay,
+            ),
+        )
     }
 
     pub(crate) fn pair_with_lifetime(
@@ -120,8 +167,16 @@ impl PipeState {
         inbound_capacity: usize,
         abandoned: mpsc::UnboundedSender<PipeId>,
         lifetime: Arc<RuntimeLifetime>,
+        resources: PipeResources,
     ) -> (Pipe, Arc<Self>) {
-        Self::pair_inner(id, outbound, inbound_capacity, abandoned, Some(lifetime))
+        Self::pair_inner(
+            id,
+            outbound,
+            inbound_capacity,
+            abandoned,
+            Some(lifetime),
+            resources,
+        )
     }
 
     fn pair_inner(
@@ -130,18 +185,31 @@ impl PipeState {
         inbound_capacity: usize,
         abandoned: mpsc::UnboundedSender<PipeId>,
         lifetime: Option<Arc<RuntimeLifetime>>,
+        resources: PipeResources,
     ) -> (Pipe, Arc<Self>) {
         let (inbound_tx, inbound_rx) = mpsc::channel(inbound_capacity);
+        let read_buffer = Arc::new(Mutex::new(PipeReadBuffer {
+            inbound: inbound_rx,
+            current: Bytes::new(),
+            current_bytes: None,
+            current_frame: None,
+            read_eof: false,
+            #[cfg(test)]
+            after_inbound_pending: None,
+        }));
         let (terminal, _) = watch::channel(None);
         let state = Arc::new(Self {
             id,
             inbound: inbound_tx,
+            read_buffer: Arc::clone(&read_buffer),
             remote_fin: AtomicBool::new(false),
             local_fin: AtomicBool::new(false),
             terminal,
             read_waker: AtomicWaker::new(),
             write_waker: AtomicWaker::new(),
             abandoned,
+            buffered_frames: Arc::new(Semaphore::new(inbound_capacity)),
+            resources,
         });
         let owner = Arc::new(PipeOwner {
             state: Arc::clone(&state),
@@ -150,11 +218,7 @@ impl PipeState {
         let pipe = Pipe {
             owner,
             reader: PipeReader {
-                inbound: inbound_rx,
-                current: Bytes::new(),
-                read_eof: false,
-                #[cfg(test)]
-                after_inbound_pending: None,
+                buffer: read_buffer,
             },
             writer: PipeWriter { outbound },
         };
@@ -169,13 +233,30 @@ impl PipeState {
                 "DATA arrived after the remote direction closed",
             ));
         }
-        self.inbound.try_send(payload).map_err(|error| {
-            Error::new(
-                ErrorCode::ResourceExhausted,
-                PeerObservation::Observed,
-                format!("Pipe inbound buffer is full or closed: {error}"),
-            )
-        })
+        if payload.is_empty() {
+            return Ok(());
+        }
+        let frame = Arc::clone(&self.buffered_frames)
+            .try_acquire_owned()
+            .map_err(|_| {
+                resource_exhausted(
+                    ResourceLimitKind::PipeBufferedFrames,
+                    PeerObservation::Observed,
+                )
+            })?;
+        let bytes = self.resources.try_reserve_buffered(payload.len())?;
+        self.inbound
+            .try_send(BufferedChunk {
+                payload,
+                bytes,
+                frame,
+            })
+            .map_err(|_| {
+                resource_exhausted(
+                    ResourceLimitKind::PipeBufferedFrames,
+                    PeerObservation::Observed,
+                )
+            })
     }
 
     pub(crate) fn remote_fin(&self) {
@@ -199,7 +280,13 @@ impl PipeState {
             || (self.local_fin.load(Ordering::Acquire) && self.remote_fin.load(Ordering::Acquire))
     }
 
+    #[cfg(test)]
+    pub(crate) fn buffered_bytes(&self) -> (usize, usize) {
+        self.resources.buffered_bytes()
+    }
+
     fn try_set_terminal(&self, terminal: Terminal) -> bool {
+        let failed = matches!(terminal, Terminal::Failed(_));
         let terminal_event = match &terminal {
             Terminal::Closed => None,
             Terminal::Failed(error) => Some((error.code(), error.observation())),
@@ -212,6 +299,10 @@ impl PipeState {
             true
         });
         if changed {
+            self.resources.release_live();
+            if failed {
+                self.discard_inbound();
+            }
             self.read_waker.wake();
             self.write_waker.wake();
             if let Some((error_code, observation)) = terminal_event {
@@ -239,6 +330,14 @@ impl PipeState {
         changed
     }
 
+    fn discard_inbound(&self) {
+        let mut buffer = self
+            .read_buffer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        buffer.discard();
+    }
+
     fn write_error(&self) -> Option<Error> {
         match self.terminal.borrow().clone() {
             Some(Terminal::Failed(error)) => Some(error),
@@ -261,6 +360,25 @@ impl PipeState {
             Some(Terminal::Failed(error)) => Some(error),
             Some(Terminal::Closed) | None => None,
         }
+    }
+}
+
+impl PipeReadBuffer {
+    fn discard(&mut self) {
+        self.inbound.close();
+        self.current = Bytes::new();
+        self.current_bytes = None;
+        self.current_frame = None;
+        while self.inbound.try_recv().is_ok() {}
+    }
+}
+
+impl Drop for PipeReader {
+    fn drop(&mut self) {
+        self.buffer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .discard();
     }
 }
 

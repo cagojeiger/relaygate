@@ -28,31 +28,41 @@ impl PipeReader {
         if destination.is_empty() {
             return Poll::Ready(Ok(0));
         }
+        let mut buffer = self
+            .buffer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
 
         loop {
-            if self.current.has_remaining() {
-                let count = destination.len().min(self.current.remaining());
-                self.current.copy_to_slice(&mut destination[..count]);
+            if buffer.current.has_remaining() {
+                let count = destination.len().min(buffer.current.remaining());
+                buffer.current.copy_to_slice(&mut destination[..count]);
+                if !buffer.current.has_remaining() {
+                    buffer.current_bytes = None;
+                    buffer.current_frame = None;
+                }
                 return Poll::Ready(Ok(count));
             }
-            if self.read_eof {
+            if buffer.read_eof {
                 return Poll::Ready(Ok(0));
             }
 
-            match Pin::new(&mut self.inbound).poll_recv(context) {
-                Poll::Ready(Some(payload)) => {
-                    self.current = payload;
+            match Pin::new(&mut buffer.inbound).poll_recv(context) {
+                Poll::Ready(Some(chunk)) => {
+                    buffer.current = chunk.payload;
+                    buffer.current_bytes = Some(chunk.bytes);
+                    buffer.current_frame = Some(chunk.frame);
                     continue;
                 }
                 Poll::Ready(None) => {
-                    self.read_eof = true;
+                    buffer.read_eof = true;
                     return Poll::Ready(state.terminal_failure().map_or(Ok(0), Err));
                 }
                 Poll::Pending => {}
             }
 
             #[cfg(test)]
-            if let Some(after_inbound_pending) = self.after_inbound_pending.take() {
+            if let Some(after_inbound_pending) = buffer.after_inbound_pending.take() {
                 after_inbound_pending();
             }
 
@@ -62,22 +72,22 @@ impl PipeReader {
                 return Poll::Ready(Err(error.clone()));
             }
             if state.remote_fin.load(Ordering::Acquire) {
-                // DATA may have raced the first empty poll. FIN forbids later
-                // DATA, so this is the final queue drain before EOF.
-                match self.inbound.try_recv() {
-                    Ok(payload) => {
-                        self.current = payload;
+                match buffer.inbound.try_recv() {
+                    Ok(chunk) => {
+                        buffer.current = chunk.payload;
+                        buffer.current_bytes = Some(chunk.bytes);
+                        buffer.current_frame = Some(chunk.frame);
                         continue;
                     }
                     Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
-                        self.read_eof = true;
+                        buffer.read_eof = true;
                         return Poll::Ready(Ok(0));
                     }
                 }
             }
             match terminal {
                 Some(Terminal::Closed) => {
-                    self.read_eof = true;
+                    buffer.read_eof = true;
                     return Poll::Ready(Ok(0));
                 }
                 Some(Terminal::Failed(_)) | None => {}
