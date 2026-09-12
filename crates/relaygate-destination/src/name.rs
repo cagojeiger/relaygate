@@ -18,7 +18,7 @@ pub const MAX_DESTINATION_NAME_BYTES: usize = 253;
 pub struct Namespace(Box<str>);
 
 impl Namespace {
-    /// Validates and constructs a namespace.
+    /// Validates one lowercase ASCII label; dots are rejected.
     pub fn new(value: &str) -> Result<Self, DestinationError> {
         if value.contains('.') {
             return Err(DestinationError::InvalidNamespace);
@@ -28,7 +28,7 @@ impl Namespace {
     }
 
     #[must_use]
-    /// Returns the validated namespace text.
+    /// Borrows the canonical validated text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -70,7 +70,7 @@ impl fmt::Display for Namespace {
 pub struct DestinationName(Box<str>);
 
 impl DestinationName {
-    /// Validates and constructs a destination name.
+    /// Validates the total length and every dot-separated label.
     pub fn new(value: &str) -> Result<Self, DestinationError> {
         if value.len() > MAX_DESTINATION_NAME_BYTES {
             return Err(DestinationError::DestinationNameLength);
@@ -82,7 +82,7 @@ impl DestinationName {
     }
 
     #[must_use]
-    /// Returns the validated dot-separated destination name.
+    /// Borrows the canonical validated text.
     pub fn as_str(&self) -> &str {
         &self.0
     }

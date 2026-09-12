@@ -29,15 +29,15 @@ use self::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ListenerStatus {
-    /// The Listener is publishing or republishing its binding.
+    /// No current binding exists while initial publication or republish runs.
     Registering,
-    /// The Listener has a current Gateway binding and can receive Pipes.
+    /// A current Gateway binding can receive new Pipes.
     Active,
-    /// The returned Listener is waiting for a transient republish recovery.
+    /// A transient republish failure is waiting for a later Relay recovery.
     Suspended,
     /// Republish failed permanently; recreate the Listener with new inputs.
     Blocked,
-    /// The Listener is terminal.
+    /// The handle is terminal and will yield no more Pipes.
     Closed,
 }
 
@@ -49,32 +49,16 @@ pub enum RelayStatus {
     Active,
     /// No current session is installed and managed reconnect is running.
     Reconnecting,
-    /// The Relay runtime is terminal.
+    /// The runtime is terminal and will not reconnect.
     Closed,
 }
 
-/// Subscription to the latest Relay status.
-///
-/// This is a coalescing subscription: slow consumers observe the latest status
-/// after each change, not every intermediate transition. Calling [`current`]
-/// consumes the current version, so a later [`changed`] call waits for a newer
-/// status.
-///
-/// [`current`]: Self::current
-/// [`changed`]: Self::changed
+/// Coalescing view of Relay status; intermediate transitions may be skipped.
 pub struct RelayStatusSubscription {
     status: watch::Receiver<RelayStatus>,
 }
 
-/// Subscription to the latest Listener status.
-///
-/// This is a coalescing subscription: slow consumers observe the latest status
-/// after each change, not every intermediate transition. Calling [`current`]
-/// consumes the current version, so a later [`changed`] call waits for a newer
-/// status.
-///
-/// [`current`]: Self::current
-/// [`changed`]: Self::changed
+/// Coalescing view of Listener status; intermediate transitions may be skipped.
 pub struct ListenerStatusSubscription {
     status: watch::Receiver<ListenerStatus>,
 }
@@ -446,10 +430,7 @@ impl Relay {
 
     /// Waits until a current Relay session is active.
     ///
-    /// Returns an error with [`ErrorCode::Cancelled`] when the Relay has
-    /// already closed.
-    ///
-    /// [`ErrorCode::Cancelled`]: crate::ErrorCode::Cancelled
+    /// Returns [`ErrorCode::Cancelled`] when the Relay has already closed.
     pub async fn wait_ready(&self) -> Result<()> {
         let mut status = self.inner.status.subscribe();
         let mut current = self.inner.current.subscribe();
@@ -572,15 +553,16 @@ impl Listener {
 }
 
 impl RelayStatusSubscription {
-    /// Returns the latest status and marks it as observed.
+    /// Returns the latest status and marks its version as observed.
     #[must_use]
     pub fn current(&mut self) -> RelayStatus {
         *self.status.borrow_and_update()
     }
 
-    /// Waits for a newer status and returns the latest value.
+    /// Waits for a newer version and returns the latest value.
     ///
-    /// Returns `None` when the Relay runtime has dropped the sender.
+    /// Intermediate transitions may be skipped. `Closed` is still returned as
+    /// a status; `None` means the Relay runtime itself has been dropped.
     pub async fn changed(&mut self) -> Option<RelayStatus> {
         self.status.changed().await.ok()?;
         Some(*self.status.borrow_and_update())
@@ -588,15 +570,16 @@ impl RelayStatusSubscription {
 }
 
 impl ListenerStatusSubscription {
-    /// Returns the latest status and marks it as observed.
+    /// Returns the latest status and marks its version as observed.
     #[must_use]
     pub fn current(&mut self) -> ListenerStatus {
         *self.status.borrow_and_update()
     }
 
-    /// Waits for a newer status and returns the latest value.
+    /// Waits for a newer version and returns the latest value.
     ///
-    /// Returns `None` when the Listener state has dropped the sender.
+    /// Intermediate transitions may be skipped. `Closed` is still returned as
+    /// a status; `None` means the Listener state itself has been dropped.
     pub async fn changed(&mut self) -> Option<ListenerStatus> {
         self.status.changed().await.ok()?;
         Some(*self.status.borrow_and_update())

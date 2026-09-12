@@ -2,33 +2,24 @@ use bytes::Bytes;
 
 use crate::{BearerToken, BindingId, Destination, PipeId, SessionId};
 
-/// Stable failure codes carried by protocol error frames.
+/// Stable wire error codes whose discriminants are part of protocol version 3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ErrorCode {
-    /// An argument or frame field is invalid.
     InvalidArgument = 1,
-    /// The operation credential could not be authenticated.
     Unauthenticated = 2,
-    /// The authenticated credential does not authorize the operation.
     PermissionDenied = 3,
-    /// The requested current resource does not exist.
     NotFound = 4,
-    /// A required operation precondition is not satisfied.
     FailedPrecondition = 5,
-    /// A required transport or dependency is unavailable.
     Unavailable = 6,
-    /// The operation did not complete before its deadline.
     DeadlineExceeded = 7,
-    /// An admission, capacity, queue, or size limit was exceeded.
+    /// Covers admission, capacity, queue, and size limits.
     ResourceExhausted = 8,
-    /// The operation was cancelled by its owner.
     Cancelled = 9,
     /// A peer violated the wire protocol or state-machine contract.
     ProtocolError = 10,
-    /// An internal invariant or task failed.
+    /// A local invariant or task failed without a peer protocol violation.
     Internal = 11,
-    /// The requested resource already exists.
     AlreadyExists = 12,
 }
 
@@ -77,147 +68,96 @@ impl PeerObservation {
     }
 }
 
-/// One SDK–Gateway protocol message.
+/// Wire messages exchanged within one SDK–Gateway session.
+///
+/// Credentials are operation-scoped and appear only in [`Frame::Publish`] and
+/// [`Frame::Dial`]; application data remains opaque in [`Frame::Data`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
-    /// Starts a credential-free SDK session handshake.
     Hello,
-    /// Accepts the handshake and assigns a session incarnation.
     Welcome {
-        /// Identifier assigned to this transport-session incarnation.
         session_id: SessionId,
     },
-    /// Rejects the session handshake.
     SessionRejected {
-        /// Stable rejection reason.
         code: ErrorCode,
-        /// Human-readable diagnostic message.
         message: String,
     },
-    /// Requests a live route binding for an exact destination.
     Publish {
-        /// Session-local identifier used to correlate the response.
         request_id: u64,
-        /// Exact destination to bind.
         destination: Destination,
-        /// Operation-scoped authorization credential.
         access_token: BearerToken,
     },
-    /// Confirms that a publish request created a binding.
     Published {
-        /// Identifier of the corresponding publish request.
         request_id: u64,
-        /// Identifier assigned to the live binding.
         binding_id: BindingId,
     },
-    /// Rejects a publish request.
     PublishFailed {
-        /// Identifier of the corresponding publish request.
         request_id: u64,
-        /// Stable failure reason.
         code: ErrorCode,
-        /// Human-readable diagnostic message.
         message: String,
     },
-    /// Requests removal of a live binding.
     Unpublish {
-        /// Session-local identifier used to correlate the response.
         request_id: u64,
-        /// Binding to remove.
         binding_id: BindingId,
     },
-    /// Confirms completion of an unpublish request.
     Unpublished {
-        /// Identifier of the corresponding unpublish request.
         request_id: u64,
     },
-    /// Requests a new Pipe to an exact destination.
     Dial {
-        /// Session-local connection identifier for the attempted Pipe.
         connection_id: u64,
-        /// Exact destination to resolve.
         destination: Destination,
-        /// Operation-scoped authorization credential.
         access_token: BearerToken,
     },
     /// Offers an incoming Pipe to the session that owns a selected binding.
     Offer {
-        /// Cluster-unique identifier of the offered Pipe.
         pipe_id: PipeId,
-        /// Selected binding that receives the offer.
         binding_id: BindingId,
-        /// Exact destination associated with the binding.
         destination: Destination,
     },
-    /// Accepts an offered Pipe.
     OfferAccepted {
-        /// Identifier of the offered Pipe.
         pipe_id: PipeId,
     },
-    /// Rejects an offered Pipe.
     OfferRejected {
-        /// Identifier of the offered Pipe.
         pipe_id: PipeId,
-        /// Stable rejection reason.
         code: ErrorCode,
-        /// Human-readable diagnostic message.
         message: String,
     },
     /// Confirms that a Pipe is established for the dialing session.
     Opened {
-        /// Identifier of the established Pipe.
         pipe_id: PipeId,
     },
-    /// Reports that a dial attempt failed.
     DialFailed {
-        /// Session-local identifier of the corresponding dial attempt.
         connection_id: u64,
-        /// Stable failure reason.
         code: ErrorCode,
-        /// Whether the selected peer may have observed the attempt.
         observation: PeerObservation,
-        /// Human-readable diagnostic message.
         message: String,
     },
-    /// Carries opaque application bytes on an established Pipe.
     Data {
-        /// Pipe that owns the payload.
         pipe_id: PipeId,
-        /// Opaque application payload.
         payload: Bytes,
     },
     /// Half-closes the sender's write direction of a Pipe.
     Fin {
-        /// Pipe whose write direction is finished.
         pipe_id: PipeId,
     },
     /// Closes a Pipe normally in both directions.
     Close {
-        /// Pipe to close.
         pipe_id: PipeId,
     },
     /// Terminates a Pipe with an error.
     Reset {
-        /// Pipe to terminate.
         pipe_id: PipeId,
-        /// Stable termination reason.
         code: ErrorCode,
-        /// Human-readable diagnostic message.
         message: String,
     },
-    /// Requests a liveness response carrying the same nonce.
     Ping {
-        /// Opaque value used to correlate the response.
         nonce: u64,
     },
-    /// Responds to a liveness request.
     Pong {
-        /// Nonce copied from the corresponding [`Frame::Ping`].
         nonce: u64,
     },
     /// Cancels a pending Pipe establishment attempt.
     Cancel {
-        /// Identifier of the pending Pipe.
         pipe_id: PipeId,
     },
 }

@@ -24,9 +24,9 @@ pub const OPERATION_TOKEN_TYPE: &str = "relaygate-operation+jwt";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
-    /// Publish a listener at the authorized destination.
+    /// Authorizes `PUBLISH` for the permission's destination scope.
     Publish,
-    /// Dial a listener at the authorized destination.
+    /// Authorizes `DIAL` for the permission's destination scope.
     Dial,
 }
 

@@ -63,9 +63,9 @@ pub enum AccessAction {
 /// Context passed to an application-owned dynamic token source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessTokenRequest {
-    /// Operation being authorized.
+    /// Admission operation the returned token must permit.
     pub action: AccessAction,
-    /// Destination being published or dialed.
+    /// Exact destination the returned token must cover.
     pub destination: Destination,
 }
 

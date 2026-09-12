@@ -22,9 +22,9 @@ impl BearerToken {
         Ok(Self(value))
     }
 
-    /// Exposes the credential text for authorization or wire encoding.
+    /// Returns the raw credential text for authorization or wire encoding.
     ///
-    /// Callers should avoid logging or otherwise persisting the returned value.
+    /// Do not log or persist the returned value.
     #[must_use]
     pub fn expose_secret(&self) -> &str {
         &self.0

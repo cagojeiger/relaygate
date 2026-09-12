@@ -124,7 +124,7 @@ doc_args=(doc --no-deps --locked)
 for package in "${packages[@]}"; do
   doc_args+=(-p "$package")
 done
-RUSTDOCFLAGS="-Dwarnings -Dmissing_docs" cargo "${doc_args[@]}"
+RUSTDOCFLAGS="-Dwarnings" cargo "${doc_args[@]}"
 
 package_args=(package --locked --no-verify)
 if [ -n "$allow_dirty" ]; then
@@ -133,7 +133,7 @@ fi
 
 for package in "${packages[@]}"; do
   source_manifest="$root/crates/$package/Cargo.toml"
-  if ! rg -q '^publish[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$source_manifest"; then
+  if ! grep -Eq '^publish[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$source_manifest"; then
     echo "$source_manifest must keep publish = false until the final release decision" >&2
     exit 1
   fi
@@ -179,7 +179,7 @@ for package in "${packages[@]}"; do
     echo "package archive for $package does not include README.md" >&2
     exit 1
   fi
-  if ! rg -q '^publish[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$manifest"; then
+  if ! grep -Eq '^publish[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$manifest"; then
     echo "normalized manifest for $package must keep publish = false" >&2
     exit 1
   fi

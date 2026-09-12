@@ -13,19 +13,19 @@ pub struct Destination {
 }
 
 impl Destination {
-    /// Constructs a destination from an already validated namespace and name.
+    /// Combines validated components without revalidating them.
     #[must_use]
     pub const fn new(namespace: Namespace, name: DestinationName) -> Self {
         Self { namespace, name }
     }
 
-    /// Returns the destination's namespace.
+    /// Borrows the exact-match routing namespace.
     #[must_use]
     pub const fn namespace(&self) -> &Namespace {
         &self.namespace
     }
 
-    /// Returns the name within the destination's namespace.
+    /// Borrows the namespace-local exact-match name.
     #[must_use]
     pub const fn name(&self) -> &DestinationName {
         &self.name

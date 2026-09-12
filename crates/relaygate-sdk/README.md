@@ -74,6 +74,9 @@ assert_eq!(relay_status.current(), RelayStatus::Active);
 let relay_observer = tokio::spawn(async move {
     while let Some(status) = relay_status.changed().await {
         eprintln!("Relay status: {status:?}");
+        if status == RelayStatus::Closed {
+            break;
+        }
     }
 });
 
@@ -85,6 +88,9 @@ assert_eq!(listener_status.current(), ListenerStatus::Active);
 let listener_observer = tokio::spawn(async move {
     while let Some(status) = listener_status.changed().await {
         eprintln!("Listener status: {status:?}");
+        if status == ListenerStatus::Closed {
+            break;
+        }
     }
 });
 
@@ -129,6 +135,9 @@ assert_eq!(statuses.current(), RelayStatus::Active);
 let observer = tokio::spawn(async move {
     while let Some(status) = statuses.changed().await {
         eprintln!("Relay status: {status:?}");
+        if status == RelayStatus::Closed {
+            break;
+        }
     }
 });
 

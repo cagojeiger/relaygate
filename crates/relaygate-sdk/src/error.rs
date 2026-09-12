@@ -84,7 +84,7 @@ impl Error {
         self.observation
     }
 
-    /// Returns a human-readable diagnostic message.
+    /// Returns an unstructured diagnostic; branch on [`Self::code`] instead.
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
