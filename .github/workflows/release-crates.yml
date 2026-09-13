@@ -1,0 +1,145 @@
+name: Release crates
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Workspace crate version to publish
+        required: true
+        type: string
+      confirmation:
+        description: Type publish-<version>
+        required: true
+        type: string
+
+concurrency:
+  group: release-crates-io
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUST_TOOLCHAIN: 1.96.1
+
+jobs:
+  publish:
+    name: Publish crates.io packages
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate release request
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          current_sha=$(git rev-parse "origin/${DEFAULT_BRANCH}")
+          if [ "$GITHUB_SHA" != "$current_sha" ]; then
+            echo "::error::run this workflow from the current ${DEFAULT_BRANCH} branch"
+            exit 1
+          fi
+
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          if [ "$REQUESTED_VERSION" != "$version" ]; then
+            echo "::error::requested version ${REQUESTED_VERSION} does not match workspace version ${version}"
+            exit 1
+          fi
+          if [ "$CONFIRMATION" != "publish-${version}" ]; then
+            echo "::error::confirmation must be publish-${version}"
+            exit 1
+          fi
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+
+      - name: Verify package archives
+        run: .github/scripts/check-crate-packages.sh
+
+      - name: Confirm versions are unpublished
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          packages=(
+            relaygate-destination
+            relaygate-transport
+            relaygate-protocol
+            relaygate-token-issuer
+            relaygate-sdk
+          )
+          for package in "${packages[@]}"; do
+            status=$(curl --silent --show-error --output /dev/null \
+              --write-out '%{http_code}' \
+              --header "User-Agent: relaygate-release (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY})" \
+              "https://crates.io/api/v1/crates/${package}/${VERSION}")
+            case "$status" in
+              404) ;;
+              200)
+                echo "::error::${package} ${VERSION} is already published"
+                exit 1
+                ;;
+              *)
+                echo "::error::crates.io lookup for ${package} ${VERSION} returned HTTP ${status}"
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          wait_for_index() {
+            local package="$1"
+            local index_path
+            index_path=$(python3 - "$package" <<'PY'
+          import sys
+
+          name = sys.argv[1]
+          if len(name) == 1:
+              print(f"1/{name}")
+          elif len(name) == 2:
+              print(f"2/{name}")
+          elif len(name) == 3:
+              print(f"3/{name[0]}/{name}")
+          else:
+              print(f"{name[:2]}/{name[2:4]}/{name}")
+          PY
+            )
+
+            for attempt in $(seq 1 60); do
+              if curl --fail --silent --show-error \
+                --header "User-Agent: relaygate-release (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY})" \
+                "https://index.crates.io/${index_path}" \
+                | python3 -c \
+                    'import json,sys; version=sys.argv[1]; raise SystemExit(0 if any(json.loads(line)["vers"] == version for line in sys.stdin if line.strip()) else 1)' \
+                    "$VERSION"; then
+                return
+              fi
+              echo "waiting for ${package} ${VERSION} to reach the crates.io index (${attempt}/60)"
+              sleep 5
+            done
+
+            echo "::error::${package} ${VERSION} did not reach the crates.io index"
+            return 1
+          }
+
+          publish() {
+            local package="$1"
+            cargo publish --locked -p "$package"
+            wait_for_index "$package"
+          }
+
+          publish relaygate-destination
+          publish relaygate-transport
+          publish relaygate-protocol
+          publish relaygate-token-issuer
+          publish relaygate-sdk
