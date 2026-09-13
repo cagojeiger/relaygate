@@ -1,3 +1,5 @@
+use std::fmt;
+
 use bytes::Bytes;
 
 use crate::{BearerToken, BindingId, Destination, PipeId, SessionId};
@@ -72,7 +74,7 @@ impl PeerObservation {
 ///
 /// Credentials are operation-scoped and appear only in [`Frame::Publish`] and
 /// [`Frame::Dial`]; application data remains opaque in [`Frame::Data`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Frame {
     Hello,
     Welcome {
@@ -160,4 +162,146 @@ pub enum Frame {
     Cancel {
         pipe_id: PipeId,
     },
+}
+
+impl fmt::Debug for Frame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hello => formatter.write_str("Hello"),
+            Self::Welcome { session_id } => formatter
+                .debug_struct("Welcome")
+                .field("session_id", session_id)
+                .finish(),
+            Self::SessionRejected { code, message } => formatter
+                .debug_struct("SessionRejected")
+                .field("code", code)
+                .field("message", message)
+                .finish(),
+            Self::Publish {
+                request_id,
+                destination,
+                access_token,
+            } => formatter
+                .debug_struct("Publish")
+                .field("request_id", request_id)
+                .field("destination", destination)
+                .field("access_token", access_token)
+                .finish(),
+            Self::Published {
+                request_id,
+                binding_id,
+            } => formatter
+                .debug_struct("Published")
+                .field("request_id", request_id)
+                .field("binding_id", binding_id)
+                .finish(),
+            Self::PublishFailed {
+                request_id,
+                code,
+                message,
+            } => formatter
+                .debug_struct("PublishFailed")
+                .field("request_id", request_id)
+                .field("code", code)
+                .field("message", message)
+                .finish(),
+            Self::Unpublish {
+                request_id,
+                binding_id,
+            } => formatter
+                .debug_struct("Unpublish")
+                .field("request_id", request_id)
+                .field("binding_id", binding_id)
+                .finish(),
+            Self::Unpublished { request_id } => formatter
+                .debug_struct("Unpublished")
+                .field("request_id", request_id)
+                .finish(),
+            Self::Dial {
+                connection_id,
+                destination,
+                access_token,
+            } => formatter
+                .debug_struct("Dial")
+                .field("connection_id", connection_id)
+                .field("destination", destination)
+                .field("access_token", access_token)
+                .finish(),
+            Self::Offer {
+                pipe_id,
+                binding_id,
+                destination,
+            } => formatter
+                .debug_struct("Offer")
+                .field("pipe_id", pipe_id)
+                .field("binding_id", binding_id)
+                .field("destination", destination)
+                .finish(),
+            Self::OfferAccepted { pipe_id } => formatter
+                .debug_struct("OfferAccepted")
+                .field("pipe_id", pipe_id)
+                .finish(),
+            Self::OfferRejected {
+                pipe_id,
+                code,
+                message,
+            } => formatter
+                .debug_struct("OfferRejected")
+                .field("pipe_id", pipe_id)
+                .field("code", code)
+                .field("message", message)
+                .finish(),
+            Self::Opened { pipe_id } => formatter
+                .debug_struct("Opened")
+                .field("pipe_id", pipe_id)
+                .finish(),
+            Self::DialFailed {
+                connection_id,
+                code,
+                observation,
+                message,
+            } => formatter
+                .debug_struct("DialFailed")
+                .field("connection_id", connection_id)
+                .field("code", code)
+                .field("observation", observation)
+                .field("message", message)
+                .finish(),
+            Self::Data { pipe_id, payload } => formatter
+                .debug_struct("Data")
+                .field("pipe_id", pipe_id)
+                .field("payload_len", &payload.len())
+                .finish(),
+            Self::Fin { pipe_id } => formatter
+                .debug_struct("Fin")
+                .field("pipe_id", pipe_id)
+                .finish(),
+            Self::Close { pipe_id } => formatter
+                .debug_struct("Close")
+                .field("pipe_id", pipe_id)
+                .finish(),
+            Self::Reset {
+                pipe_id,
+                code,
+                message,
+            } => formatter
+                .debug_struct("Reset")
+                .field("pipe_id", pipe_id)
+                .field("code", code)
+                .field("message", message)
+                .finish(),
+            Self::Ping { nonce } => formatter
+                .debug_struct("Ping")
+                .field("nonce", nonce)
+                .finish(),
+            Self::Pong { nonce } => formatter
+                .debug_struct("Pong")
+                .field("nonce", nonce)
+                .finish(),
+            Self::Cancel { pipe_id } => formatter
+                .debug_struct("Cancel")
+                .field("pipe_id", pipe_id)
+                .finish(),
+        }
+    }
 }

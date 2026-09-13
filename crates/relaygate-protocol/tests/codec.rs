@@ -149,3 +149,15 @@ fn bearer_token_is_bounded_and_redacted() -> Result<(), ProtocolError> {
     ));
     Ok(())
 }
+
+#[test]
+fn data_debug_reports_only_payload_length() {
+    let frame = Frame::Data {
+        pipe_id: PipeId::new(SessionId::new(), 1),
+        payload: Bytes::from_static(b"payload-must-not-be-logged"),
+    };
+
+    let rendered = format!("{frame:?}");
+    assert!(rendered.contains("payload_len: 26"));
+    assert!(!rendered.contains("payload-must-not-be-logged"));
+}
