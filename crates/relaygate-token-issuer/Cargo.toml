@@ -7,7 +7,6 @@ license-file.workspace = true
 repository.workspace = true
 description = "Server-side RelayGate operation token construction and ES256 signing"
 readme = "README.md"
-publish = false
 
 [dependencies]
 jsonwebtoken.workspace = true

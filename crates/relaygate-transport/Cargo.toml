@@ -7,7 +7,6 @@ license-file.workspace = true
 repository.workspace = true
 description = "TLS and mTLS transport helpers for RelayGate"
 readme = "README.md"
-publish = false
 
 [dependencies]
 rustls.workspace = true

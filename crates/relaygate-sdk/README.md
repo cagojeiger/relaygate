@@ -10,10 +10,6 @@ watch channels are intentionally not exposed as the public SDK contract.
 Use this crate when an application needs to publish a destination with a
 `Listener` or dial a destination to obtain a byte-stream `Pipe`.
 
-This crate is currently guarded with `publish = false`; the metadata and
-package checks exist so crate archives can be validated before a future public
-release decision.
-
 ## Transport and operation tokens
 
 A bare `host:port` or `tls://host:port` uses public CA trust and verifies the
