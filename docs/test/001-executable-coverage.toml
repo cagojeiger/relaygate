@@ -151,6 +151,9 @@ rust = [
   "peer::tests::peer_frame_codec_round_trips_every_frame_kind",
   "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily",
   "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily",
+  "gateway::effects::tests::transport_loss_coalescer_batches_only_reset_and_dial_failed",
+  "gateway::effects::tests::capacity_one_batches_peer_loss_without_removing_listener",
+  "gateway::session::tests::writer_flushes_singles_and_terminal_batches_in_wire_order",
 ]
 
 [[case]]
@@ -161,6 +164,7 @@ rust = [
   "state::tests::foreign_session_cannot_control_an_existing_pipe",
   "state::tests::remote_dial_admission_releases_all_slots_when_caller_session_ends",
   "gateway::tests::full_non_offer_queue_still_removes_the_failed_session_state",
+  "gateway::effects::tests::full_terminal_batch_removes_session_without_partial_enqueue",
   "peer::transport::tests::terminal::reordering::opened_terminal_reordering_converges_once",
   "routing::runtime::tests::stale_epoch::worker_reconnect_epoch_ignores_late_update_completion",
   "operation_denial_does_not_end_the_relay_session",

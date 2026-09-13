@@ -434,13 +434,9 @@ pub(crate) async fn expect_shard_isolation(
 }
 
 pub(crate) async fn connect(address: &str) -> anyhow::Result<Relay> {
-    Relay::connect(
-        sdk_config(address)?
-            .with_connect_timeout(Duration::from_secs(2))
-            .with_operation_timeout(Duration::from_secs(3)),
-    )
-    .await
-    .with_context(|| format!("failed to connect Relay SDK to {address}"))
+    Relay::connect(sdk_config(address)?)
+        .await
+        .with_context(|| format!("failed to connect Relay SDK to {address}"))
 }
 
 pub(crate) async fn dial_when_available(

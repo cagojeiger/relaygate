@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -78,39 +78,20 @@ impl Inner {
         let mut pending = VecDeque::from(actions);
         let mut cleaned = HashSet::new();
         while let Some(action) = pending.pop_front() {
-            match action {
-                GatewayAction::SendSdkFrame(delivery) => {
-                    let Some(failure) = delivery.deliver() else {
-                        continue;
-                    };
-                    match failure {
-                        DeliveryFailure::OfferQueueFull { acceptor, pipe_id } => {
-                            pending.extend(self.transition(|state| {
-                                state.offer_delivery_rejected(acceptor, pipe_id)
-                            }));
-                        }
-                        DeliveryFailure::SessionUnavailable(failed_session)
-                            if cleaned.insert(failed_session) =>
-                        {
-                            let cleanup_actions = {
-                                let mut state = self.lock_state();
-                                let actions = state.remove_session(failed_session);
-                                self.commit_registration_actions(&actions);
-                                actions
-                            };
-                            pending.extend(cleanup_actions);
-                        }
-                        DeliveryFailure::SessionUnavailable(_) => {}
-                    }
-                }
-                GatewayAction::PublishRegistration { .. } => {}
+            let failure = match action {
+                GatewayAction::SendSdkFrame(delivery) => delivery.deliver(),
+                GatewayAction::SendSdkTerminalBatch(delivery) => delivery.deliver(),
+                GatewayAction::PublishRegistration { .. } => continue,
                 GatewayAction::ResolveRoute {
                     open_identity,
                     destination,
-                } => pending.extend(self.spawn_control_effect(ControlAction::ResolveRoute {
-                    open_identity,
-                    destination,
-                })),
+                } => {
+                    pending.extend(self.spawn_control_effect(ControlAction::ResolveRoute {
+                        open_identity,
+                        destination,
+                    }));
+                    continue;
+                }
                 GatewayAction::OpenPeer {
                     open_identity,
                     gateway_id,
@@ -118,20 +99,49 @@ impl Inner {
                     destination,
                     relay_session_id,
                     binding_id,
-                } => pending.extend(self.spawn_control_effect(ControlAction::OpenPeer {
-                    open_identity,
-                    gateway_id,
-                    gateway_locator,
-                    destination,
-                    relay_session_id,
-                    binding_id,
-                })),
-                GatewayAction::CancelPeerOpen { open_identity } => pending.extend(
-                    self.spawn_control_effect(ControlAction::CancelPeerOpen { open_identity }),
-                ),
+                } => {
+                    pending.extend(self.spawn_control_effect(ControlAction::OpenPeer {
+                        open_identity,
+                        gateway_id,
+                        gateway_locator,
+                        destination,
+                        relay_session_id,
+                        binding_id,
+                    }));
+                    continue;
+                }
+                GatewayAction::CancelPeerOpen { open_identity } => {
+                    pending.extend(
+                        self.spawn_control_effect(ControlAction::CancelPeerOpen { open_identity }),
+                    );
+                    continue;
+                }
                 GatewayAction::SendPeerFrame(delivery) => {
                     pending.extend(self.send_peer_delivery(delivery).await);
+                    continue;
                 }
+            };
+            let Some(failure) = failure else {
+                continue;
+            };
+            match failure {
+                DeliveryFailure::OfferQueueFull { acceptor, pipe_id } => {
+                    pending.extend(
+                        self.transition(|state| state.offer_delivery_rejected(acceptor, pipe_id)),
+                    );
+                }
+                DeliveryFailure::SessionUnavailable(failed_session)
+                    if cleaned.insert(failed_session) =>
+                {
+                    let cleanup_actions = {
+                        let mut state = self.lock_state();
+                        let actions = state.remove_session(failed_session);
+                        self.commit_registration_actions(&actions);
+                        actions
+                    };
+                    pending.extend(cleanup_actions);
+                }
+                DeliveryFailure::SessionUnavailable(_) => {}
             }
         }
     }
@@ -404,16 +414,19 @@ impl Inner {
             PeerEvent::Fin { key } => state.peer_fin(key),
             PeerEvent::Close { key } => state.peer_close(key),
             PeerEvent::Reset { key, code, message } => state.peer_reset(key, code, message),
-            PeerEvent::TransportLost { streams, .. } => streams
-                .into_iter()
-                .flat_map(|stream| {
-                    state.peer_transport_lost_stream(
-                        stream.key,
-                        stream.open_identity,
-                        stream.progress.failure_observation(),
-                    )
-                })
-                .collect(),
+            PeerEvent::TransportLost { streams, .. } => {
+                let actions = streams
+                    .into_iter()
+                    .flat_map(|stream| {
+                        state.peer_transport_lost_stream(
+                            stream.key,
+                            stream.open_identity,
+                            stream.progress.failure_observation(),
+                        )
+                    })
+                    .collect();
+                batch_transport_lost_terminal_frames(actions)
+            }
         })
     }
 
@@ -443,5 +456,249 @@ impl Inner {
         if let Some(control) = &self.control_effects {
             control.close_and_wait().await;
         }
+    }
+}
+
+fn batch_transport_lost_terminal_frames(actions: Vec<GatewayAction>) -> Vec<GatewayAction> {
+    let mut indexes = HashMap::new();
+    let mut batched = Vec::new();
+    for action in actions {
+        let GatewayAction::SendSdkFrame(delivery) = action else {
+            batched.push(action);
+            continue;
+        };
+        let target = delivery.target;
+        if let Some(index) = indexes.get(&delivery.target).copied() {
+            let GatewayAction::SendSdkTerminalBatch(batch) = &mut batched[index] else {
+                batched.push(GatewayAction::SendSdkFrame(delivery));
+                continue;
+            };
+            if let Err(delivery) = batch.push(delivery) {
+                indexes.remove(&target);
+                batched.push(GatewayAction::SendSdkFrame(delivery));
+            }
+            continue;
+        }
+        let batch = match delivery.into_terminal_batch() {
+            Ok(batch) => batch,
+            Err(delivery) => {
+                batched.push(GatewayAction::SendSdkFrame(delivery));
+                continue;
+            }
+        };
+        indexes.insert(target, batched.len());
+        batched.push(GatewayAction::SendSdkTerminalBatch(batch));
+    }
+    batched
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Gateway, GatewayConfig,
+        peer::{
+            LostPeerStream, OpenIdentity, PeerOpenProgress, PeerStreamKey, PeerTransportId,
+            StreamId,
+        },
+        state::SdkWriterItem,
+        test_support::{authorization_config, unique_destination},
+    };
+    use relaygate_protocol::{BearerToken, Frame, PipeId};
+    use std::error::Error;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+    struct PeerLossFixture {
+        gateway: Gateway,
+        receiver: mpsc::Receiver<SdkWriterItem>,
+        cancellation: CancellationToken,
+        event: PeerEvent,
+    }
+
+    fn peer_loss_fixture(queue_capacity: usize, fill_queue: bool) -> TestResult<PeerLossFixture> {
+        let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
+        let destination = unique_destination();
+        let (sender, receiver) = mpsc::channel(queue_capacity);
+        if fill_queue {
+            sender.try_send(SdkWriterItem::Single(Frame::Ping { nonce: 99 }))?;
+        }
+        let cancellation = CancellationToken::new();
+        let peer_gateway_id = GatewayId::new();
+        let peer_transport_id = PeerTransportId::new();
+        let mut streams = Vec::new();
+        {
+            let mut state = gateway.inner.lock_state();
+            let listener = state
+                .add_session(sender, cancellation.clone())
+                .ok_or("missing listener session")?;
+            let published = state.handle_at(
+                listener,
+                Frame::Publish {
+                    request_id: 1,
+                    destination: destination.clone(),
+                    access_token: BearerToken::new("effects-test-token")?,
+                },
+                std::time::Instant::now(),
+            )?;
+            let binding_id = published
+                .iter()
+                .find_map(|action| match action {
+                    GatewayAction::SendSdkFrame(delivery) => match &delivery.frame {
+                        Frame::Published { binding_id, .. } => Some(*binding_id),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .ok_or("missing binding")?;
+            let origin_session = SessionId::new();
+            for connection_id in 1..=3 {
+                let key = PeerStreamKey::new(
+                    peer_gateway_id,
+                    peer_transport_id,
+                    StreamId::from_raw((connection_id - 1) * 2),
+                );
+                let open_identity =
+                    OpenIdentity::new(peer_gateway_id, origin_session, connection_id);
+                let offered = state.receive_peer_open(
+                    key,
+                    open_identity,
+                    destination.clone(),
+                    listener,
+                    binding_id,
+                );
+                let pipe_id = offered
+                    .iter()
+                    .find_map(|action| match action {
+                        GatewayAction::SendSdkFrame(delivery) => match &delivery.frame {
+                            Frame::Offer { pipe_id, .. } => Some(*pipe_id),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .ok_or("missing offer")?;
+                state.handle(listener, Frame::OfferAccepted { pipe_id })?;
+                streams.push(LostPeerStream {
+                    key,
+                    open_identity,
+                    progress: PeerOpenProgress::Opened,
+                });
+            }
+        }
+        Ok(PeerLossFixture {
+            gateway,
+            receiver,
+            cancellation,
+            event: PeerEvent::TransportLost {
+                peer_gateway_id,
+                peer_transport_id,
+                streams,
+            },
+        })
+    }
+
+    #[test]
+    fn transport_loss_coalescer_batches_only_reset_and_dial_failed() -> TestResult {
+        let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
+        let delivery = {
+            let (sender, _receiver) = mpsc::channel(4);
+            let mut state = gateway.inner.lock_state();
+            let session = state
+                .add_session(sender, CancellationToken::new())
+                .ok_or("missing session")?;
+            let mut actions = state.handle(session, Frame::Ping { nonce: 7 })?;
+            let Some(GatewayAction::SendSdkFrame(delivery)) = actions.pop() else {
+                return Err("missing PONG delivery".into());
+            };
+            delivery
+        };
+        let mut reset = delivery.clone();
+        reset.frame = Frame::Reset {
+            pipe_id: PipeId::new(SessionId::new(), 1),
+            code: ErrorCode::Unavailable,
+            message: "PeerTransport was lost".to_owned(),
+        };
+        let mut dial_failed = delivery.clone();
+        dial_failed.frame = Frame::DialFailed {
+            connection_id: 2,
+            code: ErrorCode::Unavailable,
+            observation: PeerObservation::MaybeObserved,
+            message: "PeerTransport was lost during remote OPEN".to_owned(),
+        };
+
+        let actions = batch_transport_lost_terminal_frames(vec![
+            GatewayAction::SendSdkFrame(reset),
+            GatewayAction::SendSdkFrame(dial_failed),
+            GatewayAction::SendSdkFrame(delivery),
+        ]);
+        assert_eq!(actions.len(), 2);
+        let GatewayAction::SendSdkTerminalBatch(batch) = &actions[0] else {
+            return Err("terminal frames were not batched".into());
+        };
+        assert!(matches!(
+            batch.frames(),
+            [Frame::Reset { .. }, Frame::DialFailed { .. }]
+        ));
+        assert!(matches!(
+            &actions[1],
+            GatewayAction::SendSdkFrame(delivery)
+                if matches!(delivery.frame, Frame::Pong { nonce: 7 })
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capacity_one_batches_peer_loss_without_removing_listener() -> TestResult {
+        let mut fixture = peer_loss_fixture(1, false)?;
+        let actions = fixture.gateway.inner.handle_peer_event(fixture.event);
+        assert_eq!(actions.len(), 1);
+        let GatewayAction::SendSdkTerminalBatch(batch) = &actions[0] else {
+            return Err("peer loss did not produce one terminal batch".into());
+        };
+        assert_eq!(batch.frames().len(), 3);
+        assert!(batch.frames().iter().all(|frame| matches!(
+            frame,
+            Frame::Reset {
+                code: ErrorCode::Unavailable,
+                message,
+                ..
+            } if message == "PeerTransport was lost"
+        )));
+
+        fixture.gateway.inner.execute_all(actions).await;
+
+        let SdkWriterItem::TerminalBatch(frames) = fixture.receiver.try_recv()? else {
+            return Err("writer did not receive the terminal batch".into());
+        };
+        assert_eq!(frames.len(), 3);
+        assert!(!fixture.cancellation.is_cancelled());
+        let snapshot = fixture.gateway.snapshot();
+        assert_eq!(snapshot.sessions, 1);
+        assert_eq!(snapshot.bindings, 1);
+        assert_eq!(snapshot.pending_offers, 0);
+        assert_eq!(snapshot.live_pipes, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn full_terminal_batch_removes_session_without_partial_enqueue() -> TestResult {
+        let mut fixture = peer_loss_fixture(1, true)?;
+        let actions = fixture.gateway.inner.handle_peer_event(fixture.event);
+        fixture.gateway.inner.execute_all(actions).await;
+
+        assert!(fixture.cancellation.is_cancelled());
+        let snapshot = fixture.gateway.snapshot();
+        assert_eq!(snapshot.sessions, 0);
+        assert_eq!(snapshot.bindings, 0);
+        assert_eq!(snapshot.pending_offers, 0);
+        assert_eq!(snapshot.live_pipes, 0);
+        assert!(matches!(
+            fixture.receiver.try_recv()?,
+            SdkWriterItem::Single(Frame::Ping { nonce: 99 })
+        ));
+        assert!(fixture.receiver.try_recv().is_err());
+        Ok(())
     }
 }

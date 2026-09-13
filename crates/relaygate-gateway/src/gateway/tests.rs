@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::state::GatewayAction;
+use crate::state::{GatewayAction, SdkWriterItem};
 use relaygate_protocol::{BearerToken, ErrorCode, Frame, PeerObservation};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -40,7 +40,7 @@ async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
     let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
     let destination = unique_destination();
     let (listener_sender, _listener_receiver) = mpsc::channel(1);
-    listener_sender.try_send(Frame::Ping { nonce: 1 })?;
+    listener_sender.try_send(SdkWriterItem::Single(Frame::Ping { nonce: 1 }))?;
     let (dialer_sender, mut dialer_receiver) = mpsc::channel(8);
     let (listener, dialer, offer) = {
         let mut state = gateway.inner.lock_state();
@@ -75,12 +75,12 @@ async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
 
     assert!(matches!(
         dialer_receiver.try_recv()?,
-        Frame::DialFailed {
+        SdkWriterItem::Single(Frame::DialFailed {
             connection_id: 1,
             code: ErrorCode::ResourceExhausted,
             observation: PeerObservation::NotObserved,
             ..
-        }
+        })
     ));
     let after_rejection = gateway.inner.lock_state().handle_at(
         dialer,
@@ -94,7 +94,8 @@ async fn full_offer_queue_rejects_only_the_dial_and_preserves_the_listener()
     assert!(matches!(
         after_rejection.first().and_then(|action| match action {
             GatewayAction::SendSdkFrame(delivery) => Some(&delivery.frame),
-            GatewayAction::PublishRegistration { .. }
+            GatewayAction::SendSdkTerminalBatch(_)
+            | GatewayAction::PublishRegistration { .. }
             | GatewayAction::ResolveRoute { .. }
             | GatewayAction::OpenPeer { .. }
             | GatewayAction::CancelPeerOpen { .. }
@@ -120,7 +121,7 @@ async fn full_non_offer_queue_still_removes_the_failed_session_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let gateway = Gateway::new(GatewayConfig::new(authorization_config()))?;
     let (sender, _receiver) = mpsc::channel(1);
-    sender.try_send(Frame::Ping { nonce: 1 })?;
+    sender.try_send(SdkWriterItem::Single(Frame::Ping { nonce: 1 }))?;
     let (session, delivery) = {
         let mut state = gateway.inner.lock_state();
         let session = state

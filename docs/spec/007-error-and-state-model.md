@@ -171,3 +171,7 @@ action이면 기존 writer queue의 공간을 기다립니다. 대기 상한은 
 즉시 대기를 종료합니다. 대기 중 해당 session의 추가 frame 읽기를 멈추고 socket writer와 다른 session은 계속
 실행합니다. State lock·공유 effects loop·별도 대기 task를 점유하지 않습니다. 큐 수용은 SDK 수신 확인이 아닙니다.
 대기 실패는 session cleanup으로 수렴하고 SDK의 observation 판정은 유지됩니다.
+
+하나의 `PeerTransport` loss가 만든 `RESET`과 `DIAL_FAILED`는 대상 SDK session별 단일 writer item으로
+묶습니다. writer는 내부 frame 순서를 유지해 전송하고, 묶음 크기는 잃은 transport의 stream 상한을 넘지
+않습니다. 묶음 자체를 bounded queue에 넣지 못하면 일부 frame만 보내지 않고 session cleanup으로 수렴합니다.
