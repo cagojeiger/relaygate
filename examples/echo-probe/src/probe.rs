@@ -7,11 +7,14 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
-use relaygate_sdk::{AccessTokenSource, Destination, ErrorCode, PeerObservation, Pipe, Relay};
+use relaygate_sdk::{
+    AccessTokenSource, Destination, ErrorCode, PeerObservation, Pipe, Relay, RelayStatus,
+    RelayStatusSubscription,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     task::JoinSet,
-    time::timeout,
+    time::{timeout, timeout_at},
 };
 
 use crate::config::{
@@ -293,6 +296,16 @@ pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
     let pause = storm_pause()?;
     let dialers = connect_many(&address, session_count).await?;
     let marker_pipes = open_marker_pipes(&dialers, &destination, &access_token_source).await?;
+    let mut statuses = dialers
+        .iter()
+        .map(Relay::subscribe_status)
+        .collect::<Vec<_>>();
+    for status in &mut statuses {
+        ensure!(
+            status.current() == RelayStatus::Active,
+            "Relay left ACTIVE before the reconnect storm"
+        );
+    }
 
     println!(
         "relaygate reconnect storm ready: {session_count} Relay sessions and marker Pipes; interrupt and restore the Gateway path within {}s",
@@ -300,6 +313,7 @@ pub(crate) async fn run_reconnect_storm() -> anyhow::Result<()> {
     );
     await_marker_pipes_closed(marker_pipes, pause).await?;
     println!("relaygate reconnect storm observed all original Relay sessions close");
+    await_relay_recovery(&dialers, &mut statuses, pause).await?;
 
     let result = verify_dialers_in_batches(&dialers, &destination, &access_token_source).await;
     for dialer in dialers {
@@ -566,6 +580,28 @@ async fn await_marker_pipes_closed(pipes: Vec<Pipe>, deadline: Duration) -> anyh
         });
     }
     join_all(&mut operations).await
+}
+
+async fn await_relay_recovery(
+    dialers: &[Relay],
+    statuses: &mut [RelayStatusSubscription],
+    deadline: Duration,
+) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + deadline;
+    for (index, (dialer, status)) in dialers.iter().zip(statuses).enumerate() {
+        let changed = timeout_at(deadline, status.changed())
+            .await
+            .with_context(|| format!("Relay {index} did not observe the reconnect episode"))?
+            .with_context(|| format!("Relay {index} status subscription closed"))?;
+        ensure!(
+            changed != RelayStatus::Closed,
+            "Relay {index} closed during reconnect"
+        );
+        timeout_at(deadline, dialer.wait_ready())
+            .await
+            .with_context(|| format!("Relay {index} did not recover before the deadline"))??;
+    }
+    Ok(())
 }
 
 async fn verify_dialers_in_batches(
