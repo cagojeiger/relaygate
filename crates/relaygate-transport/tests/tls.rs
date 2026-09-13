@@ -1,21 +1,47 @@
-use std::{
-    io::{self, Cursor},
-    sync::Arc,
-    time::Duration,
-};
+use std::{io, sync::Arc, time::Duration};
 
 use rcgen::{CertifiedKey, generate_simple_self_signed};
-use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
-use rustls::{
-    ClientConfig, RootCertStore, ServerConfig,
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
-};
+use relaygate_transport::{ClientTlsConfig, ServerTlsConfig, TlsConfigError};
+use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     time::timeout,
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+#[test]
+fn pem_failures_keep_the_public_error_classification() -> Result<(), Box<dyn std::error::Error>> {
+    let CertifiedKey { cert, signing_key } =
+        generate_simple_self_signed(vec!["relaygate.test".to_owned()])?;
+    let certificate = cert.pem();
+    let private_key = signing_key.serialize_pem();
+
+    assert!(matches!(
+        ServerTlsConfig::server_authenticated(b"", private_key.as_bytes()),
+        Err(TlsConfigError::EmptyCertificateChain)
+    ));
+    assert!(matches!(
+        ServerTlsConfig::server_authenticated(certificate.as_bytes(), b""),
+        Err(TlsConfigError::MissingPrivateKey)
+    ));
+    assert!(matches!(
+        ServerTlsConfig::server_authenticated(
+            b"-----BEGIN CERTIFICATE-----\n!\n-----END CERTIFICATE-----\n",
+            private_key.as_bytes(),
+        ),
+        Err(TlsConfigError::InvalidPem(_))
+    ));
+    assert!(matches!(
+        ServerTlsConfig::server_authenticated(
+            certificate.as_bytes(),
+            b"-----BEGIN PRIVATE KEY-----\n!\n-----END PRIVATE KEY-----\n",
+        ),
+        Err(TlsConfigError::InvalidPem(_))
+    ));
+    Ok(())
+}
 
 #[tokio::test]
 async fn tls_requires_the_configured_server_name() -> Result<(), Box<dyn std::error::Error>> {
@@ -329,15 +355,12 @@ fn raw_client_tls(
 }
 
 fn certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
-    Ok(rustls_pemfile::certs(&mut Cursor::new(pem)).collect::<Result<Vec<_>, _>>()?)
+    CertificateDer::pem_slice_iter(pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()).into())
 }
 
 fn private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, Box<dyn std::error::Error>> {
-    rustls_pemfile::private_key(&mut Cursor::new(pem))?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "test TLS private key is missing",
-        )
-        .into()
-    })
+    PrivateKeyDer::from_pem_slice(pem)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()).into())
 }
