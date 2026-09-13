@@ -78,13 +78,15 @@ pub(crate) async fn run() -> anyhow::Result<()> {
                     .dial(destination.clone(), access_token_source.clone())
                     .await
                 {
-                    Ok(pipe) => {
-                        // Keep this phase focused on control admission. Echoing every
-                        // admitted Pipe adds DATA responses to the same bounded session
-                        // writer queue and can mask the control-rate boundary under test.
-                        // The pre-existing same-Relay Pipe and fresh recovery Pipe
-                        // below, plus orchestrator sibling Pipes, verify DATA instead.
-                        drop(pipe);
+                    Ok(mut pipe) => {
+                        if let Err(error) = pipe.close().await {
+                            accounting.other_failures += 1;
+                            first_unexpected = Some(format!(
+                                "worker={worker} sequence={sequence}: admitted Pipe close failed: {error}"
+                            ));
+                            stop.store(true, Ordering::Relaxed);
+                            break;
+                        }
                         accounting.succeeded += 1;
                     }
                     Err(error) if is_expected_overload(error.code(), error.observation()) => {
