@@ -2,7 +2,7 @@ use relaygate_protocol::{ErrorCode, Frame, PeerObservation, SessionId};
 use tokio::{sync::mpsc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::state::GatewayAction;
+use crate::state::{GatewayAction, SdkWriterItem};
 
 use super::SessionError;
 
@@ -26,7 +26,7 @@ pub(super) fn is_local_rejection(actions: &[GatewayAction], session_id: SessionI
 
 // Only the requesting session waits; no state lock or shared effects loop is held.
 pub(super) async fn send_rejection(
-    sender: &mpsc::Sender<Frame>,
+    sender: &mpsc::Sender<SdkWriterItem>,
     frame: Frame,
     cancellation: &CancellationToken,
     deadline: Instant,
@@ -35,7 +35,7 @@ pub(super) async fn send_rejection(
         biased;
         _ = cancellation.cancelled() => return Err(SessionError::AdmissionResponseUnavailable),
         _ = tokio::time::sleep_until(deadline) => "timeout",
-        result = sender.send(frame) => {
+        result = sender.send(SdkWriterItem::Single(frame)) => {
             match result {
                 Ok(()) => return Ok(()),
                 Err(_) => "closed",

@@ -16,8 +16,12 @@ mod stream;
 mod transport;
 
 pub use config::GatewayPeerConfig;
+#[cfg(test)]
+pub(crate) use event::LostPeerStream;
 pub(crate) use event::{PeerEvent, PeerFailure, PeerOpenRequest, PeerStreamKey, PeerTarget};
 pub(crate) use identity::OpenIdentity;
+#[cfg(test)]
+pub(crate) use identity::{PeerOpenProgress, PeerTransportId, StreamId};
 pub(crate) use runtime::{PeerEvents, PeerHandle, PeerRuntime};
 
 #[cfg(test)]

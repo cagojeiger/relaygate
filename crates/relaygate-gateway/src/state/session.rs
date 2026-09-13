@@ -4,13 +4,13 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     Delivery, GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipePhase, RemoteOpenPhase,
-    SessionEntry, observe_dial_result,
+    SdkWriterItem, SessionEntry, observe_dial_result,
 };
 
 impl GatewayState {
     pub(crate) fn add_session(
         &mut self,
-        sender: mpsc::Sender<Frame>,
+        sender: mpsc::Sender<SdkWriterItem>,
         cancellation: CancellationToken,
     ) -> Option<SessionId> {
         if self.draining || self.sessions.len() >= self.limits.max_sessions {

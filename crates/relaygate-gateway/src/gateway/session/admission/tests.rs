@@ -68,7 +68,7 @@ fn only_single_local_unobserved_capacity_rejections_wait() -> TestResult {
 #[tokio::test(start_paused = true)]
 async fn full_queue_waits_for_drain_without_cancelling_session() -> TestResult {
     let (sender, mut receiver) = mpsc::channel(1);
-    sender.send(rejection()).await?;
+    sender.send(SdkWriterItem::Single(rejection())).await?;
     let cancellation = CancellationToken::new();
     let pending = send_rejection(
         &sender,
@@ -88,7 +88,7 @@ async fn full_queue_waits_for_drain_without_cancelling_session() -> TestResult {
 #[tokio::test(start_paused = true)]
 async fn stalled_queue_is_bounded_by_existing_liveness_deadline() -> TestResult {
     let (sender, _receiver) = mpsc::channel(1);
-    sender.send(rejection()).await?;
+    sender.send(SdkWriterItem::Single(rejection())).await?;
     let cancellation = CancellationToken::new();
     let start = Instant::now();
     assert!(
@@ -138,7 +138,7 @@ async fn cancellation_and_closed_queue_stop_wait_without_detached_send() {
 #[tokio::test(start_paused = true)]
 async fn blocked_session_does_not_block_sibling_response() -> TestResult {
     let (blocked, _receiver) = mpsc::channel(1);
-    blocked.send(rejection()).await?;
+    blocked.send(SdkWriterItem::Single(rejection())).await?;
     let (sibling, mut receiver) = mpsc::channel(1);
     let cancellation = CancellationToken::new();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -155,7 +155,7 @@ async fn blocked_session_does_not_block_sibling_response() -> TestResult {
 async fn pending_wait_stops_on_cancellation_or_receiver_drop() -> TestResult {
     for close_receiver in [false, true] {
         let (sender, mut receiver) = mpsc::channel(1);
-        sender.send(rejection()).await?;
+        sender.send(SdkWriterItem::Single(rejection())).await?;
         let cancellation = CancellationToken::new();
         let start = Instant::now();
         let pending = send_rejection(

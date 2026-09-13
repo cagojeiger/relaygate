@@ -18,7 +18,7 @@ use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use crate::authorization::ControlOperation;
 use crate::metrics::{HeartbeatTransport, observe_heartbeat_round_trip, observe_heartbeat_timeout};
-use crate::state::ProtocolViolation;
+use crate::state::{ProtocolViolation, SdkWriterItem};
 
 use super::{Inner, heartbeat::SessionHeartbeat};
 
@@ -95,7 +95,7 @@ impl Inner {
     async fn read_frames(
         self: Arc<Self>,
         session_id: relaygate_protocol::SessionId,
-        sender: mpsc::Sender<Frame>,
+        sender: mpsc::Sender<SdkWriterItem>,
         mut source: futures_util::stream::SplitStream<Framed<BoxedIo, FrameCodec>>,
         cancellation: CancellationToken,
     ) -> Result<(), SessionError> {
@@ -119,7 +119,7 @@ impl Inner {
                         );
                         break;
                     };
-                    if sender.try_send(frame).is_err() {
+                    if sender.try_send(SdkWriterItem::Single(frame)).is_err() {
                         cancellation.cancel();
                         break;
                     }
@@ -232,7 +232,7 @@ impl Inner {
         self: &Arc<Self>,
         mut actions: Vec<crate::state::GatewayAction>,
         session_id: relaygate_protocol::SessionId,
-        sender: &mpsc::Sender<Frame>,
+        sender: &mpsc::Sender<SdkWriterItem>,
         cancellation: &CancellationToken,
         deadline: Instant,
     ) -> Result<(), SessionError> {
@@ -285,11 +285,18 @@ where
 }
 
 async fn write_frames(
-    mut receiver: mpsc::Receiver<Frame>,
+    mut receiver: mpsc::Receiver<SdkWriterItem>,
     mut sink: futures_util::stream::SplitSink<Framed<BoxedIo, FrameCodec>, Frame>,
 ) -> Result<(), SessionError> {
-    while let Some(frame) = receiver.recv().await {
-        sink.send(frame).await?;
+    while let Some(item) = receiver.recv().await {
+        match item {
+            SdkWriterItem::Single(frame) => sink.send(frame).await?,
+            SdkWriterItem::TerminalBatch(frames) => {
+                for frame in frames {
+                    sink.send(frame).await?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -312,4 +319,56 @@ pub(super) enum SessionError {
     Protocol(#[from] relaygate_protocol::ProtocolError),
     #[error(transparent)]
     ProtocolViolation(#[from] ProtocolViolation),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use relaygate_protocol::{ErrorCode, PeerObservation, PipeId, SessionId};
+    use std::error::Error;
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn writer_flushes_singles_and_terminal_batches_in_wire_order()
+    -> Result<(), Box<dyn Error>> {
+        let (writer_io, reader_io) = duplex(4 * 1024);
+        let writer_io: BoxedIo = Box::new(writer_io);
+        let framed = Framed::new(writer_io, FrameCodec::default());
+        let (sink, _) = framed.split();
+        let mut reader = Framed::new(reader_io, FrameCodec::default());
+        let (sender, receiver) = mpsc::channel(3);
+        let expected = vec![
+            Frame::Ping { nonce: 1 },
+            Frame::Reset {
+                pipe_id: PipeId::new(SessionId::new(), 2),
+                code: ErrorCode::Unavailable,
+                message: "PeerTransport was lost".to_owned(),
+            },
+            Frame::DialFailed {
+                connection_id: 3,
+                code: ErrorCode::Unavailable,
+                observation: PeerObservation::MaybeObserved,
+                message: "PeerTransport was lost during remote OPEN".to_owned(),
+            },
+            Frame::Ping { nonce: 4 },
+        ];
+        sender
+            .send(SdkWriterItem::Single(expected[0].clone()))
+            .await?;
+        sender
+            .send(SdkWriterItem::TerminalBatch(expected[1..3].to_vec()))
+            .await?;
+        sender
+            .send(SdkWriterItem::Single(expected[3].clone()))
+            .await?;
+        drop(sender);
+
+        let writer = tokio::spawn(write_frames(receiver, sink));
+        for expected in expected {
+            let frame = reader.next().await.ok_or("writer closed early")??;
+            assert_eq!(frame, expected);
+        }
+        writer.await??;
+        Ok(())
+    }
 }
