@@ -604,6 +604,8 @@ main() {
     --set-string 'gateway.extraEnv[0].value=128' \
     --set-string 'gateway.extraEnv[1].name=RELAYGATE_SESSION_CONTROL_BURST' \
     --set-string 'gateway.extraEnv[1].value=128' \
+    --set-string 'gateway.extraEnv[2].name=RELAYGATE_WRITER_QUEUE_CAPACITY' \
+    --set-string 'gateway.extraEnv[2].value=1024' \
     "${certificate_args[@]}" \
     --wait --timeout 180s
   apply_host_access
@@ -745,6 +747,17 @@ main() {
     ($2 + 0) > 0 { found=1 }
     END { exit !found }
   '
+  for port in 28430 28431 28432; do
+    curl -fsS "http://127.0.0.1:$port/metrics" | awk '
+      $1 ~ /^relaygate_gateway_writer_queue_rejections_total\{/ && ($2 + 0) != 0 {
+        found=1
+      }
+      END { exit found }
+    ' || {
+      echo "Gateway writer queue rejected an overload response on port $port" >&2
+      return 1
+    }
+  done
   RELAYGATE_CONTINUITY_STATE="$TEMP_DIR/overload-continuity.state" \
     "$PROBE" continuity-check | tee "$ARTIFACTS/overload-continuity-check.log"
   record_pass KIND-15 'bounded control overload preserves established Pipe and recovers'

@@ -41,7 +41,7 @@ host Rust SDK -- TLS/TCP --|
 | `KIND-12` | reconnect storm | 100개 RelaySession 동시 단절 뒤 재연결이 bounded하고 최종 Listener와 dial 복구 |
 | `KIND-13` | bounded soak | 최소 60초·64 worker Pipe 왕복 성공; known `NOT_OBSERVED` transient dial만 deadline 안 재시도; 종료 뒤 current gauge baseline 복귀 |
 | `KIND-14` | certificate 재발급 | edge·internal leaf 재발급, 해당 role Pod 교체, Listener 재등록·fresh dial 복구, edge 제공 serial 일치 |
-| `KIND-15` | bounded overload | 정상 matrix 한 Relay의 약 104 control operation을 수용하는 테스트 전용 session control budget 128에서, 3초·256 worker·1 Relay session이 session-scope control rejection과 `RESOURCE_EXHAUSTED/NOT_OBSERVED`를 관측한다. 부하 phase의 admitted Pipe는 즉시 닫아 control admission만 측정하고, unexpected failure 없이 일부 DIAL 성공, 같은 Relay의 pre-existing Pipe와 별도 sibling session Pipe의 DATA continuity 유지, 같은 Relay의 fresh dial·echo 복구를 각각 검증한다. |
+| `KIND-15` | bounded overload | 정상 matrix 한 Relay의 약 104 control operation을 수용하는 테스트 전용 session control budget 128과 writer queue 1024에서, 3초·256 worker·1 Relay session이 session-scope control rejection과 `RESOURCE_EXHAUSTED/NOT_OBSERVED`를 관측한다. 부하 phase의 admitted Pipe는 즉시 닫아 control admission만 측정하고, writer queue rejection과 unexpected failure 없이 일부 DIAL 성공, 같은 Relay의 pre-existing Pipe와 별도 sibling session Pipe의 DATA continuity 유지, 같은 Relay의 fresh dial·echo 복구를 각각 검증한다. |
 
 ## Stop condition
 

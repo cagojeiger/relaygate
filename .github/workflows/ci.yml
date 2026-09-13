@@ -720,6 +720,7 @@ jobs:
             topology-probe relaygate-echo-probe overload | tee overload.log
           grep -Eq 'resource_exhausted_not_observed=[1-9][0-9]*' overload.log
           prometheus_has 'sum(relaygate_gateway_control_rejections_total{operation="dial",scope="session"}) > 0'
+          prometheus_has '(sum(relaygate_gateway_writer_queue_rejections_total) or vector(0)) == 0'
           docker compose exec -T continuity-ac relaygate-echo-probe continuity-check
           docker compose exec -T continuity-a-zero relaygate-echo-probe continuity-check
 
