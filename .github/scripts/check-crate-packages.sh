@@ -77,15 +77,15 @@ metadata = json.loads(
         text=True,
     )
 )
-publishable = [
+blocked = [
     package["name"]
     for package in metadata["packages"]
-    if package["name"] in packages and package.get("publish") != []
+    if package["name"] in packages and package.get("publish") == []
 ]
-if publishable:
+if blocked:
     raise SystemExit(
-        "packages must keep publish = false until the final release decision: "
-        f"{', '.join(publishable)}"
+        "public packages must be publishable: "
+        f"{', '.join(blocked)}"
     )
 versions = {
     package["name"]: package["version"]
@@ -192,8 +192,8 @@ manifest_path = sys.argv[1]
 package_name = sys.argv[2]
 with open(manifest_path, "rb") as manifest:
     publish = tomllib.load(manifest)["package"].get("publish")
-if publish is not False:
-    raise SystemExit(f"normalized manifest for {package_name} must keep publish = false")
+if publish is False or (isinstance(publish, list) and "crates-io" not in publish):
+    raise SystemExit(f"normalized manifest for {package_name} is not publishable on crates.io")
 PY
 done
 

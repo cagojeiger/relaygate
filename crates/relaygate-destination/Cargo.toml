@@ -7,7 +7,6 @@ license-file.workspace = true
 repository.workspace = true
 description = "Canonical logical destinations for RelayGate"
 readme = "README.md"
-publish = false
 
 [dependencies]
 serde.workspace = true

@@ -7,7 +7,6 @@ license-file.workspace = true
 repository.workspace = true
 description = "SDK-Gateway wire framing support for RelayGate"
 readme = "README.md"
-publish = false
 
 [dependencies]
 bytes.workspace = true

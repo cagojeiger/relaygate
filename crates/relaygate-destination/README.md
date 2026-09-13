@@ -6,10 +6,6 @@ This crate owns parsing, validation and canonical formatting for `Namespace`,
 `DestinationName` and `Destination`. It does not own routing, authorization,
 registration, discovery or token issuance.
 
-This crate is currently guarded with `publish = false`; the metadata and
-package checks exist so crate archives can be validated before a future public
-release decision.
-
 ## License
 
 Licensed under the Apache License, Version 2.0. The package includes the

@@ -74,10 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Authentication mechanisms, policy evaluation, endpoint design, private-key
 storage, and key rotation are outside this crate's scope.
 
-This crate is currently guarded with `publish = false`; the metadata and
-package checks exist so crate archives can be validated before a future public
-release decision.
-
 ## License
 
 Licensed under the Apache License, Version 2.0. The package includes the
