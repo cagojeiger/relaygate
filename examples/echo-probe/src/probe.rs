@@ -461,14 +461,21 @@ pub(crate) async fn dial_when_available(
             Ok(pipe) => return Ok(pipe),
             Err(error)
                 if Instant::now() < deadline
-                    && error.observation() == PeerObservation::NotObserved
-                    && matches!(error.code(), ErrorCode::NotFound | ErrorCode::Unavailable) =>
+                    && is_retryable_dial_failure(error.code(), error.observation()) =>
             {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+const fn is_retryable_dial_failure(code: ErrorCode, observation: PeerObservation) -> bool {
+    matches!(observation, PeerObservation::NotObserved)
+        && matches!(
+            code,
+            ErrorCode::NotFound | ErrorCode::Unavailable | ErrorCode::ResourceExhausted
+        )
 }
 
 async fn connect_all(addresses: &[String]) -> anyhow::Result<Vec<Relay>> {
@@ -761,5 +768,21 @@ mod tests {
     #[test]
     fn deterministic_payload_changes_with_seed() {
         assert_ne!(deterministic_payload(128, 1), deterministic_payload(128, 2));
+    }
+
+    #[test]
+    fn retries_only_safe_transient_dial_failures() {
+        assert!(is_retryable_dial_failure(
+            ErrorCode::ResourceExhausted,
+            PeerObservation::NotObserved
+        ));
+        assert!(!is_retryable_dial_failure(
+            ErrorCode::ResourceExhausted,
+            PeerObservation::MaybeObserved
+        ));
+        assert!(!is_retryable_dial_failure(
+            ErrorCode::PermissionDenied,
+            PeerObservation::NotObserved
+        ));
     }
 }
