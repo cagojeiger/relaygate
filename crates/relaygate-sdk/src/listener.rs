@@ -33,7 +33,7 @@ pub enum ListenerStatus {
     Registering,
     /// A current Gateway binding can receive new Pipes.
     Active,
-    /// A transient republish failure is waiting for a later Relay recovery.
+    /// A transient republish failure awaits bounded retry; the Relay may remain active.
     Suspended,
     /// Republish failed permanently; recreate the Listener with new inputs.
     Blocked,

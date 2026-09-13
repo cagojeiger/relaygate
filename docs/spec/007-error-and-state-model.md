@@ -44,9 +44,10 @@ stateDiagram-v2
         [*] --> REGISTERING
         REGISTERING --> ACTIVE
         REGISTERING --> CLOSED: Relay::listen Err / close
+        REGISTERING --> SUSPENDED: returned Listener transient failure/session loss
+        REGISTERING --> BLOCKED: returned Listener permanent PUBLISH failure
         ACTIVE --> SUSPENDED
-        SUSPENDED --> ACTIVE
-        SUSPENDED --> BLOCKED: permanent PUBLISH failure
+        SUSPENDED --> REGISTERING: bounded republish retry
         ACTIVE --> CLOSED
         SUSPENDED --> CLOSED
         BLOCKED --> CLOSED

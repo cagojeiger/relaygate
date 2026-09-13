@@ -17,10 +17,10 @@ release decision.
 ## Transport and operation tokens
 
 A bare `host:port` or `tls://host:port` uses public CA trust and verifies the
-endpoint's DNS/IP identity. A private deployment can add a CA with
-`Config::with_ca_certificate`. `tcp://host:port` explicitly selects plaintext;
-it does not encrypt access tokens or Pipe data, and a TLS failure never falls
-back to plaintext.
+endpoint's DNS/IP identity. A private deployment can replace public CA trust
+with a private CA via `Config::with_ca_certificate`. `tcp://host:port`
+explicitly selects plaintext; it does not encrypt access tokens or Pipe data,
+and a TLS failure never falls back to plaintext.
 
 Every `listen` and `dial` supplies an application-issued operation token.
 RelayGate does not issue, refresh, or persist these credentials. Production

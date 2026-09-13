@@ -695,6 +695,8 @@ jobs:
 
       - name: Verify bounded overload preserves established Pipes
         run: |
+          set -o pipefail
+
           prometheus_has() {
             expression="$1"
             for _ in {1..30}; do

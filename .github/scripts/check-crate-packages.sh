@@ -77,6 +77,16 @@ metadata = json.loads(
         text=True,
     )
 )
+publishable = [
+    package["name"]
+    for package in metadata["packages"]
+    if package["name"] in packages and package.get("publish") != []
+]
+if publishable:
+    raise SystemExit(
+        "packages must keep publish = false until the final release decision: "
+        f"{', '.join(publishable)}"
+    )
 versions = {
     package["name"]: package["version"]
     for package in metadata["packages"]
@@ -132,11 +142,6 @@ if [ -n "$allow_dirty" ]; then
 fi
 
 for package in "${packages[@]}"; do
-  source_manifest="$root/crates/$package/Cargo.toml"
-  if ! grep -Eq '^publish[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$source_manifest"; then
-    echo "$source_manifest must keep publish = false until the final release decision" >&2
-    exit 1
-  fi
   package_specific_args=()
   case "$package" in
     relaygate-protocol|relaygate-token-issuer)
@@ -179,10 +184,17 @@ for package in "${packages[@]}"; do
     echo "package archive for $package does not include README.md" >&2
     exit 1
   fi
-  if ! grep -Eq '^publish[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$manifest"; then
-    echo "normalized manifest for $package must keep publish = false" >&2
-    exit 1
-  fi
+  python3 - "$manifest" "$package" <<'PY'
+import sys
+import tomllib
+
+manifest_path = sys.argv[1]
+package_name = sys.argv[2]
+with open(manifest_path, "rb") as manifest:
+    publish = tomllib.load(manifest)["package"].get("publish")
+if publish is not False:
+    raise SystemExit(f"normalized manifest for {package_name} must keep publish = false")
+PY
 done
 
 cp -R "$root/tests/package-consumer/." "$consumer/"
