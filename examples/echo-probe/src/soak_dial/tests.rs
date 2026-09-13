@@ -97,6 +97,28 @@ async fn transient_rejections_recover_and_count_only_admission_failures() -> any
 }
 
 #[tokio::test(start_paused = true)]
+async fn resource_exhausted_not_observed_retries_until_recovery() -> anyhow::Result<()> {
+    let start = Instant::now();
+    let rejected = AtomicU64::new(0);
+    let mut calls = 0;
+    let result = retry_until_available(Duration::from_secs(1), &rejected, || {
+        calls += 1;
+        ready(match calls {
+            1 | 2 => Attempt::Retry {
+                admission_rejected: true,
+            },
+            _ => Attempt::Complete(Ok(7)),
+        })
+    })
+    .await?;
+    assert_eq!(result, 7);
+    assert_eq!(calls, 3);
+    assert_eq!(rejected.load(Ordering::Relaxed), 2);
+    assert_eq!(Instant::now() - start, Duration::from_millis(200));
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
 async fn repeated_rejection_uses_one_deadline_not_one_per_retry() -> anyhow::Result<()> {
     let start = Instant::now();
     let rejected = AtomicU64::new(0);

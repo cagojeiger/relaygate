@@ -4,14 +4,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::DestinationError;
 
+/// Maximum encoded length of one namespace or destination-name label.
 pub const MAX_LABEL_BYTES: usize = 63;
+/// Maximum encoded length of a complete [`DestinationName`].
 pub const MAX_DESTINATION_NAME_BYTES: usize = 253;
 
+/// A validated single-label tenant or application routing namespace.
+///
+/// Namespaces contain lowercase ASCII letters, digits, and interior hyphens.
+/// Unlike [`DestinationName`], a namespace cannot contain dots.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Namespace(Box<str>);
 
 impl Namespace {
+    /// Validates one lowercase ASCII label; dots are rejected.
     pub fn new(value: &str) -> Result<Self, DestinationError> {
         if value.contains('.') {
             return Err(DestinationError::InvalidNamespace);
@@ -21,6 +28,7 @@ impl Namespace {
     }
 
     #[must_use]
+    /// Borrows the canonical validated text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -54,11 +62,15 @@ impl fmt::Display for Namespace {
     }
 }
 
+/// A validated dot-separated destination name within a [`Namespace`].
+///
+/// Each label contains lowercase ASCII letters, digits, and interior hyphens.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct DestinationName(Box<str>);
 
 impl DestinationName {
+    /// Validates the total length and every dot-separated label.
     pub fn new(value: &str) -> Result<Self, DestinationError> {
         if value.len() > MAX_DESTINATION_NAME_BYTES {
             return Err(DestinationError::DestinationNameLength);
@@ -70,6 +82,7 @@ impl DestinationName {
     }
 
     #[must_use]
+    /// Borrows the canonical validated text.
     pub fn as_str(&self) -> &str {
         &self.0
     }

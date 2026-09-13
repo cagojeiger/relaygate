@@ -279,6 +279,7 @@ mod tests {
 
     use bytes::Bytes;
     use futures_util::{SinkExt, StreamExt};
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
     use relaygate_protocol::{
         BindingId, DEFAULT_MAX_FRAME_LEN, Frame, FrameCodec, PipeId, SessionId,
     };
@@ -292,7 +293,7 @@ mod tests {
     use super::{ReconnectBackoff, SessionHeartbeat};
     use crate::{
         AccessToken, AccessTokenSource, Config, Destination, ErrorCode, ListenerStatus,
-        PeerObservation, Relay,
+        PeerObservation, Relay, RelayStatus,
     };
 
     type TestResult<T = ()> = Result<T, Box<dyn StdError + Send + Sync>>;
@@ -434,12 +435,237 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_status_snapshot_subscription_and_clones_share_state() -> TestResult {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut transport = Framed::new(stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                transport.next().await.ok_or("SDK closed before HELLO")??,
+                Frame::Hello
+            ) {
+                return Err::<(), Box<dyn StdError + Send + Sync>>(
+                    "SDK first frame was not HELLO".into(),
+                );
+            }
+            transport
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await?;
+            let _ = shutdown_rx.await;
+            Ok::<(), Box<dyn StdError + Send + Sync>>(())
+        });
+
+        let relay = Relay::connect(Config::new_insecure_for_tests(address.to_string())).await?;
+        assert_eq!(relay.status(), RelayStatus::Active);
+        let relay_clone = relay.clone();
+        timeout(Duration::from_secs(1), relay.wait_ready()).await??;
+        assert_eq!(relay.status(), RelayStatus::Active);
+        assert_eq!(relay_clone.status(), RelayStatus::Active);
+
+        let mut subscription = relay.subscribe_status();
+        assert_eq!(subscription.current(), RelayStatus::Active);
+        relay.close();
+        assert_eq!(
+            timeout(Duration::from_secs(1), subscription.changed()).await?,
+            Some(RelayStatus::Closed)
+        );
+        assert_eq!(relay_clone.status(), RelayStatus::Closed);
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_status_reports_reconnecting_and_wait_ready_recovers() -> TestResult {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (drop_first_tx, drop_first_rx) = oneshot::channel();
+        let (second_hello_tx, second_hello_rx) = oneshot::channel();
+        let (welcome_second_tx, welcome_second_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (first_stream, _) = listener.accept().await?;
+            let mut first = Framed::new(first_stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                first
+                    .next()
+                    .await
+                    .ok_or("SDK closed before first HELLO")??,
+                Frame::Hello
+            ) {
+                return Err::<(), Box<dyn StdError + Send + Sync>>(
+                    "SDK first frame was not HELLO".into(),
+                );
+            }
+            first
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await?;
+            drop_first_rx
+                .await
+                .map_err(|_| "first-session drop trigger was dropped")?;
+            drop(first);
+
+            let (second_stream, _) = listener.accept().await?;
+            let mut second = Framed::new(second_stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                second
+                    .next()
+                    .await
+                    .ok_or("SDK closed before second HELLO")??,
+                Frame::Hello
+            ) {
+                return Err("SDK second frame was not HELLO".into());
+            }
+            let _ = second_hello_tx.send(());
+            welcome_second_rx
+                .await
+                .map_err(|_| "replacement WELCOME trigger was dropped")?;
+            second
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await?;
+            let _ = shutdown_rx.await;
+            Ok::<(), Box<dyn StdError + Send + Sync>>(())
+        });
+
+        let relay = Relay::connect(
+            Config::new_insecure_for_tests(address.to_string())
+                .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+        )
+        .await?;
+        timeout(Duration::from_secs(1), relay.wait_ready()).await??;
+        let mut status = relay.subscribe_status();
+        drop_first_tx
+            .send(())
+            .map_err(|_| "fake Gateway stopped before first-session drop")?;
+        timeout(Duration::from_secs(1), second_hello_rx).await??;
+        assert_eq!(
+            timeout(Duration::from_secs(1), status.changed()).await?,
+            Some(RelayStatus::Reconnecting)
+        );
+
+        let mut waiting = {
+            let relay = relay.clone();
+            tokio::spawn(async move { relay.wait_ready().await })
+        };
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(relay.status(), RelayStatus::Reconnecting);
+        assert!(
+            timeout(Duration::from_millis(50), &mut waiting)
+                .await
+                .is_err()
+        );
+        welcome_second_tx
+            .send(())
+            .map_err(|_| "fake Gateway stopped before replacement WELCOME")?;
+        timeout(Duration::from_secs(1), waiting).await???;
+        assert_eq!(relay.status(), RelayStatus::Active);
+
+        relay.close();
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn relay_close_is_terminal_during_reconnect_handshake() -> TestResult {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (drop_first_tx, drop_first_rx) = oneshot::channel();
+        let (second_hello_tx, second_hello_rx) = oneshot::channel();
+        let (try_welcome_tx, try_welcome_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (first_stream, _) = listener.accept().await?;
+            let mut first = Framed::new(first_stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                first
+                    .next()
+                    .await
+                    .ok_or("SDK closed before first HELLO")??,
+                Frame::Hello
+            ) {
+                return Err::<(), Box<dyn StdError + Send + Sync>>(
+                    "SDK first frame was not HELLO".into(),
+                );
+            }
+            first
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await?;
+            drop_first_rx
+                .await
+                .map_err(|_| "first-session drop trigger was dropped")?;
+            drop(first);
+
+            let (second_stream, _) = listener.accept().await?;
+            let mut second = Framed::new(second_stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                second
+                    .next()
+                    .await
+                    .ok_or("SDK closed before second HELLO")??,
+                Frame::Hello
+            ) {
+                return Err("SDK second frame was not HELLO".into());
+            }
+            let _ = second_hello_tx.send(());
+            let _ = try_welcome_rx.await;
+            let _ = second
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await;
+            Ok::<(), Box<dyn StdError + Send + Sync>>(())
+        });
+
+        let relay = Relay::connect(
+            Config::new_insecure_for_tests(address.to_string())
+                .with_reconnect_backoff(Duration::from_millis(10), Duration::from_millis(20)),
+        )
+        .await?;
+        timeout(Duration::from_secs(1), relay.wait_ready()).await??;
+        let mut status = relay.subscribe_status();
+        drop_first_tx
+            .send(())
+            .map_err(|_| "fake Gateway stopped before first-session drop")?;
+        timeout(Duration::from_secs(1), second_hello_rx).await??;
+        assert_eq!(
+            timeout(Duration::from_secs(1), status.changed()).await?,
+            Some(RelayStatus::Reconnecting)
+        );
+        relay.close();
+        assert_eq!(
+            timeout(Duration::from_secs(1), status.changed()).await?,
+            Some(RelayStatus::Closed)
+        );
+        let _ = try_welcome_tx.send(());
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(relay.status(), RelayStatus::Closed);
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn returned_listener_republishes_after_unexpected_runtime_frame() -> TestResult {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let destination: Destination = "inference/stt.seoul".parse()?;
         let expected_destination = destination.clone();
         let (send_unexpected, receive_unexpected) = oneshot::channel();
+        let (second_hello_tx, second_hello_rx) = oneshot::channel();
+        let (welcome_second_tx, welcome_second_rx) = oneshot::channel();
+        let (second_publish_tx, second_publish_rx) = oneshot::channel();
+        let (send_second_published, receive_second_published) = oneshot::channel();
         let (send_republished, receive_republished) = oneshot::channel();
         let (send_shutdown, receive_shutdown) = oneshot::channel();
         let server = tokio::spawn(async move {
@@ -501,6 +727,10 @@ mod tests {
             if !matches!(second_hello, Frame::Hello) {
                 return Err("SDK replacement first frame was not HELLO".into());
             }
+            let _ = second_hello_tx.send(());
+            welcome_second_rx
+                .await
+                .map_err(|_| "replacement WELCOME trigger was dropped")?;
             second
                 .send(Frame::Welcome {
                     session_id: second_session_id,
@@ -518,6 +748,10 @@ mod tests {
                 } => (request_id, destination),
                 _ => return Err("SDK did not republish on the replacement session".into()),
             };
+            let _ = second_publish_tx.send(());
+            receive_second_published
+                .await
+                .map_err(|_| "replacement PUBLISHED trigger was dropped")?;
             second
                 .send(Frame::Published {
                     request_id: second_request_id,
@@ -541,25 +775,226 @@ mod tests {
             )
             .await?;
         assert_eq!(publication.status(), ListenerStatus::Active);
+        let mut publication_status = publication.subscribe_status();
         send_unexpected
             .send(())
             .map_err(|_| "fake Gateway stopped before runtime-frame trigger")?;
+        timeout(Duration::from_secs(1), second_hello_rx).await??;
+        assert_eq!(
+            timeout(Duration::from_secs(1), publication_status.changed()).await?,
+            Some(ListenerStatus::Suspended)
+        );
+        welcome_second_tx
+            .send(())
+            .map_err(|_| "fake Gateway stopped before replacement WELCOME")?;
+        timeout(Duration::from_secs(1), second_publish_rx).await??;
+        send_second_published
+            .send(())
+            .map_err(|_| "fake Gateway stopped before replacement PUBLISHED")?;
 
         let (first_session_id, second_session_id, republished_destination) =
             timeout(Duration::from_secs(2), receive_republished).await??;
         assert_ne!(first_session_id, second_session_id);
         assert_eq!(republished_destination, destination);
         timeout(Duration::from_secs(1), async {
-            while publication.status() != ListenerStatus::Active {
-                sleep(Duration::from_millis(5)).await;
+            loop {
+                match publication_status.changed().await {
+                    Some(ListenerStatus::Active) => break Ok::<(), &'static str>(()),
+                    Some(_) => {}
+                    None => break Err("Listener status subscription closed before ACTIVE"),
+                }
             }
         })
-        .await?;
+        .await??;
 
         relay.close();
         let _ = send_shutdown.send(());
         server.await??;
         Ok(())
+    }
+
+    #[test]
+    fn permanent_republish_failure_settles_reconnect_episode_as_degraded() -> TestResult {
+        let _guard = crate::observability::RECONNECT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(async {
+                    let listener = TcpListener::bind("127.0.0.1:0").await?;
+                    let address = listener.local_addr()?;
+                    let destination: Destination = "inference/stt.seoul".parse()?;
+                    let expected_destination = destination.clone();
+                    let (drop_first_tx, drop_first_rx) = oneshot::channel();
+                    let (republish_failed_tx, republish_failed_rx) = oneshot::channel();
+                    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+                    let server = tokio::spawn(async move {
+                        let first_session_id = SessionId::new();
+                        let (first_stream, _) = listener.accept().await?;
+                        let mut first =
+                            Framed::new(first_stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+                        if !matches!(
+                            first
+                                .next()
+                                .await
+                                .ok_or("SDK closed before first HELLO")??,
+                            Frame::Hello
+                        ) {
+                            return Err::<(), Box<dyn StdError + Send + Sync>>(
+                                "SDK first frame was not HELLO".into(),
+                            );
+                        }
+                        first
+                            .send(Frame::Welcome {
+                                session_id: first_session_id,
+                            })
+                            .await?;
+                        let first_publish = first
+                            .next()
+                            .await
+                            .ok_or("SDK closed before first PUBLISH")??;
+                        let first_request_id = match first_publish {
+                            Frame::Publish {
+                                request_id,
+                                destination,
+                                ..
+                            } if destination == expected_destination => request_id,
+                            _ => return Err("SDK did not publish the expected Destination".into()),
+                        };
+                        first
+                            .send(Frame::Published {
+                                request_id: first_request_id,
+                                binding_id: BindingId::new(),
+                            })
+                            .await?;
+                        drop_first_rx
+                            .await
+                            .map_err(|_| "first-session drop trigger was dropped")?;
+                        drop(first);
+
+                        let second_session_id = SessionId::new();
+                        let (second_stream, _) = listener.accept().await?;
+                        let mut second =
+                            Framed::new(second_stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+                        if !matches!(
+                            second
+                                .next()
+                                .await
+                                .ok_or("SDK closed before second HELLO")??,
+                            Frame::Hello
+                        ) {
+                            return Err("SDK second frame was not HELLO".into());
+                        }
+                        second
+                            .send(Frame::Welcome {
+                                session_id: second_session_id,
+                            })
+                            .await?;
+                        let second_publish = second
+                            .next()
+                            .await
+                            .ok_or("SDK closed before replacement PUBLISH")??;
+                        let second_request_id = match second_publish {
+                            Frame::Publish {
+                                request_id,
+                                destination,
+                                ..
+                            } if destination == expected_destination => request_id,
+                            _ => {
+                                return Err("SDK did not republish the expected Destination".into());
+                            }
+                        };
+                        second
+                            .send(Frame::PublishFailed {
+                                request_id: second_request_id,
+                                code: relaygate_protocol::ErrorCode::PermissionDenied,
+                                message: "revoked grant".to_owned(),
+                            })
+                            .await?;
+                        let _ = republish_failed_tx.send(());
+                        let _ = shutdown_rx.await;
+                        Ok::<(), Box<dyn StdError + Send + Sync>>(())
+                    });
+
+                    let relay = Relay::connect(
+                        Config::new_insecure_for_tests(address.to_string())
+                            .with_operation_timeout(Duration::from_secs(2))
+                            .with_reconnect_backoff(
+                                Duration::from_millis(10),
+                                Duration::from_millis(20),
+                            ),
+                    )
+                    .await?;
+                    assert_eq!(relay.status(), RelayStatus::Active);
+                    let publication = relay
+                        .listen(
+                            destination,
+                            AccessTokenSource::static_token(AccessToken::new("grant")?),
+                        )
+                        .await?;
+                    assert_eq!(publication.status(), ListenerStatus::Active);
+                    let mut listener_status = publication.subscribe_status();
+                    drop_first_tx
+                        .send(())
+                        .map_err(|_| "fake Gateway stopped before first-session drop")?;
+                    timeout(Duration::from_secs(1), republish_failed_rx).await??;
+
+                    timeout(Duration::from_secs(1), async {
+                        loop {
+                            match listener_status.changed().await {
+                                Some(ListenerStatus::Blocked) => {
+                                    break Ok::<(), &'static str>(());
+                                }
+                                Some(_) => {}
+                                None => {
+                                    break Err(
+                                        "Listener status subscription closed before BLOCKED",
+                                    );
+                                }
+                            }
+                        }
+                    })
+                    .await??;
+                    assert_eq!(relay.status(), RelayStatus::Active);
+                    assert_eq!(publication.status(), ListenerStatus::Blocked);
+                    drop(publication);
+
+                    timeout(Duration::from_secs(1), async {
+                        let mut reconnect_gauge = 0.0;
+                        loop {
+                            let snapshot = snapshotter.snapshot().into_vec();
+                            for (key, _, _, value) in &snapshot {
+                                if key.key().name() == "relaygate_sdk_reconnect_in_progress"
+                                    && let DebugValue::Gauge(value) = value
+                                {
+                                    reconnect_gauge += value.into_inner();
+                                }
+                            }
+                            let degraded = snapshot.iter().any(|(key, _, _, value)| {
+                                key.key().name() == "relaygate_sdk_reconnect_episodes_total"
+                                    && key.key().labels().any(|label| {
+                                        label.key() == "outcome" && label.value() == "degraded"
+                                    })
+                                    && matches!(value, DebugValue::Counter(1))
+                            });
+                            if degraded && reconnect_gauge == 0.0 {
+                                break;
+                            }
+                            sleep(Duration::from_millis(5)).await;
+                        }
+                    })
+                    .await?;
+
+                    relay.close();
+                    let _ = shutdown_tx.send(());
+                    server.await??;
+                    Ok::<(), Box<dyn StdError + Send + Sync>>(())
+                })
+        })
     }
 
     #[tokio::test]

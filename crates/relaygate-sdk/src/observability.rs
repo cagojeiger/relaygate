@@ -7,7 +7,7 @@ mod contract_tests;
 
 // Tracing callsite interest is process-global even with a thread-local subscriber.
 #[cfg(test)]
-static RECONNECT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static RECONNECT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) struct ReconnectEpisode {
     started_at: Instant,
@@ -53,6 +53,20 @@ impl ReconnectEpisode {
             attempts = self.attempts,
             downtime_ms = elapsed.as_millis(),
             "SDK session reconnect episode recovered"
+        );
+    }
+
+    pub(crate) fn degrade(mut self) {
+        self.outcome = "degraded";
+        let elapsed = self.started_at.elapsed();
+        metrics::histogram!("relaygate_sdk_reconnect_duration_seconds")
+            .record(elapsed.as_secs_f64());
+        tracing::info!(
+            component = "sdk",
+            event = "sdk.session.reconnect_degraded",
+            attempts = self.attempts,
+            downtime_ms = elapsed.as_millis(),
+            "SDK session reconnect episode settled with blocked listeners"
         );
     }
 
@@ -123,6 +137,10 @@ mod tests {
                     episode.record_attempt("error");
                 }
                 close_reconnect_episode(&mut closed);
+
+                let mut degraded = ReconnectEpisode::start();
+                degraded.record_attempt("success");
+                degraded.degrade();
             });
         });
 
@@ -142,7 +160,7 @@ mod tests {
                     _ => 0,
                 })
                 .sum::<u64>(),
-            3
+            4
         );
 
         let durations = snapshot
@@ -152,15 +170,16 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(durations.len(), 1);
-        assert!(matches!(durations[0], DebugValue::Histogram(values) if values.len() == 1));
+        assert!(matches!(durations[0], DebugValue::Histogram(values) if values.len() == 2));
 
         let logs = match logs.lock() {
             Ok(logs) => logs.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         };
         let logs = String::from_utf8(logs)?;
-        assert_eq!(logs.matches("sdk.session.reconnect_started").count(), 2);
+        assert_eq!(logs.matches("sdk.session.reconnect_started").count(), 3);
         assert_eq!(logs.matches("sdk.session.reconnect_recovered").count(), 1);
+        assert_eq!(logs.matches("sdk.session.reconnect_degraded").count(), 1);
         assert_eq!(logs.matches("sdk.session.reconnect_closed").count(), 1);
         assert!(logs.contains("\"attempts\":2"));
         Ok(())

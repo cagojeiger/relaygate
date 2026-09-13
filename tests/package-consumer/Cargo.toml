@@ -1,0 +1,17 @@
+[package]
+name = "relaygate-package-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+relaygate-destination = "=0.3.0"
+relaygate-protocol = "=0.3.0"
+relaygate-sdk = "=0.3.0"
+relaygate-token-issuer = "=0.3.0"
+relaygate-transport = "=0.3.0"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

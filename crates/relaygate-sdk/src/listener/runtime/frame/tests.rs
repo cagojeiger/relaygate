@@ -20,7 +20,7 @@ use super::handle_relay_frame;
 use crate::{
     AccessToken, AccessTokenSource, Config, Destination, ListenerStatus,
     lifetime::RuntimeLifetime,
-    listener::{ListenerLifecycle, ListenerState, RelayInner, RelaySession},
+    listener::{ListenerLifecycle, ListenerState, RelayInner, RelaySession, RelayStatus},
     pipe::PipeState,
     resource::RelayResources,
     session::{ReconnectBackoff, session_outbound_channel},
@@ -58,6 +58,7 @@ async fn full_listener_queue_rejects_offer_immediately_and_preserves_session_fra
         cancellations: mpsc::unbounded_channel().0,
         cancel: CancellationToken::new(),
     })));
+    let (relay_status, _) = watch::channel(RelayStatus::Active);
     let inner = RelayInner {
         config,
         desired: StdMutex::new(HashMap::from([(
@@ -65,10 +66,12 @@ async fn full_listener_queue_rejects_offer_immediately_and_preserves_session_fra
             Arc::clone(&listener),
         )])),
         current,
+        status: relay_status,
         reconcile: Arc::new(Notify::new()),
         cancel: CancellationToken::new(),
         lifetime: Weak::<RuntimeLifetime>::new(),
         resources: RelayResources::new(limits),
+        reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
         republish_retry_epoch: Arc::new(AtomicU64::new(0)),
         republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
             Duration::from_millis(10),

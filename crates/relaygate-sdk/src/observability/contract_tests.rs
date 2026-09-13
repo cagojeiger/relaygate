@@ -24,10 +24,14 @@ fn reconnect_gauge_tracks_overlapping_episodes_and_all_exit_paths() {
         snapshots.push(snapshotter.snapshot().into_vec());
         drop(abandoned);
         snapshots.push(snapshotter.snapshot().into_vec());
+        let degraded = ReconnectEpisode::start();
+        snapshots.push(snapshotter.snapshot().into_vec());
+        degraded.degrade();
+        snapshots.push(snapshotter.snapshot().into_vec());
     });
     // DebuggingRecorder drains even gauges on snapshot; reconstruct the sampled increments.
     let mut active = 0.0;
-    for (snapshot, expected) in snapshots.iter().zip([2.0, 1.0, 0.0, 1.0, 0.0]) {
+    for (snapshot, expected) in snapshots.iter().zip([2.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0]) {
         let delta = snapshot.iter().find_map(|(key, _, _, value)| {
             if key.key().name() == "relaygate_sdk_reconnect_in_progress"
                 && let DebugValue::Gauge(value) = value
@@ -41,7 +45,7 @@ fn reconnect_gauge_tracks_overlapping_episodes_and_all_exit_paths() {
         active += delta.unwrap_or_default();
         assert_eq!(active, expected);
     }
-    for outcome in ["recovered", "closed", "aborted"] {
+    for outcome in ["recovered", "closed", "aborted", "degraded"] {
         assert!(snapshots.iter().flatten().any(|(key, _, _, value)| {
             key.key().name() == "relaygate_sdk_reconnect_episodes_total"
                 && key

@@ -15,6 +15,10 @@ const MAX_STRING_LEN: usize = u16::MAX as usize;
 pub const MAX_HELLO_FRAME_LEN: usize = 0;
 pub const DEFAULT_MAX_FRAME_LEN: usize = 1024 * 1024;
 
+/// Length-delimited codec for SDK–Gateway [`Frame`] values.
+///
+/// The configured limit applies to the frame payload and excludes the fixed
+/// wire header.
 #[derive(Debug, Clone)]
 pub struct FrameCodec {
     max_frame_len: usize,

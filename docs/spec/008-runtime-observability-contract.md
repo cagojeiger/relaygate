@@ -132,8 +132,8 @@ payload와 free-form error body는 redaction합니다. DATA RTT와 payload goodp
 | Gateway->RT | `relaygate_gateway_route_table_requests_total`, `relaygate_gateway_route_table_request_duration_seconds` | client queue admission -> response/failure |
 | RT actor | `relaygate_route_table_requests_total`, `relaygate_route_table_request_duration_seconds` | actor service start -> result |
 | peer | `relaygate_gateway_peer_handshakes_total`, `relaygate_gateway_peer_transport_closed_total` | transport lifecycle outcome |
-| SDK reconnect | `relaygate_sdk_reconnect_attempts_total`, `relaygate_sdk_reconnect_episode_duration_seconds{outcome}` | episode start -> `recovered|closed|aborted` |
-| SDK 미복구 | `relaygate_sdk_reconnect_in_progress` | process 내 진행 중 episode 수 |
+| SDK reconnect | `relaygate_sdk_reconnect_attempts_total`, `relaygate_sdk_reconnect_episode_duration_seconds{outcome}` | episode start -> `recovered|degraded|closed|aborted` |
+| SDK 미복구 | `relaygate_sdk_reconnect_in_progress` | process 내 진행 중 episode 수. `recovered|degraded|closed|aborted` terminal outcome 뒤 0으로 수렴 |
 
 ```text
 SDK session_connect -> token source -> SDK dial -> established Pipe DATA RTT

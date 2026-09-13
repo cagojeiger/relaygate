@@ -11,6 +11,7 @@ use super::{
         commit_registration_token, reconcile_registrations, wait_for_registration_deadline,
     },
 };
+use crate::listener::state::DesiredSettlement;
 use crate::{
     Error, ErrorCode, PeerObservation,
     listener::{RelayCommand, RelayInner},
@@ -46,11 +47,22 @@ pub(super) async fn run_relay_session(
             break;
         }
         needs_reconcile = false;
-        if inner.desired_is_converged() {
-            inner.reset_republish_backoff();
-            if let Some(episode) = reconnect_episode.take() {
-                episode.recover();
+        match inner.desired_settlement() {
+            DesiredSettlement::Recovered => {
+                inner.reset_republish_backoff();
+                if let Some(episode) = reconnect_episode.take() {
+                    episode.recover();
+                }
+                inner.clear_reconnect_degraded();
             }
+            DesiredSettlement::Degraded => {
+                inner.reset_republish_backoff();
+                if let Some(episode) = reconnect_episode.take() {
+                    episode.degrade();
+                }
+                inner.clear_reconnect_degraded();
+            }
+            DesiredSettlement::Pending => {}
         }
         let registration_deadline = state
             .pending

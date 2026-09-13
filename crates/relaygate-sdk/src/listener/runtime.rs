@@ -18,6 +18,7 @@ use tokio::{
 use super::{ListenerState, RelayInner, RelaySession};
 use crate::{
     Destination, Pipe, Result,
+    listener::RelayStatus,
     observability::{ReconnectEpisode, close_reconnect_episode},
     pipe::PipeState,
     resource::LivePipeReservation,
@@ -26,9 +27,14 @@ use crate::{
 
 use self::session::run_relay_session;
 
-pub(super) async fn relay_supervisor(inner: Arc<RelayInner>, initial: EstablishedSession) {
+pub(super) async fn relay_supervisor(
+    inner: Arc<RelayInner>,
+    initial: EstablishedSession,
+    initial_ready: Option<oneshot::Sender<()>>,
+) {
     metrics::gauge!("relaygate_sdk_reconnect_in_progress").increment(0.0);
     let mut established = Some(initial);
+    let mut initial_ready = initial_ready;
     let mut backoff = ReconnectBackoff::new(
         inner.config.reconnect_initial,
         inner.config.reconnect_maximum,
@@ -42,35 +48,57 @@ pub(super) async fn relay_supervisor(inner: Arc<RelayInner>, initial: Establishe
         }
         let next = match established.take() {
             Some(session) => session,
-            None => match establish(&inner.config).await {
-                Ok(session) => {
-                    if let Some(episode) = reconnect_episode.as_mut() {
-                        episode.record_attempt("success");
+            None => {
+                inner.set_relay_status(RelayStatus::Reconnecting);
+                match tokio::select! {
+                    biased;
+                    _ = inner.cancel.cancelled() => {
+                        close_reconnect_episode(&mut reconnect_episode);
+                        inner.close_all();
+                        return;
                     }
-                    session
-                }
-                Err(error) => {
-                    if let Some(episode) = reconnect_episode.as_mut() {
-                        episode.record_attempt("error");
-                    }
-                    tracing::debug!(
-                        component = "sdk",
-                        event = "sdk.session.reconnect_failed",
-                        error_code = error.code().metric_name(),
-                        observation = ?error.observation(),
-                        "Relay session reconnect failed"
-                    );
-                    tokio::select! {
-                        _ = inner.cancel.cancelled() => {
+                    result = establish(&inner.config) => result,
+                } {
+                    Ok(session) => {
+                        if let Some(episode) = reconnect_episode.as_mut() {
+                            episode.record_attempt("success");
+                        }
+                        if inner.cancel.is_cancelled() {
                             close_reconnect_episode(&mut reconnect_episode);
+                            inner.close_all();
                             return;
-                        },
-                        _ = tokio::time::sleep(backoff.next_delay()) => {}
+                        }
+                        session
                     }
-                    continue;
+                    Err(error) => {
+                        if let Some(episode) = reconnect_episode.as_mut() {
+                            episode.record_attempt("error");
+                        }
+                        tracing::debug!(
+                            component = "sdk",
+                            event = "sdk.session.reconnect_failed",
+                            error_code = error.code().metric_name(),
+                            observation = ?error.observation(),
+                            "Relay session reconnect failed"
+                        );
+                        tokio::select! {
+                            _ = inner.cancel.cancelled() => {
+                                close_reconnect_episode(&mut reconnect_episode);
+                                inner.close_all();
+                                return;
+                            },
+                            _ = tokio::time::sleep(backoff.next_delay()) => {}
+                        }
+                        continue;
+                    }
                 }
-            },
+            }
         };
+        if inner.cancel.is_cancelled() {
+            close_reconnect_episode(&mut reconnect_episode);
+            inner.close_all();
+            return;
+        }
         let started_at = Instant::now();
         let (commands_tx, commands_rx) = mpsc::channel(inner.config.outbound_capacity);
         let (cancellations_tx, cancellations_rx) = mpsc::unbounded_channel();
@@ -83,6 +111,10 @@ pub(super) async fn relay_supervisor(inner: Arc<RelayInner>, initial: Establishe
             cancel: session_cancel.clone(),
         });
         inner.current.send_replace(Some(Arc::clone(&session)));
+        inner.set_relay_status(RelayStatus::Active);
+        if let Some(ready) = initial_ready.take() {
+            let _ = ready.send(());
+        }
         let registration_succeeded = run_relay_session(
             next,
             &inner,
@@ -92,6 +124,20 @@ pub(super) async fn relay_supervisor(inner: Arc<RelayInner>, initial: Establishe
             &mut reconnect_episode,
         )
         .await;
+        if inner.cancel.is_cancelled() {
+            close_reconnect_episode(&mut reconnect_episode);
+            inner.close_all();
+            if inner
+                .current
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                inner.current.send_replace(None);
+            }
+            return;
+        }
+        inner.set_relay_status(RelayStatus::Reconnecting);
         if inner
             .current
             .borrow()
@@ -100,15 +146,11 @@ pub(super) async fn relay_supervisor(inner: Arc<RelayInner>, initial: Establishe
         {
             inner.current.send_replace(None);
         }
-        if inner.cancel.is_cancelled() {
-            close_reconnect_episode(&mut reconnect_episode);
-            inner.close_all();
-            return;
-        }
         if registration_succeeded {
             backoff.reset();
         }
         if reconnect_episode.is_none() {
+            inner.clear_reconnect_degraded();
             reconnect_episode = Some(ReconnectEpisode::start());
         }
         if started_at.elapsed() >= inner.config.reconnect_maximum {

@@ -103,6 +103,7 @@ pub(super) async fn handle_relay_frame(
             if permanent_registration_failure(code) {
                 if pending.state.was_returned() {
                     pending.state.block(error);
+                    inner.mark_reconnect_degraded();
                     pending.state.drain_unaccepted(true).await;
                 } else {
                     inner.fail_initial_listener(&pending.state, error);

@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex as StdMutex, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -12,7 +12,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{ListenerStatus, RelaySession};
+use super::{ListenerStatus, RelaySession, RelayStatus};
 use crate::{
     AccessTokenSource, Config, Destination, Error, ErrorCode, PeerObservation, Pipe,
     lifetime::RuntimeLifetime, resource::RelayResources, session::ReconnectBackoff,
@@ -22,12 +22,14 @@ pub(super) struct RelayInner {
     pub(super) config: Config,
     pub(super) desired: StdMutex<HashMap<Destination, Arc<ListenerState>>>,
     pub(super) current: watch::Sender<Option<Arc<RelaySession>>>,
+    pub(super) status: watch::Sender<RelayStatus>,
     pub(super) reconcile: Arc<Notify>,
     pub(super) cancel: CancellationToken,
     pub(super) lifetime: Weak<RuntimeLifetime>,
     pub(super) resources: RelayResources,
     pub(super) republish_retry_epoch: Arc<AtomicU64>,
     pub(super) republish_backoff: Arc<StdMutex<ReconnectBackoff>>,
+    pub(super) reconnect_degraded: AtomicBool,
 }
 
 pub(super) struct ListenerState {
@@ -118,12 +120,61 @@ impl RelayInner {
         }
     }
 
-    pub(super) fn desired_is_converged(&self) -> bool {
-        self.desired.lock().is_ok_and(|desired| {
-            desired
-                .values()
-                .all(|state| *state.status.borrow() == ListenerStatus::Active)
-        })
+    pub(super) fn desired_settlement(&self) -> DesiredSettlement {
+        self.desired
+            .lock()
+            .map_or(DesiredSettlement::Pending, |desired| {
+                let mut degraded = self.reconnect_degraded.load(Ordering::Acquire);
+                for state in desired.values() {
+                    match *state.status.borrow() {
+                        ListenerStatus::Active => {}
+                        ListenerStatus::Blocked => degraded = true,
+                        ListenerStatus::Registering
+                        | ListenerStatus::Suspended
+                        | ListenerStatus::Closed => return DesiredSettlement::Pending,
+                    }
+                }
+                if degraded {
+                    DesiredSettlement::Degraded
+                } else {
+                    DesiredSettlement::Recovered
+                }
+            })
+    }
+
+    pub(super) fn mark_reconnect_degraded(&self) {
+        self.reconnect_degraded.store(true, Ordering::Release);
+    }
+
+    pub(super) fn clear_reconnect_degraded(&self) {
+        self.reconnect_degraded.store(false, Ordering::Release);
+    }
+
+    pub(super) fn set_relay_status(&self, status: RelayStatus) {
+        let mut previous = status;
+        let mut applied = status;
+        let changed = self.status.send_if_modified(|current| {
+            previous = *current;
+            applied = if self.cancel.is_cancelled() {
+                RelayStatus::Closed
+            } else {
+                status
+            };
+            if *current == RelayStatus::Closed || *current == applied {
+                return false;
+            }
+            *current = applied;
+            true
+        });
+        if changed {
+            tracing::debug!(
+                component = "sdk",
+                event = "sdk.relay.status_changed",
+                previous = ?previous,
+                status = ?applied,
+                "Relay status changed"
+            );
+        }
     }
 
     pub(super) fn detach_listener(&self, state: &Arc<ListenerState>) {
@@ -149,6 +200,7 @@ impl RelayInner {
     }
 
     pub(super) fn close_all(&self) {
+        self.set_relay_status(RelayStatus::Closed);
         let mut desired = match self.desired.lock() {
             Ok(desired) => desired,
             Err(poisoned) => poisoned.into_inner(),
@@ -197,6 +249,13 @@ impl RelayInner {
         }
         self.reconcile.notify_one();
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DesiredSettlement {
+    Recovered,
+    Degraded,
+    Pending,
 }
 
 impl ListenerState {
