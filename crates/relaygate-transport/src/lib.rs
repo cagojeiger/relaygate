@@ -5,17 +5,10 @@
 //! responsibilities of the embedding application or platform.
 #![deny(missing_docs)]
 
-use std::{
-    fmt,
-    io::{self, Cursor},
-    sync::Arc,
-};
+use std::{fmt, io, sync::Arc};
 
-use rustls::{
-    ClientConfig, RootCertStore, ServerConfig,
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
-    server::WebPkiClientVerifier,
-};
+use rustls::{ClientConfig, RootCertStore, ServerConfig, server::WebPkiClientVerifier};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector, client, server};
@@ -253,9 +246,9 @@ fn root_store(ca_pem: &[u8]) -> Result<RootCertStore, TlsConfigError> {
 }
 
 fn certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsConfigError> {
-    let certificates = rustls_pemfile::certs(&mut Cursor::new(pem))
+    let certificates = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(TlsConfigError::InvalidPem)?;
+        .map_err(invalid_pem)?;
     if certificates.is_empty() {
         return Err(TlsConfigError::EmptyCertificateChain);
     }
@@ -263,9 +256,17 @@ fn certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsConfigErr
 }
 
 fn private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, TlsConfigError> {
-    rustls_pemfile::private_key(&mut Cursor::new(pem))
-        .map_err(TlsConfigError::InvalidPem)?
-        .ok_or(TlsConfigError::MissingPrivateKey)
+    PrivateKeyDer::from_pem_slice(pem).map_err(|error| match error {
+        rustls_pki_types::pem::Error::NoItemsFound => TlsConfigError::MissingPrivateKey,
+        error => invalid_pem(error),
+    })
+}
+
+fn invalid_pem(error: rustls_pki_types::pem::Error) -> TlsConfigError {
+    TlsConfigError::InvalidPem(io::Error::new(
+        io::ErrorKind::InvalidData,
+        error.to_string(),
+    ))
 }
 
 /// Failure to construct a TLS client or server configuration.
