@@ -144,12 +144,8 @@ impl Inner {
                     let (operation, access_token) = match ControlOperation::take(frame) {
                         Ok(control) => control,
                         Err(frame) => {
-                            let actions = {
-                                let mut state = self.lock_state();
-                                let actions = state.handle(session_id, frame)?;
-                                self.commit_registration_actions(&actions);
-                                actions
-                            };
+                            let actions =
+                                self.transition(|state| state.handle(session_id, frame))?;
                             self.send_session_actions(
                                 actions,
                                 session_id,
@@ -160,11 +156,13 @@ impl Inner {
                             continue;
                         }
                     };
-                    let early = self.lock_state().prepare_authorization(
-                        session_id,
-                        &operation,
-                        std::time::Instant::now(),
-                    );
+                    let early = self.transition(|state| {
+                        state.prepare_authorization(
+                            session_id,
+                            &operation,
+                            std::time::Instant::now(),
+                        )
+                    });
                     if let Some(actions) = early {
                         self.send_session_actions(
                             actions,
@@ -201,20 +199,15 @@ impl Inner {
                         "operation" => operation.name(),
                         "outcome" => outcome,
                     ).record(verification_started.elapsed().as_secs_f64());
-                    let actions = {
-                        let mut state = self.lock_state();
-                        let actions = match verified {
-                            Ok(verified) => state.commit_authorized(
-                                session_id,
-                                operation,
-                                verified,
-                                std::time::Instant::now(),
-                            ),
-                            Err(code) => state.authorization_failed(session_id, &operation, code),
-                        };
-                        self.commit_registration_actions(&actions);
-                        actions
-                    };
+                    let actions = self.transition(|state| match verified {
+                        Ok(verified) => state.commit_authorized(
+                            session_id,
+                            operation,
+                            verified,
+                            std::time::Instant::now(),
+                        ),
+                        Err(code) => state.authorization_failed(session_id, &operation, code),
+                    });
                     self.send_session_actions(
                         actions,
                         session_id,
@@ -247,12 +240,7 @@ impl Inner {
     }
 
     async fn cleanup(self: &Arc<Self>, session_id: relaygate_protocol::SessionId) {
-        let actions = {
-            let mut state = self.lock_state();
-            let actions = state.remove_session(session_id);
-            self.commit_registration_actions(&actions);
-            actions
-        };
+        let actions = self.transition(|state| state.remove_session(session_id));
         self.execute_all(actions).await;
     }
 

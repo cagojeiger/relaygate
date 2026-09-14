@@ -1,5 +1,9 @@
 # ADR 013: 인증서 생명주기는 배포자가 소유한다
 
+| 항목 | 결정 |
+| --- | --- |
+| 상태 | Accepted |
+
 | 소유자 | 책임 |
 | --- | --- |
 | 배포자 / GitOps | Certificate·Issuer·CA·Secret 공급, 갱신과 rollout 정책 |

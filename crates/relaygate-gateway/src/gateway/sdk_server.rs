@@ -244,12 +244,7 @@ async fn wait_until_drained(inner: &Inner, drain_timeout: Duration) -> bool {
 
 impl Inner {
     async fn expire_offers(self: &Arc<Self>) {
-        let actions = {
-            let mut state = self.lock_state();
-            let actions = state.expire_offers(std::time::Instant::now());
-            self.commit_registration_actions(&actions);
-            actions
-        };
+        let actions = self.transition(|state| state.expire_offers(std::time::Instant::now()));
         self.execute_all(actions).await;
     }
 }

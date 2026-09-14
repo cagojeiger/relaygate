@@ -14,8 +14,9 @@
 - `relaygate-server`는 process boot, config, observation, shutdown과 dependency wiring만 소유한다.
 - `relaygate-gateway`는 대칭 Relay session, local binding, RT registration·Resolve orchestration, one-hop peer relay, dial admission, Pipe relay와 cleanup을 소유한다.
 - `relaygate-sdk`는 public `Relay`, `Listener`, `Pipe` API와 managed reconnect·Listener republish를 소유하며 Gateway state type을 노출하지 않는다.
-- `relaygate-protocol`은 SDK–Gateway wire contract만 소유하는 workspace-internal crate이며 socket, session policy와 routing state를 소유하지 않는다.
-- Gateway와 SDK는 서로 직접 의존하지 않고 `relaygate-protocol`만 공유한다.
+- `relaygate-protocol`은 SDK–Gateway wire contract만 소유하며 socket, session policy와 routing state를 소유하지 않는다. SDK 의존성으로 crates.io에 배포되지만 application용 안정 API가 아니다.
+- `relaygate-destination`은 `Namespace/DestinationName` 문법과 검증만, `relaygate-transport`는 TLS/mTLS handshake adapter만, `relaygate-token-issuer`는 application backend용 server-side ES256 JWT 발급 helper만 소유한다.
+- Gateway와 SDK는 runtime dependency로 서로 직접 의존하지 않고(test dev-dependency 제외) `relaygate-protocol`, `relaygate-destination`, `relaygate-transport`만 공유한다.
 - `relaygate-route-table`은 synchronous memory-only current-state core를, `relaygate-route-table-transport`는 bounded internal network/auth adapter를 소유하며 persistence를 포함하지 않는다.
 - local-only mode는 Gateway 하나의 local Pipe 경로를 유지한다. distributed mode는 memory-only RouteTable과 one-hop peer relay를 사용하며 persistence를 포함하지 않는다.
 - RelayGate는 payload를 opaque bytes로 취급하고 application 인증·인가, message 의미, delivery acknowledgement와 업무 retry를 소유하지 않는다.

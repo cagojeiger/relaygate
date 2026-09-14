@@ -2,7 +2,7 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Accepted; supersedes [ADR 003](003-application-owned-destination.md) |
 | routing key | `Namespace/DestinationName` |
 | 생성·보관 | application |
 | lookup | exact match |

@@ -123,8 +123,8 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
-    [*] --> OPENING
-    OPENING --> OPEN
+    [*] --> OFFERED
+    OFFERED --> OPEN
     OPEN --> HALF_CLOSED: FIN
     HALF_CLOSED --> CLOSED: opposite FIN / CLOSE
     OPEN --> CLOSED: CLOSE / RESET

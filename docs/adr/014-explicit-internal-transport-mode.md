@@ -1,5 +1,9 @@
 # ADR 014: 내부 전송은 mTLS 기본값과 명시적 plaintext를 제공한다
 
+| 항목 | 결정 |
+| --- | --- |
+| 상태 | Accepted |
+
 | 경계 | 결정 |
 | --- | --- |
 | SDK ↔ Gateway | TLS와 PUBLISH/DIAL JWT grant 유지 |

@@ -10,7 +10,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{
     peer::{OpenIdentity, PeerEvent, PeerFailure, PeerOpenRequest, PeerTarget},
-    state::{DeliveryFailure, GatewayAction, GatewayState, PeerDelivery},
+    state::{DeliveryFailure, GatewayAction, PeerDelivery},
 };
 
 use super::{Inner, route_resolver::RouteResolver};
@@ -64,16 +64,6 @@ impl ControlEffects {
 }
 
 impl Inner {
-    fn transition(
-        &self,
-        apply: impl FnOnce(&mut GatewayState) -> Vec<GatewayAction>,
-    ) -> Vec<GatewayAction> {
-        let mut state = self.lock_state();
-        let actions = apply(&mut state);
-        self.commit_registration_actions(&actions);
-        actions
-    }
-
     pub(super) async fn execute_all(self: &Arc<Self>, actions: Vec<GatewayAction>) {
         let mut pending = VecDeque::from(actions);
         let mut cleaned = HashSet::new();
@@ -133,13 +123,7 @@ impl Inner {
                 DeliveryFailure::SessionUnavailable(failed_session)
                     if cleaned.insert(failed_session) =>
                 {
-                    let cleanup_actions = {
-                        let mut state = self.lock_state();
-                        let actions = state.remove_session(failed_session);
-                        self.commit_registration_actions(&actions);
-                        actions
-                    };
-                    pending.extend(cleanup_actions);
+                    pending.extend(self.transition(|state| state.remove_session(failed_session)));
                 }
                 DeliveryFailure::SessionUnavailable(_) => {}
             }

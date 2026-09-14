@@ -227,3 +227,91 @@ lifecycle log가 담당합니다.
 | `OBS-012` | SDK 계측은 error·polled future cancel·reconnect 미완료와 종료를 구분한다. |
 | `OBS-013` | 결과 분류와 gauge/rate 단위를 유지하고 실제 PromQL 기대값으로 검증한다. |
 | `OBS-014` | SDK live Pipe·buffered byte 점유는 cleanup 뒤 기준값으로 수렴하고 resource rejection은 bounded `resource` label로 구분한다. |
+
+## Runtime 환경변수
+
+`relaygate-server`가 읽는 환경변수의 canonical 목록입니다. 동작 계약은 각 절과 SPEC이 소유하고 이 절은 이름,
+기본값과 시작 검증만 모읍니다. 기본값은 `crates/relaygate-server/src/config/`와 각 crate의 `DEFAULT_*` 상수를
+따릅니다.
+
+공통 규칙:
+
+- 정수와 `_MS` 값은 양의 정수이며 0이나 parse 실패는 listener를 열기 전에 시작 실패입니다.
+- `_MS` 값은 monotonic deadline으로 표현할 수 있어야 합니다.
+- 제거된 `RELAYGATE_CLUSTER_TOKEN`, `RELAYGATE_NEXT_CLUSTER_TOKEN`이 설정되면 시작 실패입니다([ADR 016](../adr/016-per-operation-jwt-authorization.md)).
+
+### 공통 process
+
+| 변수 | 기본값 | 의미 |
+| --- | --- | --- |
+| `RELAYGATE_LOG` | `info` | tracing filter. 없으면 `RUST_LOG`/기본 filter |
+| `RELAYGATE_LOG_FORMAT` | `text` | `text` 또는 `json` |
+| `RELAYGATE_METRICS_BIND_ADDR` | 없음(비활성) | Prometheus exporter socket address |
+| `RELAYGATE_METRICS_INTERVAL_MS` | 5000 | Gateway gauge 갱신 주기(RouteTable은 검증만). `RELAYGATE_METRICS_BIND_ADDR` 없이 설정하면 시작 실패 |
+
+### 전송 mode
+
+규칙은 [전송](#전송)과 [ADR 014](../adr/014-explicit-internal-transport-mode.md)를 따릅니다.
+
+| 변수 | 기본값 | 의미 |
+| --- | --- | --- |
+| `RELAYGATE_SDK_TRANSPORT` | `tls` | SDK edge `tls` 또는 `plaintext` |
+| `RELAYGATE_INTERNAL_TRANSPORT` | `mtls` | GW↔GW·RT `mtls` 또는 `plaintext` |
+| `RELAYGATE_SDK_TLS_CERT_PATH` / `RELAYGATE_SDK_TLS_KEY_PATH` | 없음 | SDK TLS 사용 시 필수 |
+| `RELAYGATE_SDK_TLS_SERVER_NAME` | 없음 | TLS `check` 명령에서 필수 |
+| `RELAYGATE_SDK_TLS_CA_PATH` | Web PKI roots | `check` 명령의 사설 CA |
+| `RELAYGATE_INTERNAL_TLS_CA_PATH` / `RELAYGATE_INTERNAL_TLS_CERT_PATH` / `RELAYGATE_INTERNAL_TLS_KEY_PATH` | 없음 | 내부 mTLS 사용 시 필수 |
+| `RELAYGATE_PEER_TLS_SERVER_NAME` | 없음 | distributed Gateway 또는 RouteTable의 mTLS에서 필수. Gateway는 peer 검증 이름, RouteTable은 서버 인증서 이름 |
+| `RELAYGATE_RT_TLS_SERVER_NAME` | 없음 | distributed Gateway mTLS에서 필수 |
+| `RELAYGATE_INSECURE_TEST_TRANSPORT` / `RELAYGATE_RT_TRUSTED_LOCAL` | 없음 | legacy test flag. `INSECURE_TEST_TRANSPORT`는 값이 정확히 `true`일 때만 활성이며 SDK 기본값을 plaintext로, 내부 전송을 plaintext로 바꾸고 이때 `RT_TRUSTED_LOCAL=true`가 필요하다. `RT_TRUSTED_LOCAL` 단독 설정과 명시적 mode 혼용은 시작 실패 |
+
+### Gateway
+
+| 변수 | 기본값 | 의미 |
+| --- | --- | --- |
+| `RELAYGATE_BIND_ADDR` | `0.0.0.0:27420` | SDK listener |
+| `RELAYGATE_AUTH_CONFIG_PATH` | 없음(필수) | Namespace issuer 설정([SPEC 009](009-operation-jwt-authorization-contract.md)) |
+| `RELAYGATE_WRITER_QUEUE_CAPACITY` | 128 | session별 SDK writer queue |
+| `RELAYGATE_MAX_FRAME_LEN` | 1 MiB | SDK frame 최대 길이 |
+| `RELAYGATE_MAX_SESSIONS` | 10,000 | [SDK handshake 보호](#sdk-handshake-보호) |
+| `RELAYGATE_MAX_PENDING_HANDSHAKES` | 256 | 동일 |
+| `RELAYGATE_SDK_CONNECTION_RATE_PER_SECOND` / `RELAYGATE_SDK_CONNECTION_BURST` | 256 / 256 | 동일 |
+| `RELAYGATE_CONTROL_RATE_PER_SECOND` / `RELAYGATE_CONTROL_BURST` | 4,096 / 4,096 | [SDK 제어 요청 보호](#sdk-제어-요청-보호) |
+| `RELAYGATE_SESSION_CONTROL_RATE_PER_SECOND` / `RELAYGATE_SESSION_CONTROL_BURST` | 256 / 256 | 동일 |
+| `RELAYGATE_MAX_BINDINGS` | 100,000 | GW 전체 live Binding |
+| `RELAYGATE_MAX_PENDING_OFFERS` | 10,000 | 응답 대기 OFFER |
+| `RELAYGATE_MAX_REMOTE_DIAL_ATTEMPTS` | 128 | 동시에 진행 중인 remote dial attempt |
+| `RELAYGATE_MAX_LIVE_PIPES` | 100,000 | GW 전체 live Pipe |
+| `RELAYGATE_OFFER_TIMEOUT_MS` | 5000 | OFFER deadline(`DIAL-008`) |
+| `RELAYGATE_DRAIN_TIMEOUT_MS` | 120000 | graceful drain 상한([ADR 010](../adr/010-bounded-gateway-drain-and-reconnect-jitter.md)) |
+| `RELAYGATE_SDK_HEARTBEAT_IDLE_MS` / `RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS` | 60000 / 20000 | SDK session liveness([ADR 008](../adr/008-transport-liveness-and-idle-retirement.md)) |
+| `RELAYGATE_STATS_INTERVAL_MS` | 없음(비활성) | 주기적 state stats log |
+
+### Distributed Gateway
+
+`RELAYGATE_RT_TRUSTED_LOCAL`, `RELAYGATE_RT_SHARD_DIRECTORY_PATH`, `RELAYGATE_GATEWAY_NAME`,
+`RELAYGATE_GATEWAY_LOCATOR`, `RELAYGATE_PEER_BIND_ADDR` 중 하나라도 있으면 distributed mode이며 아래 필수 값을
+모두 요구합니다.
+
+| 변수 | 기본값 | 의미 |
+| --- | --- | --- |
+| `RELAYGATE_RT_SHARD_DIRECTORY_PATH` | 없음(필수) | ShardDirectory JSON |
+| `RELAYGATE_GATEWAY_NAME` | 없음(필수) | logical Gateway 이름 |
+| `RELAYGATE_GATEWAY_LOCATOR` | 없음(필수) | peer가 접속할 주소 |
+| `RELAYGATE_PEER_BIND_ADDR` | `0.0.0.0:27421` | peer listener |
+| `RELAYGATE_PEER_HEARTBEAT_IDLE_MS` / `RELAYGATE_PEER_HEARTBEAT_TIMEOUT_MS` | 60000 / 20000 | peer transport liveness |
+| `RELAYGATE_PEER_IDLE_TIMEOUT_MS` | 300000 | stream 없는 peer transport retirement |
+
+### RouteTable
+
+| 변수 | 기본값 | 의미 |
+| --- | --- | --- |
+| `RELAYGATE_RT_BIND_ADDR` | `127.0.0.1:27430` | RT listener |
+| `RELAYGATE_RT_SHARD_DIRECTORY_PATH` | 없음(필수) | ShardDirectory JSON |
+| `RELAYGATE_RT_SHARD_ID` | `rt-0` | 이 process가 소유하는 shard |
+| `RELAYGATE_RT_LEASE_TTL_MS` | 30000 | registration lease([SPEC 004](004-route-table-contract.md)) |
+| `RELAYGATE_RT_REQUEST_QUEUE_CAPACITY` | 128 | shard actor request queue |
+| `RELAYGATE_RT_WRITER_QUEUE_CAPACITY` | 32 | connection별 writer queue |
+| `RELAYGATE_RT_MAX_CONNECTIONS` | 1,024 | 동시 Gateway connection |
+| `RELAYGATE_RT_MAX_FRAME_LEN` | 1 MiB | RT frame 최대 길이 |
+| `RELAYGATE_RT_HANDSHAKE_TIMEOUT_MS` | 3000 | connection handshake deadline |

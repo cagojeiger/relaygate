@@ -2,7 +2,7 @@
 
 | 항목 | 결정 |
 | --- | --- |
-| 상태 | Accepted |
+| 상태 | Accepted; supersedes [ADR 004](004-cluster-token-session-admission.md) |
 | session handshake | `HELLO/WELCOME`, credential 없음 |
 | protected operation | `PUBLISH`, `DIAL` |
 | token profile | RFC 7515·7517·7518·7519·8725 기반 RelayGate custom JWT |

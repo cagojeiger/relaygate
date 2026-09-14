@@ -1,4 +1,7 @@
-//! Workspace-internal SDK–Gateway wire contract.
+//! Internal SDK–Gateway wire contract.
+//!
+//! Published only as a dependency of `relaygate-sdk`; it is not a stable
+//! application API.
 //!
 //! This crate owns framing and identifiers only. Socket ownership, reconnect,
 //! admission, and routing policy belong to the SDK and Gateway crates.
