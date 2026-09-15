@@ -72,7 +72,7 @@ impl WireRequest {
             }
         }
 
-        let requested_generation = parse_generation(self.generation())?;
+        let requested_generation: ShardDirectoryGeneration = self.generation().parse()?;
         if requested_generation != configured_generation {
             return Err(TransportError::new(
                 crate::ErrorCode::FailedPrecondition,
@@ -142,7 +142,7 @@ impl WireRequest {
     pub(crate) fn into_domain(self) -> Result<DomainRequest, TransportError> {
         match self {
             Self::Register { generation, key } => Ok(DomainRequest::Register {
-                generation: parse_generation(&generation)?,
+                generation: generation.parse()?,
                 key: key.into_domain()?,
             }),
             Self::Update {
@@ -157,7 +157,7 @@ impl WireRequest {
                     .map(WireBindingProjection::into_domain)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(DomainRequest::Update {
-                    generation: parse_generation(&generation)?,
+                    generation: generation.parse()?,
                     key: key.into_domain()?,
                     lease_id: parse_uuid(&lease_id, "LeaseId").map(LeaseId::from_uuid)?,
                     revision: RegistrationRevision::new(revision)?,
@@ -169,7 +169,7 @@ impl WireRequest {
                 key,
                 lease_id,
             } => Ok(DomainRequest::KeepAlive {
-                generation: parse_generation(&generation)?,
+                generation: generation.parse()?,
                 key: key.into_domain()?,
                 lease_id: parse_uuid(&lease_id, "LeaseId").map(LeaseId::from_uuid)?,
             }),
@@ -178,7 +178,7 @@ impl WireRequest {
                 key,
                 lease_id,
             } => Ok(DomainRequest::Deregister {
-                generation: parse_generation(&generation)?,
+                generation: generation.parse()?,
                 key: key.into_domain()?,
                 lease_id: parse_uuid(&lease_id, "LeaseId").map(LeaseId::from_uuid)?,
             }),
@@ -186,7 +186,7 @@ impl WireRequest {
                 generation,
                 destination,
             } => Ok(DomainRequest::Resolve {
-                generation: parse_generation(&generation)?,
+                generation: generation.parse()?,
                 destination: destination
                     .parse::<Destination>()
                     .map_err(RouteTableError::from)?,
@@ -483,38 +483,6 @@ pub(crate) fn response_bindings(
     Ok(bindings)
 }
 
-fn parse_generation(value: &str) -> Result<ShardDirectoryGeneration, TransportError> {
-    if value.len() != 64 || !value.is_ascii() {
-        return Err(TransportError::invalid_argument(
-            "ShardDirectoryGeneration must be 64 hexadecimal characters",
-        ));
-    }
-    let mut bytes = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-        let high = hex_value(pair[0]).ok_or_else(|| {
-            TransportError::invalid_argument(
-                "ShardDirectoryGeneration must contain only hexadecimal characters",
-            )
-        })?;
-        let low = hex_value(pair[1]).ok_or_else(|| {
-            TransportError::invalid_argument(
-                "ShardDirectoryGeneration must contain only hexadecimal characters",
-            )
-        })?;
-        bytes[index] = (high << 4) | low;
-    }
-    Ok(ShardDirectoryGeneration::from_bytes(bytes))
-}
-
-const fn hex_value(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
-    }
-}
-
 fn parse_uuid(value: &str, field: &'static str) -> Result<Uuid, TransportError> {
     Uuid::parse_str(value).map_err(|_| {
         TransportError::from(RouteTableError::InvalidArgument(format!(
@@ -561,6 +529,28 @@ mod tests {
         assert_eq!(
             error.map(|error| error.code()),
             Some(ErrorCode::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn malformed_generation_is_an_invalid_argument_at_the_transport_boundary() {
+        let authenticated = GatewayId::from_uuid(Uuid::from_u128(1));
+        let request = WireRequest::Resolve {
+            generation: "not-hex".to_owned(),
+            destination: String::new(),
+        };
+
+        let error = request
+            .validate_preconditions(
+                RequestContext::new(AuthenticatedGatewayId::from_verified_transport(
+                    authenticated,
+                )),
+                ShardDirectoryGeneration::from_bytes([1; 32]),
+            )
+            .err();
+        assert_eq!(
+            error.map(|error| error.code()),
+            Some(ErrorCode::InvalidArgument)
         );
     }
 
