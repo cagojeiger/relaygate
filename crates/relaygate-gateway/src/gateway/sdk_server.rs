@@ -245,12 +245,13 @@ fn reject_transport(reason: &'static str, message: &'static str, peer_addr: Sock
         "reason" => reason
     )
     .increment(1);
+    // `message` first keeps the text-log layout of the former inline sites.
     tracing::debug!(
+        message,
         component = "gateway",
         event = "gateway.session.rejected",
         %peer_addr,
-        reason,
-        message
+        reason
     );
 }
 
