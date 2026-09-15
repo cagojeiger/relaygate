@@ -417,33 +417,6 @@ impl Pipe {
         )
     }
 
-    /// Reads ordered bytes while preserving RelayGate's structured [`Error`].
-    /// `0` means graceful EOF.
-    #[deprecated(
-        since = "0.4.0",
-        note = "use tokio::io::AsyncReadExt::read and recover the SDK error with Error::from_io"
-    )]
-    pub async fn read_into(&mut self, destination: &mut [u8]) -> Result<usize> {
-        poll_fn(|context| {
-            self.reader
-                .poll_read(&self.owner.state, context, destination)
-        })
-        .await
-    }
-
-    /// Enqueues all bytes to the bounded session path in order.
-    ///
-    /// Success is not a peer application delivery acknowledgement. Unlike
-    /// [`tokio::io::AsyncWriteExt::write_all`], an empty payload still reports
-    /// a closed or failed Pipe.
-    #[deprecated(
-        since = "0.4.0",
-        note = "use tokio::io::AsyncWriteExt::write_all and recover the SDK error with Error::from_io"
-    )]
-    pub async fn write_all_bytes(&mut self, payload: &[u8]) -> Result<()> {
-        self.writer.write_all(&self.owner.state, payload).await
-    }
-
     /// Gracefully closes only this endpoint's write direction.
     pub async fn shutdown_write(&mut self) -> Result<()> {
         self.writer.shutdown_write(&self.owner.state).await
@@ -462,32 +435,7 @@ impl Pipe {
     }
 }
 
-impl PipeReadHalf {
-    /// Split-read equivalent of [`Pipe::read_into`].
-    #[deprecated(
-        since = "0.4.0",
-        note = "use tokio::io::AsyncReadExt::read and recover the SDK error with Error::from_io"
-    )]
-    pub async fn read_into(&mut self, destination: &mut [u8]) -> Result<usize> {
-        poll_fn(|context| {
-            self.reader
-                .poll_read(&self.owner.state, context, destination)
-        })
-        .await
-    }
-}
-
 impl PipeWriteHalf {
-    /// Split-write equivalent of [`Pipe::write_all_bytes`], including its
-    /// empty-payload behaviour.
-    #[deprecated(
-        since = "0.4.0",
-        note = "use tokio::io::AsyncWriteExt::write_all and recover the SDK error with Error::from_io"
-    )]
-    pub async fn write_all_bytes(&mut self, payload: &[u8]) -> Result<()> {
-        self.writer.write_all(&self.owner.state, payload).await
-    }
-
     /// Split-write equivalent of [`Pipe::shutdown_write`].
     pub async fn shutdown_write(&mut self) -> Result<()> {
         self.writer.shutdown_write(&self.owner.state).await
@@ -507,19 +455,6 @@ impl PipeWriteHalf {
 }
 
 impl PipeWriter {
-    async fn write_all(&mut self, state: &PipeState, payload: &[u8]) -> Result<()> {
-        if payload.is_empty() {
-            self.outbound.cancel_wait();
-            return state.write_error().map_or(Ok(()), Err);
-        }
-        let mut written = 0;
-        while written < payload.len() {
-            written +=
-                poll_fn(|context| self.poll_write(state, context, &payload[written..])).await?;
-        }
-        Ok(())
-    }
-
     async fn shutdown_write(&mut self, state: &PipeState) -> Result<()> {
         poll_fn(|context| self.poll_shutdown(state, context)).await
     }
