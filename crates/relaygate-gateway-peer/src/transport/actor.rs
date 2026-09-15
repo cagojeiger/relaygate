@@ -1,4 +1,9 @@
-use std::{cmp::min, future::pending, sync::Arc};
+use std::{
+    cmp::min,
+    future::pending,
+    ops::ControlFlow::{self, Break, Continue},
+    sync::Arc,
+};
 
 use super::{
     ActiveOpenSet, TransportCloseReason, TransportClosure, TransportCommand, TransportNotice,
@@ -7,7 +12,9 @@ use super::{
     writer::run_writer,
 };
 use crate::metrics::{HeartbeatTransport, observe_heartbeat_round_trip, observe_heartbeat_timeout};
-use crate::{config::GatewayPeerConfig, handshake::EstablishedPeer};
+use crate::{
+    codec::PeerCodecError, config::GatewayPeerConfig, frame::PeerFrame, handshake::EstablishedPeer,
+};
 use futures_util::StreamExt;
 use tokio::{
     sync::mpsc,
@@ -41,7 +48,7 @@ pub(super) async fn run_transport_actor(
     let close = closure.token().clone();
     let writer_closure = closure.clone();
     let actor_config = config.clone();
-    let mut actor = TransportActor::new(
+    let actor = TransportActor::new(
         &established,
         actor_config,
         aggregate_writer,
@@ -58,126 +65,46 @@ pub(super) async fn run_transport_actor(
         writer_wake,
         writer_closure,
     ));
-    let mut liveness = TransportLiveness::new(
+    let liveness = TransportLiveness::new(
         heartbeat_idle_interval,
         heartbeat_response_timeout,
         idle_retirement_timeout,
     );
-    liveness.sync_stream_state(actor.streams.is_empty());
-    let mut close_reason = TransportCloseReason::LocalClose;
+    let mut transport = TransportLoop { actor, liveness };
+    transport.sync_liveness();
 
-    loop {
-        let deadline = earliest_deadline(actor.next_open_deadline(), liveness.next_deadline());
-        tokio::select! {
-            () = close.cancelled() => break,
+    let close_reason = loop {
+        let deadline = transport.next_deadline();
+        let outcome = tokio::select! {
+            () = close.cancelled() => break TransportCloseReason::LocalClose,
             command = commands.recv() => {
-                let Some(command) = command else { break };
-                actor.handle_command(command).await;
-                actor.flush_stream_queues().await;
-                liveness.sync_stream_state(actor.streams.is_empty());
+                let Some(command) = command else { break TransportCloseReason::LocalClose };
+                transport.on_command(command).await;
+                Continue(())
             }
-            frame = source.next() => {
-                let Some(frame) = frame else {
-                    close_reason = TransportCloseReason::RemoteClosed;
-                    break;
-                };
-                match frame {
-                    Ok(frame) => {
-                        if let Some(round_trip) = liveness.observe_inbound(&frame) {
-                            observe_heartbeat_round_trip(HeartbeatTransport::Peer, round_trip);
-                        }
-                        if liveness.response_timed_out() {
-                            observe_heartbeat_timeout(HeartbeatTransport::Peer);
-                            tracing::debug!(
-                                component = "gateway",
-                                event = "gateway.peer.transport.heartbeat_timeout",
-                                peer_gateway_id = %actor.peer_gateway_id.as_uuid(),
-                                peer_transport_id = %actor.peer_transport_id.as_uuid(),
-                                streams = actor.streams.len(),
-                                "PeerTransport heartbeat response timed out"
-                            );
-                            close_reason = TransportCloseReason::HeartbeatTimeout;
-                            break;
-                        }
-                        if !actor.handle_frame(frame).await {
-                            close_reason = TransportCloseReason::ProtocolError;
-                            break;
-                        }
-                        actor.flush_stream_queues().await;
-                        liveness.sync_stream_state(actor.streams.is_empty());
-                    }
-                    Err(error) => {
-                        close_reason = if error.is_io() {
-                            TransportCloseReason::RemoteClosed
-                        } else {
-                            TransportCloseReason::ProtocolError
-                        };
-                        break;
-                    }
-                }
-            }
+            frame = source.next() => transport.on_inbound(frame).await,
             () = wait_for_deadline(deadline), if deadline.is_some() => {
-                let now = Instant::now();
-                actor.expire_open_deadlines().await;
-                actor.flush_stream_queues().await;
-                if let Some(action) = liveness.on_deadline(
-                    now,
-                    actor.streams.is_empty(),
-                    commands.is_empty(),
-                ) {
-                    match action {
-                        LivenessAction::Ping(frame) => {
-                            if actor.aggregate_writer.try_send(frame).is_err() {
-                                close_reason = TransportCloseReason::WriterFailed;
-                                break;
-                            }
-                            liveness.mark_probe_committed();
-                        }
-                        LivenessAction::HeartbeatTimeout => {
-                            observe_heartbeat_timeout(HeartbeatTransport::Peer);
-                            tracing::debug!(
-                                component = "gateway",
-                                event = "gateway.peer.transport.heartbeat_timeout",
-                                peer_gateway_id = %actor.peer_gateway_id.as_uuid(),
-                                peer_transport_id = %actor.peer_transport_id.as_uuid(),
-                                streams = actor.streams.len(),
-                                "PeerTransport heartbeat response timed out"
-                            );
-                            close_reason = TransportCloseReason::HeartbeatTimeout;
-                            break;
-                        }
-                        LivenessAction::IdleRetired => {
-                            tracing::debug!(
-                                component = "gateway",
-                                event = "gateway.peer.transport.idle_retired",
-                                peer_gateway_id = %actor.peer_gateway_id.as_uuid(),
-                                peer_transport_id = %actor.peer_transport_id.as_uuid(),
-                                streams = actor.streams.len(),
-                                "PeerTransport idle retirement timeout expired"
-                            );
-                            close_reason = TransportCloseReason::IdleRetired;
-                            break;
-                        }
-                    }
-                }
-                liveness.sync_stream_state(actor.streams.is_empty());
+                transport.on_deadline(commands.is_empty()).await
             }
             wake = writer_wakes.recv() => {
                 if wake.is_none() {
-                    if !close.is_cancelled() {
-                        close_reason = TransportCloseReason::WriterFailed;
-                    }
-                    break;
+                    break if close.is_cancelled() {
+                        TransportCloseReason::LocalClose
+                    } else {
+                        TransportCloseReason::WriterFailed
+                    };
                 }
-                actor.flush_stream_queues().await;
-                liveness.sync_stream_state(actor.streams.is_empty());
+                transport.after_activity().await;
+                Continue(())
             }
+        };
+        if let Break(reason) = outcome {
+            break reason;
         }
-    }
+    };
 
-    if let Some(failure_reason) = actor.closure.failure_reason() {
-        close_reason = failure_reason;
-    }
+    let TransportLoop { mut actor, .. } = transport;
+    let close_reason = actor.closure.failure_reason().unwrap_or(close_reason);
     close.cancel();
     let losses = actor.drain_losses();
     drop(actor.aggregate_writer);
@@ -194,6 +121,105 @@ pub(super) async fn run_transport_actor(
             streams: losses,
         })
         .await;
+}
+
+/// One transport's read loop state: protocol actor plus heartbeat/idle liveness.
+struct TransportLoop {
+    actor: TransportActor,
+    liveness: TransportLiveness,
+}
+
+impl TransportLoop {
+    fn next_deadline(&self) -> Option<Instant> {
+        earliest_deadline(
+            self.actor.next_open_deadline(),
+            self.liveness.next_deadline(),
+        )
+    }
+
+    fn sync_liveness(&mut self) {
+        self.liveness
+            .sync_stream_state(self.actor.streams.is_empty());
+    }
+
+    /// Every state change flushes queued stream frames and re-syncs idle tracking.
+    async fn after_activity(&mut self) {
+        self.actor.flush_stream_queues().await;
+        self.sync_liveness();
+    }
+
+    async fn on_command(&mut self, command: TransportCommand) {
+        self.actor.handle_command(command).await;
+        self.after_activity().await;
+    }
+
+    async fn on_inbound(
+        &mut self,
+        frame: Option<Result<PeerFrame, PeerCodecError>>,
+    ) -> ControlFlow<TransportCloseReason> {
+        let frame = match frame {
+            None => return Break(TransportCloseReason::RemoteClosed),
+            Some(Err(error)) if error.is_io() => return Break(TransportCloseReason::RemoteClosed),
+            Some(Err(_)) => return Break(TransportCloseReason::ProtocolError),
+            Some(Ok(frame)) => frame,
+        };
+        if let Some(round_trip) = self.liveness.observe_inbound(&frame) {
+            observe_heartbeat_round_trip(HeartbeatTransport::Peer, round_trip);
+        }
+        if self.liveness.response_timed_out() {
+            return Break(self.heartbeat_timed_out());
+        }
+        if !self.actor.handle_frame(frame).await {
+            return Break(TransportCloseReason::ProtocolError);
+        }
+        self.after_activity().await;
+        Continue(())
+    }
+
+    async fn on_deadline(&mut self, commands_empty: bool) -> ControlFlow<TransportCloseReason> {
+        let now = Instant::now();
+        self.actor.expire_open_deadlines().await;
+        self.actor.flush_stream_queues().await;
+        let action = self
+            .liveness
+            .on_deadline(now, self.actor.streams.is_empty(), commands_empty);
+        match action {
+            Some(LivenessAction::Ping(frame)) => {
+                if self.actor.aggregate_writer.try_send(frame).is_err() {
+                    return Break(TransportCloseReason::WriterFailed);
+                }
+                self.liveness.mark_probe_committed();
+            }
+            Some(LivenessAction::HeartbeatTimeout) => return Break(self.heartbeat_timed_out()),
+            Some(LivenessAction::IdleRetired) => {
+                tracing::debug!(
+                    component = "gateway",
+                    event = "gateway.peer.transport.idle_retired",
+                    peer_gateway_id = %self.actor.peer_gateway_id.as_uuid(),
+                    peer_transport_id = %self.actor.peer_transport_id.as_uuid(),
+                    streams = self.actor.streams.len(),
+                    "PeerTransport idle retirement timeout expired"
+                );
+                return Break(TransportCloseReason::IdleRetired);
+            }
+            None => {}
+        }
+        self.sync_liveness();
+        Continue(())
+    }
+
+    fn heartbeat_timed_out(&self) -> TransportCloseReason {
+        observe_heartbeat_timeout(HeartbeatTransport::Peer);
+        tracing::debug!(
+            component = "gateway",
+            event = "gateway.peer.transport.heartbeat_timeout",
+            peer_gateway_id = %self.actor.peer_gateway_id.as_uuid(),
+            peer_transport_id = %self.actor.peer_transport_id.as_uuid(),
+            streams = self.actor.streams.len(),
+            "PeerTransport heartbeat response timed out"
+        );
+        TransportCloseReason::HeartbeatTimeout
+    }
 }
 
 fn earliest_deadline(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
