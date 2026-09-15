@@ -138,6 +138,7 @@ crates/
 ├── relaygate-sdk/                   public Relay, Listener, Pipe API
 ├── relaygate-token-issuer/          server-side operation JWT helper
 ├── relaygate-gateway/               Binding, dial, relay, cleanup
+├── relaygate-gateway-peer/          GW-GW one-hop transport, handshake, peer wire
 ├── relaygate-route-table/           memory-only current-state shard
 ├── relaygate-route-table-transport/ GW-RT bounded transport/auth
 └── relaygate-server/                config, wiring, metrics, shutdown

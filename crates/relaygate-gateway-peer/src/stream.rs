@@ -1,0 +1,135 @@
+#[cfg(test)]
+use relaygate_protocol::ErrorCode;
+
+use super::{
+    error::PeerError,
+    identity::{StreamEndpoint, StreamOwner},
+};
+
+#[derive(Debug, Clone)]
+pub struct RelayStream {
+    state: RelayStreamState,
+    owner: Option<StreamOwner>,
+    local_finished: bool,
+    remote_finished: bool,
+}
+
+impl RelayStream {
+    #[must_use]
+    #[cfg(test)]
+    pub const fn opening() -> Self {
+        Self {
+            state: RelayStreamState::Opening,
+            owner: None,
+            local_finished: false,
+            remote_finished: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn owned_opening(owner: StreamOwner) -> Self {
+        Self {
+            state: RelayStreamState::Opening,
+            owner: Some(owner),
+            local_finished: false,
+            remote_finished: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn owner(&self) -> Option<StreamOwner> {
+        self.owner
+    }
+
+    pub fn opened(&mut self) -> Result<(), PeerError> {
+        match self.state {
+            RelayStreamState::Opening => {
+                self.state = RelayStreamState::Open;
+                Ok(())
+            }
+            RelayStreamState::Open | RelayStreamState::Closed(_) => {
+                Err(PeerError::FailedPrecondition("RelayStream is not opening"))
+            }
+        }
+    }
+
+    pub fn fin(&mut self, sender: StreamEndpoint) -> Result<bool, PeerError> {
+        self.ensure_open()?;
+        let finished = match sender {
+            StreamEndpoint::Dialer => &mut self.local_finished,
+            StreamEndpoint::Acceptor => &mut self.remote_finished,
+        };
+        if *finished {
+            return Ok(false);
+        }
+        *finished = true;
+        if self.local_finished && self.remote_finished {
+            self.state = RelayStreamState::Closed(StreamTerminal::Closed);
+        }
+        Ok(true)
+    }
+
+    pub fn data(&self, sender: StreamEndpoint) -> Result<(), PeerError> {
+        self.ensure_open()?;
+        let finished = match sender {
+            StreamEndpoint::Dialer => self.local_finished,
+            StreamEndpoint::Acceptor => self.remote_finished,
+        };
+        if finished {
+            return Err(PeerError::Protocol("DATA is not valid after FIN"));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn close(&mut self) {
+        self.state = StreamTerminal::Closed.into();
+    }
+
+    #[cfg(test)]
+    pub fn reset(&mut self, code: ErrorCode) {
+        self.state = StreamTerminal::Reset(code).into();
+    }
+
+    #[must_use]
+    pub const fn is_closed(&self) -> bool {
+        matches!(self.state, RelayStreamState::Closed(_))
+    }
+
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        matches!(self.state, RelayStreamState::Open)
+    }
+
+    fn ensure_open(&self) -> Result<(), PeerError> {
+        match self.state {
+            RelayStreamState::Open => Ok(()),
+            RelayStreamState::Opening => {
+                Err(PeerError::FailedPrecondition("RelayStream is not open yet"))
+            }
+            RelayStreamState::Closed(_) => {
+                Err(PeerError::FailedPrecondition("RelayStream is closed"))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayStreamState {
+    Opening,
+    Open,
+    Closed(StreamTerminal),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamTerminal {
+    Closed,
+    #[cfg(test)]
+    Reset(ErrorCode),
+}
+
+impl From<StreamTerminal> for RelayStreamState {
+    fn from(value: StreamTerminal) -> Self {
+        Self::Closed(value)
+    }
+}

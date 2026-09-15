@@ -18,6 +18,12 @@ pub enum GatewayError {
     UnexpectedAdmissionResponse,
 }
 
+impl From<relaygate_gateway_peer::PeerConfigError> for GatewayError {
+    fn from(error: relaygate_gateway_peer::PeerConfigError) -> Self {
+        Self::InvalidConfig(error.to_string())
+    }
+}
+
 impl From<crate::routing::RoutingError> for GatewayError {
     fn from(error: crate::routing::RoutingError) -> Self {
         Self::Routing(error.to_string())

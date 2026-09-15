@@ -8,16 +8,16 @@ mod authorization;
 mod config;
 mod error;
 mod gateway;
-mod jitter;
-mod metrics;
 mod observation;
-mod peer;
 mod rate_limit;
 mod registry;
 mod routing;
 mod state;
 #[cfg(test)]
 mod test_support;
+
+use relaygate_gateway_peer as peer;
+use relaygate_gateway_peer::{jitter, metrics};
 
 pub use authorization::{AuthorizationConfig, Es256PublicKey, TrustedIssuer};
 pub use config::{

@@ -1,26 +1,18 @@
 [package]
-name = "relaygate-gateway"
+name = "relaygate-gateway-peer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-autotests = false
 
 [dependencies]
-base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
-jsonwebtoken.workspace = true
 metrics.workspace = true
-p256.workspace = true
-relaygate-destination.workspace = true
-relaygate-gateway-peer.workspace = true
 relaygate-protocol.workspace = true
 relaygate-route-table.workspace = true
-relaygate-route-table-transport.workspace = true
 relaygate-transport.workspace = true
-serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -30,19 +22,8 @@ uuid.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 metrics-util.workspace = true
-rcgen = "0.14"
-relaygate-sdk = { workspace = true, features = ["insecure-test-transport"] }
-relaygate-token-issuer.workspace = true
 serde_json.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
-
-[[test]]
-name = "sdk_gateway_contract"
-path = "tests/sdk_gateway_contract.rs"
-
-[[test]]
-name = "three_gateway"
-path = "tests/three_gateway.rs"
