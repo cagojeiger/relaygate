@@ -617,7 +617,7 @@ impl GatewayState {
             metrics::counter!(
                 "relaygate_gateway_publish_results_total",
                 "outcome" => "error",
-                "code" => error_code_name(code),
+                "code" => code.metric_name(),
             )
             .increment(1);
         }
@@ -775,7 +775,7 @@ fn observe_dial_result(started_at: Option<Instant>, code: Option<ErrorCode>) {
     let (outcome, code) = match code {
         None => ("success", "ok"),
         Some(ErrorCode::Cancelled) => ("cancelled", "cancelled"),
-        Some(code) => ("error", error_code_name(code)),
+        Some(code) => ("error", code.metric_name()),
     };
     metrics::counter!(
         "relaygate_gateway_dial_results_total",
@@ -807,22 +807,5 @@ fn dial_result_class(code: Option<ErrorCode>) -> &'static str {
             | ErrorCode::ProtocolError
             | ErrorCode::AlreadyExists,
         ) => "request",
-    }
-}
-
-pub(super) const fn error_code_name(code: ErrorCode) -> &'static str {
-    match code {
-        ErrorCode::InvalidArgument => "invalid_argument",
-        ErrorCode::Unauthenticated => "unauthenticated",
-        ErrorCode::PermissionDenied => "permission_denied",
-        ErrorCode::NotFound => "not_found",
-        ErrorCode::FailedPrecondition => "failed_precondition",
-        ErrorCode::Unavailable => "unavailable",
-        ErrorCode::DeadlineExceeded => "deadline_exceeded",
-        ErrorCode::ResourceExhausted => "resource_exhausted",
-        ErrorCode::Cancelled => "cancelled",
-        ErrorCode::ProtocolError => "protocol_error",
-        ErrorCode::Internal => "internal",
-        ErrorCode::AlreadyExists => "already_exists",
     }
 }
