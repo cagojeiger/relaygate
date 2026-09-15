@@ -42,31 +42,34 @@ impl ReconnectEpisode {
         .increment(1);
     }
 
-    pub(crate) fn recover(mut self) {
-        self.outcome = "recovered";
-        let elapsed = self.started_at.elapsed();
-        metrics::histogram!("relaygate_sdk_reconnect_duration_seconds")
-            .record(elapsed.as_secs_f64());
-        tracing::info!(
-            component = "sdk",
-            event = "sdk.session.reconnect_recovered",
-            attempts = self.attempts,
-            downtime_ms = elapsed.as_millis(),
-            "SDK session reconnect episode recovered"
+    pub(crate) fn recover(self) {
+        self.settle(
+            "recovered",
+            "sdk.session.reconnect_recovered",
+            "SDK session reconnect episode recovered",
         );
     }
 
-    pub(crate) fn degrade(mut self) {
-        self.outcome = "degraded";
+    pub(crate) fn degrade(self) {
+        self.settle(
+            "degraded",
+            "sdk.session.reconnect_degraded",
+            "SDK session reconnect episode settled with blocked listeners",
+        );
+    }
+
+    /// Both settled outcomes record the recovery histogram; `closed` does not.
+    fn settle(mut self, outcome: &'static str, event: &'static str, message: &'static str) {
+        self.outcome = outcome;
         let elapsed = self.started_at.elapsed();
         metrics::histogram!("relaygate_sdk_reconnect_duration_seconds")
             .record(elapsed.as_secs_f64());
         tracing::info!(
             component = "sdk",
-            event = "sdk.session.reconnect_degraded",
+            event,
             attempts = self.attempts,
             downtime_ms = elapsed.as_millis(),
-            "SDK session reconnect episode settled with blocked listeners"
+            message
         );
     }
 

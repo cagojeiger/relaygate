@@ -17,7 +17,7 @@ use crate::{
     listener::{RelayCommand, RelayInner},
     observability::ReconnectEpisode,
     session::{
-        EstablishedSession, SessionHeartbeat, send_bounded, session_outbound_channel,
+        EstablishedSession, SessionHeartbeat, SessionLink, send_bounded, session_outbound_channel,
         wait_for_heartbeat,
     },
 };
@@ -93,8 +93,11 @@ pub(super) async fn run_relay_session(
                     &outbound_tx,
                     &abandoned_tx,
                     inner,
-                    &mut established.transport,
-                    &session_cancel,
+                    &mut SessionLink::new(
+                        &mut established.transport,
+                        inner.config.operation_timeout,
+                        &session_cancel,
+                    ),
                 ).await {
                     RelayFrameAction::Continue => {}
                     RelayFrameAction::RegistrationSucceeded => {
