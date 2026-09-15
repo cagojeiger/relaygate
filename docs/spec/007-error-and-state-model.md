@@ -144,12 +144,15 @@ Gateway는 `Register`로 새 lease를 얻고 첫 `Update`를 반복합니다.
 ## 장애 전파
 
 SDK session 생성 전 connection-rate budget 부족 또는 transport·handshake capacity 초과는 새 socket을 닫습니다.
-이 시점에는 wire 오류 응답을 보장하지 않습니다. TLS는 5초, credential-free HELLO 수신·응답은 합쳐 5초
-이내 종료합니다. WELCOME 쓰기 실패·만료는 이미 예약된 session을 정리하고 slot을 반환합니다.
+이 socket 단계에는 wire 오류 응답을 보장하지 않습니다. HELLO 뒤의 admission 거절(drain은 `UNAVAILABLE`,
+session 상한은 `RESOURCE_EXHAUSTED`)은 handshake 예산 안에서 `SESSION_REJECTED`를 best-effort로 보낸 뒤 socket을
+닫습니다. drain은 진행 중인 handshake가 끝날 때까지(TLS·HELLO 예산 이내) session 정리를 미룹니다. TLS는 5초, credential-free HELLO 수신·응답은 합쳐 5초 이내 종료합니다. WELCOME 쓰기 실패·만료는 이미
+예약된 session을 정리하고 slot을 반환합니다.
 
 | 장애 | 종료 범위 | 유지 범위 | 복구 |
 | --- | --- | --- | --- |
 | SDK–GW loss | session 소유 Pipe/dial/Binding | 다른 session·Binding | reconnect + Listener republish |
+| drain 중 HELLO | 해당 socket(`SESSION_REJECTED/UNAVAILABLE`) | 기존 session·Binding·Pipe | SDK backoff 재연결 |
 | token source 실패 | 해당 PUBLISH/DIAL | session·기존 Binding·Pipe | application source 회복; returned Listener는 재공급 시도 |
 | token 인증·권한 실패 | 해당 PUBLISH/DIAL; returned Listener는 `BLOCKED` | session·기존 sibling Binding·Pipe | application이 새 token/source로 새 operation 구성 |
 | authorization capacity/deadline | 해당 PUBLISH/DIAL | session·기존 Binding·Pipe | 부하 감소 뒤 새 operation |

@@ -56,7 +56,7 @@ async callback(action, Destination) -> PUBLISH 또는 DIAL
 | `SDK-003` | 실행 중 session loss는 bounded exponential backoff와 runtime별 jitter로 재연결한다. |
 | `SDK-004` | 새 session은 이미 반환된 live Listener를 새 AccessToken으로 자동 republish한다. |
 | `SDK-005` | recovery는 새 session·Binding을 만든다. existing Pipe, committed dial, payload와 PUBLISH가 commit된 initial listen은 terminal이다. PUBLISH pre-commit initial listen은 원래 deadline 안에서 재시도한다. |
-| `SDK-006` | 초기 config·transport·handshake 실패는 `Relay::connect`의 `Err`다. 실행 중 session·protocol·transport failure는 current session을 끝내고 bounded backoff 재연결로 수렴한다. |
+| `SDK-006` | 초기 config·transport·handshake 실패는 `Relay::connect`의 `Err`다. Gateway의 `SESSION_REJECTED`(drain 중 `UNAVAILABLE`)도 같은 `Err`다. 실행 중 session·protocol·transport failure는 current session을 끝내고 bounded backoff 재연결로 수렴한다. |
 | `SDK-007` | explicit close는 같은 runtime의 terminal `CLOSED`로 수렴한다. |
 | `SDK-014` | AccessToken은 비어 있지 않은 최대 4,096 bytes이고 Debug 출력은 값을 redaction한다. |
 | `SDK-015` | dynamic AccessTokenSource는 `AccessAction`과 exact Destination을 받아 application-owned future를 실행한다. |

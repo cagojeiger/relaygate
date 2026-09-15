@@ -9,7 +9,7 @@ use std::{
 };
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use relaygate_protocol::{Frame, FrameCodec, MAX_HELLO_FRAME_LEN};
+use relaygate_protocol::{ErrorCode, Frame, FrameCodec, MAX_HELLO_FRAME_LEN};
 use relaygate_transport::BoxedIo;
 use tokio::{
     sync::{OwnedSemaphorePermit, mpsc},
@@ -59,8 +59,31 @@ impl Inner {
 
         let (sender, receiver) = mpsc::channel(self.writer_queue_capacity);
         let heartbeat_sender = sender.clone();
-        let Some(session_id) = self.lock_state().add_session(sender, cancellation.clone()) else {
-            return Err(SessionError::ResourceExhausted);
+        let admitted = {
+            let mut state = self.lock_state();
+            state
+                .add_session(sender, cancellation.clone())
+                .ok_or_else(|| {
+                    state
+                        .session_rejection()
+                        .unwrap_or((ErrorCode::Internal, "Gateway rejected the session"))
+                })
+        };
+        let session_id = match admitted {
+            Ok(session_id) => session_id,
+            Err((code, message)) => {
+                // Best effort within the remaining handshake budget (SEC-013);
+                // the socket closes either way.
+                let rejection = Frame::SessionRejected {
+                    code,
+                    message: message.to_owned(),
+                };
+                tokio::select! {
+                    _ = cancellation.cancelled() => {}
+                    _ = timeout_at(deadline, framed.send(rejection)) => {}
+                }
+                return Err(SessionError::SessionRejected(code));
+            }
         };
         let run_inner = Arc::clone(&self);
         let run_cancellation = cancellation.clone();
@@ -324,8 +347,8 @@ pub(super) enum SessionError {
     HandshakeTimeout,
     #[error("first SDK frame was not HELLO")]
     ExpectedHello,
-    #[error("Gateway SDK session limit reached")]
-    ResourceExhausted,
+    #[error("SDK session rejected: {}", .0.metric_name())]
+    SessionRejected(ErrorCode),
     #[error("SDK admission response could not be queued before the liveness deadline")]
     AdmissionResponseUnavailable,
     #[error("authorization timeout is too large to form a deadline")]

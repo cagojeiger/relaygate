@@ -8,12 +8,29 @@ use super::{
 };
 
 impl GatewayState {
+    /// Why a new session would be refused right now, with the wire message.
+    /// The session limit is a defensive fallback: SEC-012 socket admission
+    /// holds one transport slot per session before TLS, so it normally trips
+    /// there without a frame.
+    pub(crate) fn session_rejection(&self) -> Option<(ErrorCode, &'static str)> {
+        if self.draining {
+            Some((ErrorCode::Unavailable, "Gateway is draining"))
+        } else if self.sessions.len() >= self.limits.max_sessions {
+            Some((
+                ErrorCode::ResourceExhausted,
+                "Gateway SDK session limit reached",
+            ))
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn add_session(
         &mut self,
         sender: mpsc::Sender<SdkWriterItem>,
         cancellation: CancellationToken,
     ) -> Option<SessionId> {
-        if self.draining || self.sessions.len() >= self.limits.max_sessions {
+        if self.session_rejection().is_some() {
             return None;
         }
         loop {

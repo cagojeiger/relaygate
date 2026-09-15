@@ -583,3 +583,29 @@ fn protocol_reset_of_an_offered_pipe_records_the_dial_result() -> TestResult {
     assert!(matches!(value, DebugValue::Counter(1)));
     Ok(())
 }
+
+#[test]
+fn session_rejection_reports_drain_before_the_session_limit() {
+    let mut state = limited_state(GatewayLimits {
+        max_sessions: 1,
+        ..GatewayLimits::default()
+    });
+    assert!(state.session_rejection().is_none());
+    let _first = add_session(&mut state);
+    assert_eq!(
+        state.session_rejection().map(|(code, _)| code),
+        Some(ErrorCode::ResourceExhausted)
+    );
+    let (sender, _receiver) = mpsc::channel(1);
+    assert!(
+        state
+            .add_session(sender, CancellationToken::new())
+            .is_none()
+    );
+
+    state.begin_draining();
+    assert_eq!(
+        state.session_rejection().map(|(code, _)| code),
+        Some(ErrorCode::Unavailable)
+    );
+}

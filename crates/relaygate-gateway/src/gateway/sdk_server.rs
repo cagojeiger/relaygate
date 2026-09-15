@@ -280,8 +280,11 @@ async fn join_sessions(
     }
 }
 
+/// Drain also waits for in-flight handshakes (bounded by the TLS and HELLO
+/// deadlines) so a HELLO refused during drain is answered with
+/// SESSION_REJECTED instead of a bare close.
 async fn wait_until_drained(inner: &Arc<Inner>, drain_timeout: Duration) -> bool {
-    if inner.is_drained() {
+    if inner.is_drained() && inner.handshakes_idle() {
         return true;
     }
     timeout(drain_timeout, async {
@@ -290,7 +293,7 @@ async fn wait_until_drained(inner: &Arc<Inner>, drain_timeout: Duration) -> bool
         loop {
             poll.tick().await;
             inner.expire_offers().await;
-            if inner.is_drained() {
+            if inner.is_drained() && inner.handshakes_idle() {
                 return;
             }
         }
@@ -300,6 +303,10 @@ async fn wait_until_drained(inner: &Arc<Inner>, drain_timeout: Duration) -> bool
 }
 
 impl Inner {
+    fn handshakes_idle(&self) -> bool {
+        self.handshake_slots.available_permits() == self.max_pending_handshakes
+    }
+
     async fn expire_offers(self: &Arc<Self>) {
         let actions = self.transition(|state| state.expire_offers(std::time::Instant::now()));
         self.execute_all(actions).await;
@@ -597,6 +604,49 @@ mod tests {
         timeout(Duration::from_secs(2), serving).await???;
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(gateway.snapshot().pending_offers, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn draining_gateway_rejects_a_late_hello_with_unavailable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let gateway = Gateway::new(
+            GatewayConfig::new(authorization_config()).with_drain_timeout(Duration::from_secs(5)),
+        )?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let shutdown = CancellationToken::new();
+        let serving_gateway = gateway.clone();
+        let serving_shutdown = shutdown.clone();
+        let serving =
+            tokio::spawn(
+                async move { serving_gateway.serve_sdk(listener, serving_shutdown).await },
+            );
+
+        // Idle Gateway: only this in-flight handshake keeps drain open. The
+        // socket is accepted before drain starts; HELLO arrives after it.
+        let late_stream = TcpStream::connect(address).await?;
+        sleep(Duration::from_millis(50)).await;
+        shutdown.cancel();
+        sleep(Duration::from_millis(50)).await;
+        assert!(gateway.snapshot().draining);
+        assert!(!serving.is_finished());
+
+        let mut late = Framed::new(late_stream, FrameCodec::default());
+        late.send(Frame::Hello).await?;
+        assert!(matches!(
+            timeout(Duration::from_secs(1), late.next()).await?,
+            Some(Ok(Frame::SessionRejected {
+                code: relaygate_protocol::ErrorCode::Unavailable,
+                ..
+            }))
+        ));
+        assert!(
+            timeout(Duration::from_secs(1), late.next())
+                .await?
+                .is_none()
+        );
+        timeout(Duration::from_secs(2), serving).await???;
         Ok(())
     }
 
