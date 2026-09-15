@@ -264,9 +264,13 @@ pub(super) async fn run_relay_session(
 /// are reported as `NOT_OBSERVED` instead of being dropped as uncertain.
 fn fail_queued_dials(commands: &mut mpsc::Receiver<RelayCommand>) {
     commands.close();
-    while let Ok(RelayCommand::Dial { response, .. }) = commands.try_recv() {
-        let _ = response.send(Err(Error::unavailable(
-            "RelaySession ended before DIAL was sent",
-        )));
+    while let Ok(command) = commands.try_recv() {
+        match command {
+            RelayCommand::Dial { response, .. } => {
+                let _ = response.send(Err(Error::unavailable(
+                    "RelaySession ended before DIAL was sent",
+                )));
+            }
+        }
     }
 }

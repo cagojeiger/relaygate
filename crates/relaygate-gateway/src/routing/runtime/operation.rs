@@ -89,14 +89,13 @@ fn apply_operation_completion(
                         ErrorCode::Unavailable
                             | ErrorCode::DeadlineExceeded
                             | ErrorCode::ResourceExhausted
-                            | ErrorCode::ProtocolError
                             | ErrorCode::Internal
-                    ) =>
+                    ) && !state.lease_expired(now) =>
                 {
                     state.transient_failure(&completion.ticket, now);
                 }
-                // The lease is unusable (invalid, unknown, or unauthorized):
-                // drop it locally and rely on RT expiry.
+                // The lease is unusable or already expired on RT: drop it
+                // locally and rely on RT expiry.
                 Err(_) => state.finish_deregister(&completion.ticket),
             }
             result.clone().err()

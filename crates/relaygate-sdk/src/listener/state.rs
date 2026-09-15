@@ -226,11 +226,25 @@ impl RelayInner {
         message: &str,
     ) -> Error {
         let error = state
-            .terminate_initial_operation(code, message)
+            .terminate_initial_operation(code, message, false)
             .or_else(|| state.last_error())
             .unwrap_or_else(|| Error::new(code, PeerObservation::NotObserved, message));
         self.remove_terminal_listener(state);
         error
+    }
+
+    /// Deadline expiry for an initial listen. Returns `None` when the
+    /// registration became ACTIVE first (or already settled), so the caller
+    /// re-reads the status instead of discarding a confirmed Binding.
+    pub(super) fn expire_initial_listener(
+        &self,
+        state: &Arc<ListenerState>,
+        code: ErrorCode,
+        message: &str,
+    ) -> Option<Error> {
+        let error = state.terminate_initial_operation(code, message, true)?;
+        self.remove_terminal_listener(state);
+        Some(error)
     }
 
     pub(super) fn remove_terminal_listener(&self, state: &Arc<ListenerState>) {
@@ -455,11 +469,20 @@ impl ListenerState {
         }
     }
 
-    fn terminate_initial_operation(&self, code: ErrorCode, message: &str) -> Option<Error> {
+    fn terminate_initial_operation(
+        &self,
+        code: ErrorCode,
+        message: &str,
+        keep_active: bool,
+    ) -> Option<Error> {
         let Ok(mut lifecycle) = self.lifecycle.lock() else {
             return None;
         };
         if *lifecycle != ListenerLifecycle::Pending {
+            return None;
+        }
+        // `activate_while_locked` publishes ACTIVE under this same lock.
+        if keep_active && *self.status.borrow() == ListenerStatus::Active {
             return None;
         }
         let observation = self.registration_committed.lock().map_or(

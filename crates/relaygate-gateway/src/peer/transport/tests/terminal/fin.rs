@@ -109,9 +109,7 @@ async fn local_data_and_fin_survive_remote_fin_under_writer_pressure() -> Result
     ));
     assert_stream_removed(&actor, open_identity);
     assert!(frames.try_recv().is_err());
-    let extra = notices.try_recv();
-    eprintln!("EXTRA NOTICE: {extra:?}");
-    assert!(extra.is_err());
+    assert!(notices.try_recv().is_err());
     Ok(())
 }
 

@@ -214,6 +214,12 @@ impl TransportActor {
             // The stream's terminal event is already on its way to the
             // Gateway; treating late DATA as a failure would replace a
             // remote CLOSE with a synthetic RESET.
+            tracing::debug!(
+                component = "gateway",
+                event = "gateway.peer.stream.late_data",
+                stream_id = ?stream_id,
+                "dropping DATA for a peer stream that already ended"
+            );
             return Ok(());
         };
         stream.relay.data(self.local_endpoint).map_err(|_| {

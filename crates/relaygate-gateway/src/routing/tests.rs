@@ -832,3 +832,22 @@ fn unrelated_desired_version_bump_keeps_deregister_backoff() -> TestResult {
     assert!(state.begin_next(now + retry)?.is_some());
     Ok(())
 }
+
+#[test]
+fn deregister_retry_budget_ends_with_the_lease_lifetime() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+    state.publish(2, None, now);
+
+    assert!(!state.lease_expired(now));
+    assert!(!state.lease_expired(now + Duration::from_secs(4)));
+    assert!(state.lease_expired(now + Duration::from_secs(5)));
+
+    let deregister = state.begin_next(now)?.ok_or("missing DEREGISTER")?;
+    state.finish_deregister(&deregister);
+    assert!(state.is_removable());
+    assert!(state.lease_expired(now));
+    Ok(())
+}

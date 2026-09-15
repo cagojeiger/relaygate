@@ -50,6 +50,7 @@ struct LeaseState {
     id: LeaseId,
     revision: Option<RegistrationRevision>,
     keep_alive_at: Instant,
+    expires_at: Instant,
 }
 
 /// Current desired state and synchronization metadata for one session-shard
@@ -252,6 +253,7 @@ impl RegistrationState {
             id: ack.lease_id(),
             revision: ack.accepted_revision(),
             keep_alive_at: next_keep_alive(now, ack.expires_in()),
+            expires_at: lease_expiry(now, ack.expires_in()),
         });
         self.synced_version = None;
         self.validate_lease = false;
@@ -284,6 +286,7 @@ impl RegistrationState {
         // snapshot and be rejected as a precondition failure (RT-005).
         lease.revision = Some(*revision);
         lease.keep_alive_at = next_keep_alive(now, ack.expires_in());
+        lease.expires_at = lease_expiry(now, ack.expires_in());
         if self.desired_version == ticket.desired_version {
             self.synced_version = Some(ticket.desired_version);
         }
@@ -308,6 +311,7 @@ impl RegistrationState {
             && lease.id == lease_id
         {
             lease.keep_alive_at = next_keep_alive(now, ack.expires_in());
+            lease.expires_at = lease_expiry(now, ack.expires_in());
             self.precondition_probe_active = false;
             self.validate_lease = false;
             self.reset_retry(now);
@@ -376,6 +380,14 @@ impl RegistrationState {
         self.terminal = true;
     }
 
+    /// RT has already expired this lease, so a failed Deregister no longer
+    /// needs a retry; the local reference can be dropped.
+    pub(super) fn lease_expired(&self, now: Instant) -> bool {
+        self.lease
+            .as_ref()
+            .is_none_or(|lease| now >= lease.expires_at)
+    }
+
     pub(super) fn finish_deregister(&mut self, ticket: &OperationTicket) {
         if self.take_current(ticket)
             && matches!(ticket.action, RegistrationAction::Deregister { .. })
@@ -406,6 +418,11 @@ impl RegistrationState {
         self.retry_at = now;
         self.retry_backoff = self.retry_initial;
     }
+}
+
+fn lease_expiry(now: Instant, expires_in: Duration) -> Instant {
+    now.checked_add(expires_in)
+        .unwrap_or_else(|| now + Duration::from_secs(60))
 }
 
 fn next_keep_alive(now: Instant, expires_in: Duration) -> Instant {

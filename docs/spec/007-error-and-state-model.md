@@ -129,7 +129,8 @@ stateDiagram-v2
     LEASED --> DEREGISTERING
     UNSYNCED --> DEREGISTERING
     SYNCED --> DEREGISTERING
-    DEREGISTERING --> REMOVED
+    DEREGISTERING --> DEREGISTERING: transient 실패 bounded 재시도 (lease TTL 이내)
+    DEREGISTERING --> REMOVED: ACK / lease 사용 불가 / lease TTL 경과 (RT expiry 위임)
     REGISTERING --> TERMINAL: permanent failure
     LEASED --> TERMINAL: permanent failure
     UNSYNCED --> TERMINAL: permanent failure
