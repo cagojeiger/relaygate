@@ -533,6 +533,28 @@ mod tests {
     }
 
     #[test]
+    fn malformed_generation_is_an_invalid_argument_at_the_transport_boundary() {
+        let authenticated = GatewayId::from_uuid(Uuid::from_u128(1));
+        let request = WireRequest::Resolve {
+            generation: "not-hex".to_owned(),
+            destination: String::new(),
+        };
+
+        let error = request
+            .validate_preconditions(
+                RequestContext::new(AuthenticatedGatewayId::from_verified_transport(
+                    authenticated,
+                )),
+                ShardDirectoryGeneration::from_bytes([1; 32]),
+            )
+            .err();
+        assert_eq!(
+            error.map(|error| error.code()),
+            Some(ErrorCode::InvalidArgument)
+        );
+    }
+
+    #[test]
     fn generation_mismatch_precedes_malformed_operation_fields() {
         let authenticated = GatewayId::from_uuid(Uuid::from_u128(1));
         let request = WireRequest::KeepAlive {
