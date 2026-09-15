@@ -15,7 +15,7 @@ use tokio::{net::TcpListener, time::Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::registry::Binding;
+use crate::Binding;
 
 use super::{
     GatewayRoutingConfig, RoutingError, RoutingRuntime,

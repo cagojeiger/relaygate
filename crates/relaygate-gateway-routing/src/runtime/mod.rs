@@ -19,7 +19,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{RouteDependencyHealth, registry::Binding};
+use crate::{Binding, RouteDependencyHealth};
 
 use super::{
     GatewayRoutingConfig, RoutingError,
@@ -42,16 +42,16 @@ mod tests;
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RoutingCounts {
-    pub(crate) synced: usize,
-    pub(crate) unsynced: usize,
-    pub(crate) dependency_health: RouteDependencyHealth,
+pub struct RoutingCounts {
+    pub synced: usize,
+    pub unsynced: usize,
+    pub dependency_health: RouteDependencyHealth,
 }
 
 /// Cloneable Gateway-local handle. Publication commits manager-owned desired
 /// state before sending a coalescible bounded wake signal.
 #[derive(Clone)]
-pub(crate) struct RoutingHandle {
+pub struct RoutingHandle {
     directory: ShardDirectory,
     gateway_id: GatewayId,
     gateway_locator: relaygate_route_table::GatewayLocator,
@@ -60,7 +60,7 @@ pub(crate) struct RoutingHandle {
 }
 
 impl RoutingHandle {
-    pub(crate) fn publish_session(
+    pub fn publish_session(
         &self,
         session_id: SessionId,
         bindings: Vec<Binding>,
@@ -91,10 +91,7 @@ impl RoutingHandle {
         }
     }
 
-    pub(crate) async fn resolve(
-        &self,
-        destination: Destination,
-    ) -> Result<BindingSet, RoutingError> {
+    pub async fn resolve(&self, destination: Destination) -> Result<BindingSet, RoutingError> {
         let record = self.directory.authority(&destination);
         let worker = self.shards.get(record.id()).ok_or_else(|| {
             RoutingError::InvalidConfig("authority shard worker is missing".to_owned())
@@ -126,7 +123,7 @@ impl RoutingHandle {
     }
 
     #[must_use]
-    pub(crate) fn current_counts(&self) -> RoutingCounts {
+    pub fn current_counts(&self) -> RoutingCounts {
         self.shards.values().fold(
             RoutingCounts {
                 synced: 0,
@@ -176,14 +173,14 @@ const fn merge_dependency_health(
 }
 
 /// Owns one worker per immutable ShardDirectory record.
-pub(crate) struct RoutingRuntime {
+pub struct RoutingRuntime {
     handle: RoutingHandle,
     workers: JoinSet<(ShardId, Result<(), RoutingError>)>,
     shutdown: CancellationToken,
 }
 
 impl RoutingRuntime {
-    pub(crate) fn start(
+    pub fn start(
         config: GatewayRoutingConfig,
         gateway_id: GatewayId,
         shutdown: CancellationToken,
@@ -255,11 +252,11 @@ impl RoutingRuntime {
     }
 
     #[must_use]
-    pub(crate) fn handle(&self) -> RoutingHandle {
+    pub fn handle(&self) -> RoutingHandle {
         self.handle.clone()
     }
 
-    pub(crate) async fn wait(mut self) -> Result<(), RoutingError> {
+    pub async fn wait(mut self) -> Result<(), RoutingError> {
         while let Some(completed) = self.workers.join_next().await {
             match completed {
                 Ok((_, Ok(()))) => {}

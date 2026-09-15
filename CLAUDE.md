@@ -14,6 +14,7 @@
 - `relaygate-server`는 process boot, config, observation, shutdown과 dependency wiring만 소유한다.
 - `relaygate-gateway`는 대칭 Relay session, local binding, RT registration·Resolve orchestration, dial admission, Pipe relay와 cleanup을 소유한다.
 - `relaygate-gateway-peer`는 Gateway 간 one-hop PeerTransport, handshake, stream 다중화와 peer wire codec을 소유하는 workspace-internal crate이며 Gateway session state를 알지 못한다. Gateway가 `PeerHandle`로 구동하고 `PeerEvents`를 소비한다.
+- `relaygate-gateway-routing`은 local Binding을 shard별 BindingSnapshot으로 projection해 RT registration·KeepAlive·Resolve를 수행하는 workspace-internal crate이며 local Binding 소유권과 Resolve 결과 cache를 갖지 않는다.
 - `relaygate-sdk`는 public `Relay`, `Listener`, `Pipe` API와 managed reconnect·Listener republish를 소유하며 Gateway state type을 노출하지 않는다.
 - `relaygate-protocol`은 SDK–Gateway wire contract만 소유하며 socket, session policy와 routing state를 소유하지 않는다. SDK 의존성으로 crates.io에 배포되지만 application용 안정 API가 아니다.
 - `relaygate-destination`은 `Namespace/DestinationName` 문법과 검증만, `relaygate-transport`는 TLS/mTLS handshake adapter만, `relaygate-token-issuer`는 application backend용 server-side ES256 JWT 발급 helper만 소유한다.

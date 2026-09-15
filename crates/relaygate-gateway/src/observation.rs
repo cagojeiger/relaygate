@@ -1,28 +1,4 @@
-/// Gateway-local summary of the RouteTable dependency's last observed state.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum RouteDependencyHealth {
-    /// This Gateway runs without RouteTable orchestration.
-    #[default]
-    Disabled,
-    /// Every configured shard is available and current desired registrations are synchronized.
-    Ready,
-    /// At least one shard is unavailable or a desired registration is not synchronized.
-    Degraded,
-    /// At least one shard or desired registration observed a non-retryable control failure.
-    Terminal,
-}
-
-impl RouteDependencyHealth {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "DISABLED",
-            Self::Ready => "READY",
-            Self::Degraded => "DEGRADED",
-            Self::Terminal => "TERMINAL",
-        }
-    }
-}
+pub use relaygate_gateway_routing::RouteDependencyHealth;
 
 /// A point-in-time view of the Gateway's local, live runtime state.
 ///

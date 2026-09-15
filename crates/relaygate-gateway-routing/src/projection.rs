@@ -6,7 +6,7 @@ use relaygate_route_table::{
     ShardDirectory, ShardId,
 };
 
-use crate::registry::Binding;
+use crate::Binding;
 
 use super::RoutingError;
 

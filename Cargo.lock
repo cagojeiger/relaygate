@@ -1206,6 +1206,7 @@ dependencies = [
  "rcgen",
  "relaygate-destination",
  "relaygate-gateway-peer",
+ "relaygate-gateway-routing",
  "relaygate-protocol",
  "relaygate-route-table",
  "relaygate-route-table-transport",
@@ -1232,6 +1233,25 @@ dependencies = [
  "metrics-util",
  "relaygate-protocol",
  "relaygate-route-table",
+ "relaygate-transport",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "relaygate-gateway-routing"
+version = "0.3.1"
+dependencies = [
+ "metrics",
+ "metrics-util",
+ "relaygate-protocol",
+ "relaygate-route-table",
+ "relaygate-route-table-transport",
  "relaygate-transport",
  "serde_json",
  "thiserror",
