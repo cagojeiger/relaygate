@@ -2,7 +2,7 @@ use relaygate_protocol::{BindingId, Destination, ErrorCode, Frame, SessionId};
 
 use crate::registry::Registration;
 
-use super::{GatewayAction, GatewayState, error_code_name};
+use super::{GatewayAction, GatewayState};
 
 impl GatewayState {
     pub(super) fn publish(
@@ -123,7 +123,7 @@ impl GatewayState {
 fn registration_result(response: &Frame) -> Option<(&'static str, &'static str)> {
     match response {
         Frame::Published { .. } => Some(("success", "ok")),
-        Frame::PublishFailed { code, .. } => Some(("error", error_code_name(*code))),
+        Frame::PublishFailed { code, .. } => Some(("error", code.metric_name())),
         _ => None,
     }
 }

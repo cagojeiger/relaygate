@@ -192,7 +192,7 @@ impl Inner {
                     };
                     let (outcome, code) = match &verified {
                         Ok(_) => ("success", "ok"),
-                        Err(code) => ("error", crate::state::error_code_name(*code)),
+                        Err(code) => ("error", code.metric_name()),
                     };
                     metrics::counter!(
                         "relaygate_gateway_authorization_results_total",
