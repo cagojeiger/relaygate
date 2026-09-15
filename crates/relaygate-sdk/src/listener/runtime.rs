@@ -42,8 +42,7 @@ pub(super) async fn relay_supervisor(
     let mut reconnect_episode: Option<ReconnectEpisode> = None;
     loop {
         if inner.cancel.is_cancelled() {
-            close_reconnect_episode(&mut reconnect_episode);
-            inner.close_all();
+            shutdown(&inner, &mut reconnect_episode);
             return;
         }
         let next = match established.take() {
@@ -53,8 +52,7 @@ pub(super) async fn relay_supervisor(
                 match tokio::select! {
                     biased;
                     _ = inner.cancel.cancelled() => {
-                        close_reconnect_episode(&mut reconnect_episode);
-                        inner.close_all();
+                        shutdown(&inner, &mut reconnect_episode);
                         return;
                     }
                     result = establish(&inner.config) => result,
@@ -64,8 +62,7 @@ pub(super) async fn relay_supervisor(
                             episode.record_attempt("success");
                         }
                         if inner.cancel.is_cancelled() {
-                            close_reconnect_episode(&mut reconnect_episode);
-                            inner.close_all();
+                            shutdown(&inner, &mut reconnect_episode);
                             return;
                         }
                         session
@@ -83,8 +80,7 @@ pub(super) async fn relay_supervisor(
                         );
                         tokio::select! {
                             _ = inner.cancel.cancelled() => {
-                                close_reconnect_episode(&mut reconnect_episode);
-                                inner.close_all();
+                                shutdown(&inner, &mut reconnect_episode);
                                 return;
                             },
                             _ = tokio::time::sleep(backoff.next_delay()) => {}
@@ -95,8 +91,7 @@ pub(super) async fn relay_supervisor(
             }
         };
         if inner.cancel.is_cancelled() {
-            close_reconnect_episode(&mut reconnect_episode);
-            inner.close_all();
+            shutdown(&inner, &mut reconnect_episode);
             return;
         }
         let started_at = Instant::now();
@@ -125,27 +120,12 @@ pub(super) async fn relay_supervisor(
         )
         .await;
         if inner.cancel.is_cancelled() {
-            close_reconnect_episode(&mut reconnect_episode);
-            inner.close_all();
-            if inner
-                .current
-                .borrow()
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &session))
-            {
-                inner.current.send_replace(None);
-            }
+            shutdown(&inner, &mut reconnect_episode);
+            clear_current_if(&inner, &session);
             return;
         }
         inner.set_relay_status(RelayStatus::Reconnecting);
-        if inner
-            .current
-            .borrow()
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, &session))
-        {
-            inner.current.send_replace(None);
-        }
+        clear_current_if(&inner, &session);
         if registration_succeeded {
             backoff.reset();
         }
@@ -158,12 +138,27 @@ pub(super) async fn relay_supervisor(
         }
         tokio::select! {
             _ = inner.cancel.cancelled() => {
-                close_reconnect_episode(&mut reconnect_episode);
-                inner.close_all();
+                shutdown(&inner, &mut reconnect_episode);
                 return;
             }
             _ = tokio::time::sleep(backoff.next_delay()) => {}
         }
+    }
+}
+
+fn shutdown(inner: &RelayInner, reconnect_episode: &mut Option<ReconnectEpisode>) {
+    close_reconnect_episode(reconnect_episode);
+    inner.close_all();
+}
+
+fn clear_current_if(inner: &RelayInner, session: &Arc<RelaySession>) {
+    if inner
+        .current
+        .borrow()
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, session))
+    {
+        inner.current.send_replace(None);
     }
 }
 
