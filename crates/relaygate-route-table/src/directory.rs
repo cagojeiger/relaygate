@@ -28,7 +28,6 @@ impl ShardRecord {
 /// Immutable, ordered shard directory loaded from exact JSON artifact bytes.
 #[derive(Debug, Clone)]
 pub struct ShardDirectory {
-    artifact: Arc<[u8]>,
     generation: ShardDirectoryGeneration,
     shards: Arc<[ShardRecord]>,
 }
@@ -88,7 +87,6 @@ impl ShardDirectory {
 
         let digest: [u8; 32] = Sha256::digest(bytes).into();
         Ok(Self {
-            artifact: Arc::from(bytes),
             generation: ShardDirectoryGeneration::from_bytes(digest),
             shards: Arc::from(shards),
         })
@@ -97,11 +95,6 @@ impl ShardDirectory {
     #[must_use]
     pub const fn generation(&self) -> ShardDirectoryGeneration {
         self.generation
-    }
-
-    #[must_use]
-    pub fn artifact_bytes(&self) -> &[u8] {
-        &self.artifact
     }
 
     #[must_use]

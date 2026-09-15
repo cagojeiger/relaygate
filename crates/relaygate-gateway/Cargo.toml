@@ -19,23 +19,22 @@ relaygate-gateway-peer.workspace = true
 relaygate-gateway-routing.workspace = true
 relaygate-protocol.workspace = true
 relaygate-route-table.workspace = true
-relaygate-route-table-transport.workspace = true
 relaygate-transport.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 metrics-util.workspace = true
 rcgen = "0.14"
+relaygate-route-table-transport.workspace = true
 relaygate-sdk = { workspace = true, features = ["insecure-test-transport"] }
 relaygate-token-issuer.workspace = true
 serde_json.workspace = true
-tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true
