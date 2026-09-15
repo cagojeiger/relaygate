@@ -100,7 +100,7 @@ rust = [
   "resource::tests::relay_byte_budget_is_shared_and_released_across_pipes",
   "resource::tests::resource_metrics_report_bounded_limits_usage_rejections_and_cleanup",
   "resource_limits::pipe_byte_limit_resets_only_the_overflowed_pipe_and_preserves_sibling",
-  "peer::transport::tests::capacity::saturated_stream_and_aggregate_buffers_are_released_on_transport_loss",
+  "transport::tests::capacity::saturated_stream_and_aggregate_buffers_are_released_on_transport_loss",
 ]
 
 [[case]]
@@ -146,11 +146,11 @@ id = "T-PEER-01"
 status = "executable"
 rust = [
   "rt_one_gateway_three_forms_a_closed_current_state_relay",
-  "peer::tests::peer_pool_keeps_at_most_one_transport_per_direction",
-  "peer::tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_failed_counter",
-  "peer::tests::peer_frame_codec_round_trips_every_frame_kind",
-  "peer::liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily",
-  "peer::liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily",
+  "tests::peer_pool_keeps_at_most_one_transport_per_direction",
+  "tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_failed_counter",
+  "tests::peer_frame_codec_round_trips_every_frame_kind",
+  "liveness_runtime_tests::active_transport_heartbeat_timeout_releases_streams_and_reconnects_lazily",
+  "liveness_runtime_tests::zero_stream_idle_retirement_removes_ready_transport_and_reconnects_lazily",
   "gateway::effects::tests::transport_loss_coalescer_batches_only_reset_and_dial_failed",
   "gateway::effects::tests::capacity_one_batches_peer_loss_without_removing_listener",
   "gateway::session::tests::writer_flushes_singles_and_terminal_batches_in_wire_order",
@@ -165,7 +165,7 @@ rust = [
   "state::tests::remote_dial_admission_releases_all_slots_when_caller_session_ends",
   "gateway::tests::full_non_offer_queue_still_removes_the_failed_session_state",
   "gateway::effects::tests::full_terminal_batch_removes_session_without_partial_enqueue",
-  "peer::transport::tests::terminal::reordering::opened_terminal_reordering_converges_once",
+  "transport::tests::terminal::reordering::opened_terminal_reordering_converges_once",
   "routing::runtime::tests::stale_epoch::worker_reconnect_epoch_ignores_late_update_completion",
   "operation_denial_does_not_end_the_relay_session",
   "resource_limits::pipe_byte_limit_resets_only_the_overflowed_pipe_and_preserves_sibling",
@@ -187,7 +187,7 @@ rust = [
   "tls_server_rejects_a_client_without_alpn",
   "mutual_tls_rejects_a_trusted_certificate_with_the_wrong_gateway_role",
   "mutual_tls_rejects_an_untrusted_gateway_certificate",
-  "peer::runtime_tests::plaintext_peer_accepts_without_a_key_allowlist",
+  "runtime_tests::plaintext_peer_accepts_without_a_key_allowlist",
   "transport_modes::internal_plaintext_does_not_disable_sdk_tls",
   "transport_modes::internal_transport_rejects_unknown_and_conflicting_modes_before_serving",
   "transport_modes::explicit_plaintext_route_table_admits_without_keys_or_certificates",
