@@ -465,37 +465,18 @@ impl PayloadReader {
 
     fn error_code(&mut self) -> Result<ErrorCode, PeerCodecError> {
         let value = self.u8("error_code")?;
-        match value {
-            1 => Ok(ErrorCode::InvalidArgument),
-            2 => Ok(ErrorCode::Unauthenticated),
-            3 => Ok(ErrorCode::PermissionDenied),
-            4 => Ok(ErrorCode::NotFound),
-            5 => Ok(ErrorCode::FailedPrecondition),
-            6 => Ok(ErrorCode::Unavailable),
-            7 => Ok(ErrorCode::DeadlineExceeded),
-            8 => Ok(ErrorCode::ResourceExhausted),
-            9 => Ok(ErrorCode::Cancelled),
-            10 => Ok(ErrorCode::ProtocolError),
-            11 => Ok(ErrorCode::Internal),
-            12 => Ok(ErrorCode::AlreadyExists),
-            _ => Err(PeerCodecError::UnknownEnum {
-                name: "ErrorCode",
-                value,
-            }),
-        }
+        ErrorCode::from_wire(value).ok_or(PeerCodecError::UnknownEnum {
+            name: "ErrorCode",
+            value,
+        })
     }
 
     fn observation(&mut self) -> Result<PeerObservation, PeerCodecError> {
         let value = self.u8("peer_observation")?;
-        match value {
-            1 => Ok(PeerObservation::NotObserved),
-            2 => Ok(PeerObservation::MaybeObserved),
-            3 => Ok(PeerObservation::Observed),
-            _ => Err(PeerCodecError::UnknownEnum {
-                name: "PeerObservation",
-                value,
-            }),
-        }
+        PeerObservation::from_wire(value).ok_or(PeerCodecError::UnknownEnum {
+            name: "PeerObservation",
+            value,
+        })
     }
 
     fn remaining(&mut self) -> Bytes {

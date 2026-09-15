@@ -26,7 +26,9 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub(crate) fn from_wire(value: u8) -> Option<Self> {
+    /// Decodes the wire byte; `None` for values outside the contract.
+    #[must_use]
+    pub fn from_wire(value: u8) -> Option<Self> {
         match value {
             1 => Some(Self::InvalidArgument),
             2 => Some(Self::Unauthenticated),
@@ -60,7 +62,9 @@ pub enum PeerObservation {
 }
 
 impl PeerObservation {
-    pub(crate) fn from_wire(value: u8) -> Option<Self> {
+    /// Decodes the wire byte; `None` for values outside the contract.
+    #[must_use]
+    pub fn from_wire(value: u8) -> Option<Self> {
         match value {
             1 => Some(Self::NotObserved),
             2 => Some(Self::MaybeObserved),
