@@ -163,13 +163,7 @@ pub(super) fn staggered_interval(
         StreamEndpoint::Dialer => 0x50_u8,
         StreamEndpoint::Acceptor => 0x51_u8,
     };
-    let mut hash = u64::from(salt);
-    for byte in peer_transport_id.as_uuid().as_bytes() {
-        hash = hash.wrapping_mul(16_777_619) ^ u64::from(*byte);
-    }
-    let factor_per_mille = 900 + (hash % 201) as u128;
-    let nanos = interval.as_nanos().saturating_mul(factor_per_mille) / 1_000;
-    Duration::from_nanos(nanos.try_into().unwrap_or(u64::MAX)).max(Duration::from_millis(1))
+    crate::jitter::staggered(interval, peer_transport_id.as_uuid(), salt)
 }
 
 #[cfg(test)]
