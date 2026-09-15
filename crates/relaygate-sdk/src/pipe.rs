@@ -419,8 +419,10 @@ impl Pipe {
 
     /// Reads ordered bytes while preserving RelayGate's structured [`Error`].
     /// `0` means graceful EOF.
-    ///
-    /// Prefer Tokio's [`tokio::io::AsyncReadExt`] helpers for ordinary I/O.
+    #[deprecated(
+        since = "0.4.0",
+        note = "use tokio::io::AsyncReadExt::read and recover the SDK error with Error::from_io"
+    )]
     pub async fn read_into(&mut self, destination: &mut [u8]) -> Result<usize> {
         poll_fn(|context| {
             self.reader
@@ -432,7 +434,10 @@ impl Pipe {
     /// Enqueues all bytes to the bounded session path in order.
     ///
     /// Success is not a peer application delivery acknowledgement.
-    /// Prefer Tokio's [`tokio::io::AsyncWriteExt`] helpers for ordinary I/O.
+    #[deprecated(
+        since = "0.4.0",
+        note = "use tokio::io::AsyncWriteExt::write_all and recover the SDK error with Error::from_io"
+    )]
     pub async fn write_all_bytes(&mut self, payload: &[u8]) -> Result<()> {
         self.writer.write_all(&self.owner.state, payload).await
     }
@@ -457,6 +462,10 @@ impl Pipe {
 
 impl PipeReadHalf {
     /// Split-read equivalent of [`Pipe::read_into`].
+    #[deprecated(
+        since = "0.4.0",
+        note = "use tokio::io::AsyncReadExt::read and recover the SDK error with Error::from_io"
+    )]
     pub async fn read_into(&mut self, destination: &mut [u8]) -> Result<usize> {
         poll_fn(|context| {
             self.reader
@@ -468,6 +477,10 @@ impl PipeReadHalf {
 
 impl PipeWriteHalf {
     /// Split-write equivalent of [`Pipe::write_all_bytes`].
+    #[deprecated(
+        since = "0.4.0",
+        note = "use tokio::io::AsyncWriteExt::write_all and recover the SDK error with Error::from_io"
+    )]
     pub async fn write_all_bytes(&mut self, payload: &[u8]) -> Result<()> {
         self.writer.write_all(&self.owner.state, payload).await
     }

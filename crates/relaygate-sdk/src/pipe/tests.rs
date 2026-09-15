@@ -12,6 +12,10 @@ use crate::{
     session::session_outbound_channel,
 };
 
+fn sdk_error(error: &std::io::Error) -> Result<&Error, &'static str> {
+    Error::from_io(error).ok_or("Pipe I/O error lost its SDK Error payload")
+}
+
 #[tokio::test]
 async fn buffered_byte_capacity_is_returned_after_read_and_drop()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -207,11 +211,11 @@ async fn remote_failure_wins_while_close_waits_for_capacity()
 
     let mut buffer = [0_u8; 1];
     let error = pipe
-        .read_into(&mut buffer)
+        .read(&mut buffer)
         .await
         .err()
         .ok_or("remote failure was overwritten by local close")?;
-    assert_eq!(error.code(), ErrorCode::Unavailable);
+    assert_eq!(sdk_error(&error)?.code(), ErrorCode::Unavailable);
     Ok(())
 }
 
@@ -228,7 +232,7 @@ async fn remote_failure_wins_while_write_waits_for_capacity()
     let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
     let failure = Error::unavailable("remote session failed");
 
-    let write = pipe.write_all_bytes(b"blocked payload");
+    let write = pipe.write_all(b"blocked payload");
     tokio::pin!(write);
     assert!(
         timeout(Duration::from_millis(10), &mut write)
@@ -237,10 +241,11 @@ async fn remote_failure_wins_while_write_waits_for_capacity()
     );
 
     assert!(state.fail(failure.clone()));
-    assert_eq!(
-        timeout(Duration::from_secs(1), &mut write).await?,
-        Err(failure)
-    );
+    let error = timeout(Duration::from_secs(1), &mut write)
+        .await?
+        .err()
+        .ok_or("blocked write unexpectedly succeeded after remote failure")?;
+    assert_eq!(sdk_error(&error)?, &failure);
     assert_eq!(receiver.recv().await, Some(Frame::Ping { nonce: 1 }));
     assert!(receiver.try_recv().is_err());
     Ok(())
@@ -258,11 +263,11 @@ async fn full_failure_is_not_masked_by_remote_fin() -> Result<(), Box<dyn std::e
 
     let mut buffer = [0_u8; 1];
     let error = pipe
-        .read_into(&mut buffer)
+        .read(&mut buffer)
         .await
         .err()
         .ok_or("remote FIN masked the later full failure")?;
-    assert_eq!(error.code(), ErrorCode::Unavailable);
+    assert_eq!(sdk_error(&error)?.code(), ErrorCode::Unavailable);
     Ok(())
 }
 
@@ -464,11 +469,14 @@ async fn write_half_close_terminates_the_split_read_half() -> Result<(), Box<dyn
     writer.close().await?;
     assert_eq!(outbound_rx.recv().await, Some(Frame::Close { pipe_id }));
     let write_error = writer
-        .write_all_bytes(b"after-close")
+        .write_all(b"after-close")
         .await
         .err()
         .ok_or("closed Pipe write unexpectedly succeeded")?;
-    assert_eq!(write_error.code(), ErrorCode::FailedPrecondition);
+    assert_eq!(
+        sdk_error(&write_error)?.code(),
+        ErrorCode::FailedPrecondition
+    );
 
     let mut byte = [0_u8; 1];
     assert_eq!(reader.read(&mut byte).await?, 0);
@@ -572,7 +580,7 @@ async fn closed_session_outbound_wakes_a_pending_write() -> Result<(), Box<dyn s
     let pipe_id = PipeId::new(SessionId::new(), 23);
     let (mut pipe, _state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
 
-    let pending = pipe.write_all_bytes(b"pending");
+    let pending = pipe.write_all(b"pending");
     tokio::pin!(pending);
     assert!(
         timeout(Duration::from_millis(10), &mut pending)
@@ -585,6 +593,7 @@ async fn closed_session_outbound_wakes_a_pending_write() -> Result<(), Box<dyn s
         .await?
         .err()
         .ok_or("pending write unexpectedly succeeded after outbound receiver closed")?;
+    let error = sdk_error(&error)?;
     assert_eq!(error.code(), ErrorCode::Unavailable);
     assert_eq!(error.observation(), crate::PeerObservation::MaybeObserved);
     Ok(())
@@ -626,30 +635,38 @@ async fn async_io_errors_preserve_the_structured_sdk_error_as_their_payload()
     let failure = Error::unavailable("session failed");
     assert!(state.fail(failure.clone()));
 
-    assert_eq!(pipe.write_all_bytes(b"custom").await, Err(failure.clone()));
-
+    let mut byte = [0_u8; 1];
     let write_error = pipe
         .write_all(b"trait")
         .await
         .err()
         .ok_or("AsyncWrite unexpectedly succeeded")?;
-    let write_source = write_error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<Error>())
-        .ok_or("AsyncWrite error lost its SDK Error payload")?;
-    assert_eq!(write_source, &failure);
+    assert_eq!(sdk_error(&write_error)?, &failure);
 
-    let mut byte = [0_u8; 1];
     let read_error = pipe
         .read(&mut byte)
         .await
         .err()
         .ok_or("AsyncRead unexpectedly succeeded")?;
-    let read_source = read_error
-        .get_ref()
-        .and_then(|source| source.downcast_ref::<Error>())
-        .ok_or("AsyncRead error lost its SDK Error payload")?;
-    assert_eq!(read_source, &failure);
+    assert_eq!(sdk_error(&read_error)?, &failure);
+    assert!(Error::from_io(&std::io::Error::other("foreign")).is_none());
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn deprecated_pipe_helpers_still_return_the_structured_sdk_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 32);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+    let failure = Error::unavailable("session failed");
+    assert!(state.fail(failure.clone()));
+
+    assert_eq!(pipe.write_all_bytes(b"custom").await, Err(failure.clone()));
+    let mut byte = [0_u8; 1];
+    assert_eq!(pipe.read_into(&mut byte).await, Err(failure));
     Ok(())
 }
 

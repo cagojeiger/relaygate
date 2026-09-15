@@ -90,6 +90,14 @@ impl Error {
         &self.message
     }
 
+    /// Recovers the structured SDK error carried by a Pipe I/O error from
+    /// Tokio's [`AsyncRead`](tokio::io::AsyncRead) and
+    /// [`AsyncWrite`](tokio::io::AsyncWrite) adapters.
+    #[must_use]
+    pub fn from_io(error: &std::io::Error) -> Option<&Self> {
+        error.get_ref()?.downcast_ref()
+    }
+
     /// Classifies transient, not-observed errors for a new connection or
     /// registration control operation. The caller still decides whether to
     /// start it; the SDK does not replay the failed operation.
