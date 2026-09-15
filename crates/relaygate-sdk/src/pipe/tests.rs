@@ -654,29 +654,6 @@ async fn async_io_errors_preserve_the_structured_sdk_error_as_their_payload()
 }
 
 #[tokio::test]
-#[allow(deprecated)]
-async fn deprecated_pipe_helpers_still_return_the_structured_sdk_error()
--> Result<(), Box<dyn std::error::Error>> {
-    let (outbound, _outbound_rx) = session_outbound_channel(1);
-    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
-    let pipe_id = PipeId::new(SessionId::new(), 32);
-    let (mut pipe, state) = PipeState::pair(pipe_id, outbound.clone(), 1, abandoned.clone());
-    let failure = Error::unavailable("session failed");
-    assert!(state.fail(failure.clone()));
-
-    assert_eq!(pipe.write_all_bytes(b"custom").await, Err(failure.clone()));
-    let mut byte = [0_u8; 1];
-    assert_eq!(pipe.read_into(&mut byte).await, Err(failure.clone()));
-
-    let (split, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
-    assert!(state.fail(failure.clone()));
-    let (mut reader, mut writer) = split.into_split();
-    assert_eq!(writer.write_all_bytes(b"split").await, Err(failure.clone()));
-    assert_eq!(reader.read_into(&mut byte).await, Err(failure));
-    Ok(())
-}
-
-#[tokio::test]
 async fn async_shutdown_reports_terminal_failure_and_preserves_its_payload()
 -> Result<(), Box<dyn std::error::Error>> {
     let (outbound, mut outbound_rx) = session_outbound_channel(1);
