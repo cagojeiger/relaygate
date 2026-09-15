@@ -84,7 +84,7 @@ pub(super) async fn run_transport_actor(
             }
             frame = source.next() => transport.on_inbound(frame).await,
             () = wait_for_deadline(deadline), if deadline.is_some() => {
-                transport.on_deadline(commands.is_empty()).await
+                transport.on_deadline(&commands).await
             }
             wake = writer_wakes.recv() => {
                 if wake.is_none() {
@@ -167,7 +167,7 @@ impl TransportLoop {
             observe_heartbeat_round_trip(HeartbeatTransport::Peer, round_trip);
         }
         if self.liveness.response_timed_out() {
-            return Break(self.heartbeat_timed_out());
+            return Break(self.report_heartbeat_timeout());
         }
         if !self.actor.handle_frame(frame).await {
             return Break(TransportCloseReason::ProtocolError);
@@ -176,13 +176,18 @@ impl TransportLoop {
         Continue(())
     }
 
-    async fn on_deadline(&mut self, commands_empty: bool) -> ControlFlow<TransportCloseReason> {
+    async fn on_deadline(
+        &mut self,
+        commands: &mpsc::Receiver<TransportCommand>,
+    ) -> ControlFlow<TransportCloseReason> {
         let now = Instant::now();
         self.actor.expire_open_deadlines().await;
         self.actor.flush_stream_queues().await;
-        let action = self
-            .liveness
-            .on_deadline(now, self.actor.streams.is_empty(), commands_empty);
+        // Sampled after the flushes so a command queued meanwhile still defers
+        // idle retirement.
+        let action =
+            self.liveness
+                .on_deadline(now, self.actor.streams.is_empty(), commands.is_empty());
         match action {
             Some(LivenessAction::Ping(frame)) => {
                 if self.actor.aggregate_writer.try_send(frame).is_err() {
@@ -190,7 +195,9 @@ impl TransportLoop {
                 }
                 self.liveness.mark_probe_committed();
             }
-            Some(LivenessAction::HeartbeatTimeout) => return Break(self.heartbeat_timed_out()),
+            Some(LivenessAction::HeartbeatTimeout) => {
+                return Break(self.report_heartbeat_timeout());
+            }
             Some(LivenessAction::IdleRetired) => {
                 tracing::debug!(
                     component = "gateway",
@@ -208,7 +215,8 @@ impl TransportLoop {
         Continue(())
     }
 
-    fn heartbeat_timed_out(&self) -> TransportCloseReason {
+    /// Records the timeout metric and log, returning the matching close reason.
+    fn report_heartbeat_timeout(&self) -> TransportCloseReason {
         observe_heartbeat_timeout(HeartbeatTransport::Peer);
         tracing::debug!(
             component = "gateway",
