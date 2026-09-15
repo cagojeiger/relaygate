@@ -1,6 +1,8 @@
+use std::ops::ControlFlow::{self, Break, Continue};
+
 use futures_util::StreamExt;
 use relaygate_protocol::{Frame, PipeId};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -17,13 +19,13 @@ use crate::{
     listener::{RelayCommand, RelayInner},
     observability::ReconnectEpisode,
     session::{
-        EstablishedSession, SessionHeartbeat, SessionLink, send_bounded, session_outbound_channel,
-        wait_for_heartbeat,
+        EstablishedSession, SessionHeartbeat, SessionLink, SessionOutbound,
+        session_outbound_channel, wait_for_heartbeat,
     },
 };
 
 pub(super) async fn run_relay_session(
-    mut established: EstablishedSession,
+    established: EstablishedSession,
     inner: &RelayInner,
     mut commands: mpsc::Receiver<RelayCommand>,
     mut cancellations: mpsc::UnboundedReceiver<PipeId>,
@@ -34,233 +36,320 @@ pub(super) async fn run_relay_session(
     // One unique Pipe value can abandon one current PipeId, so this lane is
     // logically bounded by the session's live Pipe map rather than history.
     let (abandoned_tx, mut abandoned_rx) = mpsc::unbounded_channel();
-    let mut state = RelaySessionState::new();
-    let mut needs_reconcile = true;
-    let mut timed_out_request = None;
-    let mut registration_succeeded = false;
-    let mut heartbeat = SessionHeartbeat::new(&inner.config, established.id, 0x4c);
+    let mut session = RelayLoop {
+        heartbeat: SessionHeartbeat::new(&inner.config, established.id, 0x4c),
+        established,
+        inner,
+        state: RelaySessionState::new(),
+        session_cancel,
+        outbound_tx,
+        abandoned_tx,
+        needs_reconcile: true,
+        timed_out_request: None,
+        registration_succeeded: false,
+    };
 
     loop {
-        if needs_reconcile
-            && !reconcile_registrations(inner, &mut established, &mut state, &session_cancel).await
-        {
+        if session.needs_reconcile && !session.reconcile().await {
             break;
         }
-        needs_reconcile = false;
-        match inner.desired_settlement() {
-            DesiredSettlement::Recovered => {
-                inner.reset_republish_backoff();
-                if let Some(episode) = reconnect_episode.take() {
-                    episode.recover();
-                }
-                inner.clear_reconnect_degraded();
-            }
-            DesiredSettlement::Degraded => {
-                inner.reset_republish_backoff();
-                if let Some(episode) = reconnect_episode.take() {
-                    episode.degrade();
-                }
-                inner.clear_reconnect_degraded();
-            }
-            DesiredSettlement::Pending => {}
-        }
-        let registration_deadline = state
-            .pending
-            .iter()
-            .filter(|(_, pending)| pending.committed)
-            .min_by_key(|(_, pending)| pending.deadline)
-            .map(|(request_id, pending)| (*request_id, pending.deadline));
-        tokio::select! {
+        session.needs_reconcile = false;
+        session.settle_reconnect(reconnect_episode);
+        let registration_deadline = session.registration_deadline();
+        let flow = tokio::select! {
             biased;
-            _ = session_cancel.cancelled() => break,
-            incoming = established.transport.next() => {
-                let Some(incoming) = incoming else { break; };
-                let Ok(frame) = incoming else { break; };
-                heartbeat.observe_inbound(&frame);
-                if heartbeat.response_timed_out() {
-                    tracing::debug!(
-                        component = "sdk",
-                        event = "sdk.session.heartbeat_timeout",
-                        session_id = %established.id.as_uuid(),
-                        "Relay session heartbeat response timed out"
-                    );
-                    break;
-                }
-                match handle_relay_frame(
-                    frame,
-                    established.id,
-                    &mut state,
-                    &outbound_tx,
-                    &abandoned_tx,
-                    inner,
-                    &mut SessionLink::new(
-                        &mut established.transport,
-                        inner.config.operation_timeout,
-                        &session_cancel,
-                    ),
-                ).await {
-                    RelayFrameAction::Continue => {}
-                    RelayFrameAction::RegistrationSucceeded => {
-                        registration_succeeded = true;
-                    }
-                    RelayFrameAction::Reconcile => needs_reconcile = true,
-                    RelayFrameAction::Stop => break,
-                }
-            }
-            () = wait_for_heartbeat(heartbeat.next_deadline()) => {
-                let Some(frame) = heartbeat.on_deadline() else {
-                    tracing::debug!(
-                        component = "sdk",
-                        event = "sdk.session.heartbeat_timeout",
-                        session_id = %established.id.as_uuid(),
-                        "Relay session heartbeat response timed out"
-                    );
-                    break;
-                };
-                if send_bounded(
-                    &mut established.transport,
-                    frame,
-                    inner.config.operation_timeout,
-                    &session_cancel,
-                )
-                .await
-                .is_err()
-                {
-                    break;
-                }
-                heartbeat.mark_probe_committed();
+            _ = session.session_cancel.cancelled() => break,
+            incoming = session.established.transport.next() => session.on_inbound(incoming).await,
+            () = wait_for_heartbeat(session.heartbeat.next_deadline()) => {
+                session.on_heartbeat_deadline().await
             }
             _ = wait_for_registration_deadline(registration_deadline), if registration_deadline.is_some() => {
-                timed_out_request = registration_deadline.map(|(request_id, _)| request_id);
-                session_cancel.cancel();
+                session.timed_out_request = registration_deadline.map(|(request_id, _)| request_id);
+                session.session_cancel.cancel();
                 break;
             }
-            _ = inner.reconcile.notified() => {
-                needs_reconcile = true;
+            _ = session.inner.reconcile.notified() => {
+                session.needs_reconcile = true;
+                Continue(())
             }
-            supplied = state.token_supplies.next(), if !state.token_supplies.is_empty() => {
-                let Some((request_id, token)) = supplied else { continue; };
-                if !commit_registration_token(
-                    request_id,
-                    token,
-                    inner,
-                    &mut established,
-                    &mut state,
-                    &session_cancel,
-                ).await {
-                    break;
+            supplied = session.state.token_supplies.next(), if !session.state.token_supplies.is_empty() => {
+                match supplied {
+                    Some((request_id, token)) => session.on_token(request_id, token).await,
+                    None => Continue(()),
                 }
             }
             command = commands.recv() => {
                 let Some(command) = command else { break; };
-                match command {
-                    RelayCommand::Dial { connection_id, destination, access_token, response, resources } => {
-                        let pending = super::PendingDial { response, resources };
-                        if state.pending_dials.insert(connection_id, pending).is_some() {
-                            if let Some(pending) = state.pending_dials.remove(&connection_id) {
-                                let _ = pending.response.send(Err(Error::new(
-                                    ErrorCode::AlreadyExists,
-                                    PeerObservation::NotObserved,
-                                    "ConnectionId is already in flight",
-                                )));
-                            }
-                            continue;
-                        }
-                        if send_bounded(
-                            &mut established.transport,
-                            Frame::Dial {
-                                connection_id,
-                                destination,
-                                access_token,
-                            },
-                            inner.config.operation_timeout,
-                            &session_cancel,
-                        )
-                        .await
-                        .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }
+                session.on_command(command).await
             }
             cancelled = cancellations.recv() => {
-                let Some(pipe_id) = cancelled else { continue; };
-                let mut removed = false;
-                if let Some(pending) = state.pending_dials.remove(&pipe_id.connection_id()) {
-                    removed = true;
-                    let _ = pending.response.send(Err(Error::new(
-                        ErrorCode::Cancelled,
-                        PeerObservation::MaybeObserved,
-                        "committed DIAL was cancelled",
-                    )));
-                }
-                if let Some(pipe) = state.pipes.remove(&pipe_id) {
-                    removed = true;
-                    pipe.state.close_normal();
-                }
-                if removed
-                    && send_bounded(
-                        &mut established.transport,
-                        Frame::Cancel { pipe_id },
-                        inner.config.operation_timeout,
-                        &session_cancel,
-                    )
-                    .await
-                    .is_err()
-                {
-                    break;
+                match cancelled {
+                    Some(pipe_id) => session.on_cancelled(pipe_id).await,
+                    None => Continue(()),
                 }
             }
             frame = outbound_rx.recv() => {
                 let Some(frame) = frame else { break; };
-                let terminal_pipe = match &frame {
-                    Frame::Close { pipe_id } | Frame::Reset { pipe_id, .. } => Some(*pipe_id),
-                    Frame::Fin { pipe_id } if state.pipes.get(pipe_id).is_some_and(|pipe| pipe.state.is_protocol_finished()) => Some(*pipe_id),
-                    _ => None,
-                };
-                if send_bounded(
-                    &mut established.transport,
-                    frame,
-                    inner.config.operation_timeout,
-                    &session_cancel,
-                )
-                .await
-                .is_err()
-                {
-                    break;
-                }
-                if let Some(pipe_id) = terminal_pipe {
-                    state.pipes.remove(&pipe_id);
-                }
+                session.on_outbound(frame).await
             }
             abandoned = abandoned_rx.recv() => {
-                let Some(pipe_id) = abandoned else { continue; };
-                if state.pipes.remove(&pipe_id).is_some()
-                    && send_bounded(
-                        &mut established.transport,
-                        Frame::Close { pipe_id },
-                        inner.config.operation_timeout,
-                        &session_cancel,
-                    )
-                    .await
-                    .is_err()
-                {
-                    break;
+                match abandoned {
+                    Some(pipe_id) => session.on_abandoned(pipe_id).await,
+                    None => Continue(()),
                 }
             }
+        };
+        if let Break(()) = flow {
+            break;
         }
     }
 
     fail_queued_dials(&mut commands);
     cleanup_relay_session(
-        established.id,
+        session.established.id,
         inner,
-        state,
-        timed_out_request,
-        registration_succeeded,
+        session.state,
+        session.timed_out_request,
+        session.registration_succeeded,
     )
     .await
+}
+
+/// One RelaySession's loop state. Every arm body of the session `select!`
+/// is a method here; the select itself and its `biased` order stay in
+/// `run_relay_session`.
+struct RelayLoop<'a> {
+    established: EstablishedSession,
+    inner: &'a RelayInner,
+    state: RelaySessionState,
+    heartbeat: SessionHeartbeat,
+    session_cancel: CancellationToken,
+    outbound_tx: SessionOutbound,
+    abandoned_tx: mpsc::UnboundedSender<PipeId>,
+    needs_reconcile: bool,
+    timed_out_request: Option<u64>,
+    registration_succeeded: bool,
+}
+
+impl RelayLoop<'_> {
+    fn link(&mut self) -> SessionLink<'_> {
+        SessionLink::new(
+            &mut self.established.transport,
+            self.inner.config.operation_timeout,
+            &self.session_cancel,
+        )
+    }
+
+    async fn reconcile(&mut self) -> bool {
+        reconcile_registrations(
+            self.inner,
+            &mut self.established,
+            &mut self.state,
+            &self.session_cancel,
+        )
+        .await
+    }
+
+    fn settle_reconnect(&self, reconnect_episode: &mut Option<ReconnectEpisode>) {
+        match self.inner.desired_settlement() {
+            DesiredSettlement::Recovered => {
+                self.inner.reset_republish_backoff();
+                if let Some(episode) = reconnect_episode.take() {
+                    episode.recover();
+                }
+                self.inner.clear_reconnect_degraded();
+            }
+            DesiredSettlement::Degraded => {
+                self.inner.reset_republish_backoff();
+                if let Some(episode) = reconnect_episode.take() {
+                    episode.degrade();
+                }
+                self.inner.clear_reconnect_degraded();
+            }
+            DesiredSettlement::Pending => {}
+        }
+    }
+
+    fn registration_deadline(&self) -> Option<(u64, Instant)> {
+        self.state
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.committed)
+            .min_by_key(|(_, pending)| pending.deadline)
+            .map(|(request_id, pending)| (*request_id, pending.deadline))
+    }
+
+    fn heartbeat_timed_out(&self) {
+        tracing::debug!(
+            component = "sdk",
+            event = "sdk.session.heartbeat_timeout",
+            session_id = %self.established.id.as_uuid(),
+            "Relay session heartbeat response timed out"
+        );
+    }
+
+    async fn on_inbound(
+        &mut self,
+        incoming: Option<Result<Frame, relaygate_protocol::ProtocolError>>,
+    ) -> ControlFlow<()> {
+        let Some(Ok(frame)) = incoming else {
+            return Break(());
+        };
+        self.heartbeat.observe_inbound(&frame);
+        if self.heartbeat.response_timed_out() {
+            self.heartbeat_timed_out();
+            return Break(());
+        }
+        let session_id = self.established.id;
+        let action = handle_relay_frame(
+            frame,
+            session_id,
+            &mut self.state,
+            &self.outbound_tx,
+            &self.abandoned_tx,
+            self.inner,
+            &mut SessionLink::new(
+                &mut self.established.transport,
+                self.inner.config.operation_timeout,
+                &self.session_cancel,
+            ),
+        )
+        .await;
+        match action {
+            RelayFrameAction::Continue => {}
+            RelayFrameAction::RegistrationSucceeded => self.registration_succeeded = true,
+            RelayFrameAction::Reconcile => self.needs_reconcile = true,
+            RelayFrameAction::Stop => return Break(()),
+        }
+        Continue(())
+    }
+
+    async fn on_heartbeat_deadline(&mut self) -> ControlFlow<()> {
+        let Some(frame) = self.heartbeat.on_deadline() else {
+            self.heartbeat_timed_out();
+            return Break(());
+        };
+        if self.link().send(frame).await.is_err() {
+            return Break(());
+        }
+        self.heartbeat.mark_probe_committed();
+        Continue(())
+    }
+
+    async fn on_token(
+        &mut self,
+        request_id: u64,
+        token: crate::Result<relaygate_protocol::BearerToken>,
+    ) -> ControlFlow<()> {
+        if commit_registration_token(
+            request_id,
+            token,
+            self.inner,
+            &mut self.established,
+            &mut self.state,
+            &self.session_cancel,
+        )
+        .await
+        {
+            Continue(())
+        } else {
+            Break(())
+        }
+    }
+
+    async fn on_command(&mut self, command: RelayCommand) -> ControlFlow<()> {
+        let RelayCommand::Dial {
+            connection_id,
+            destination,
+            access_token,
+            response,
+            resources,
+        } = command;
+        let pending = super::PendingDial {
+            response,
+            resources,
+        };
+        if self
+            .state
+            .pending_dials
+            .insert(connection_id, pending)
+            .is_some()
+        {
+            if let Some(pending) = self.state.pending_dials.remove(&connection_id) {
+                let _ = pending.response.send(Err(Error::new(
+                    ErrorCode::AlreadyExists,
+                    PeerObservation::NotObserved,
+                    "ConnectionId is already in flight",
+                )));
+            }
+            return Continue(());
+        }
+        if self
+            .link()
+            .send(Frame::Dial {
+                connection_id,
+                destination,
+                access_token,
+            })
+            .await
+            .is_err()
+        {
+            return Break(());
+        }
+        Continue(())
+    }
+
+    async fn on_cancelled(&mut self, pipe_id: PipeId) -> ControlFlow<()> {
+        let mut removed = false;
+        if let Some(pending) = self.state.pending_dials.remove(&pipe_id.connection_id()) {
+            removed = true;
+            let _ = pending.response.send(Err(Error::new(
+                ErrorCode::Cancelled,
+                PeerObservation::MaybeObserved,
+                "committed DIAL was cancelled",
+            )));
+        }
+        if let Some(pipe) = self.state.pipes.remove(&pipe_id) {
+            removed = true;
+            pipe.state.close_normal();
+        }
+        if removed && self.link().send(Frame::Cancel { pipe_id }).await.is_err() {
+            return Break(());
+        }
+        Continue(())
+    }
+
+    async fn on_outbound(&mut self, frame: Frame) -> ControlFlow<()> {
+        let terminal_pipe = match &frame {
+            Frame::Close { pipe_id } | Frame::Reset { pipe_id, .. } => Some(*pipe_id),
+            Frame::Fin { pipe_id }
+                if self
+                    .state
+                    .pipes
+                    .get(pipe_id)
+                    .is_some_and(|pipe| pipe.state.is_protocol_finished()) =>
+            {
+                Some(*pipe_id)
+            }
+            _ => None,
+        };
+        if self.link().send(frame).await.is_err() {
+            return Break(());
+        }
+        if let Some(pipe_id) = terminal_pipe {
+            self.state.pipes.remove(&pipe_id);
+        }
+        Continue(())
+    }
+
+    async fn on_abandoned(&mut self, pipe_id: PipeId) -> ControlFlow<()> {
+        if self.state.pipes.remove(&pipe_id).is_some()
+            && self.link().send(Frame::Close { pipe_id }).await.is_err()
+        {
+            return Break(());
+        }
+        Continue(())
+    }
 }
 
 /// DIALs still queued when the session ends never reached the wire, so they
