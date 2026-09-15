@@ -19,13 +19,6 @@ pub(super) struct InternalTlsMaterial {
     pub(super) private_key: Vec<u8>,
 }
 
-pub(super) fn insecure_test_transport() -> bool {
-    env::var("RELAYGATE_INSECURE_TEST_TRANSPORT")
-        .ok()
-        .as_deref()
-        == Some("true")
-}
-
 pub(super) fn load_internal_tls() -> Result<InternalTlsMaterial> {
     let ca_path = env::var("RELAYGATE_INTERNAL_TLS_CA_PATH")
         .context("RELAYGATE_INTERNAL_TLS_CA_PATH is required")?;

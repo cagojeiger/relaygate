@@ -4,7 +4,7 @@ State와 event 의미의 기준 문서입니다.
 
 ## 오류
 
-Process startup에서 unknown transport mode, legacy test flag 혼용, mTLS material 누락, authorization config
+Process startup에서 unknown transport mode, 제거된 legacy test flag, mTLS material 누락, authorization config
 오류는 listener를 열기 전에 실패합니다. 연결 후 TLS/mTLS 실패는 plaintext fallback 없는 terminal connection
 failure입니다.
 

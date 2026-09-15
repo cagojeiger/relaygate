@@ -19,8 +19,7 @@ const DEFAULT_RT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_RT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_RT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-const DISTRIBUTED_ENVIRONMENT: [&str; 5] = [
-    "RELAYGATE_RT_TRUSTED_LOCAL",
+const DISTRIBUTED_ENVIRONMENT: [&str; 4] = [
     "RELAYGATE_RT_SHARD_DIRECTORY_PATH",
     "RELAYGATE_GATEWAY_NAME",
     "RELAYGATE_GATEWAY_LOCATOR",

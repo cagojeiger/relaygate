@@ -91,7 +91,6 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .arg("route-table")
-            .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
             .env("RELAYGATE_RT_BIND_ADDR", &address)
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_RT_SHARD_ID", "rt-0")
@@ -225,7 +224,6 @@ async fn route_table_expiry_metric_counts_removed_soft_state_once() -> Result<()
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .arg("route-table")
-            .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
             .env("RELAYGATE_RT_BIND_ADDR", &address)
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_RT_SHARD_ID", "rt-0")
@@ -269,7 +267,6 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_GATEWAY_NAME", "gw-a")
             .env("RELAYGATE_GATEWAY_LOCATOR", &peer_address)
@@ -320,7 +317,6 @@ fn distributed_peer_accept_failure_exits_process_nonzero_within_bound() -> Resul
     let mut server = ChildGuard::spawn_captured(
         server_command_with_open_file_limit(PROCESS_NOFILE_LIMIT)
             .env("RELAYGATE_BIND_ADDR", &address)
-            .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_GATEWAY_NAME", "gw-a")
             .env("RELAYGATE_GATEWAY_LOCATOR", &peer_address)
@@ -392,16 +388,18 @@ fn invalid_cli_arguments_fail_with_actionable_errors() -> Result<(), Box<dyn Err
 
 #[test]
 fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dyn Error>> {
-    let missing_trusted_local_opt_in = server_command().arg("route-table").output()?;
-    assert_unsuccessful_output(
-        &missing_trusted_local_opt_in,
-        "RELAYGATE_RT_TRUSTED_LOCAL must be `true`",
-    );
+    for removed in [
+        "RELAYGATE_INSECURE_TEST_TRANSPORT",
+        "RELAYGATE_RT_TRUSTED_LOCAL",
+    ] {
+        let legacy_flag = server_command()
+            .arg("route-table")
+            .env(removed, "true")
+            .output()?;
+        assert_unsuccessful_output(&legacy_flag, "is no longer supported");
+    }
 
-    let missing_route_table_directory = server_command()
-        .arg("route-table")
-        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
-        .output()?;
+    let missing_route_table_directory = server_command().arg("route-table").output()?;
     assert_unsuccessful_output(
         &missing_route_table_directory,
         "RELAYGATE_RT_SHARD_DIRECTORY_PATH is required",
@@ -412,11 +410,10 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         .output()?;
     assert_unsuccessful_output(
         &incomplete_gateway_routing,
-        "RELAYGATE_RT_TRUSTED_LOCAL must be `true`",
+        "RELAYGATE_RT_SHARD_DIRECTORY_PATH is required for distributed Gateway mode",
     );
 
     let missing_gateway_directory = server_command()
-        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
         .env("RELAYGATE_GATEWAY_NAME", "gw-a")
         .env("RELAYGATE_GATEWAY_LOCATOR", "gw-a.internal:27431")
         .output()?;
@@ -519,7 +516,6 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
     let artifact = ShardDirectoryArtifact::create()?;
     let zero_peer_heartbeat_idle = server_command()
         .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
-        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
         .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
         .env("RELAYGATE_GATEWAY_NAME", "gw-a")
         .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
@@ -532,7 +528,6 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
 
     let zero_peer_heartbeat_timeout = server_command()
         .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
-        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
         .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
         .env("RELAYGATE_GATEWAY_NAME", "gw-a")
         .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
@@ -545,7 +540,6 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
 
     let zero_peer_idle_retirement = server_command()
         .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
-        .env("RELAYGATE_RT_TRUSTED_LOCAL", "true")
         .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
         .env("RELAYGATE_GATEWAY_NAME", "gw-a")
         .env("RELAYGATE_GATEWAY_LOCATOR", "127.0.0.1:27421")
@@ -1125,7 +1119,8 @@ fn clean_server_command(mut command: Command) -> Command {
     }
     command.env("RELAYGATE_LOG", "warn");
     command.env("RELAYGATE_AUTH_CONFIG_PATH", authorization_config_path());
-    command.env("RELAYGATE_INSECURE_TEST_TRANSPORT", "true");
+    command.env("RELAYGATE_SDK_TRANSPORT", "plaintext");
+    command.env("RELAYGATE_INTERNAL_TRANSPORT", "plaintext");
     command
 }
 

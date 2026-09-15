@@ -14,7 +14,7 @@ GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 위 구성이 기본값입니다. `RELAYGATE_INTERNAL_TRANSPORT=plaintext`는 내부 두 구간만 평문 TCP로 실행하고
 SDK TLS를 유지합니다. SDK edge는 독립적으로 `RELAYGATE_SDK_TRANSPORT=tls|plaintext`를 사용합니다(`tls`
 기본). SDK Gateway endpoint의 `tcp://`는 plaintext에 대응하며 access token과 payload를 암호화하지 않습니다. Unknown mode,
-명시적 mode와 legacy test flag 혼용은 시작 실패입니다. Readiness도 같은 mode를 사용합니다.
+제거된 test flag(`RELAYGATE_INSECURE_TEST_TRANSPORT`, `RELAYGATE_RT_TRUSTED_LOCAL`)가 설정되면 시작 실패입니다. Readiness도 같은 mode를 사용합니다.
 
 | ID | 계약 |
 | --- | --- |
@@ -108,7 +108,7 @@ budget은 결과·연결 종료와 무관하게 시간으로만 보충합니다.
 | `RELAYGATE_INTERNAL_TLS_CA_PATH` / `RELAYGATE_INTERNAL_TLS_CERT_PATH` / `RELAYGATE_INTERNAL_TLS_KEY_PATH` | 없음 | 내부 mTLS 사용 시 필수 |
 | `RELAYGATE_PEER_TLS_SERVER_NAME` | 없음 | distributed Gateway 또는 RouteTable의 mTLS에서 필수. Gateway는 peer 검증 이름, RouteTable은 접속을 허용할 Gateway client 인증서 이름 |
 | `RELAYGATE_RT_TLS_SERVER_NAME` | 없음 | distributed Gateway mTLS에서 필수 |
-| `RELAYGATE_INSECURE_TEST_TRANSPORT` / `RELAYGATE_RT_TRUSTED_LOCAL` | 없음 | legacy test flag. `INSECURE_TEST_TRANSPORT`는 값이 정확히 `true`일 때만 활성이며 SDK 기본값을 plaintext로, 내부 전송을 plaintext로 바꾸고 이때 `RT_TRUSTED_LOCAL=true`가 필요하다. `RT_TRUSTED_LOCAL` 단독 설정과 명시적 mode 혼용은 시작 실패 |
+| `RELAYGATE_INSECURE_TEST_TRANSPORT` / `RELAYGATE_RT_TRUSTED_LOCAL` | – | 0.4에서 제거. 설정되어 있으면 시작 실패 |
 
 ### Gateway
 
@@ -134,8 +134,8 @@ budget은 결과·연결 종료와 무관하게 시간으로만 보충합니다.
 
 ### Distributed Gateway
 
-`RELAYGATE_RT_TRUSTED_LOCAL`, `RELAYGATE_RT_SHARD_DIRECTORY_PATH`, `RELAYGATE_GATEWAY_NAME`,
-`RELAYGATE_GATEWAY_LOCATOR`, `RELAYGATE_PEER_BIND_ADDR` 중 하나라도 있으면 distributed mode이며 아래 필수 값을
+`RELAYGATE_RT_SHARD_DIRECTORY_PATH`, `RELAYGATE_GATEWAY_NAME`, `RELAYGATE_GATEWAY_LOCATOR`,
+`RELAYGATE_PEER_BIND_ADDR` 중 하나라도 있으면 distributed mode이며 아래 필수 값을
 모두 요구합니다.
 
 | 변수 | 기본값 | 의미 |

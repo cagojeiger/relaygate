@@ -4,19 +4,16 @@ use super::*;
 fn local_gateway_validates_explicit_transport_before_sdk_setup() -> Result<(), Box<dyn Error>> {
     for mode in ["", "tcp", "MTLS"] {
         let output = server_command()
-            .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
             .env("RELAYGATE_INTERNAL_TRANSPORT", mode)
             .output()?;
         assert_unsuccessful_output(&output, "must be `mtls` or `plaintext`");
     }
-    for mode in ["mtls", "plaintext"] {
-        let output = server_command()
-            .env("RELAYGATE_INTERNAL_TRANSPORT", mode)
-            .output()?;
-        assert_unsuccessful_output(
-            &output,
-            "cannot be combined with legacy test transport flags",
-        );
+    for removed in [
+        "RELAYGATE_INSECURE_TEST_TRANSPORT",
+        "RELAYGATE_RT_TRUSTED_LOCAL",
+    ] {
+        let output = server_command().env(removed, "true").output()?;
+        assert_unsuccessful_output(&output, "is no longer supported");
     }
     Ok(())
 }
@@ -24,7 +21,7 @@ fn local_gateway_validates_explicit_transport_before_sdk_setup() -> Result<(), B
 #[test]
 fn internal_plaintext_does_not_disable_sdk_tls() -> Result<(), Box<dyn Error>> {
     let output = server_command()
-        .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
+        .env_remove("RELAYGATE_SDK_TRANSPORT")
         .env("RELAYGATE_INTERNAL_TRANSPORT", "plaintext")
         .output()?;
     assert_unsuccessful_output(&output, "RELAYGATE_SDK_TLS_CERT_PATH is required");
@@ -38,26 +35,16 @@ fn internal_transport_rejects_unknown_and_conflicting_modes_before_serving()
     for mode in ["", "tcp", "MTLS"] {
         let output = server_command()
             .arg("route-table")
-            .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
             .env("RELAYGATE_INTERNAL_TRANSPORT", mode)
             .output()?;
         assert_unsuccessful_output(&output, "must be `mtls` or `plaintext`");
     }
-    let output = server_command()
-        .arg("route-table")
-        .env("RELAYGATE_INTERNAL_TRANSPORT", "plaintext")
-        .output()?;
-    assert_unsuccessful_output(
-        &output,
-        "cannot be combined with legacy test transport flags",
-    );
-
     let artifact = ShardDirectoryArtifact::create()?;
     for mode in [None, Some("mtls")] {
         let mut command = server_command();
         command
             .arg("route-table")
-            .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
+            .env_remove("RELAYGATE_INTERNAL_TRANSPORT")
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path());
         if let Some(mode) = mode {
             command.env("RELAYGATE_INTERNAL_TRANSPORT", mode);
@@ -79,7 +66,6 @@ async fn explicit_plaintext_route_table_admits_without_keys_or_certificates()
     let mut server = ChildGuard::spawn(
         server_command()
             .arg("route-table")
-            .env_remove("RELAYGATE_INSECURE_TEST_TRANSPORT")
             .env("RELAYGATE_INTERNAL_TRANSPORT", "plaintext")
             .env("RELAYGATE_RT_BIND_ADDR", &address)
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path()),
