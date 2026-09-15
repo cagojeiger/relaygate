@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use relaygate_protocol::{ErrorCode as WireErrorCode, Frame, PipeId, SessionId};
+use bytes::Bytes;
+use relaygate_protocol::{
+    BindingId, Destination, ErrorCode as WireErrorCode, Frame,
+    PeerObservation as WirePeerObservation, PipeId, SessionId,
+};
 use tokio::sync::mpsc;
 
 use super::{LivePipe, Registration, RelayFrameAction, RelaySessionState};
@@ -24,7 +28,7 @@ pub(super) async fn handle_relay_frame(
     inner: &RelayInner,
     link: &mut SessionLink<'_>,
 ) -> RelayFrameAction {
-    let mut frames = Frames {
+    let mut frames = FrameContext {
         session_id,
         session,
         outbound,
@@ -72,7 +76,7 @@ pub(super) async fn handle_relay_frame(
 
 /// One inbound frame's handling context: the session state plus the lanes a
 /// frame may write to. Each `on_*` method owns exactly one frame kind.
-struct Frames<'a, 'l> {
+struct FrameContext<'a, 'l> {
     session_id: SessionId,
     session: &'a mut RelaySessionState,
     outbound: &'a SessionOutbound,
@@ -81,9 +85,9 @@ struct Frames<'a, 'l> {
     link: &'a mut SessionLink<'l>,
 }
 
-impl Frames<'_, '_> {
-    /// Frames that change no session lifecycle state still stop the loop once
-    /// the runtime is cancelled.
+impl FrameContext<'_, '_> {
+    /// Default outcome for a frame whose handler produced no verdict of its
+    /// own: stop once the runtime is cancelled, otherwise continue.
     fn settle(&self) -> RelayFrameAction {
         if self.inner.cancel.is_cancelled() {
             RelayFrameAction::Stop
@@ -92,11 +96,7 @@ impl Frames<'_, '_> {
         }
     }
 
-    async fn on_published(
-        &mut self,
-        request_id: u64,
-        binding_id: relaygate_protocol::BindingId,
-    ) -> RelayFrameAction {
+    async fn on_published(&mut self, request_id: u64, binding_id: BindingId) -> RelayFrameAction {
         let Some(pending) = self.session.pending.remove(&request_id) else {
             return RelayFrameAction::Continue;
         };
@@ -188,8 +188,8 @@ impl Frames<'_, '_> {
     async fn on_offer(
         &mut self,
         pipe_id: PipeId,
-        binding_id: relaygate_protocol::BindingId,
-        destination: relaygate_protocol::Destination,
+        binding_id: BindingId,
+        destination: Destination,
     ) -> RelayFrameAction {
         if let Some(existing) = self.session.pipes.get(&pipe_id) {
             if !existing.state.is_finished()
@@ -405,7 +405,7 @@ impl Frames<'_, '_> {
         &mut self,
         connection_id: u64,
         code: WireErrorCode,
-        observation: relaygate_protocol::PeerObservation,
+        observation: WirePeerObservation,
         message: String,
     ) -> RelayFrameAction {
         if let Some(pending) = self.session.pending_dials.remove(&connection_id) {
@@ -418,7 +418,7 @@ impl Frames<'_, '_> {
         self.settle()
     }
 
-    async fn on_data(&mut self, pipe_id: PipeId, payload: bytes::Bytes) -> RelayFrameAction {
+    async fn on_data(&mut self, pipe_id: PipeId, payload: Bytes) -> RelayFrameAction {
         let error = self
             .session
             .pipes
