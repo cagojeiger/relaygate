@@ -79,6 +79,31 @@ async fn establish_inner(config: &Config) -> Result<EstablishedSession> {
     })
 }
 
+/// One session's bounded, cancellable frame sender.
+pub(crate) struct SessionLink<'a> {
+    transport: &'a mut WireTransport,
+    timeout: Duration,
+    cancel: &'a CancellationToken,
+}
+
+impl<'a> SessionLink<'a> {
+    pub(crate) fn new(
+        transport: &'a mut WireTransport,
+        timeout: Duration,
+        cancel: &'a CancellationToken,
+    ) -> Self {
+        Self {
+            transport,
+            timeout,
+            cancel,
+        }
+    }
+
+    pub(crate) async fn send(&mut self, frame: Frame) -> std::result::Result<(), ()> {
+        send_bounded(self.transport, frame, self.timeout, self.cancel).await
+    }
+}
+
 pub(crate) async fn send_bounded(
     transport: &mut WireTransport,
     frame: Frame,

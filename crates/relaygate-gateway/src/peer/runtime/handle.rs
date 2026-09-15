@@ -66,24 +66,16 @@ impl PeerHandle {
     }
 
     pub(crate) async fn cancel_open(&self, open_identity: OpenIdentity) -> Result<(), PeerFailure> {
-        let (reply, response) = oneshot::channel();
-        self.try_manager_send(
-            ManagerCommand::Cancel {
-                open_identity,
-                reply,
-            },
-            PeerObservation::MaybeObserved,
-        )?;
-        await_command_response(response).await
+        self.command(|reply| ManagerCommand::Cancel {
+            open_identity,
+            reply,
+        })
+        .await
     }
 
     pub(crate) async fn send_opened(&self, key: PeerStreamKey) -> Result<(), PeerFailure> {
-        let (reply, response) = oneshot::channel();
-        self.try_manager_send(
-            ManagerCommand::Opened { key, reply },
-            PeerObservation::MaybeObserved,
-        )?;
-        await_command_response(response).await
+        self.command(|reply| ManagerCommand::Opened { key, reply })
+            .await
     }
 
     pub(crate) async fn send_failed(
@@ -91,23 +83,12 @@ impl PeerHandle {
         key: PeerStreamKey,
         failure: PeerFailure,
     ) -> Result<(), PeerFailure> {
-        let (reply, response) = oneshot::channel();
-        if let Err(error) = self.try_manager_send(
-            ManagerCommand::Failed {
-                key,
-                failure,
-                reply,
-            },
-            PeerObservation::MaybeObserved,
-        ) {
-            self.close_transport(key);
-            return Err(error);
-        }
-        let result = await_command_response(response).await;
-        if result.is_err() {
-            self.close_transport(key);
-        }
-        result
+        self.command_or_close(key, |reply| ManagerCommand::Failed {
+            key,
+            failure,
+            reply,
+        })
+        .await
     }
 
     pub(crate) async fn send_data(
@@ -115,41 +96,22 @@ impl PeerHandle {
         key: PeerStreamKey,
         payload: Bytes,
     ) -> Result<(), PeerFailure> {
-        let (reply, response) = oneshot::channel();
-        self.try_manager_send(
-            ManagerCommand::Data {
-                key,
-                payload,
-                reply,
-            },
-            PeerObservation::MaybeObserved,
-        )?;
-        await_command_response(response).await
+        self.command(|reply| ManagerCommand::Data {
+            key,
+            payload,
+            reply,
+        })
+        .await
     }
 
     pub(crate) async fn send_fin(&self, key: PeerStreamKey) -> Result<(), PeerFailure> {
-        let (reply, response) = oneshot::channel();
-        self.try_manager_send(
-            ManagerCommand::Fin { key, reply },
-            PeerObservation::MaybeObserved,
-        )?;
-        await_command_response(response).await
+        self.command(|reply| ManagerCommand::Fin { key, reply })
+            .await
     }
 
     pub(crate) async fn send_close(&self, key: PeerStreamKey) -> Result<(), PeerFailure> {
-        let (reply, response) = oneshot::channel();
-        if let Err(error) = self.try_manager_send(
-            ManagerCommand::Close { key, reply },
-            PeerObservation::MaybeObserved,
-        ) {
-            self.close_transport(key);
-            return Err(error);
-        }
-        let result = await_command_response(response).await;
-        if result.is_err() {
-            self.close_transport(key);
-        }
-        result
+        self.command_or_close(key, |reply| ManagerCommand::Close { key, reply })
+            .await
     }
 
     pub(crate) async fn send_reset(
@@ -158,20 +120,33 @@ impl PeerHandle {
         code: ErrorCode,
         message: impl Into<String>,
     ) -> Result<(), PeerFailure> {
+        let message = message.into();
+        self.command_or_close(key, |reply| ManagerCommand::Reset {
+            key,
+            code,
+            message,
+            reply,
+        })
+        .await
+    }
+
+    async fn command(
+        &self,
+        make: impl FnOnce(oneshot::Sender<Result<(), PeerFailure>>) -> ManagerCommand,
+    ) -> Result<(), PeerFailure> {
         let (reply, response) = oneshot::channel();
-        if let Err(error) = self.try_manager_send(
-            ManagerCommand::Reset {
-                key,
-                code,
-                message: message.into(),
-                reply,
-            },
-            PeerObservation::MaybeObserved,
-        ) {
-            self.close_transport(key);
-            return Err(error);
-        }
-        let result = await_command_response(response).await;
+        self.try_manager_send(make(reply), PeerObservation::MaybeObserved)?;
+        await_command_response(response).await
+    }
+
+    /// Terminal stream frames: a commit that fails leaves the transport
+    /// ambiguously reusable, so it is force-closed.
+    async fn command_or_close(
+        &self,
+        key: PeerStreamKey,
+        make: impl FnOnce(oneshot::Sender<Result<(), PeerFailure>>) -> ManagerCommand,
+    ) -> Result<(), PeerFailure> {
+        let result = self.command(make).await;
         if result.is_err() {
             self.close_transport(key);
         }
