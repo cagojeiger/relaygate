@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use relaygate_protocol::{ErrorCode as WireErrorCode, Frame, PipeId, SessionId};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 use super::{LivePipe, Registration, RelayFrameAction, RelaySessionState};
 use crate::{
@@ -10,13 +9,12 @@ use crate::{
     listener::{ListenerStatus, RelayInner, is_current_desired},
     pipe::{PipeState, to_wire_code},
     resource::{ResourceLimitKind, resource_exhausted},
-    session::{SessionOutbound, WireTransport, send_bounded},
+    session::{SessionLink, SessionOutbound},
 };
 
 #[cfg(test)]
 mod tests;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_relay_frame(
     frame: Frame,
     session_id: SessionId,
@@ -24,8 +22,7 @@ pub(super) async fn handle_relay_frame(
     outbound: &SessionOutbound,
     abandoned: &mpsc::UnboundedSender<PipeId>,
     inner: &RelayInner,
-    transport: &mut WireTransport,
-    session_cancel: &CancellationToken,
+    link: &mut SessionLink<'_>,
 ) -> RelayFrameAction {
     match frame {
         Frame::Published {
@@ -61,17 +58,13 @@ pub(super) async fn handle_relay_frame(
                 let Some(request_id) = session.next_request_id() else {
                     return RelayFrameAction::Stop;
                 };
-                if send_bounded(
-                    transport,
-                    Frame::Unpublish {
+                if link
+                    .send(Frame::Unpublish {
                         request_id,
                         binding_id,
-                    },
-                    inner.config.operation_timeout,
-                    session_cancel,
-                )
-                .await
-                .is_err()
+                    })
+                    .await
+                    .is_err()
                 {
                     return RelayFrameAction::Stop;
                 }
@@ -127,65 +120,40 @@ pub(super) async fn handle_relay_frame(
         } => {
             if let Some(existing) = session.pipes.get(&pipe_id) {
                 if !existing.state.is_finished()
-                    && send_bounded(
-                        transport,
-                        Frame::OfferAccepted { pipe_id },
-                        inner.config.operation_timeout,
-                        session_cancel,
-                    )
-                    .await
-                    .is_err()
+                    && link.send(Frame::OfferAccepted { pipe_id }).await.is_err()
                 {
                     return RelayFrameAction::Stop;
                 }
                 return RelayFrameAction::Continue;
             }
             let Some(registration) = session.registrations.get(&destination) else {
-                return listener_frame_action(
-                    send_bounded(
-                        transport,
-                        Frame::OfferRejected {
-                            pipe_id,
-                            code: WireErrorCode::NotFound,
-                            message: "Listener is not active".to_owned(),
-                        },
-                        inner.config.operation_timeout,
-                        session_cancel,
-                    )
-                    .await,
-                );
+                return reject_offer(
+                    link,
+                    pipe_id,
+                    WireErrorCode::NotFound,
+                    "Listener is not active",
+                )
+                .await;
             };
             if registration.binding_id != binding_id {
-                return listener_frame_action(
-                    send_bounded(
-                        transport,
-                        Frame::OfferRejected {
-                            pipe_id,
-                            code: WireErrorCode::FailedPrecondition,
-                            message: "Binding incarnation is stale".to_owned(),
-                        },
-                        inner.config.operation_timeout,
-                        session_cancel,
-                    )
-                    .await,
-                );
+                return reject_offer(
+                    link,
+                    pipe_id,
+                    WireErrorCode::FailedPrecondition,
+                    "Binding incarnation is stale",
+                )
+                .await;
             }
             if !is_current_desired(inner, &registration.state)
                 || *registration.state.status.borrow() != ListenerStatus::Active
             {
-                return listener_frame_action(
-                    send_bounded(
-                        transport,
-                        Frame::OfferRejected {
-                            pipe_id,
-                            code: WireErrorCode::Unavailable,
-                            message: "Listener is not active".to_owned(),
-                        },
-                        inner.config.operation_timeout,
-                        session_cancel,
-                    )
-                    .await,
-                );
+                return reject_offer(
+                    link,
+                    pipe_id,
+                    WireErrorCode::Unavailable,
+                    "Listener is not active",
+                )
+                .await;
             }
             if !registration.state.try_compact_terminal_queue() {
                 tracing::error!(
@@ -210,19 +178,13 @@ pub(super) async fn handle_relay_frame(
                             "Listener incoming queue is closed",
                         ),
                     };
-                    return listener_frame_action(
-                        send_bounded(
-                            transport,
-                            Frame::OfferRejected {
-                                pipe_id,
-                                code: to_wire_code(error.code()),
-                                message: error.message().to_owned(),
-                            },
-                            inner.config.operation_timeout,
-                            session_cancel,
-                        )
-                        .await,
-                    );
+                    return reject_offer(
+                        link,
+                        pipe_id,
+                        to_wire_code(error.code()),
+                        error.message(),
+                    )
+                    .await;
                 }
             };
             let live = match inner
@@ -231,19 +193,13 @@ pub(super) async fn handle_relay_frame(
             {
                 Ok(live) => live,
                 Err(error) => {
-                    return listener_frame_action(
-                        send_bounded(
-                            transport,
-                            Frame::OfferRejected {
-                                pipe_id,
-                                code: to_wire_code(error.code()),
-                                message: error.message().to_owned(),
-                            },
-                            inner.config.operation_timeout,
-                            session_cancel,
-                        )
-                        .await,
-                    );
+                    return reject_offer(
+                        link,
+                        pipe_id,
+                        to_wire_code(error.code()),
+                        error.message(),
+                    )
+                    .await;
                 }
             };
             let pipe_resources = inner.resources.pipe_resources(
@@ -303,29 +259,15 @@ pub(super) async fn handle_relay_frame(
                 }
             };
             if !admitted {
-                return listener_frame_action(
-                    send_bounded(
-                        transport,
-                        Frame::OfferRejected {
-                            pipe_id,
-                            code: WireErrorCode::Unavailable,
-                            message: "Listener closed during Pipe admission".to_owned(),
-                        },
-                        inner.config.operation_timeout,
-                        session_cancel,
-                    )
-                    .await,
-                );
+                return reject_offer(
+                    link,
+                    pipe_id,
+                    WireErrorCode::Unavailable,
+                    "Listener closed during Pipe admission",
+                )
+                .await;
             }
-            if send_bounded(
-                transport,
-                Frame::OfferAccepted { pipe_id },
-                inner.config.operation_timeout,
-                session_cancel,
-            )
-            .await
-            .is_err()
-            {
+            if link.send(Frame::OfferAccepted { pipe_id }).await.is_err() {
                 return RelayFrameAction::Stop;
             }
         }
@@ -355,15 +297,7 @@ pub(super) async fn handle_relay_frame(
                         listener: None,
                     },
                 );
-            } else if send_bounded(
-                transport,
-                Frame::Cancel { pipe_id },
-                inner.config.operation_timeout,
-                session_cancel,
-            )
-            .await
-            .is_err()
-            {
+            } else if link.send(Frame::Cancel { pipe_id }).await.is_err() {
                 return RelayFrameAction::Stop;
             }
         }
@@ -393,18 +327,14 @@ pub(super) async fn handle_relay_frame(
                         return RelayFrameAction::Stop;
                     }
                 }
-                if send_bounded(
-                    transport,
-                    Frame::Reset {
+                if link
+                    .send(Frame::Reset {
                         pipe_id,
                         code: to_wire_code(error.code()),
                         message: error.message().to_owned(),
-                    },
-                    inner.config.operation_timeout,
-                    session_cancel,
-                )
-                .await
-                .is_err()
+                    })
+                    .await
+                    .is_err()
                 {
                     return RelayFrameAction::Stop;
                 }
@@ -459,15 +389,7 @@ pub(super) async fn handle_relay_frame(
             }
         }
         Frame::Ping { nonce } => {
-            if send_bounded(
-                transport,
-                Frame::Pong { nonce },
-                inner.config.operation_timeout,
-                session_cancel,
-            )
-            .await
-            .is_err()
-            {
+            if link.send(Frame::Pong { nonce }).await.is_err() {
                 return RelayFrameAction::Stop;
             }
         }
@@ -479,6 +401,22 @@ pub(super) async fn handle_relay_frame(
     } else {
         RelayFrameAction::Continue
     }
+}
+
+async fn reject_offer(
+    link: &mut SessionLink<'_>,
+    pipe_id: PipeId,
+    code: WireErrorCode,
+    message: impl Into<String>,
+) -> RelayFrameAction {
+    listener_frame_action(
+        link.send(Frame::OfferRejected {
+            pipe_id,
+            code,
+            message: message.into(),
+        })
+        .await,
+    )
 }
 
 fn listener_frame_action<T, E>(result: Result<T, E>) -> RelayFrameAction {

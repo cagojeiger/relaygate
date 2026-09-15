@@ -23,7 +23,7 @@ use crate::{
     listener::{ListenerLifecycle, ListenerState, RelayInner, RelaySession, RelayStatus},
     pipe::PipeState,
     resource::RelayResources,
-    session::{ReconnectBackoff, session_outbound_channel},
+    session::{ReconnectBackoff, SessionLink, session_outbound_channel},
 };
 
 use super::super::{Registration, RelayFrameAction, RelaySessionState};
@@ -119,8 +119,7 @@ async fn full_listener_queue_rejects_offer_immediately_and_preserves_session_fra
         &outbound,
         &abandoned,
         &inner,
-        &mut transport,
-        &cancel,
+        &mut SessionLink::new(&mut transport, inner.config.operation_timeout, &cancel),
     )
     .await;
     assert!(matches!(action, RelayFrameAction::Continue));
@@ -141,8 +140,7 @@ async fn full_listener_queue_rejects_offer_immediately_and_preserves_session_fra
         &outbound,
         &abandoned,
         &inner,
-        &mut transport,
-        &cancel,
+        &mut SessionLink::new(&mut transport, inner.config.operation_timeout, &cancel),
     )
     .await;
     assert!(matches!(action, RelayFrameAction::Continue));
@@ -213,8 +211,7 @@ async fn dropped_pipe_keeps_its_entry_until_close_is_sent() -> TestResult {
             &outbound,
             &abandoned,
             &inner,
-            &mut transport,
-            &cancel,
+            &mut SessionLink::new(&mut transport, inner.config.operation_timeout, &cancel),
         )
         .await;
         assert!(matches!(action, RelayFrameAction::Continue));
