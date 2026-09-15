@@ -1,7 +1,7 @@
 use std::ops::ControlFlow::{self, Break, Continue};
 
 use futures_util::StreamExt;
-use relaygate_protocol::{Frame, PipeId};
+use relaygate_protocol::{BearerToken, Frame, PipeId, ProtocolError};
 use tokio::{sync::mpsc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -179,7 +179,7 @@ impl RelayLoop<'_> {
             .map(|(request_id, pending)| (*request_id, pending.deadline))
     }
 
-    fn heartbeat_timed_out(&self) {
+    fn log_heartbeat_timeout(&self) {
         tracing::debug!(
             component = "sdk",
             event = "sdk.session.heartbeat_timeout",
@@ -190,14 +190,14 @@ impl RelayLoop<'_> {
 
     async fn on_inbound(
         &mut self,
-        incoming: Option<Result<Frame, relaygate_protocol::ProtocolError>>,
+        incoming: Option<Result<Frame, ProtocolError>>,
     ) -> ControlFlow<()> {
         let Some(Ok(frame)) = incoming else {
             return Break(());
         };
         self.heartbeat.observe_inbound(&frame);
         if self.heartbeat.response_timed_out() {
-            self.heartbeat_timed_out();
+            self.log_heartbeat_timeout();
             return Break(());
         }
         let session_id = self.established.id;
@@ -226,7 +226,7 @@ impl RelayLoop<'_> {
 
     async fn on_heartbeat_deadline(&mut self) -> ControlFlow<()> {
         let Some(frame) = self.heartbeat.on_deadline() else {
-            self.heartbeat_timed_out();
+            self.log_heartbeat_timeout();
             return Break(());
         };
         if self.link().send(frame).await.is_err() {
@@ -239,7 +239,7 @@ impl RelayLoop<'_> {
     async fn on_token(
         &mut self,
         request_id: u64,
-        token: crate::Result<relaygate_protocol::BearerToken>,
+        token: crate::Result<BearerToken>,
     ) -> ControlFlow<()> {
         if commit_registration_token(
             request_id,
