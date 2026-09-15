@@ -166,7 +166,7 @@ rust = [
   "gateway::tests::full_non_offer_queue_still_removes_the_failed_session_state",
   "gateway::effects::tests::full_terminal_batch_removes_session_without_partial_enqueue",
   "transport::tests::terminal::reordering::opened_terminal_reordering_converges_once",
-  "routing::runtime::tests::stale_epoch::worker_reconnect_epoch_ignores_late_update_completion",
+  "runtime::tests::stale_epoch::worker_reconnect_epoch_ignores_late_update_completion",
   "operation_denial_does_not_end_the_relay_session",
   "resource_limits::pipe_byte_limit_resets_only_the_overflowed_pipe_and_preserves_sibling",
   "listener::runtime::frame::tests::full_listener_queue_rejects_offer_immediately_and_preserves_session_frames",
