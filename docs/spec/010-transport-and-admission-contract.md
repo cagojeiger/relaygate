@@ -13,8 +13,9 @@ GW  <-> RT : mTLS/TCP + logical Gateway/shard handshake
 
 위 구성이 기본값입니다. `RELAYGATE_INTERNAL_TRANSPORT=plaintext`는 내부 두 구간만 평문 TCP로 실행하고
 SDK TLS를 유지합니다. SDK edge는 독립적으로 `RELAYGATE_SDK_TRANSPORT=tls|plaintext`를 사용합니다(`tls`
-기본). SDK Gateway endpoint의 `tcp://`는 plaintext에 대응하며 access token과 payload를 암호화하지 않습니다. Unknown mode,
-제거된 test flag(`RELAYGATE_INSECURE_TEST_TRANSPORT`, `RELAYGATE_RT_TRUSTED_LOCAL`)가 설정되면 시작 실패입니다. Readiness도 같은 mode를 사용합니다.
+기본). SDK Gateway endpoint의 `tcp://`는 plaintext에 대응하며 access token과 payload를 암호화하지 않습니다. Unknown mode는
+시작 실패입니다. 제거된 test flag(`RELAYGATE_INSECURE_TEST_TRANSPORT`, `RELAYGATE_RT_TRUSTED_LOCAL`)가 설정되어도 시작
+실패입니다. Readiness도 같은 mode를 사용합니다.
 
 | ID | 계약 |
 | --- | --- |
@@ -84,6 +85,7 @@ budget은 결과·연결 종료와 무관하게 시간으로만 보충합니다.
 - 정수와 `_MS` 값은 양의 정수이며 0이나 parse 실패는 listener를 열기 전에 시작 실패입니다.
 - `_MS` 값은 monotonic deadline으로 표현할 수 있어야 합니다.
 - 제거된 `RELAYGATE_CLUSTER_TOKEN`, `RELAYGATE_NEXT_CLUSTER_TOKEN`이 설정되면 시작 실패입니다([ADR 016](../adr/016-per-operation-jwt-authorization.md)).
+- 제거된 `RELAYGATE_INSECURE_TEST_TRANSPORT`, `RELAYGATE_RT_TRUSTED_LOCAL`이 설정되면 시작 실패입니다([ADR 014](../adr/014-explicit-internal-transport-mode.md)).
 
 ### 공통 process
 
