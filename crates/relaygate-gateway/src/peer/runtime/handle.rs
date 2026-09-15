@@ -58,7 +58,10 @@ impl PeerHandle {
             PeerObservation::NotObserved,
         )?;
         response.await.map_err(|_| {
-            PeerFailure::not_observed(ErrorCode::Unavailable, "peer manager stopped before OPEN")
+            PeerFailure::not_observed(
+                ErrorCode::Unavailable,
+                "peer transport ended before the OPEN command was processed",
+            )
         })?
     }
 
@@ -220,7 +223,7 @@ async fn await_command_response(
     response.await.map_err(|_| {
         PeerFailure::maybe_observed(
             ErrorCode::Unavailable,
-            "peer manager stopped before command result",
+            "peer transport ended before the command was processed",
         )
     })?
 }

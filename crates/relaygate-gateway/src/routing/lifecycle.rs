@@ -125,8 +125,10 @@ impl RegistrationState {
             self.pending = None;
             self.validate_lease = false;
         }
-        self.retry_at = now;
-        self.retry_backoff = self.retry_initial;
+        if !unchanged {
+            self.retry_at = now;
+            self.retry_backoff = self.retry_initial;
+        }
     }
 
     #[must_use]
@@ -268,7 +270,7 @@ impl RegistrationState {
         else {
             return;
         };
-        if !self.take_current(ticket) || ack.lease_id() != *lease_id {
+        if !self.take_pending(ticket) || ack.lease_id() != *lease_id {
             return;
         }
         let Some(lease) = &mut self.lease else {
@@ -277,9 +279,14 @@ impl RegistrationState {
         if lease.id != *lease_id {
             return;
         }
+        // RT accepted this revision even if desired state moved on meanwhile;
+        // forgetting it would replay the same revision with a different
+        // snapshot and be rejected as a precondition failure (RT-005).
         lease.revision = Some(*revision);
         lease.keep_alive_at = next_keep_alive(now, ack.expires_in());
-        self.synced_version = Some(ticket.desired_version);
+        if self.desired_version == ticket.desired_version {
+            self.synced_version = Some(ticket.desired_version);
+        }
         self.precondition_probe_active = false;
         self.validate_lease = false;
         self.reset_retry(now);
@@ -380,12 +387,15 @@ impl RegistrationState {
     }
 
     fn take_current(&mut self, ticket: &OperationTicket) -> bool {
+        self.take_pending(ticket) && self.desired_version == ticket.desired_version
+    }
+
+    fn take_pending(&mut self, ticket: &OperationTicket) -> bool {
         if self.pending.as_ref() != Some(ticket) {
             return false;
         }
         self.pending = None;
-        self.desired_version == ticket.desired_version
-            && self.current_lease_id() == ticket.action.lease_id()
+        self.current_lease_id() == ticket.action.lease_id()
     }
 
     fn current_lease_id(&self) -> Option<LeaseId> {

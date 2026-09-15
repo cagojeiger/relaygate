@@ -109,7 +109,9 @@ async fn local_data_and_fin_survive_remote_fin_under_writer_pressure() -> Result
     ));
     assert_stream_removed(&actor, open_identity);
     assert!(frames.try_recv().is_err());
-    assert!(notices.try_recv().is_err());
+    let extra = notices.try_recv();
+    eprintln!("EXTRA NOTICE: {extra:?}");
+    assert!(extra.is_err());
     Ok(())
 }
 
@@ -238,6 +240,44 @@ async fn duplicate_fin_and_data_after_fin_are_stream_scoped() -> Result<(), Box<
     assert_stream_removed(&actor, identities[0]);
     assert!(!actor.active_opens.contains(identities[1]));
     assert!(!close.is_cancelled());
+    assert!(notices.try_recv().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_data_after_remote_close_is_a_no_op() -> Result<(), Box<dyn Error>> {
+    let (mut actor, mut frames, mut notices, open_identity, request) = actor_for_open(4)?;
+    assert!(actor.active_opens.reserve(open_identity)?);
+    let key = actor.open(request).await?;
+    let stream_id = key.stream_id();
+    assert!(matches!(
+        frames.recv().await,
+        Some(PeerFrame::Open { stream_id: opened, .. }) if opened == stream_id
+    ));
+    assert!(actor.handle_frame(PeerFrame::Opened { stream_id }).await);
+    assert!(matches!(
+        notices.recv().await,
+        Some(TransportNotice::Event(PeerEvent::Opened { .. }))
+    ));
+
+    assert!(actor.handle_frame(PeerFrame::Close { stream_id }).await);
+    assert!(matches!(
+        notices.recv().await,
+        Some(TransportNotice::Event(PeerEvent::Close { key: closed })) if closed == key
+    ));
+    assert!(matches!(
+        notices.recv().await,
+        Some(TransportNotice::StreamEnded { key: ended, .. }) if ended == key
+    ));
+    assert_stream_removed(&actor, open_identity);
+
+    send_data(
+        &mut actor,
+        stream_id,
+        Bytes::from_static(b"raced the CLOSE"),
+    )
+    .await?;
+    assert!(frames.try_recv().is_err());
     assert!(notices.try_recv().is_err());
     Ok(())
 }

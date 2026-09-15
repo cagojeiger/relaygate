@@ -81,7 +81,24 @@ fn apply_operation_completion(
     let state = registration_for_ticket(registrations, &completion.ticket)?;
     match (&completion.ticket.action, &completion.result) {
         (RegistrationAction::Deregister { .. }, OperationResult::Deregister(result)) => {
-            state.finish_deregister(&completion.ticket);
+            match result {
+                Ok(()) => state.finish_deregister(&completion.ticket),
+                Err(error)
+                    if matches!(
+                        error.code(),
+                        ErrorCode::Unavailable
+                            | ErrorCode::DeadlineExceeded
+                            | ErrorCode::ResourceExhausted
+                            | ErrorCode::ProtocolError
+                            | ErrorCode::Internal
+                    ) =>
+                {
+                    state.transient_failure(&completion.ticket, now);
+                }
+                // The lease is unusable (invalid, unknown, or unauthorized):
+                // drop it locally and rely on RT expiry.
+                Err(_) => state.finish_deregister(&completion.ticket),
+            }
             result.clone().err()
         }
         (RegistrationAction::Register { .. }, OperationResult::Registration(Ok(ack))) => {
