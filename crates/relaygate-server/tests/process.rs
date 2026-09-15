@@ -3,7 +3,10 @@ use std::{
     io,
     net::TcpListener,
     process::{Child, Command, ExitStatus, Output, Stdio},
-    sync::atomic::{AtomicU16, Ordering},
+    sync::{
+        LazyLock,
+        atomic::{AtomicU16, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -31,9 +34,20 @@ use relaygate_route_table::{
 use relaygate_route_table_transport::{
     ErrorCode as RouteTableErrorCode, GatewayName, RouteTableClient, RouteTableClientConfig,
 };
-const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
+
+// Test ports stay below the OS ephemeral range (49152+ on macOS and Linux) so a
+// health-poll client socket can never grab a port between the check-bind here
+// and the child server's real bind. The per-process offset keeps concurrent
+// invocations of this binary on the same checkout out of each other's range.
 const FIRST_TEST_PORT: u16 = 20_000;
-static NEXT_TEST_PORT: AtomicU16 = AtomicU16::new(FIRST_TEST_PORT);
+const TEST_PORT_STRIDE: u16 = 64;
+const TEST_PORT_SLOTS: u16 = 440;
+static NEXT_TEST_PORT: LazyLock<AtomicU16> = LazyLock::new(|| {
+    let slot = (std::process::id() % u32::from(TEST_PORT_SLOTS)) as u16;
+    AtomicU16::new(FIRST_TEST_PORT + slot * TEST_PORT_STRIDE)
+});
+
+const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
 
 #[cfg(unix)]
 #[path = "process/admission.rs"]
