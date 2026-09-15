@@ -112,14 +112,7 @@ impl SessionHeartbeat {
 }
 
 fn jittered_duration(duration: Duration, session_id: SessionId, salt: u8) -> Duration {
-    let mut hash = u64::from(salt);
-    for byte in session_id.as_uuid().as_bytes() {
-        hash = hash.wrapping_mul(16_777_619) ^ u64::from(*byte);
-    }
-    let offset_per_mille = (hash % 201) as u128;
-    let factor_per_mille = 900 + offset_per_mille;
-    let nanos = duration.as_nanos().saturating_mul(factor_per_mille) / 1_000;
-    Duration::from_nanos(nanos.try_into().unwrap_or(u64::MAX)).max(Duration::from_millis(1))
+    crate::jitter::staggered(duration, session_id.as_uuid(), salt)
 }
 
 #[cfg(test)]

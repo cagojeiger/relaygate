@@ -163,6 +163,7 @@ impl GatewayPeerConfig {
         self
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn with_queue_bounds(
         mut self,
