@@ -105,7 +105,7 @@ class TransportTests(unittest.TestCase):
 
     def test_extra_env_cannot_bypass_transport_selection(self):
         for component in ("gateway", "routeTable"):
-            for name in ("RELAYGATE_INTERNAL_TRANSPORT", "RELAYGATE_INTERNAL_GATEWAY_KEYS", "RELAYGATE_INSECURE_TEST_TRANSPORT", "RELAYGATE_RT_TRUSTED_LOCAL"):
+            for name in ("RELAYGATE_INTERNAL_TRANSPORT", "RELAYGATE_SDK_TRANSPORT", "RELAYGATE_INTERNAL_GATEWAY_KEYS", "RELAYGATE_INSECURE_TEST_TRANSPORT", "RELAYGATE_RT_TRUSTED_LOCAL"):
                 with self.subTest(component=component, name=name):
                     result = render(f"{component}.extraEnv[0].name={name}", f"{component}.extraEnv[0].value=blocked")
                     self.assertNotEqual(result.returncode, 0)

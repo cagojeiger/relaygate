@@ -5,7 +5,7 @@ use crate::peer::PeerStreamKey;
 
 use super::{
     GatewayAction, GatewayState, PeerDelivery, PipeEndpoint, PipeEntry, PipePhase,
-    ProtocolViolation,
+    ProtocolViolation, observe_dial_result,
 };
 
 impl GatewayState {
@@ -181,6 +181,9 @@ impl GatewayState {
         let Some(pipe) = self.remove_pipe(pipe_id) else {
             return Vec::new();
         };
+        if pipe.phase == PipePhase::Offered {
+            observe_dial_result(pipe.open_started_at, Some(ErrorCode::ProtocolError));
+        }
         [pipe.dialer, pipe.acceptor]
             .into_iter()
             .flat_map(|target| {

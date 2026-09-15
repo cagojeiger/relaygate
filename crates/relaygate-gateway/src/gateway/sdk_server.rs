@@ -224,7 +224,7 @@ impl Gateway {
     }
 }
 
-async fn wait_until_drained(inner: &Inner, drain_timeout: Duration) -> bool {
+async fn wait_until_drained(inner: &Arc<Inner>, drain_timeout: Duration) -> bool {
     if inner.is_drained() {
         return true;
     }
@@ -233,6 +233,7 @@ async fn wait_until_drained(inner: &Inner, drain_timeout: Duration) -> bool {
         poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             poll.tick().await;
+            inner.expire_offers().await;
             if inner.is_drained() {
                 return;
             }
@@ -478,6 +479,68 @@ mod tests {
         assert!(!gateway.snapshot().draining);
         assert_eq!(gateway.snapshot().sessions, 0);
         assert_eq!(gateway.snapshot().live_pipes, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_keeps_expiring_pending_offers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let gateway = Gateway::new(
+            GatewayConfig::new(authorization_config())
+                .with_offer_timeout(Duration::from_millis(50))
+                .with_drain_timeout(Duration::from_secs(10)),
+        )?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let shutdown = CancellationToken::new();
+        let serving_gateway = gateway.clone();
+        let serving_shutdown = shutdown.clone();
+        let serving =
+            tokio::spawn(
+                async move { serving_gateway.serve_sdk(listener, serving_shutdown).await },
+            );
+
+        let destination = destination(DESTINATION);
+        let mut acceptor = open_sdk_session(address).await?;
+        acceptor
+            .send(Frame::Publish {
+                request_id: 1,
+                destination: destination.clone(),
+                access_token: bearer_token(&destination, TestAction::Publish),
+            })
+            .await?;
+        assert!(matches!(
+            acceptor.next().await,
+            Some(Ok(Frame::Published { .. }))
+        ));
+        let mut dialer = open_sdk_session(address).await?;
+        dialer
+            .send(Frame::Dial {
+                connection_id: 1,
+                destination: destination.clone(),
+                access_token: bearer_token(&destination, TestAction::Dial),
+            })
+            .await?;
+        assert!(matches!(
+            timeout(Duration::from_secs(1), acceptor.next()).await?,
+            Some(Ok(Frame::Offer { .. }))
+        ));
+        assert_eq!(gateway.snapshot().pending_offers, 1);
+
+        shutdown.cancel();
+        let started = std::time::Instant::now();
+        let frame = timeout(Duration::from_secs(1), dialer.next()).await?;
+        assert!(matches!(
+            frame,
+            Some(Ok(Frame::DialFailed {
+                connection_id: 1,
+                code: relaygate_protocol::ErrorCode::DeadlineExceeded,
+                ..
+            }))
+        ));
+        timeout(Duration::from_secs(2), serving).await???;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(gateway.snapshot().pending_offers, 0);
         Ok(())
     }
 

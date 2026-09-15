@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{ErrorCode, TransportError, codec::FrameCodec};
 
 use actor::{ServiceCommand, spawn_shard_actor};
-use connection::{handle_connection, reject_over_capacity};
+use connection::{handle_connection, observe_capacity_rejection, reject_over_capacity};
 use response::error_response_frame;
 
 /// Bounds and handshake deadline for one RouteTable service runtime.
@@ -184,6 +184,7 @@ impl RouteTableService {
                             });
                         }
                         Err(_) => {
+                            observe_capacity_rejection();
                             if tls.is_some() {
                                 drop(stream);
                             } else {

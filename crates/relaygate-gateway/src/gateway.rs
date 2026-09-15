@@ -71,7 +71,7 @@ impl fmt::Debug for Gateway {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Gateway")
-            .field("distributed", &self.inner.distributed_runtime())
+            .field("distributed", &self.inner.is_distributed())
             .finish_non_exhaustive()
     }
 }
@@ -181,7 +181,7 @@ impl Gateway {
         listener: TcpListener,
         shutdown: CancellationToken,
     ) -> Result<(), GatewayError> {
-        if self.inner.distributed_runtime() {
+        if self.inner.is_distributed() {
             return Err(GatewayError::InvalidConfig(
                 "a distributed Gateway must be served with serve_distributed".to_owned(),
             ));
@@ -199,11 +199,8 @@ impl Inner {
         self.lock_state().is_drained()
     }
 
-    fn distributed_runtime(&self) -> bool {
-        match self.distributed_runtime.lock() {
-            Ok(runtime) => runtime.is_some(),
-            Err(poisoned) => poisoned.into_inner().is_some(),
-        }
+    fn is_distributed(&self) -> bool {
+        self.routing.is_some()
     }
 
     /// Read-only access and action-free admission. Mutations that return

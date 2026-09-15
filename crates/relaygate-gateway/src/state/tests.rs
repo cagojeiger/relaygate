@@ -449,3 +449,137 @@ fn remote_dial_admission_releases_all_slots_when_caller_session_ends() -> TestRe
     assert!(state.is_drained());
     Ok(())
 }
+
+#[test]
+fn dialer_cannot_answer_its_own_offer() -> TestResult {
+    let mut state = state();
+    let listener = add_session(&mut state);
+    let dialer = add_session(&mut state);
+    let destination = destination(DESTINATION_A)?;
+    publish(&mut state, listener, &destination)?;
+    let offered = state.test_handle(dialer, dial(1, &destination))?;
+    let pipe_id = offered_pipe(&offered).ok_or("missing OFFER")?;
+    assert_eq!(state.snapshot().pending_offers, 1);
+
+    let rejected = state.test_handle(
+        dialer,
+        Frame::OfferRejected {
+            pipe_id,
+            code: ErrorCode::Unavailable,
+            message: "forged".to_owned(),
+        },
+    );
+    assert!(matches!(
+        rejected,
+        Err(ProtocolViolation::PipeOwnership { sender, .. }) if sender == dialer
+    ));
+    let accepted = state.test_handle(dialer, Frame::OfferAccepted { pipe_id });
+    assert!(matches!(
+        accepted,
+        Err(ProtocolViolation::PipeOwnership { sender, .. }) if sender == dialer
+    ));
+    assert_eq!(state.snapshot().pending_offers, 1);
+    assert_eq!(state.snapshot().live_pipes, 0);
+
+    let opened = state.test_handle(listener, Frame::OfferAccepted { pipe_id })?;
+    assert!(sdk_frames(&opened).any(|(target, frame)| {
+        target == dialer && matches!(frame, Frame::Opened { pipe_id: opened } if *opened == pipe_id)
+    }));
+    Ok(())
+}
+
+#[test]
+fn draining_unpublish_keeps_route_registration_withdrawn() -> TestResult {
+    let mut state = GatewayState::new_distributed(GatewayLimits::default(), GatewayId::new());
+    let relay = add_session(&mut state);
+    let first = publish(&mut state, relay, &destination(DESTINATION_A)?)?;
+    let second = state.test_handle(
+        relay,
+        Frame::Publish {
+            request_id: 2,
+            destination: destination(DESTINATION_B)?,
+            access_token: access_token(),
+        },
+    )?;
+    let published = second
+        .iter()
+        .find_map(|action| match action {
+            GatewayAction::PublishRegistration { bindings, .. } => Some(bindings.len()),
+            _ => None,
+        })
+        .ok_or("missing registration publication")?;
+    assert_eq!(published, 2);
+
+    let drained = state.begin_draining();
+    assert!(drained.iter().all(|action| matches!(
+        action,
+        GatewayAction::PublishRegistration { bindings, .. } if bindings.is_empty()
+    )));
+
+    let unpublished = state.test_handle(
+        relay,
+        Frame::Unpublish {
+            request_id: 3,
+            binding_id: first,
+        },
+    )?;
+    let republished = unpublished
+        .iter()
+        .find_map(|action| match action {
+            GatewayAction::PublishRegistration { bindings, .. } => Some(bindings.len()),
+            _ => None,
+        })
+        .ok_or("missing registration publication after UNPUBLISH")?;
+    assert_eq!(republished, 0);
+    assert_eq!(state.snapshot().bindings, 1);
+    Ok(())
+}
+
+#[test]
+fn protocol_reset_of_an_offered_pipe_records_the_dial_result() -> TestResult {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, || -> TestResult {
+        let mut state = state();
+        let listener = add_session(&mut state);
+        let dialer = add_session(&mut state);
+        let destination = destination(DESTINATION_A)?;
+        publish(&mut state, listener, &destination)?;
+        let offered = state.test_handle(dialer, dial(1, &destination))?;
+        let pipe_id = offered_pipe(&offered).ok_or("missing OFFER")?;
+
+        let reset = state.test_handle(
+            listener,
+            Frame::Data {
+                pipe_id,
+                payload: Bytes::from_static(b"early"),
+            },
+        )?;
+        assert_eq!(
+            sdk_frames(&reset)
+                .filter(|(_, frame)| matches!(frame, Frame::Reset { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(state.snapshot().pending_offers, 0);
+        Ok(())
+    })?;
+
+    let results = snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter(|(key, _, _, _)| key.key().name() == "relaygate_gateway_dial_results_total")
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 1);
+    let (key, _, _, value) = &results[0];
+    assert!(
+        key.key()
+            .labels()
+            .any(|label| label.key() == "code" && label.value() == "protocol_error")
+    );
+    assert!(matches!(value, DebugValue::Counter(1)));
+    Ok(())
+}

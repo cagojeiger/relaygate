@@ -8,7 +8,7 @@ use relaygate_transport::{ClientTlsConfig, ServerTlsConfig};
 
 use super::{
     InternalTransport, internal_transport, load_internal_tls, optional_duration_millis,
-    optional_usize,
+    optional_env, optional_usize,
 };
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:27420";
@@ -47,7 +47,7 @@ impl GatewayRuntimeConfig {
             internal_transport()?;
         }
         let bind_address =
-            env::var("RELAYGATE_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned());
+            optional_env("RELAYGATE_BIND_ADDR")?.unwrap_or_else(|| DEFAULT_BIND_ADDRESS.to_owned());
         for removed in ["RELAYGATE_CLUSTER_TOKEN", "RELAYGATE_NEXT_CLUSTER_TOKEN"] {
             if env::var_os(removed).is_some() {
                 anyhow::bail!(

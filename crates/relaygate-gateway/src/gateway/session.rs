@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use std::{
     future::Future,
     panic::{AssertUnwindSafe, resume_unwind},
+    pin::pin,
     sync::Arc,
     time::Duration,
 };
@@ -12,7 +13,7 @@ use relaygate_protocol::{Frame, FrameCodec, MAX_HELLO_FRAME_LEN};
 use relaygate_transport::BoxedIo;
 use tokio::{
     sync::{OwnedSemaphorePermit, mpsc},
-    time::{Instant, sleep_until, timeout_at},
+    time::{Instant, sleep_until, timeout, timeout_at},
 };
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
@@ -25,6 +26,7 @@ use super::{Inner, heartbeat::SessionHeartbeat};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const SDK_FRAME_INITIAL_CAPACITY: usize = 2 * 1024;
 const SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY: usize = 8 * 1024;
+const WRITER_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
 mod admission;
 
@@ -77,12 +79,16 @@ impl Inner {
                 let (sink, source) = framed.split();
                 let read =
                     run_inner.read_frames(session_id, heartbeat_sender, source, read_cancellation);
-                let write = write_frames(receiver, sink);
-                tokio::select! {
-                    _ = run_cancellation.cancelled() => Ok(()),
+                let mut write = pin!(write_frames(receiver, sink, run_cancellation.clone()));
+                let read_result = tokio::select! {
                     result = read => result,
-                    result = write => result,
-                }
+                    result = &mut write => return result,
+                };
+                // Flush frames already queued before the session ended, bounded so a
+                // stalled socket cannot hold up shutdown.
+                run_cancellation.cancel();
+                let _ = timeout(WRITER_FLUSH_TIMEOUT, write).await;
+                read_result
             },
             || async {
                 cancellation.cancel();
@@ -275,14 +281,35 @@ where
 async fn write_frames(
     mut receiver: mpsc::Receiver<SdkWriterItem>,
     mut sink: futures_util::stream::SplitSink<Framed<BoxedIo, FrameCodec>, Frame>,
+    cancellation: CancellationToken,
 ) -> Result<(), SessionError> {
-    while let Some(item) = receiver.recv().await {
-        match item {
-            SdkWriterItem::Single(frame) => sink.send(frame).await?,
-            SdkWriterItem::TerminalBatch(frames) => {
-                for frame in frames {
-                    sink.send(frame).await?;
-                }
+    loop {
+        let item = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => break,
+            item = receiver.recv() => match item {
+                Some(item) => item,
+                None => return Ok(()),
+            },
+        };
+        write_item(&mut sink, item).await?;
+    }
+    receiver.close();
+    while let Ok(item) = receiver.try_recv() {
+        write_item(&mut sink, item).await?;
+    }
+    Ok(())
+}
+
+async fn write_item(
+    sink: &mut futures_util::stream::SplitSink<Framed<BoxedIo, FrameCodec>, Frame>,
+    item: SdkWriterItem,
+) -> Result<(), SessionError> {
+    match item {
+        SdkWriterItem::Single(frame) => sink.send(frame).await?,
+        SdkWriterItem::TerminalBatch(frames) => {
+            for frame in frames {
+                sink.send(frame).await?;
             }
         }
     }
@@ -351,7 +378,7 @@ mod tests {
             .await?;
         drop(sender);
 
-        let writer = tokio::spawn(write_frames(receiver, sink));
+        let writer = tokio::spawn(write_frames(receiver, sink, CancellationToken::new()));
         for expected in expected {
             let frame = reader.next().await.ok_or("writer closed early")??;
             assert_eq!(frame, expected);

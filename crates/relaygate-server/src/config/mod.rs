@@ -45,8 +45,16 @@ pub(super) fn load_internal_tls() -> Result<InternalTlsMaterial> {
     })
 }
 
+pub(crate) fn optional_env(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("{name} is not valid Unicode")),
+    }
+}
+
 pub(crate) fn optional_usize(name: &str) -> Result<Option<usize>> {
-    let Ok(value) = env::var(name) else {
+    let Some(value) = optional_env(name)? else {
         return Ok(None);
     };
     let parsed = value
@@ -59,7 +67,7 @@ pub(crate) fn optional_usize(name: &str) -> Result<Option<usize>> {
 }
 
 pub(crate) fn optional_duration_millis(name: &str) -> Result<Option<Duration>> {
-    let Ok(value) = env::var(name) else {
+    let Some(value) = optional_env(name)? else {
         return Ok(None);
     };
     duration_millis(name, &value).map(Some)
