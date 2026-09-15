@@ -1205,6 +1205,7 @@ dependencies = [
  "p256",
  "rcgen",
  "relaygate-destination",
+ "relaygate-gateway-peer",
  "relaygate-protocol",
  "relaygate-route-table",
  "relaygate-route-table-transport",
@@ -1212,6 +1213,26 @@ dependencies = [
  "relaygate-token-issuer",
  "relaygate-transport",
  "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "relaygate-gateway-peer"
+version = "0.3.1"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "metrics",
+ "metrics-util",
+ "relaygate-protocol",
+ "relaygate-route-table",
+ "relaygate-transport",
  "serde_json",
  "thiserror",
  "tokio",
