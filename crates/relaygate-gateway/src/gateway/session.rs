@@ -63,19 +63,20 @@ impl Inner {
             let mut state = self.lock_state();
             state
                 .add_session(sender, cancellation.clone())
-                .ok_or_else(|| state.session_rejection_code())
+                .ok_or_else(|| {
+                    state
+                        .session_rejection()
+                        .unwrap_or((ErrorCode::Internal, "Gateway rejected the session"))
+                })
         };
         let session_id = match admitted {
             Ok(session_id) => session_id,
-            Err(code) => {
+            Err((code, message)) => {
                 // Best effort within the remaining handshake budget (SEC-013);
                 // the socket closes either way.
                 let rejection = Frame::SessionRejected {
                     code,
-                    message: match code {
-                        ErrorCode::Unavailable => "Gateway is draining".to_owned(),
-                        _ => "Gateway SDK session limit reached".to_owned(),
-                    },
+                    message: message.to_owned(),
                 };
                 tokio::select! {
                     _ = cancellation.cancelled() => {}
@@ -346,7 +347,7 @@ pub(super) enum SessionError {
     HandshakeTimeout,
     #[error("first SDK frame was not HELLO")]
     ExpectedHello,
-    #[error("SDK session rejected: {0:?}")]
+    #[error("SDK session rejected: {}", .0.metric_name())]
     SessionRejected(ErrorCode),
     #[error("SDK admission response could not be queued before the liveness deadline")]
     AdmissionResponseUnavailable,
