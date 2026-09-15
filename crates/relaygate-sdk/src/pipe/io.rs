@@ -71,7 +71,8 @@ impl PipeReader {
             if let Some(Terminal::Failed(error)) = terminal.as_ref() {
                 return Poll::Ready(Err(error.clone()));
             }
-            if state.remote_fin.load(Ordering::Acquire) {
+            let closed = matches!(terminal, Some(Terminal::Closed));
+            if closed || state.remote_fin.load(Ordering::Acquire) {
                 match buffer.inbound.try_recv() {
                     Ok(chunk) => {
                         buffer.current = chunk.payload;
@@ -84,13 +85,6 @@ impl PipeReader {
                         return Poll::Ready(Ok(0));
                     }
                 }
-            }
-            match terminal {
-                Some(Terminal::Closed) => {
-                    buffer.read_eof = true;
-                    return Poll::Ready(Ok(0));
-                }
-                Some(Terminal::Failed(_)) | None => {}
             }
             return Poll::Pending;
         }

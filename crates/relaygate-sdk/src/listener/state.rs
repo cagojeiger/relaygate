@@ -125,7 +125,7 @@ impl RelayInner {
             .lock()
             .map_or(DesiredSettlement::Pending, |desired| {
                 let mut degraded = self.reconnect_degraded.load(Ordering::Acquire);
-                for state in desired.values() {
+                for state in desired.values().filter(|state| state.was_returned()) {
                     match *state.status.borrow() {
                         ListenerStatus::Active => {}
                         ListenerStatus::Blocked => degraded = true,
@@ -260,7 +260,18 @@ pub(super) enum DesiredSettlement {
 
 impl ListenerState {
     pub(super) fn set_status(&self, status: ListenerStatus, error: Option<Error>) {
-        let previous = *self.status.borrow();
+        let mut previous = status;
+        let applied = self.status.send_if_modified(|current| {
+            previous = *current;
+            if *current == ListenerStatus::Closed {
+                return false;
+            }
+            *current = status;
+            true
+        });
+        if !applied {
+            return;
+        }
         if previous != status {
             if let Some(error) = error.as_ref() {
                 tracing::debug!(
@@ -287,7 +298,6 @@ impl ListenerState {
         if let Ok(mut last_error) = self.last_error.lock() {
             *last_error = error;
         }
-        self.status.send_replace(status);
     }
 
     pub(super) fn last_error(&self) -> Option<Error> {

@@ -226,7 +226,11 @@ impl PipeState {
     }
 
     pub(crate) fn push_data(&self, payload: Bytes) -> Result<()> {
-        if self.remote_fin.load(Ordering::Acquire) || self.terminal.borrow().is_some() {
+        if self.terminal.borrow().is_some() {
+            // A local terminal frame is already queued; late DATA is discarded.
+            return Ok(());
+        }
+        if self.remote_fin.load(Ordering::Acquire) {
             return Err(Error::new(
                 ErrorCode::ProtocolError,
                 PeerObservation::Observed,
@@ -276,8 +280,12 @@ impl PipeState {
     }
 
     pub(crate) fn is_finished(&self) -> bool {
-        self.terminal.borrow().is_some()
-            || (self.local_fin.load(Ordering::Acquire) && self.remote_fin.load(Ordering::Acquire))
+        self.terminal.borrow().is_some() || self.is_protocol_finished()
+    }
+
+    /// Both directions are FIN-closed; the entry needs no further terminal frame.
+    pub(crate) fn is_protocol_finished(&self) -> bool {
+        self.local_fin.load(Ordering::Acquire) && self.remote_fin.load(Ordering::Acquire)
     }
 
     #[cfg(test)]

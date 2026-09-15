@@ -168,3 +168,91 @@ async fn repeated_republish_failures_share_one_bounded_retry_timer() -> TestResu
     tokio::task::yield_now().await;
     Ok(())
 }
+
+#[test]
+fn closed_listener_status_is_terminal() -> TestResult {
+    let destination: Destination = "inference/stt.seoul".parse()?;
+    let (status, mut subscription) = watch::channel(ListenerStatus::Active);
+    let (incoming_tx, incoming_rx) = mpsc::channel(1);
+    let state = Arc::new(ListenerState {
+        destination,
+        access_token_source: AccessTokenSource::static_token(AccessToken::new("grant")?),
+        status,
+        last_error: StdMutex::new(None),
+        incoming_tx,
+        incoming_rx: tokio::sync::Mutex::new(incoming_rx),
+        initial_deadline: Instant::now() + Duration::from_secs(10),
+        lifecycle: StdMutex::new(ListenerLifecycle::Returned),
+        registration_committed: StdMutex::new(false),
+        live_pipe_slots: Arc::new(Semaphore::new(1)),
+    });
+
+    state.close(None);
+    assert_eq!(*subscription.borrow_and_update(), ListenerStatus::Closed);
+    state.set_status(
+        ListenerStatus::Suspended,
+        Some(Error::unavailable("late token source failure")),
+    );
+    assert_eq!(*state.status.borrow(), ListenerStatus::Closed);
+    assert!(!subscription.has_changed()?);
+    assert!(state.last_error().is_none());
+    Ok(())
+}
+
+#[test]
+fn reconnect_settlement_ignores_initial_listens_that_were_never_returned() -> TestResult {
+    let config = Config::new_insecure_for_tests("127.0.0.1:1");
+    let limits = config.resource_limits;
+    let listener = |name: &str, status: ListenerStatus, lifecycle: ListenerLifecycle| {
+        let (status, _) = watch::channel(status);
+        let (incoming_tx, incoming_rx) = mpsc::channel(1);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((
+            name.parse::<Destination>()?,
+            Arc::new(ListenerState {
+                destination: name.parse()?,
+                access_token_source: AccessTokenSource::static_token(AccessToken::new("grant")?),
+                status,
+                last_error: StdMutex::new(None),
+                incoming_tx,
+                incoming_rx: tokio::sync::Mutex::new(incoming_rx),
+                initial_deadline: Instant::now() + Duration::from_secs(10),
+                lifecycle: StdMutex::new(lifecycle),
+                registration_committed: StdMutex::new(false),
+                live_pipe_slots: Arc::new(Semaphore::new(1)),
+            }),
+        ))
+    };
+    let returned = listener(
+        "inference/returned",
+        ListenerStatus::Active,
+        ListenerLifecycle::Returned,
+    )?;
+    let pending = listener(
+        "inference/pending",
+        ListenerStatus::Registering,
+        ListenerLifecycle::Pending,
+    )?;
+    let (current, _) = watch::channel(None::<Arc<RelaySession>>);
+    let (relay_status, _) = watch::channel(RelayStatus::Active);
+    let inner = RelayInner {
+        config,
+        desired: StdMutex::new(HashMap::from([returned, pending])),
+        current,
+        status: relay_status,
+        reconcile: Arc::new(Notify::new()),
+        cancel: CancellationToken::new(),
+        lifetime: Weak::<RuntimeLifetime>::new(),
+        resources: RelayResources::new(limits),
+        reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+        republish_retry_epoch: Arc::new(AtomicU64::new(0)),
+        republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
+            Duration::from_millis(10),
+            Duration::from_millis(100),
+        ))),
+    };
+    assert!(matches!(
+        inner.desired_settlement(),
+        super::DesiredSettlement::Recovered
+    ));
+    Ok(())
+}

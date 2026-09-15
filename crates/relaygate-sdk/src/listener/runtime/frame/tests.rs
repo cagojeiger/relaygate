@@ -155,3 +155,79 @@ async fn full_listener_queue_rejects_offer_immediately_and_preserves_session_fra
     peer.close().await?;
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn dropped_pipe_keeps_its_entry_until_close_is_sent() -> TestResult {
+    let config = Config::new_insecure_for_tests("127.0.0.1:1");
+    let limits = config.resource_limits;
+    let (current, _) = watch::channel(None);
+    let (relay_status, _) = watch::channel(RelayStatus::Active);
+    let inner = RelayInner {
+        config,
+        desired: StdMutex::new(HashMap::new()),
+        current,
+        status: relay_status,
+        reconcile: Arc::new(Notify::new()),
+        cancel: CancellationToken::new(),
+        lifetime: Weak::<RuntimeLifetime>::new(),
+        resources: RelayResources::new(limits),
+        reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+        republish_retry_epoch: Arc::new(AtomicU64::new(0)),
+        republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
+            Duration::from_millis(10),
+            Duration::from_millis(100),
+        ))),
+    };
+    let session_id = SessionId::new();
+    let mut state = RelaySessionState::new();
+    let (outbound, _outbound_rx) = session_outbound_channel(4);
+    let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(session_id, 1);
+    let (pipe, pipe_state) = PipeState::pair(pipe_id, outbound.clone(), 4, abandoned.clone());
+    state.pipes.insert(
+        pipe_id,
+        super::super::LivePipe {
+            state: pipe_state,
+            listener: None,
+        },
+    );
+    let (sdk_io, peer_io) = duplex(4 * 1024);
+    let mut transport = Framed::new(Box::new(sdk_io) as BoxedIo, FrameCodec::default());
+    let mut peer = Framed::new(Box::new(peer_io) as BoxedIo, FrameCodec::default());
+    let cancel = CancellationToken::new();
+
+    drop(pipe);
+    assert_eq!(abandoned_rx.try_recv()?, pipe_id);
+
+    for frame in [
+        Frame::Fin { pipe_id },
+        Frame::Data {
+            pipe_id,
+            payload: bytes::Bytes::from_static(b"late"),
+        },
+    ] {
+        let action = handle_relay_frame(
+            frame,
+            session_id,
+            &mut state,
+            &outbound,
+            &abandoned,
+            &inner,
+            &mut transport,
+            &cancel,
+        )
+        .await;
+        assert!(matches!(action, RelayFrameAction::Continue));
+    }
+    assert!(
+        state.pipes.contains_key(&pipe_id),
+        "entry must survive until the abandoned lane sends CLOSE"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), peer.next())
+            .await
+            .is_err(),
+        "no RESET may be sent for DATA that raced a local close"
+    );
+    Ok(())
+}

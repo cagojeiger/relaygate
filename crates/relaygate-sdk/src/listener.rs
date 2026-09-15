@@ -267,6 +267,9 @@ impl Relay {
             tokio::select! {
                 _ = self.inner.cancel.cancelled() => return Err(Error::closed()),
                 _ = sleep_until(deadline) => {
+                    if *state.status.borrow() == ListenerStatus::Active {
+                        continue;
+                    }
                     let error = self.inner.terminate_initial_listener(
                         &state,
                         ErrorCode::DeadlineExceeded,

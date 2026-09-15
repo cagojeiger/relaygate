@@ -677,3 +677,52 @@ async fn async_shutdown_reports_terminal_failure_and_preserves_its_payload()
     assert!(outbound_rx.try_recv().is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn close_racing_after_empty_poll_does_not_discard_accepted_data()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
+    let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 27);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+    let state_for_race = state.clone();
+    pipe.reader
+        .buffer
+        .lock()
+        .map_err(|_| "Pipe read buffer lock poisoned")?
+        .after_inbound_pending = Some(Box::new(move || {
+        assert!(
+            state_for_race
+                .push_data(Bytes::from_static(b"tail-before-close"))
+                .is_ok(),
+            "DATA before CLOSE must fit the inbound queue"
+        );
+        state_for_race.close_normal();
+    }));
+
+    let mut payload = [0_u8; 17];
+    pipe.read_exact(&mut payload).await?;
+    assert_eq!(&payload, b"tail-before-close");
+    assert_eq!(pipe.read(&mut payload).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn data_after_local_terminal_is_discarded_without_protocol_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outbound, _outbound_rx) = session_outbound_channel(1);
+    let (abandoned, mut abandoned_rx) = mpsc::unbounded_channel();
+    let pipe_id = PipeId::new(SessionId::new(), 28);
+    let (pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+
+    drop(pipe);
+    assert_eq!(abandoned_rx.try_recv()?, pipe_id);
+    assert!(state.is_finished());
+    assert!(!state.is_protocol_finished());
+    assert!(state.push_data(Bytes::from_static(b"late")).is_ok());
+    assert_eq!(state.buffered_bytes(), (0, 0));
+
+    state.remote_fin();
+    assert!(!state.is_protocol_finished());
+    Ok(())
+}

@@ -213,7 +213,7 @@ pub(super) async fn run_relay_session(
                 let Some(frame) = frame else { break; };
                 let terminal_pipe = match &frame {
                     Frame::Close { pipe_id } | Frame::Reset { pipe_id, .. } => Some(*pipe_id),
-                    Frame::Fin { pipe_id } if state.pipes.get(pipe_id).is_some_and(|pipe| pipe.state.is_finished()) => Some(*pipe_id),
+                    Frame::Fin { pipe_id } if state.pipes.get(pipe_id).is_some_and(|pipe| pipe.state.is_protocol_finished()) => Some(*pipe_id),
                     _ => None,
                 };
                 if send_bounded(
@@ -249,6 +249,7 @@ pub(super) async fn run_relay_session(
         }
     }
 
+    fail_queued_dials(&mut commands);
     cleanup_relay_session(
         established.id,
         inner,
@@ -257,4 +258,15 @@ pub(super) async fn run_relay_session(
         registration_succeeded,
     )
     .await
+}
+
+/// DIALs still queued when the session ends never reached the wire, so they
+/// are reported as `NOT_OBSERVED` instead of being dropped as uncertain.
+fn fail_queued_dials(commands: &mut mpsc::Receiver<RelayCommand>) {
+    commands.close();
+    while let Ok(RelayCommand::Dial { response, .. }) = commands.try_recv() {
+        let _ = response.send(Err(Error::unavailable(
+            "RelaySession ended before DIAL was sent",
+        )));
+    }
 }
