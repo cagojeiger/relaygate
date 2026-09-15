@@ -19,8 +19,7 @@ const DEFAULT_RT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_RT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_RT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-const DISTRIBUTED_ENVIRONMENT: [&str; 5] = [
-    "RELAYGATE_RT_TRUSTED_LOCAL",
+const DISTRIBUTED_ENVIRONMENT: [&str; 4] = [
     "RELAYGATE_RT_SHARD_DIRECTORY_PATH",
     "RELAYGATE_GATEWAY_NAME",
     "RELAYGATE_GATEWAY_LOCATOR",
@@ -43,9 +42,8 @@ pub(crate) struct GatewayRuntimeConfig {
 
 impl GatewayRuntimeConfig {
     pub(crate) fn from_env() -> Result<Self> {
-        if env::var_os("RELAYGATE_INTERNAL_TRANSPORT").is_some() {
-            internal_transport()?;
-        }
+        super::transport::reject_removed_flags()?;
+        internal_transport()?;
         let bind_address =
             optional_env("RELAYGATE_BIND_ADDR")?.unwrap_or_else(|| DEFAULT_BIND_ADDRESS.to_owned());
         for removed in ["RELAYGATE_CLUSTER_TOKEN", "RELAYGATE_NEXT_CLUSTER_TOKEN"] {
