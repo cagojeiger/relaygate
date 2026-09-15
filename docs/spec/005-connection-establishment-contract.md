@@ -64,7 +64,7 @@ AccessToken은 Entry Gateway에서 제거됩니다. RT Resolve와 peer OPEN에�
 
 ## observation
 
-새 DIAL은 ConnectionId fence를 갱신한 뒤 [제어 요청 예산](008-runtime-observability-contract.md#sdk-제어-요청-보호)과
+새 DIAL은 ConnectionId fence를 갱신한 뒤 [제어 요청 예산](010-transport-and-admission-contract.md#sdk-제어-요청-보호)과
 operation authorization을 검사합니다. rate·authorization 거절은 local lookup·RT Resolve·OFFER 전의 실패이며,
 새 시도는 새 ConnectionId를 사용합니다.
 

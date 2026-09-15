@@ -3,7 +3,8 @@
 이 문서는 `PUBLISH`와 `DIAL`의 token profile, static trust, permission 판정과 Gateway 실패 경계를
 소유합니다. SDK token 공급·재공급은 [SPEC 002](002-sdk-pipe-contract.md), canonical 오류와 상태는
 [SPEC 007](007-error-and-state-model.md), metric·log는
-[SPEC 008](008-runtime-observability-contract.md)이 소유합니다.
+[SPEC 008](008-runtime-observability-contract.md), authorization 전 admission 예산은
+[SPEC 010](010-transport-and-admission-contract.md)이 소유합니다.
 
 ## Profile과 경계
 
