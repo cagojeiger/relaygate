@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use uuid::Uuid;
 
@@ -158,6 +158,27 @@ impl fmt::Display for ShardDirectoryGeneration {
     }
 }
 
+impl FromStr for ShardDirectoryGeneration {
+    type Err = RouteTableError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let invalid = || {
+            RouteTableError::InvalidArgument(
+                "ShardDirectoryGeneration must be 64 hexadecimal characters".to_owned(),
+            )
+        };
+        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(invalid());
+        }
+        let mut bytes = [0_u8; 32];
+        for (byte, pair) in bytes.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+            let pair = std::str::from_utf8(pair).map_err(|_| invalid())?;
+            *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid())?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
 /// Monotonic snapshot revision scoped to one active lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RegistrationRevision(u64);
@@ -213,5 +234,44 @@ impl RequestContext {
     #[must_use]
     pub const fn authenticated_gateway_id(self) -> AuthenticatedGatewayId {
         self.authenticated_gateway_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShardDirectoryGeneration;
+
+    #[test]
+    fn shard_directory_generation_round_trips_through_its_hex_display() {
+        let generation = ShardDirectoryGeneration::from_bytes(core::array::from_fn(|i| i as u8));
+        let text = generation.to_string();
+        assert_eq!(text.len(), 64);
+        assert_eq!(
+            text.parse::<ShardDirectoryGeneration>().ok(),
+            Some(generation)
+        );
+        assert_eq!(
+            text.to_ascii_uppercase()
+                .parse::<ShardDirectoryGeneration>()
+                .ok(),
+            Some(generation)
+        );
+    }
+
+    #[test]
+    fn shard_directory_generation_rejects_non_hex_text() {
+        for text in [
+            "",
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &("+f".repeat(32)),
+            &("zz".repeat(32)),
+            &("é".repeat(32)),
+        ] {
+            assert!(
+                text.parse::<ShardDirectoryGeneration>().is_err(),
+                "{text:?}"
+            );
+        }
     }
 }
