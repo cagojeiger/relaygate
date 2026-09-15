@@ -5,12 +5,12 @@ use relaygate_route_table::GatewayId;
 use super::{error::PeerError, identity::PeerTransportId};
 
 #[derive(Debug, Default)]
-pub struct PeerPool {
+pub(crate) struct PeerPool {
     slots: BTreeMap<PeerSlotKey, PeerSlot>,
 }
 
 impl PeerPool {
-    pub fn connect(
+    pub(crate) fn connect(
         &mut self,
         local_gateway: GatewayId,
         remote_gateway: GatewayId,
@@ -28,7 +28,7 @@ impl PeerPool {
     }
 
     #[must_use]
-    pub fn ready_transport(&self, remote_gateway: GatewayId) -> Option<PeerTransportId> {
+    pub(crate) fn ready_transport(&self, remote_gateway: GatewayId) -> Option<PeerTransportId> {
         self.slots
             .iter()
             .filter(|(key, _)| key.dialer == remote_gateway || key.acceptor == remote_gateway)
@@ -39,7 +39,7 @@ impl PeerPool {
     }
 
     #[must_use]
-    pub fn state_counts(&self) -> (usize, usize) {
+    pub(crate) fn state_counts(&self) -> (usize, usize) {
         self.slots
             .values()
             .fold((0, 0), |(connecting, ready), slot| match slot.state {
@@ -49,7 +49,7 @@ impl PeerPool {
             })
     }
 
-    pub fn ready(
+    pub(crate) fn ready(
         &mut self,
         local_gateway: GatewayId,
         remote_gateway: GatewayId,
@@ -74,7 +74,7 @@ impl PeerPool {
         }
     }
 
-    pub fn remove_transport(&mut self, transport_id: PeerTransportId) {
+    pub(crate) fn remove_transport(&mut self, transport_id: PeerTransportId) {
         self.slots
             .retain(|_, slot| slot.state.transport_id() != Some(transport_id));
     }

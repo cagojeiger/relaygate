@@ -30,7 +30,7 @@ const PING: u8 = 11;
 const PONG: u8 = 12;
 
 #[derive(Debug, thiserror::Error)]
-pub enum PeerCodecError {
+pub(crate) enum PeerCodecError {
     #[error("peer frame I/O failed: {0}")]
     Io(#[from] io::Error),
     #[error("invalid peer frame magic")]
@@ -64,18 +64,18 @@ pub enum PeerCodecError {
 }
 
 impl PeerCodecError {
-    pub const fn is_io(&self) -> bool {
+    pub(crate) const fn is_io(&self) -> bool {
         matches!(self, Self::Io(_))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct PeerFrameCodec {
+pub(crate) struct PeerFrameCodec {
     max_frame_len: usize,
 }
 
 impl PeerFrameCodec {
-    pub const fn new(max_frame_len: usize) -> Self {
+    pub(crate) const fn new(max_frame_len: usize) -> Self {
         Self { max_frame_len }
     }
 

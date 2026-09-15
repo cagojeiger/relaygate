@@ -149,7 +149,7 @@ fn registration_for_ticket<'a>(
     registrations.get_mut(&key.relay_session_id())
 }
 
-pub const fn is_connection_error(code: ErrorCode) -> bool {
+pub(crate) const fn is_connection_error(code: ErrorCode) -> bool {
     matches!(
         code,
         ErrorCode::Unavailable
@@ -159,7 +159,7 @@ pub const fn is_connection_error(code: ErrorCode) -> bool {
     )
 }
 
-pub const fn is_terminal_control_error(code: ErrorCode) -> bool {
+pub(crate) const fn is_terminal_control_error(code: ErrorCode) -> bool {
     matches!(
         code,
         ErrorCode::Unauthenticated | ErrorCode::PermissionDenied | ErrorCode::FailedPrecondition

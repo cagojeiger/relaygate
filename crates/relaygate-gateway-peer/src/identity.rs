@@ -6,10 +6,10 @@ use super::error::PeerError;
 
 /// Stable configuration name presented by one Gateway during peer handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerGatewayName(String);
+pub(crate) struct PeerGatewayName(String);
 
 impl PeerGatewayName {
-    pub fn new(value: impl Into<String>) -> Result<Self, PeerError> {
+    pub(crate) fn new(value: impl Into<String>) -> Result<Self, PeerError> {
         let value = value.into();
         if value.is_empty() {
             return Err(PeerError::InvalidArgument(
@@ -31,7 +31,7 @@ impl PeerGatewayName {
 /// the expected runtime incarnation and the
 /// direction-specific transport identity before admitting any stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerHandshake {
+pub(crate) struct PeerHandshake {
     pub gateway_name: PeerGatewayName,
     pub gateway_id: GatewayId,
     pub expected_peer_gateway_id: GatewayId,
@@ -89,7 +89,7 @@ impl StreamId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamEndpoint {
+pub(crate) enum StreamEndpoint {
     Dialer,
     Acceptor,
 }
@@ -104,14 +104,14 @@ impl StreamEndpoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamIdAllocator {
+pub(crate) struct StreamIdAllocator {
     endpoint: StreamEndpoint,
     next_counter: u64,
 }
 
 impl StreamIdAllocator {
     #[must_use]
-    pub const fn new(endpoint: StreamEndpoint) -> Self {
+    pub(crate) const fn new(endpoint: StreamEndpoint) -> Self {
         Self {
             endpoint,
             next_counter: 0,
@@ -126,7 +126,7 @@ impl StreamIdAllocator {
         }
     }
 
-    pub fn allocate(&mut self) -> Result<StreamId, PeerError> {
+    pub(crate) fn allocate(&mut self) -> Result<StreamId, PeerError> {
         if self.next_counter > i64::MAX as u64 {
             return Err(PeerError::ResourceExhausted(
                 "PeerTransport StreamId counter is exhausted",
@@ -139,21 +139,21 @@ impl StreamIdAllocator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RemoteStreamGuard {
+pub(crate) struct RemoteStreamGuard {
     remote_endpoint: StreamEndpoint,
     highest_counter: Option<u64>,
 }
 
 impl RemoteStreamGuard {
     #[must_use]
-    pub const fn new(remote_endpoint: StreamEndpoint) -> Self {
+    pub(crate) const fn new(remote_endpoint: StreamEndpoint) -> Self {
         Self {
             remote_endpoint,
             highest_counter: None,
         }
     }
 
-    pub fn accept_open(&mut self, stream_id: StreamId) -> Result<(), PeerError> {
+    pub(crate) fn accept_open(&mut self, stream_id: StreamId) -> Result<(), PeerError> {
         if stream_id.initiator_bit() != self.remote_endpoint.bit() {
             return Err(PeerError::Protocol("remote StreamId role bit is invalid"));
         }
@@ -209,7 +209,7 @@ impl OpenIdentity {
 }
 
 /// Stream state uses the same active correlation identity as peer `OPEN`.
-pub type StreamOwner = OpenIdentity;
+pub(crate) type StreamOwner = OpenIdentity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerOpenProgress {
