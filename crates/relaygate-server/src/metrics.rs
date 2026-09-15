@@ -5,7 +5,7 @@ use metrics::{describe_counter, describe_gauge, describe_histogram, gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use relaygate_gateway::{GatewaySnapshot, RouteDependencyHealth};
 
-use crate::config::optional_duration_millis;
+use crate::config::{optional_duration_millis, optional_env};
 
 const DEFAULT_METRICS_INTERVAL: Duration = Duration::from_secs(5);
 const LATENCY_BUCKETS_SECONDS: &[f64] = &[
@@ -20,7 +20,7 @@ pub(crate) struct MetricsRuntime {
 
 impl MetricsRuntime {
     pub(crate) fn install(role: &'static str) -> Result<Option<Self>> {
-        let bind_address = env::var("RELAYGATE_METRICS_BIND_ADDR").ok();
+        let bind_address = optional_env("RELAYGATE_METRICS_BIND_ADDR")?;
         if bind_address.is_none() && env::var_os("RELAYGATE_METRICS_INTERVAL_MS").is_some() {
             bail!(
                 "RELAYGATE_METRICS_BIND_ADDR is required when RELAYGATE_METRICS_INTERVAL_MS is set"

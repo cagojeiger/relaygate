@@ -269,6 +269,15 @@ async fn run_writer(
     }
 }
 
+pub(super) fn observe_capacity_rejection() {
+    observe_handshake("error", ErrorCode::ResourceExhausted.metric_name());
+    tracing::debug!(
+        event = "route_table.connection.rejected",
+        reason = "max_connections",
+        "RouteTable connection limit reached"
+    );
+}
+
 pub(super) async fn reject_over_capacity(
     stream: TcpStream,
     config: RouteTableServiceConfig,
@@ -276,7 +285,6 @@ pub(super) async fn reject_over_capacity(
 ) {
     let mut framed = Framed::new(stream, FrameCodec::new(config.max_frame_len));
     let error = TransportError::resource_exhausted("RouteTable connection limit reached");
-    observe_handshake("error", error.code().metric_name());
     let send = framed.send(WireFrame::HandshakeRejected {
         role: ROUTE_TABLE_ROLE.to_owned(),
         code: error.code(),

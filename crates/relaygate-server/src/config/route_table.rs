@@ -7,7 +7,7 @@ use relaygate_transport::ServerTlsConfig;
 
 use super::{
     InternalTransport, internal_transport, load_internal_tls, optional_duration_millis,
-    optional_usize,
+    optional_env, optional_usize,
 };
 
 const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:27430";
@@ -29,8 +29,8 @@ pub(crate) struct RouteTableRuntimeConfig {
 impl RouteTableRuntimeConfig {
     pub(crate) fn from_env() -> Result<Self> {
         let insecure = internal_transport()? == InternalTransport::Plaintext;
-        let bind_address =
-            env::var("RELAYGATE_RT_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned());
+        let bind_address = optional_env("RELAYGATE_RT_BIND_ADDR")?
+            .unwrap_or_else(|| DEFAULT_BIND_ADDRESS.to_owned());
         let directory_path = env::var("RELAYGATE_RT_SHARD_DIRECTORY_PATH")
             .context("RELAYGATE_RT_SHARD_DIRECTORY_PATH is required")?;
         let directory_bytes = fs::read(&directory_path).with_context(|| {
@@ -38,7 +38,7 @@ impl RouteTableRuntimeConfig {
         })?;
         let directory = ShardDirectory::from_json_bytes(directory_bytes)?;
         let shard_id = ShardId::new(
-            env::var("RELAYGATE_RT_SHARD_ID").unwrap_or_else(|_| DEFAULT_SHARD_ID.to_owned()),
+            optional_env("RELAYGATE_RT_SHARD_ID")?.unwrap_or_else(|| DEFAULT_SHARD_ID.to_owned()),
         )?;
         let lease_ttl =
             optional_duration_millis("RELAYGATE_RT_LEASE_TTL_MS")?.unwrap_or(DEFAULT_LEASE_TTL);

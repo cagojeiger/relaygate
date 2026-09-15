@@ -727,3 +727,127 @@ const fn protocol_session(value: u128) -> SessionId {
 const fn protocol_binding(value: u128) -> ProtocolBindingId {
     ProtocolBindingId::from_uuid(Uuid::from_u128(value))
 }
+
+#[test]
+fn late_update_ack_still_records_accepted_revision() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+    let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+    let RegistrationAction::Update { revision, .. } = update.action else {
+        return Err("expected UPDATE".into());
+    };
+
+    state.publish(
+        2,
+        Some(snapshot("22222222-2222-4222-8222-222222222222")?),
+        now,
+    );
+    state.update_succeeded(&update, registration_ack(10, Some(revision)), now);
+
+    assert!(!state.is_synced());
+    let next = state.begin_next(now)?.ok_or("missing next UPDATE")?;
+    let RegistrationAction::Update {
+        revision: next_revision,
+        ..
+    } = next.action
+    else {
+        return Err("expected UPDATE after a late ack".into());
+    };
+    assert!(next_revision > revision);
+    Ok(())
+}
+
+#[test]
+fn repeated_publish_during_update_does_not_go_terminal() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+
+    let destinations = [
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+        "44444444-4444-4444-8444-444444444444",
+    ];
+    for (offset, destination) in destinations.iter().enumerate() {
+        let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+        let RegistrationAction::Update { revision, .. } = update.action else {
+            return Err("expected UPDATE".into());
+        };
+        state.publish(2 + offset as u64, Some(snapshot(destination)?), now);
+        state.update_succeeded(&update, registration_ack(10, Some(revision)), now);
+    }
+    let last = state.begin_next(now)?.ok_or("registration went terminal")?;
+    assert!(matches!(last.action, RegistrationAction::Update { .. }));
+    state.update_succeeded(&last, registration_ack(10, None), now);
+    assert!(state.is_synced());
+    Ok(())
+}
+
+#[test]
+fn transient_deregister_failure_retries_with_the_same_lease() -> TestResult {
+    let now = Instant::now();
+    let retry = Duration::from_millis(10);
+    let mut state =
+        registration_state_with_retry(now, 1, "11111111-1111-4111-8111-111111111111", retry)?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+    state.publish(2, None, now);
+    let deregister = state.begin_next(now)?.ok_or("missing DEREGISTER")?;
+    let RegistrationAction::Deregister { lease_id, .. } = deregister.action else {
+        return Err("expected DEREGISTER".into());
+    };
+
+    state.transient_failure(&deregister, now);
+    assert!(!state.is_removable());
+    assert!(state.begin_next(now)?.is_none());
+    let repeated = state
+        .begin_next(now + retry)?
+        .ok_or("missing repeated DEREGISTER")?;
+    assert!(matches!(
+        repeated.action,
+        RegistrationAction::Deregister { lease_id: repeated_lease, .. } if repeated_lease == lease_id
+    ));
+    state.finish_deregister(&repeated);
+    assert!(state.is_removable());
+    Ok(())
+}
+
+#[test]
+fn unrelated_desired_version_bump_keeps_deregister_backoff() -> TestResult {
+    let now = Instant::now();
+    let retry = Duration::from_millis(10);
+    let mut state =
+        registration_state_with_retry(now, 1, "11111111-1111-4111-8111-111111111111", retry)?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+    state.publish(2, None, now);
+    let deregister = state.begin_next(now)?.ok_or("missing DEREGISTER")?;
+    state.transient_failure(&deregister, now);
+
+    state.publish(3, None, now);
+    assert!(state.begin_next(now)?.is_none());
+    assert!(state.begin_next(now + retry)?.is_some());
+    Ok(())
+}
+
+#[test]
+fn deregister_retry_budget_ends_with_the_lease_lifetime() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+    state.publish(2, None, now);
+
+    assert!(!state.lease_expired(now));
+    assert!(!state.lease_expired(now + Duration::from_secs(4)));
+    assert!(state.lease_expired(now + Duration::from_secs(5)));
+
+    let deregister = state.begin_next(now)?.ok_or("missing DEREGISTER")?;
+    state.finish_deregister(&deregister);
+    assert!(state.is_removable());
+    assert!(state.lease_expired(now));
+    Ok(())
+}

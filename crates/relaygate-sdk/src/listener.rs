@@ -267,12 +267,14 @@ impl Relay {
             tokio::select! {
                 _ = self.inner.cancel.cancelled() => return Err(Error::closed()),
                 _ = sleep_until(deadline) => {
-                    let error = self.inner.terminate_initial_listener(
+                    match self.inner.expire_initial_listener(
                         &state,
                         ErrorCode::DeadlineExceeded,
                         "operation deadline exceeded",
-                    );
-                    return Err(error);
+                    ) {
+                        Some(error) => return Err(error),
+                        None => continue,
+                    }
                 }
                 changed = status.changed() => {
                     if changed.is_err() {

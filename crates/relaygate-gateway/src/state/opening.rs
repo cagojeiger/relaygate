@@ -225,7 +225,7 @@ impl GatewayState {
             let Some(pipe) = self.pipes.get(&pipe_id) else {
                 return Ok(Vec::new());
             };
-            pipe.ensure_sdk_owner(acceptor, pipe_id, "OFFER_ACCEPTED")?;
+            pipe.ensure_sdk_acceptor(acceptor, pipe_id, "OFFER_ACCEPTED")?;
             pipe.phase
         };
         if phase != PipePhase::Offered {
@@ -280,7 +280,7 @@ impl GatewayState {
         let Some(pipe) = self.pipes.get(&pipe_id) else {
             return Ok(Vec::new());
         };
-        pipe.ensure_sdk_owner(acceptor, pipe_id, "OFFER_REJECTED")?;
+        pipe.ensure_sdk_acceptor(acceptor, pipe_id, "OFFER_REJECTED")?;
         if pipe.phase != PipePhase::Offered {
             return Ok(
                 self.protocol_reset(pipe_id, "OFFER_REJECTED is not valid after the Pipe opened")

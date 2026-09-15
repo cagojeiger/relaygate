@@ -85,7 +85,15 @@ impl Manager {
                     );
                     self.pool.remove_transport(peer_transport_id);
                     self.counts.update_pool(&self.pool);
-                    self.fail_pending_for(remote_gateway_id, error);
+                    let pending_failure = if error.code() == ErrorCode::AlreadyExists {
+                        PeerFailure::not_observed(
+                            ErrorCode::Unavailable,
+                            "peer pair already has a transport in the opposite direction",
+                        )
+                    } else {
+                        error
+                    };
+                    self.fail_pending_for(remote_gateway_id, pending_failure);
                 }
             },
             HandshakeNotice::InboundHello(result) => {

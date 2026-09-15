@@ -393,7 +393,7 @@ pub(super) async fn handle_relay_frame(
                         return RelayFrameAction::Stop;
                     }
                 }
-                let _ = send_bounded(
+                if send_bounded(
                     transport,
                     Frame::Reset {
                         pipe_id,
@@ -403,17 +403,22 @@ pub(super) async fn handle_relay_frame(
                     inner.config.operation_timeout,
                     session_cancel,
                 )
-                .await;
+                .await
+                .is_err()
+                {
+                    return RelayFrameAction::Stop;
+                }
             }
         }
         Frame::Fin { pipe_id } => {
             if let Some(pipe) = session.pipes.get(&pipe_id) {
                 pipe.state.remote_fin();
             }
+            // A locally terminal Pipe keeps its entry until its CLOSE/RESET is sent.
             let finished = session
                 .pipes
                 .get(&pipe_id)
-                .is_some_and(|pipe| pipe.state.is_finished());
+                .is_some_and(|pipe| pipe.state.is_protocol_finished());
             if finished
                 && let Some(pipe) = session.pipes.remove(&pipe_id)
                 && !pipe.compact_listener_queue()

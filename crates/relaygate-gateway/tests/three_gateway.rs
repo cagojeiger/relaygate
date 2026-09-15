@@ -620,3 +620,20 @@ fn one_shard_directory(endpoint: SocketAddr) -> Vec<u8> {
     )
     .into_bytes()
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn distributed_gateway_rejects_local_serve_after_serve_distributed() -> TestResult {
+    let route_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let directory =
+        ShardDirectory::from_json_bytes(one_shard_directory(route_listener.local_addr()?))?;
+    let running = RunningGateway::start(GATEWAY_A, directory).await?;
+
+    let extra_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let result = running
+        .gateway
+        .serve(extra_listener, CancellationToken::new())
+        .await;
+    assert!(matches!(result, Err(GatewayError::InvalidConfig(_))));
+
+    running.stop().await
+}

@@ -295,6 +295,22 @@ impl PipeEntry {
         })
     }
 
+    fn ensure_sdk_acceptor(
+        &self,
+        sender: SessionId,
+        pipe_id: PipeId,
+        frame_name: &'static str,
+    ) -> Result<(), ProtocolViolation> {
+        if self.acceptor == PipeEndpoint::Sdk(sender) {
+            return Ok(());
+        }
+        Err(ProtocolViolation::PipeOwnership {
+            sender,
+            pipe_id,
+            frame_name,
+        })
+    }
+
     fn peer_key(&self) -> Option<PeerStreamKey> {
         match (self.dialer, self.acceptor) {
             (PipeEndpoint::Peer(key), _) | (_, PipeEndpoint::Peer(key)) => Some(key),
@@ -559,6 +575,9 @@ impl GatewayState {
         now: Instant,
     ) -> Vec<GatewayAction> {
         if !self.sessions.contains_key(&session_id) {
+            if let ControlOperation::Dial { started_at, .. } = operation {
+                observe_dial_result(Some(started_at), Some(ErrorCode::Cancelled));
+            }
             return Vec::new();
         }
         if !verified.authorizes(&operation, now.into()) {
@@ -732,9 +751,14 @@ impl GatewayState {
     }
 
     fn registration_publication(&self, session_id: SessionId) -> GatewayAction {
+        let bindings = if self.draining {
+            Vec::new()
+        } else {
+            self.registry.bindings_for_session(session_id)
+        };
         GatewayAction::PublishRegistration {
             session_id,
-            bindings: self.registry.bindings_for_session(session_id),
+            bindings,
         }
     }
 }
