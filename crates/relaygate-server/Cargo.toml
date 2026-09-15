@@ -27,7 +27,6 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
-jsonwebtoken.workspace = true
 relaygate-protocol.workspace = true
 
 [lints]

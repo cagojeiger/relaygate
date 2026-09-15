@@ -1219,7 +1219,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -1253,7 +1252,6 @@ dependencies = [
  "relaygate-route-table",
  "relaygate-route-table-transport",
  "relaygate-transport",
- "serde_json",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -1328,7 +1326,6 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "futures-util",
- "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
  "relaygate-gateway",

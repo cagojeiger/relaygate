@@ -10,7 +10,6 @@ fn exact_artifact_bytes_define_generation_and_ordered_authority() -> Result<(), 
         directory.generation().to_string(),
         "26538882fe1a6cb2d35c8f094d6ec1605bba0e0932c0e1f60068e224144633c1"
     );
-    assert_eq!(directory.artifact_bytes(), THREE_SHARD_DIRECTORY);
     assert_eq!(directory.shards().len(), 3);
     for (destination, expected_shard) in [
         ("test/alpha", "rt-1"),

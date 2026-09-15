@@ -181,6 +181,7 @@ impl GatewayPeerConfig {
         self
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn with_resource_limits(
         mut self,

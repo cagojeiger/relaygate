@@ -141,11 +141,6 @@ impl GatewayConfig {
     }
 
     #[must_use]
-    pub const fn authorization_limits(&self) -> (usize, Duration) {
-        (self.authorization_concurrency, self.authorization_timeout)
-    }
-
-    #[must_use]
     pub const fn with_writer_queue_capacity(mut self, capacity: usize) -> Self {
         self.writer_queue_capacity = capacity;
         self
