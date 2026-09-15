@@ -150,8 +150,8 @@ let mut response = [0_u8; 4096];
 loop {
     match pipe.read(&mut response).await {
         Ok(0) => break,
-        Ok(_received) => {
-            // Process the opaque response bytes according to the application protocol.
+        Ok(received) => {
+            // Process `&response[..received]` according to the application protocol.
         }
         Err(error) => {
             // `Pipe` implements Tokio's `AsyncRead`/`AsyncWrite`; the structured SDK

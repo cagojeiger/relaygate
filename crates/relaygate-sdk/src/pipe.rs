@@ -433,7 +433,9 @@ impl Pipe {
 
     /// Enqueues all bytes to the bounded session path in order.
     ///
-    /// Success is not a peer application delivery acknowledgement.
+    /// Success is not a peer application delivery acknowledgement. Unlike
+    /// [`tokio::io::AsyncWriteExt::write_all`], an empty payload still reports
+    /// a closed or failed Pipe.
     #[deprecated(
         since = "0.4.0",
         note = "use tokio::io::AsyncWriteExt::write_all and recover the SDK error with Error::from_io"
@@ -476,7 +478,8 @@ impl PipeReadHalf {
 }
 
 impl PipeWriteHalf {
-    /// Split-write equivalent of [`Pipe::write_all_bytes`].
+    /// Split-write equivalent of [`Pipe::write_all_bytes`], including its
+    /// empty-payload behaviour.
     #[deprecated(
         since = "0.4.0",
         note = "use tokio::io::AsyncWriteExt::write_all and recover the SDK error with Error::from_io"

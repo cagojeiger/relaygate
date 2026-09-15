@@ -93,6 +93,10 @@ impl Error {
     /// Recovers the structured SDK error carried by a Pipe I/O error from
     /// Tokio's [`AsyncRead`](tokio::io::AsyncRead) and
     /// [`AsyncWrite`](tokio::io::AsyncWrite) adapters.
+    ///
+    /// Returns `None` for errors a Pipe did not produce, including the ones
+    /// Tokio helpers synthesize themselves (for example `read_exact`'s
+    /// `UnexpectedEof` or `write_all`'s `WriteZero`).
     #[must_use]
     pub fn from_io(error: &std::io::Error) -> Option<&Self> {
         error.get_ref()?.downcast_ref()

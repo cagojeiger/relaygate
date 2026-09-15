@@ -660,13 +660,19 @@ async fn deprecated_pipe_helpers_still_return_the_structured_sdk_error()
     let (outbound, _outbound_rx) = session_outbound_channel(1);
     let (abandoned, _abandoned_rx) = mpsc::unbounded_channel();
     let pipe_id = PipeId::new(SessionId::new(), 32);
-    let (mut pipe, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+    let (mut pipe, state) = PipeState::pair(pipe_id, outbound.clone(), 1, abandoned.clone());
     let failure = Error::unavailable("session failed");
     assert!(state.fail(failure.clone()));
 
     assert_eq!(pipe.write_all_bytes(b"custom").await, Err(failure.clone()));
     let mut byte = [0_u8; 1];
-    assert_eq!(pipe.read_into(&mut byte).await, Err(failure));
+    assert_eq!(pipe.read_into(&mut byte).await, Err(failure.clone()));
+
+    let (split, state) = PipeState::pair(pipe_id, outbound, 1, abandoned);
+    assert!(state.fail(failure.clone()));
+    let (mut reader, mut writer) = split.into_split();
+    assert_eq!(writer.write_all_bytes(b"split").await, Err(failure.clone()));
+    assert_eq!(reader.read_into(&mut byte).await, Err(failure));
     Ok(())
 }
 
