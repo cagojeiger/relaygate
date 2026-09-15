@@ -55,6 +55,7 @@ use relaygate_sdk::{
     AccessToken, AccessTokenRequest, AccessTokenSource, AccessTokenSourceError,
     Config, Destination, ListenerStatus, Relay, RelayStatus,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 # async fn token_from_application_backend(
 #     _request: AccessTokenRequest,
@@ -92,8 +93,8 @@ let listener_observer = tokio::spawn(async move {
 
 let mut pipe = listener.accept().await?;
 let mut request = [0_u8; 4096];
-let received = pipe.read_into(&mut request).await?;
-pipe.write_all_bytes(&request[..received]).await?;
+let received = pipe.read(&mut request).await?;
+pipe.write_all(&request[..received]).await?;
 pipe.shutdown_write().await?;
 
 listener.close().await?;
@@ -114,8 +115,9 @@ application chooses whether to start a new operation.
 ```no_run
 use relaygate_sdk::{
     AccessToken, AccessTokenRequest, AccessTokenSource, AccessTokenSourceError,
-    Config, Destination, Relay, RelayStatus,
+    Config, Destination, Error, Relay, RelayStatus,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 # async fn token_from_application_backend(
 #     _request: AccessTokenRequest,
@@ -141,12 +143,25 @@ relay.wait_ready().await?;
 let destination: Destination = "inference/stt.seoul".parse()?;
 let tokens = AccessTokenSource::dynamic(token_from_application_backend);
 let mut pipe = relay.dial(destination, tokens).await?;
-pipe.write_all_bytes(b"transcribe this audio").await?;
+pipe.write_all(b"transcribe this audio").await?;
 pipe.shutdown_write().await?;
 
 let mut response = [0_u8; 4096];
-while pipe.read_into(&mut response).await? != 0 {
-    // Process the opaque response bytes according to the application protocol.
+loop {
+    match pipe.read(&mut response).await {
+        Ok(0) => break,
+        Ok(received) => {
+            // Process `&response[..received]` according to the application protocol.
+        }
+        Err(error) => {
+            // `Pipe` implements Tokio's `AsyncRead`/`AsyncWrite`; the structured SDK
+            // error stays recoverable from the `std::io::Error` payload.
+            if let Some(sdk_error) = Error::from_io(&error) {
+                eprintln!("dial pipe failed: {:?}", sdk_error.code());
+            }
+            return Err(error.into());
+        }
+    }
 }
 relay.close();
 let _ = observer.await;
