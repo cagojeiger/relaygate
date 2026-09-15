@@ -8,8 +8,7 @@ use tokio::{net::TcpListener, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    registry::Binding,
-    routing::{GatewayRoutingConfig, RoutingRuntime},
+    Binding, {GatewayRoutingConfig, RoutingRuntime},
 };
 
 use super::{

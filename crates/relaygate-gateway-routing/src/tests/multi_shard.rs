@@ -11,12 +11,12 @@ use relaygate_route_table_transport::{
 use tokio::{net::TcpListener, time::timeout};
 use tokio_util::sync::CancellationToken;
 
-use crate::{RouteDependencyHealth, registry::Binding, routing::GatewayRoutingConfig};
+use crate::{Binding, GatewayRoutingConfig, RouteDependencyHealth};
 
 use super::{
     TestResult, gateway, protocol_binding, protocol_session, wait_for_not_found, wait_for_resolve,
 };
-use crate::routing::{RoutingHandle, RoutingRuntime, projection::project_session_id};
+use crate::{RoutingHandle, RoutingRuntime, projection::project_session_id};
 
 mod keep_alive_partition;
 

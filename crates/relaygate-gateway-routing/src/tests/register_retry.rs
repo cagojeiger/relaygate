@@ -6,7 +6,7 @@ use relaygate_route_table::{
 };
 use tokio::time::Instant;
 
-use crate::routing::lifecycle::{RegistrationAction, RegistrationState};
+use crate::lifecycle::{RegistrationAction, RegistrationState};
 
 use super::{TestResult, gateway, one_shard_directory, relay_session, snapshot};
 

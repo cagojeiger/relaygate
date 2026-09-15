@@ -2,12 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use relaygate_protocol::{BindingId, Destination, SessionId};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Binding {
-    pub(crate) id: BindingId,
-    pub(crate) destination: Destination,
-    pub(crate) session_id: SessionId,
-}
+pub(crate) use relaygate_gateway_routing::Binding;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Registration {

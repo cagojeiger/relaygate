@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::{
     OperationCompletion, OperationResult, WorkerCounts, apply_epoch_scoped_operation_completion,
 };
-use crate::routing::lifecycle::{RegistrationAction, RegistrationState};
+use crate::lifecycle::{RegistrationAction, RegistrationState};
 
 mod stale_epoch;
 mod update_gate_proxy;

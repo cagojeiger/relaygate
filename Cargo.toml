@@ -4,6 +4,7 @@ members = [
     "crates/relaygate-destination",
     "crates/relaygate-gateway",
     "crates/relaygate-gateway-peer",
+    "crates/relaygate-gateway-routing",
     "crates/relaygate-protocol",
     "crates/relaygate-route-table",
     "crates/relaygate-route-table-transport",
@@ -37,6 +38,7 @@ p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
 relaygate-destination = { version = "0.3.1", path = "crates/relaygate-destination" }
 relaygate-gateway = { path = "crates/relaygate-gateway" }
 relaygate-gateway-peer = { path = "crates/relaygate-gateway-peer" }
+relaygate-gateway-routing = { path = "crates/relaygate-gateway-routing" }
 relaygate-protocol = { version = "0.3.1", path = "crates/relaygate-protocol" }
 relaygate-route-table = { path = "crates/relaygate-route-table" }
 relaygate-route-table-transport = { path = "crates/relaygate-route-table-transport" }

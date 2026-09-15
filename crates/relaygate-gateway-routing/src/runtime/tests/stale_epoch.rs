@@ -15,8 +15,7 @@ use uuid::Uuid;
 
 use super::{TestResult, update_gate_proxy::UpdateGateProxy};
 use crate::{
-    registry::Binding,
-    routing::{GatewayRoutingConfig, RoutingError},
+    Binding, {GatewayRoutingConfig, RoutingError},
 };
 
 use super::super::{ClientAvailability, ClientFailure, RoutingHandle, RoutingRuntime};
