@@ -32,25 +32,25 @@ failure입니다.
 stateDiagram-v2
     state Relay {
         [*] --> CONNECTING
-        CONNECTING --> ACTIVE
+        CONNECTING --> ACTIVE: TLS + HELLO/WELCOME
         CONNECTING --> [*]: Relay::connect Err
         ACTIVE --> RECONNECTING: session/protocol/transport loss
-        RECONNECTING --> ACTIVE
+        RECONNECTING --> ACTIVE: reconnect HELLO/WELCOME
         RECONNECTING --> RECONNECTING: bounded backoff retry
-        ACTIVE --> CLOSED
-        RECONNECTING --> CLOSED
+        ACTIVE --> CLOSED: Relay.close
+        RECONNECTING --> CLOSED: Relay.close
     }
     state Listener {
         [*] --> REGISTERING
-        REGISTERING --> ACTIVE
+        REGISTERING --> ACTIVE: Binding confirmed
         REGISTERING --> CLOSED: Relay::listen Err / close
         REGISTERING --> SUSPENDED: returned Listener transient failure/session loss
         REGISTERING --> BLOCKED: returned Listener permanent PUBLISH failure
-        ACTIVE --> SUSPENDED
+        ACTIVE --> SUSPENDED: session loss
         SUSPENDED --> REGISTERING: bounded republish retry
-        ACTIVE --> CLOSED
-        SUSPENDED --> CLOSED
-        BLOCKED --> CLOSED
+        ACTIVE --> CLOSED: close
+        SUSPENDED --> CLOSED: close
+        BLOCKED --> CLOSED: close
     }
     state Binding {
         [*] --> ABSENT
@@ -67,7 +67,8 @@ PUBLISH 실패 응답은 `Relay::listen`의 `Err`이고, 이미 반환된 Listen
 `BLOCKED`로 만듭니다.
 Public status subscription은 SDK 소유 wrapper로 latest-state/coalescing 의미를 가집니다. `current()`는
 현재 값을 반환하고 subscription cursor를 소비하며, `changed()`는 그 이후 변경에서 latest state를 반환합니다.
-Relay `ACTIVE`는 current `HELLO/WELCOME` transport session 설치를 뜻하며 Listener `ACTIVE/BLOCKED/SUSPENDED`와
+Relay `CONNECTING`은 `Relay::connect` 반환 전의 논리 상태이며 public `RelayStatus`는 `ACTIVE/RECONNECTING/CLOSED`만
+노출합니다. Relay `ACTIVE`는 current `HELLO/WELCOME` transport session 설치를 뜻하며 Listener `ACTIVE/BLOCKED/SUSPENDED`와
 독립입니다. Relay `CLOSED`와 Listener `CLOSED`는 terminal이며 `ACTIVE`로 역행하지 않습니다.
 
 ## Authorization과 Pipe 상태
@@ -91,15 +92,23 @@ stateDiagram-v2
         REQUESTED --> FAILED
         RESOLVING --> FAILED
         OFFERED --> FAILED
+        RESOLVING --> CANCELLED: CANCEL
+        OFFERED --> CANCELLED: CANCEL
     }
     state Pipe {
         [*] --> OFFERED
         OFFERED --> OPEN
         OPEN --> HALF_CLOSED: 한 방향 FIN
-        OPEN --> CLOSED
+        OFFERED --> CLOSED: reject / CANCEL / timeout / Binding·session 제거
+        OPEN --> CLOSED: CLOSE / RESET / CANCEL(OPENED 경합)
         HALF_CLOSED --> CLOSED: 반대 FIN / CLOSE / RESET
     }
 ```
+
+Dial 상태는 Gateway 관점의 논리 상태입니다. `REQUESTED`는 precheck·authorization, `RESOLVING`은 local lookup·RT
+Resolve, `OFFERED`는 local OFFER 또는 peer OPEN 대기(`StartingPeer`/`AwaitingPeer`)이며 구현 phase와 1:1이 아닙니다.
+`CANCEL`(`DIAL-009`)은 remote attempt 또는 Pipe를 제거합니다. acceptor 또는 peer stream이 이미 있으면 `CANCELLED`로
+RESET하고, peer OPEN 시작 중이면 OPEN을 취소하며, RT Resolve 중이면 attempt만 제거합니다.
 
 Authorization은 operation admission으로 끝납니다. COMMITTED 뒤 token·claim·expiry state를 Binding 또는 Pipe에
 보관하지 않습니다. `HALF_CLOSED`는 별도 wire/state enum이 아니라 `OPEN` Pipe의 방향별 finished flag 중
@@ -126,6 +135,8 @@ stateDiagram-v2
     UNSYNCED --> TERMINAL: permanent failure
 ```
 
+이 다이어그램은 Gateway가 session-shard registration별로 관측하는 상태입니다. RT 쪽 lease와 snapshot 설치 구분은
+[ADR 019](../adr/019-registration-snapshot-lifecycle.md)가 설명하며 두 관점은 같은 lifecycle을 다르게 나눈 것입니다.
 첫 sync는 revision 1의 current full snapshot `Update` ACK로 성립합니다. RT restart로 기존 lease가 사라지면
 Gateway는 `Register`로 새 lease를 얻고 첫 `Update`를 반복합니다.
 

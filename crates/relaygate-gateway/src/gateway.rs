@@ -15,8 +15,7 @@ use crate::{
     authorization::Authorization,
     peer::PeerHandle,
     routing::RoutingHandle,
-    state::GatewayState,
-    state::{GatewayAction, GatewayLimits},
+    state::{GatewayLimits, GatewayState},
 };
 
 #[cfg(test)]
@@ -33,6 +32,7 @@ mod session;
 mod snapshot;
 #[cfg(test)]
 mod tests;
+mod transition;
 
 use connection_rate::ConnectionRateLimit;
 use distributed::DistributedRuntime;
@@ -192,40 +192,11 @@ impl Gateway {
 
 impl Inner {
     fn begin_draining(&self) {
-        let actions = self.lock_state().begin_draining();
-        self.commit_registration_actions(&actions);
+        self.transition(GatewayState::begin_draining);
     }
 
     fn is_drained(&self) -> bool {
         self.lock_state().is_drained()
-    }
-
-    /// Commits the latest complete snapshot while the Gateway state lock still
-    /// orders the corresponding local mutation. The manager wake is bounded
-    /// and synchronous; no network I/O occurs under this lock. This prevents a
-    /// delayed action from publishing an older snapshot after session cleanup.
-    fn commit_registration_actions(&self, actions: &[GatewayAction]) {
-        let Some(routing) = &self.routing else {
-            return;
-        };
-        for action in actions {
-            let GatewayAction::PublishRegistration {
-                session_id,
-                bindings,
-            } = action
-            else {
-                continue;
-            };
-            if let Err(error) = routing.publish_session(*session_id, bindings.clone()) {
-                tracing::warn!(
-                    component = "gateway",
-                    event = "gateway.registration.publish_failed",
-                    relay_session_id = %session_id.as_uuid(),
-                    %error,
-                    "local registration remains active while RouteTable publication is unavailable"
-                );
-            }
-        }
     }
 
     fn distributed_runtime(&self) -> bool {
@@ -235,6 +206,8 @@ impl Inner {
         }
     }
 
+    /// Read-only access and action-free admission. Mutations that return
+    /// `GatewayAction`s must use `transition` so registrations are committed.
     fn lock_state(&self) -> MutexGuard<'_, GatewayState> {
         match self.state.lock() {
             Ok(guard) => guard,

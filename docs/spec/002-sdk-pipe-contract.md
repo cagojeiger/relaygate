@@ -81,33 +81,11 @@ recovered가 아니라 degraded로 종료됩니다.
 
 ## Relay runtime
 
-```mermaid
-stateDiagram-v2
-    [*] --> CONNECTING
-    CONNECTING --> ACTIVE: TLS + HELLO/WELCOME
-    CONNECTING --> [*]: Relay::connect Err
-    ACTIVE --> RECONNECTING: session/protocol/transport loss
-    RECONNECTING --> ACTIVE: reconnect + republish
-    RECONNECTING --> RECONNECTING: bounded backoff retry
-    ACTIVE --> CLOSED: Relay.close
-    RECONNECTING --> CLOSED: Relay.close
-```
+Relay 상태와 전이는 [SPEC 007](007-error-and-state-model.md#sdk와-binding-상태)이 소유합니다.
 
 ## Listener
 
-```mermaid
-stateDiagram-v2
-    [*] --> REGISTERING
-    REGISTERING --> ACTIVE: Binding confirmed
-    REGISTERING --> CLOSED: Relay::listen Err / close
-    REGISTERING --> SUSPENDED: returned Listener transient failure/session loss
-    REGISTERING --> BLOCKED: returned Listener permanent PUBLISH failure
-    ACTIVE --> SUSPENDED: session loss
-    SUSPENDED --> REGISTERING: bounded republish retry
-    ACTIVE --> CLOSED: close
-    SUSPENDED --> CLOSED: close
-    BLOCKED --> CLOSED: close
-```
+Listener 상태와 전이는 [SPEC 007](007-error-and-state-model.md#sdk와-binding-상태)이 소유합니다.
 
 | ID | 계약 |
 | --- | --- |
@@ -121,17 +99,7 @@ stateDiagram-v2
 
 ## Pipe
 
-```mermaid
-stateDiagram-v2
-    [*] --> OPENING
-    OPENING --> OPEN
-    OPEN --> HALF_CLOSED: FIN
-    HALF_CLOSED --> CLOSED: opposite FIN / CLOSE
-    OPEN --> CLOSED: CLOSE / RESET
-    HALF_CLOSED --> CLOSED: RESET
-```
-
-`HALF_CLOSED`는 별도 wire/state enum이 아니라 `OPEN` Pipe의 방향별 finished flag 중 하나만 설정된 논리 상태입니다.
+Pipe 상태와 전이는 [SPEC 007](007-error-and-state-model.md#authorization과-pipe-상태)이 소유합니다.
 
 | ID | 계약 |
 | --- | --- |

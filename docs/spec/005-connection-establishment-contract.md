@@ -26,6 +26,27 @@ sequenceDiagram
 
 AccessToken은 Entry Gateway에서 제거됩니다. RT Resolve와 peer OPEN에는 Destination·Binding identity만 전달합니다.
 
+## SDK–Gateway frame
+
+`relaygate-protocol` `Frame`의 전체 목록입니다. 상관 ID는 응답과 요청을 연결하는 field입니다.
+
+| Frame | 방향 | 상관 ID | 의미 |
+| --- | --- | --- | --- |
+| `Hello` | SDK → GW | – | credential 없는 session 시작 |
+| `Welcome` | GW → SDK | – | session 수립과 새 `session_id` 부여 |
+| `SessionRejected` | GW → SDK | – | session 거절(`code`) |
+| `Publish` | SDK → GW | `request_id` | Destination 등록과 access token |
+| `Published` / `PublishFailed` | GW → SDK | `request_id` | 등록 결과(`binding_id` 또는 `code`) |
+| `Unpublish` / `Unpublished` | SDK → GW / GW → SDK | `request_id` | Binding 해제와 확인 |
+| `Dial` | SDK → GW | `connection_id` | Destination 연결 요청과 access token |
+| `Offer` | GW → SDK | `pipe_id` | 선택된 Binding의 Listener에 incoming Pipe 제안 |
+| `OfferAccepted` / `OfferRejected` | SDK → GW | `pipe_id` | Listener queue admission 결과 |
+| `Opened` | GW → SDK | `pipe_id` | dial 쪽 Pipe 수립. `pipe_id`는 origin `session_id`와 DIAL `connection_id`를 포함 |
+| `DialFailed` | GW → SDK | `connection_id` | dial terminal 실패(`code`, `observation`) |
+| `Cancel` | SDK → GW | `pipe_id` | dial future 취소 시 current PipeId 해제(`DIAL-009`) |
+| `Data` / `Fin` / `Close` / `Reset` | 양방향 | `pipe_id` | payload, 한 방향 종료, 정상 종료, 오류 종료 |
+| `Ping` / `Pong` | 양방향 | `nonce` | session liveness |
+
 | ID | 계약 |
 | --- | --- |
 | `DIAL-001` | ConnectionId는 RelaySession 안에서 단조 증가하고 overflow는 terminal resource 오류다. |
@@ -43,7 +64,7 @@ AccessToken은 Entry Gateway에서 제거됩니다. RT Resolve와 peer OPEN에�
 
 ## observation
 
-새 DIAL은 ConnectionId fence를 갱신한 뒤 [제어 요청 예산](008-runtime-observability-contract.md#sdk-제어-요청-보호)과
+새 DIAL은 ConnectionId fence를 갱신한 뒤 [제어 요청 예산](010-transport-and-admission-contract.md#sdk-제어-요청-보호)과
 operation authorization을 검사합니다. rate·authorization 거절은 local lookup·RT Resolve·OFFER 전의 실패이며,
 새 시도는 새 ConnectionId를 사용합니다.
 
