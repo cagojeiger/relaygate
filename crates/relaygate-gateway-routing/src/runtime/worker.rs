@@ -114,81 +114,30 @@ pub(super) async fn run_shard_worker(
     counts: Arc<WorkerCounts>,
     shutdown: CancellationToken,
 ) -> Result<(), RoutingError> {
-    let mut registrations = BTreeMap::new();
-    let mut connected: Option<ConnectedClient> = None;
-    let mut connection_epoch = 0_u64;
-    let mut reconnect_at = Instant::now();
-    let mut reconnect_backoff = ReconnectBackoff::new(
-        config.reconnect_initial,
-        config.reconnect_max,
-        config.gateway_id,
-        &config.shard_id,
-    );
+    let mut worker = ShardWorker::new(config, client_sender, counts);
     let mut connect: Option<BoxFuture<Result<RouteTableClient, TransportError>>> = None;
     let mut operation: Option<BoxFuture<OperationCompletion>> = None;
-    let mut terminal = false;
     let mut dirty = true;
     let mut observed_desired_version = 0_u64;
-    let mut scan = tokio::time::interval(config.scan_interval);
-    let mut observation = RouteDependencyObservation::new();
+    let mut scan = tokio::time::interval(worker.config.scan_interval);
     scan.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         let now = Instant::now();
         if dirty {
-            reconcile_desired(
-                &config,
-                &desired,
-                &mut registrations,
-                &mut observed_desired_version,
-                now,
-            )?;
+            worker.reconcile(&desired, &mut observed_desired_version, now)?;
             dirty = false;
-            counts.update(&registrations);
         }
-        registrations.retain(|_, state| !state.is_removable());
+        worker.prune();
 
-        if !terminal && connected.is_none() && connect.is_none() && now >= reconnect_at {
-            connect = Some(connect_once(&config));
+        if worker.wants_connect(connect.is_none(), now) {
+            connect = Some(connect_once(&worker.config));
         }
-        if !terminal
-            && operation.is_none()
-            && let Some(current) = connected.clone()
-        {
-            match begin_registration_operation(&mut registrations, now) {
-                Ok(Some(ticket)) => {
-                    operation = Some(execute_operation(
-                        current.epoch,
-                        current.client,
-                        config.generation,
-                        ticket,
-                    ));
-                    counts.update(&registrations);
-                }
-                Ok(None) => {}
-                Err(message) => {
-                    for state in registrations.values_mut() {
-                        state.mark_terminal();
-                    }
-                    counts.update(&registrations);
-                    return Err(RoutingError::WorkerFailed(format!(
-                        "RouteTable shard {} lifecycle failed: {message}",
-                        config.shard_id
-                    )));
-                }
-            }
+        if operation.is_none() {
+            operation = worker.begin_operation(now)?;
         }
-
-        let registration_deadline = if connected.is_some() && operation.is_none() {
-            registrations
-                .values()
-                .filter_map(RegistrationState::next_deadline)
-                .min()
-        } else {
-            None
-        };
-        let reconnect_deadline =
-            (!terminal && connected.is_none() && connect.is_none()).then_some(reconnect_at);
+        let registration_deadline = worker.registration_deadline(operation.is_none());
+        let reconnect_deadline = worker.reconnect_deadline(connect.is_none());
 
         tokio::select! {
             biased;
@@ -202,82 +151,17 @@ pub(super) async fn run_shard_worker(
             changed = failure.changed() => {
                 if changed.is_ok()
                     && let Some(observed) = failure.borrow_and_update().clone()
-                    && connected.as_ref().is_some_and(|current| current.epoch == observed.epoch)
                 {
-                    if is_terminal_control_error(observed.error.code()) {
-                        observation.terminal(&config.shard_id, &observed.error);
-                        terminal = true;
-                        connected = None;
-                        mark_all_terminal(&mut registrations);
-                        counts.update(&registrations);
-                        client_sender.send_replace(ClientAvailability::Terminal(observed.error));
-                    } else if is_connection_error(observed.error.code()) {
-                        observation.connection_lost(&config.shard_id, &observed.error);
-                        connected = None;
-                        client_sender.send_replace(ClientAvailability::Unavailable);
-                        mark_connection_lost(&mut registrations, Instant::now());
-                        counts.update(&registrations);
-                        reconnect_at = Instant::now() + reconnect_backoff.next_delay();
-                    }
+                    worker.on_client_failure(observed);
                 }
             }
             result = poll_optional(&mut connect) => {
                 connect = None;
-                match result {
-                    Ok(client) => {
-                        connection_epoch = connection_epoch.checked_add(1).ok_or_else(|| {
-                            RoutingError::WorkerFailed("RouteTable connection epoch exhausted".to_owned())
-                        })?;
-                        let current = ConnectedClient { epoch: connection_epoch, client };
-                        connected = Some(current.clone());
-                        client_sender.send_replace(ClientAvailability::Ready(current));
-                        observation.ready(&config.shard_id);
-                        reconnect_backoff.reset();
-                    }
-                    Err(error) if is_terminal_control_error(error.code()) => {
-                        observation.connect_terminal(&config.shard_id, &error);
-                        terminal = true;
-                        mark_all_terminal(&mut registrations);
-                        counts.update(&registrations);
-                        client_sender.send_replace(ClientAvailability::Terminal(error));
-                    }
-                    Err(error) => {
-                        observation.connect_failed(&config.shard_id, &error);
-                        client_sender.send_replace(ClientAvailability::Unavailable);
-                        reconnect_at = Instant::now() + reconnect_backoff.next_delay();
-                    }
-                }
+                worker.on_connect_result(result)?;
             }
             completion = poll_optional(&mut operation) => {
                 operation = None;
-                let current_epoch = connected.as_ref().map(|current| current.epoch);
-                let result = apply_epoch_scoped_operation_completion(
-                    &mut registrations,
-                    &completion,
-                    current_epoch,
-                    Instant::now(),
-                );
-                if let Some(error) = result {
-                    if is_terminal_control_error(error.code()) {
-                        if matches!(completion.ticket.action, RegistrationAction::Register { .. }) {
-                            observation.terminal(&config.shard_id, &error);
-                            terminal = true;
-                            connected = None;
-                            mark_all_terminal(&mut registrations);
-                            counts.update(&registrations);
-                            client_sender.send_replace(ClientAvailability::Terminal(error));
-                        }
-                    } else if is_connection_error(error.code()) {
-                        observation.connection_lost(&config.shard_id, &error);
-                        connected = None;
-                        client_sender.send_replace(ClientAvailability::Unavailable);
-                        mark_connection_lost(&mut registrations, Instant::now());
-                        counts.update(&registrations);
-                        reconnect_at = Instant::now() + reconnect_backoff.next_delay();
-                    }
-                }
-                registrations.retain(|_, state| !state.is_removable());
-                counts.update(&registrations);
+                worker.on_operation_completion(&completion);
             }
             _ = scan.tick() => dirty = true,
             _ = wait_until(registration_deadline) => {}
@@ -285,22 +169,244 @@ pub(super) async fn run_shard_worker(
         }
     }
 
-    client_sender.send_replace(ClientAvailability::Unavailable);
     drop(operation);
     drop(connect);
-    if let Some(current) = connected {
-        best_effort_deregister(
-            &current.client,
-            config.generation,
-            &registrations,
-            config.shutdown_timeout,
-        )
-        .await;
-    }
-    counts.synced.store(0, Ordering::Relaxed);
-    counts.unsynced.store(0, Ordering::Relaxed);
-    counts.terminal.store(0, Ordering::Relaxed);
+    worker.shutdown().await;
     Ok(())
+}
+
+/// Per-shard worker state: desired registrations, the current RouteTable
+/// client, reconnect pacing, and the dependency observation.
+struct ShardWorker {
+    config: ShardWorkerConfig,
+    registrations: BTreeMap<RelaySessionId, RegistrationState>,
+    connected: Option<ConnectedClient>,
+    connection_epoch: u64,
+    reconnect_at: Instant,
+    reconnect_backoff: ReconnectBackoff,
+    terminal: bool,
+    observation: RouteDependencyObservation,
+    client_sender: watch::Sender<ClientAvailability>,
+    counts: Arc<WorkerCounts>,
+}
+
+impl ShardWorker {
+    fn new(
+        config: ShardWorkerConfig,
+        client_sender: watch::Sender<ClientAvailability>,
+        counts: Arc<WorkerCounts>,
+    ) -> Self {
+        let reconnect_backoff = ReconnectBackoff::new(
+            config.reconnect_initial,
+            config.reconnect_max,
+            config.gateway_id,
+            &config.shard_id,
+        );
+        Self {
+            config,
+            registrations: BTreeMap::new(),
+            connected: None,
+            connection_epoch: 0,
+            reconnect_at: Instant::now(),
+            reconnect_backoff,
+            terminal: false,
+            observation: RouteDependencyObservation::new(),
+            client_sender,
+            counts,
+        }
+    }
+
+    fn reconcile(
+        &mut self,
+        desired: &DesiredStore,
+        observed_version: &mut u64,
+        now: Instant,
+    ) -> Result<(), RoutingError> {
+        reconcile_desired(
+            &self.config,
+            desired,
+            &mut self.registrations,
+            observed_version,
+            now,
+        )?;
+        self.counts.update(&self.registrations);
+        Ok(())
+    }
+
+    fn prune(&mut self) {
+        self.registrations.retain(|_, state| !state.is_removable());
+    }
+
+    fn wants_connect(&self, no_connect_in_flight: bool, now: Instant) -> bool {
+        !self.terminal
+            && self.connected.is_none()
+            && no_connect_in_flight
+            && now >= self.reconnect_at
+    }
+
+    fn begin_operation(
+        &mut self,
+        now: Instant,
+    ) -> Result<Option<BoxFuture<OperationCompletion>>, RoutingError> {
+        if self.terminal {
+            return Ok(None);
+        }
+        let Some(current) = self.connected.clone() else {
+            return Ok(None);
+        };
+        match begin_registration_operation(&mut self.registrations, now) {
+            Ok(Some(ticket)) => {
+                self.counts.update(&self.registrations);
+                Ok(Some(execute_operation(
+                    current.epoch,
+                    current.client,
+                    self.config.generation,
+                    ticket,
+                )))
+            }
+            Ok(None) => Ok(None),
+            Err(message) => {
+                mark_all_terminal(&mut self.registrations);
+                self.counts.update(&self.registrations);
+                Err(RoutingError::WorkerFailed(format!(
+                    "RouteTable shard {} lifecycle failed: {message}",
+                    self.config.shard_id
+                )))
+            }
+        }
+    }
+
+    fn registration_deadline(&self, no_operation_in_flight: bool) -> Option<Instant> {
+        if self.connected.is_some() && no_operation_in_flight {
+            self.registrations
+                .values()
+                .filter_map(RegistrationState::next_deadline)
+                .min()
+        } else {
+            None
+        }
+    }
+
+    fn reconnect_deadline(&self, no_connect_in_flight: bool) -> Option<Instant> {
+        (!self.terminal && self.connected.is_none() && no_connect_in_flight)
+            .then_some(self.reconnect_at)
+    }
+
+    fn on_client_failure(&mut self, observed: ClientFailure) {
+        if self
+            .connected
+            .as_ref()
+            .is_none_or(|current| current.epoch != observed.epoch)
+        {
+            return;
+        }
+        if is_terminal_control_error(observed.error.code()) {
+            self.observation
+                .terminal(&self.config.shard_id, &observed.error);
+            self.enter_terminal(observed.error);
+        } else if is_connection_error(observed.error.code()) {
+            self.connection_lost(&observed.error);
+        }
+    }
+
+    fn on_connect_result(
+        &mut self,
+        result: Result<RouteTableClient, TransportError>,
+    ) -> Result<(), RoutingError> {
+        match result {
+            Ok(client) => {
+                self.connection_epoch = self.connection_epoch.checked_add(1).ok_or_else(|| {
+                    RoutingError::WorkerFailed("RouteTable connection epoch exhausted".to_owned())
+                })?;
+                let current = ConnectedClient {
+                    epoch: self.connection_epoch,
+                    client,
+                };
+                self.connected = Some(current.clone());
+                self.client_sender
+                    .send_replace(ClientAvailability::Ready(current));
+                self.observation.ready(&self.config.shard_id);
+                self.reconnect_backoff.reset();
+            }
+            Err(error) if is_terminal_control_error(error.code()) => {
+                self.observation
+                    .connect_terminal(&self.config.shard_id, &error);
+                self.enter_terminal(error);
+            }
+            Err(error) => {
+                self.observation
+                    .connect_failed(&self.config.shard_id, &error);
+                self.client_sender
+                    .send_replace(ClientAvailability::Unavailable);
+                self.reconnect_at = Instant::now() + self.reconnect_backoff.next_delay();
+            }
+        }
+        Ok(())
+    }
+
+    fn on_operation_completion(&mut self, completion: &OperationCompletion) {
+        let current_epoch = self.connected.as_ref().map(|current| current.epoch);
+        let result = apply_epoch_scoped_operation_completion(
+            &mut self.registrations,
+            completion,
+            current_epoch,
+            Instant::now(),
+        );
+        if let Some(error) = result {
+            if is_terminal_control_error(error.code()) {
+                // Only a rejected REGISTER proves the shard is unusable; other
+                // terminal codes stay scoped to their registration.
+                if matches!(
+                    completion.ticket.action,
+                    RegistrationAction::Register { .. }
+                ) {
+                    self.observation.terminal(&self.config.shard_id, &error);
+                    self.enter_terminal(error);
+                }
+            } else if is_connection_error(error.code()) {
+                self.connection_lost(&error);
+            }
+        }
+        self.prune();
+        self.counts.update(&self.registrations);
+    }
+
+    fn enter_terminal(&mut self, error: TransportError) {
+        self.terminal = true;
+        self.connected = None;
+        mark_all_terminal(&mut self.registrations);
+        self.counts.update(&self.registrations);
+        self.client_sender
+            .send_replace(ClientAvailability::Terminal(error));
+    }
+
+    fn connection_lost(&mut self, error: &TransportError) {
+        self.observation
+            .connection_lost(&self.config.shard_id, error);
+        self.connected = None;
+        self.client_sender
+            .send_replace(ClientAvailability::Unavailable);
+        mark_connection_lost(&mut self.registrations, Instant::now());
+        self.counts.update(&self.registrations);
+        self.reconnect_at = Instant::now() + self.reconnect_backoff.next_delay();
+    }
+
+    async fn shutdown(self) {
+        self.client_sender
+            .send_replace(ClientAvailability::Unavailable);
+        if let Some(current) = self.connected {
+            best_effort_deregister(
+                &current.client,
+                self.config.generation,
+                &self.registrations,
+                self.config.shutdown_timeout,
+            )
+            .await;
+        }
+        self.counts.synced.store(0, Ordering::Relaxed);
+        self.counts.unsynced.store(0, Ordering::Relaxed);
+        self.counts.terminal.store(0, Ordering::Relaxed);
+    }
 }
 
 struct ReconnectBackoff {
