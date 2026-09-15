@@ -1,10 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use relaygate_protocol::{Frame, FrameCodec};
-use relaygate_transport::{ClientTlsConfig, insecure_boxed};
+use relaygate_transport::{BoxedIo, ClientTlsConfig, insecure_boxed};
 use tokio::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
+    sync::OwnedSemaphorePermit,
     task::{JoinError, JoinSet},
     time::{MissedTickBehavior, timeout},
 };
@@ -79,148 +80,203 @@ impl Gateway {
                             break;
                         }
                     };
-                    if !self.inner.connection_rate.try_acquire() {
-                        metrics::counter!(
-                            "relaygate_gateway_sdk_transport_rejections_total",
-                            "reason" => "rate_limit"
-                        ).increment(1);
+                    if let Some(slots) = self.inner.admit_transport(peer_addr) {
+                        self.inner.spawn_session(&mut sessions, stream, peer_addr, slots, &session_lifecycle);
+                    } else {
                         drop(stream);
-                        continue;
                     }
-                    let Ok(session_slot) = Arc::clone(&self.inner.session_slots).try_acquire_owned()
-                    else {
-                        metrics::counter!(
-                            "relaygate_gateway_sdk_transport_rejections_total",
-                            "reason" => "session_limit"
-                        ).increment(1);
-                        tracing::debug!(
-                            component = "gateway",
-                            event = "gateway.session.rejected",
-                            %peer_addr,
-                            reason = "session_limit",
-                            "rejecting SDK connection because the session limit is reached"
-                        );
-                        drop(stream);
-                        continue;
-                    };
-                    let Ok(handshake_slot) = Arc::clone(&self.inner.handshake_slots).try_acquire_owned()
-                    else {
-                        metrics::counter!(
-                            "relaygate_gateway_sdk_transport_rejections_total",
-                            "reason" => "handshake_limit"
-                        ).increment(1);
-                        tracing::debug!(
-                            component = "gateway",
-                            event = "gateway.session.rejected",
-                            %peer_addr,
-                            reason = "handshake_limit",
-                            "rejecting SDK connection because the handshake limit is reached"
-                        );
-                        drop(stream);
-                        continue;
-                    };
-                    if let Err(error) = stream.set_nodelay(true) {
-                        tracing::warn!(
-                            component = "gateway",
-                            event = "gateway.socket.configure_failed",
-                            %peer_addr,
-                            %error,
-                            "failed to enable TCP_NODELAY"
-                        );
-                    }
-                    let inner = Arc::clone(&self.inner);
-                    let session_shutdown = session_lifecycle.child_token();
-                    sessions.spawn(async move {
-                        let _session_slot = session_slot;
-                        let stream = match &inner.sdk_tls {
-                            Some(tls) => match timeout(TLS_HANDSHAKE_TIMEOUT, tls.accept_boxed(stream)).await {
-                                Ok(Ok(stream)) => stream,
-                                Ok(Err(error)) => {
-                                    tracing::debug!(
-                                        component = "gateway",
-                                        event = "gateway.session.tls_rejected",
-                                        %peer_addr,
-                                        %error,
-                                        "SDK TLS handshake failed"
-                                    );
-                                    return;
-                                }
-                                Err(_) => {
-                                    tracing::debug!(
-                                        component = "gateway",
-                                        event = "gateway.session.tls_timeout",
-                                        %peer_addr,
-                                        "SDK TLS handshake timed out"
-                                    );
-                                    return;
-                                }
-                            },
-                            None => insecure_boxed(stream),
-                        };
-                        if let Err(error) = inner.run_session(stream, session_shutdown, handshake_slot).await {
-                            tracing::debug!(
-                                component = "gateway",
-                                event = "gateway.session.task_ended",
-                                %peer_addr,
-                                %error,
-                                "SDK session ended"
-                            );
-                        }
-                    });
                 }
             }
         }
 
         drop(listener);
         if graceful_shutdown {
-            let snapshot = self.snapshot();
+            self.drain().await;
+        }
+        session_lifecycle.cancel();
+        join_sessions(sessions, first_error).await
+    }
+
+    /// Drains existing work after admission stopped, bounded by `drain_timeout`.
+    async fn drain(&self) {
+        let snapshot = self.snapshot();
+        tracing::info!(
+            component = "gateway",
+            event = "gateway.drain.started",
+            pending_offers = snapshot.pending_offers,
+            live_pipes = snapshot.live_pipes,
+            remote_open_attempts = snapshot.remote_open_attempts,
+            drain_timeout_ms = self.inner.drain_timeout.as_millis(),
+            "Gateway stopped admission and started draining existing work"
+        );
+        if wait_until_drained(&self.inner, self.inner.drain_timeout).await {
             tracing::info!(
                 component = "gateway",
-                event = "gateway.drain.started",
+                event = "gateway.drain.completed",
+                "Gateway drain completed"
+            );
+        } else {
+            let snapshot = self.snapshot();
+            tracing::warn!(
+                component = "gateway",
+                event = "gateway.drain.timed_out",
                 pending_offers = snapshot.pending_offers,
                 live_pipes = snapshot.live_pipes,
                 remote_open_attempts = snapshot.remote_open_attempts,
-                drain_timeout_ms = self.inner.drain_timeout.as_millis(),
-                "Gateway stopped admission and started draining existing work"
+                "Gateway drain deadline expired; forcing remaining work to close"
             );
-            if wait_until_drained(&self.inner, self.inner.drain_timeout).await {
-                tracing::info!(
+        }
+    }
+}
+
+/// Admission slots held for one accepted SDK socket until its session ends.
+struct TransportSlots {
+    session: OwnedSemaphorePermit,
+    handshake: OwnedSemaphorePermit,
+}
+
+impl Inner {
+    /// Rate budget, then the whole-transport slot, then the handshake slot;
+    /// each rejection is a bounded-label counter and closes only this socket.
+    fn admit_transport(&self, peer_addr: SocketAddr) -> Option<TransportSlots> {
+        if !self.connection_rate.try_acquire() {
+            metrics::counter!(
+                "relaygate_gateway_sdk_transport_rejections_total",
+                "reason" => "rate_limit"
+            )
+            .increment(1);
+            return None;
+        }
+        let Ok(session) = Arc::clone(&self.session_slots).try_acquire_owned() else {
+            reject_transport(
+                "session_limit",
+                "rejecting SDK connection because the session limit is reached",
+                peer_addr,
+            );
+            return None;
+        };
+        let Ok(handshake) = Arc::clone(&self.handshake_slots).try_acquire_owned() else {
+            reject_transport(
+                "handshake_limit",
+                "rejecting SDK connection because the handshake limit is reached",
+                peer_addr,
+            );
+            return None;
+        };
+        Some(TransportSlots { session, handshake })
+    }
+
+    fn spawn_session(
+        self: &Arc<Self>,
+        sessions: &mut JoinSet<()>,
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        slots: TransportSlots,
+        session_lifecycle: &CancellationToken,
+    ) {
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::warn!(
+                component = "gateway",
+                event = "gateway.socket.configure_failed",
+                %peer_addr,
+                %error,
+                "failed to enable TCP_NODELAY"
+            );
+        }
+        let inner = Arc::clone(self);
+        let session_shutdown = session_lifecycle.child_token();
+        sessions.spawn(async move {
+            let _session_slot = slots.session;
+            let Some(stream) = inner.accept_sdk_transport(stream, peer_addr).await else {
+                return;
+            };
+            if let Err(error) = inner
+                .run_session(stream, session_shutdown, slots.handshake)
+                .await
+            {
+                tracing::debug!(
                     component = "gateway",
-                    event = "gateway.drain.completed",
-                    "Gateway drain completed"
-                );
-            } else {
-                let snapshot = self.snapshot();
-                tracing::warn!(
-                    component = "gateway",
-                    event = "gateway.drain.timed_out",
-                    pending_offers = snapshot.pending_offers,
-                    live_pipes = snapshot.live_pipes,
-                    remote_open_attempts = snapshot.remote_open_attempts,
-                    "Gateway drain deadline expired; forcing remaining work to close"
+                    event = "gateway.session.task_ended",
+                    %peer_addr,
+                    %error,
+                    "SDK session ended"
                 );
             }
-        }
-        session_lifecycle.cancel();
-        let mut shutdown_error = first_error;
-        while let Some(result) = sessions.join_next().await {
-            match result {
-                Ok(()) => {}
-                Err(error) => {
-                    tracing::error!(
-                        component = "gateway",
-                        event = "gateway.session.shutdown_task_failed",
-                        %error,
-                        "SDK session task failed during shutdown"
-                    );
-                    shutdown_error.get_or_insert(session_shutdown_task_failure(error));
-                }
+        });
+    }
+
+    /// TLS-terminates the socket when SDK TLS is configured; `None` closes it.
+    async fn accept_sdk_transport(
+        &self,
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+    ) -> Option<BoxedIo> {
+        let Some(tls) = &self.sdk_tls else {
+            return Some(insecure_boxed(stream));
+        };
+        match timeout(TLS_HANDSHAKE_TIMEOUT, tls.accept_boxed(stream)).await {
+            Ok(Ok(stream)) => Some(stream),
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    component = "gateway",
+                    event = "gateway.session.tls_rejected",
+                    %peer_addr,
+                    %error,
+                    "SDK TLS handshake failed"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    component = "gateway",
+                    event = "gateway.session.tls_timeout",
+                    %peer_addr,
+                    "SDK TLS handshake timed out"
+                );
+                None
             }
         }
-        match shutdown_error {
-            Some(error) => Err(error),
-            None => Ok(()),
+    }
+}
+
+fn reject_transport(reason: &'static str, message: &'static str, peer_addr: SocketAddr) {
+    metrics::counter!(
+        "relaygate_gateway_sdk_transport_rejections_total",
+        "reason" => reason
+    )
+    .increment(1);
+    // `message` first keeps the text-log layout of the former inline sites.
+    tracing::debug!(
+        message,
+        component = "gateway",
+        event = "gateway.session.rejected",
+        %peer_addr,
+        reason
+    );
+}
+
+async fn join_sessions(
+    mut sessions: JoinSet<()>,
+    first_error: Option<GatewayError>,
+) -> Result<(), GatewayError> {
+    let mut shutdown_error = first_error;
+    while let Some(result) = sessions.join_next().await {
+        match result {
+            Ok(()) => {}
+            Err(error) => {
+                tracing::error!(
+                    component = "gateway",
+                    event = "gateway.session.shutdown_task_failed",
+                    %error,
+                    "SDK session task failed during shutdown"
+                );
+                shutdown_error.get_or_insert(session_shutdown_task_failure(error));
+            }
         }
+    }
+    match shutdown_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
