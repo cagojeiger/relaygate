@@ -600,6 +600,54 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn draining_gateway_rejects_a_late_hello_with_unavailable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let gateway = Gateway::new(
+            GatewayConfig::new(authorization_config()).with_drain_timeout(Duration::from_secs(5)),
+        )?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let shutdown = CancellationToken::new();
+        let serving_gateway = gateway.clone();
+        let serving_shutdown = shutdown.clone();
+        let serving =
+            tokio::spawn(
+                async move { serving_gateway.serve_sdk(listener, serving_shutdown).await },
+            );
+
+        let (mut acceptor_sdk, mut dialer_sdk, pipe_id) = open_pipe(address).await?;
+        // Accepted before drain starts; HELLO arrives only after it.
+        let late_stream = TcpStream::connect(address).await?;
+        sleep(Duration::from_millis(50)).await;
+        shutdown.cancel();
+        sleep(Duration::from_millis(50)).await;
+        assert!(gateway.snapshot().draining);
+
+        let mut late = Framed::new(late_stream, FrameCodec::default());
+        late.send(Frame::Hello).await?;
+        assert!(matches!(
+            timeout(Duration::from_secs(1), late.next()).await?,
+            Some(Ok(Frame::SessionRejected {
+                code: relaygate_protocol::ErrorCode::Unavailable,
+                ..
+            }))
+        ));
+        assert!(
+            timeout(Duration::from_secs(1), late.next())
+                .await?
+                .is_none()
+        );
+
+        dialer_sdk.send(Frame::Close { pipe_id }).await?;
+        assert!(matches!(
+            timeout(Duration::from_secs(1), acceptor_sdk.next()).await?,
+            Some(Ok(Frame::Close { pipe_id: closed })) if closed == pipe_id
+        ));
+        timeout(Duration::from_secs(2), serving).await???;
+        Ok(())
+    }
+
     async fn open_pipe(
         gateway_address: std::net::SocketAddr,
     ) -> Result<

@@ -8,6 +8,16 @@ use super::{
 };
 
 impl GatewayState {
+    /// Why the next `add_session` would be refused; `UNAVAILABLE` while
+    /// draining, `RESOURCE_EXHAUSTED` at the session limit.
+    pub(crate) fn session_rejection_code(&self) -> ErrorCode {
+        if self.draining {
+            ErrorCode::Unavailable
+        } else {
+            ErrorCode::ResourceExhausted
+        }
+    }
+
     pub(crate) fn add_session(
         &mut self,
         sender: mpsc::Sender<SdkWriterItem>,
