@@ -10,7 +10,7 @@ use super::identity::{OpenIdentity, PeerHandshake, StreamId};
 /// `DATA` keeps its payload as `Bytes`; the codec carries those bytes exactly
 /// once without text or base64 expansion.
 #[derive(Clone, PartialEq, Eq)]
-pub enum PeerFrame {
+pub(crate) enum PeerFrame {
     Hello(PeerHandshake),
     Welcome(PeerHandshake),
     HandshakeRejected {

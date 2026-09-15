@@ -7,27 +7,27 @@ use tokio::time::Instant;
 use crate::GatewayError;
 use crate::authorization::AuthorizationConfig;
 
-pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 128;
-pub const DEFAULT_MAX_SESSIONS: usize = 10_000;
-pub const DEFAULT_MAX_PENDING_HANDSHAKES: usize = 256;
-pub const DEFAULT_SDK_CONNECTION_RATE_PER_SECOND: usize = 256;
-pub const DEFAULT_SDK_CONNECTION_BURST: usize = 256;
-pub const DEFAULT_CONTROL_RATE_PER_SECOND: usize = 4096;
-pub const DEFAULT_CONTROL_BURST: usize = 4096;
-pub const DEFAULT_SESSION_CONTROL_RATE_PER_SECOND: usize = 256;
-pub const DEFAULT_SESSION_CONTROL_BURST: usize = 256;
+pub(crate) const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 128;
+pub(crate) const DEFAULT_MAX_SESSIONS: usize = 10_000;
+pub(crate) const DEFAULT_MAX_PENDING_HANDSHAKES: usize = 256;
+pub(crate) const DEFAULT_SDK_CONNECTION_RATE_PER_SECOND: usize = 256;
+pub(crate) const DEFAULT_SDK_CONNECTION_BURST: usize = 256;
+pub(crate) const DEFAULT_CONTROL_RATE_PER_SECOND: usize = 4096;
+pub(crate) const DEFAULT_CONTROL_BURST: usize = 4096;
+pub(crate) const DEFAULT_SESSION_CONTROL_RATE_PER_SECOND: usize = 256;
+pub(crate) const DEFAULT_SESSION_CONTROL_BURST: usize = 256;
 pub const DEFAULT_AUTHORIZATION_CONCURRENCY: usize = 32;
 pub const DEFAULT_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(1);
 pub const MAX_AUTHORIZATION_CONCURRENCY: usize = 1_024;
 pub const MAX_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(5);
-pub const DEFAULT_MAX_BINDINGS: usize = 100_000;
-pub const DEFAULT_MAX_PENDING_OFFERS: usize = 10_000;
-pub const DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS: usize = 128;
-pub const DEFAULT_MAX_LIVE_PIPES: usize = 100_000;
-pub const DEFAULT_OFFER_TIMEOUT: Duration = Duration::from_secs(5);
-pub const DEFAULT_HEARTBEAT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
-pub const DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
-pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const DEFAULT_MAX_BINDINGS: usize = 100_000;
+pub(crate) const DEFAULT_MAX_PENDING_OFFERS: usize = 10_000;
+pub(crate) const DEFAULT_MAX_REMOTE_DIAL_ATTEMPTS: usize = 128;
+pub(crate) const DEFAULT_MAX_LIVE_PIPES: usize = 100_000;
+pub(crate) const DEFAULT_OFFER_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const DEFAULT_HEARTBEAT_IDLE_INTERVAL: Duration = Duration::from_secs(60);
+pub(crate) const DEFAULT_HEARTBEAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Immutable runtime configuration for one Gateway process.
 #[derive(Clone)]

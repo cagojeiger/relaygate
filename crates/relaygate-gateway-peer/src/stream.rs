@@ -7,7 +7,7 @@ use super::{
 };
 
 #[derive(Debug, Clone)]
-pub struct RelayStream {
+pub(crate) struct RelayStream {
     state: RelayStreamState,
     owner: Option<StreamOwner>,
     local_finished: bool,
@@ -27,7 +27,7 @@ impl RelayStream {
     }
 
     #[must_use]
-    pub const fn owned_opening(owner: StreamOwner) -> Self {
+    pub(crate) const fn owned_opening(owner: StreamOwner) -> Self {
         Self {
             state: RelayStreamState::Opening,
             owner: Some(owner),
@@ -37,11 +37,11 @@ impl RelayStream {
     }
 
     #[must_use]
-    pub const fn owner(&self) -> Option<StreamOwner> {
+    pub(crate) const fn owner(&self) -> Option<StreamOwner> {
         self.owner
     }
 
-    pub fn opened(&mut self) -> Result<(), PeerError> {
+    pub(crate) fn opened(&mut self) -> Result<(), PeerError> {
         match self.state {
             RelayStreamState::Opening => {
                 self.state = RelayStreamState::Open;
@@ -53,7 +53,7 @@ impl RelayStream {
         }
     }
 
-    pub fn fin(&mut self, sender: StreamEndpoint) -> Result<bool, PeerError> {
+    pub(crate) fn fin(&mut self, sender: StreamEndpoint) -> Result<bool, PeerError> {
         self.ensure_open()?;
         let finished = match sender {
             StreamEndpoint::Dialer => &mut self.local_finished,
@@ -69,7 +69,7 @@ impl RelayStream {
         Ok(true)
     }
 
-    pub fn data(&self, sender: StreamEndpoint) -> Result<(), PeerError> {
+    pub(crate) fn data(&self, sender: StreamEndpoint) -> Result<(), PeerError> {
         self.ensure_open()?;
         let finished = match sender {
             StreamEndpoint::Dialer => self.local_finished,
@@ -92,12 +92,12 @@ impl RelayStream {
     }
 
     #[must_use]
-    pub const fn is_closed(&self) -> bool {
+    pub(crate) const fn is_closed(&self) -> bool {
         matches!(self.state, RelayStreamState::Closed(_))
     }
 
     #[must_use]
-    pub const fn is_open(&self) -> bool {
+    pub(crate) const fn is_open(&self) -> bool {
         matches!(self.state, RelayStreamState::Open)
     }
 
