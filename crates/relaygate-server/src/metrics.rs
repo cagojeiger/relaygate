@@ -13,13 +13,30 @@ const LATENCY_BUCKETS_SECONDS: &[f64] = &[
     5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
 ];
 
+/// Which process the exporter serves; selects the `role` label and the set
+/// of metric descriptions that process can actually emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetricsRole {
+    Gateway,
+    RouteTable,
+}
+
+impl MetricsRole {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Gateway => "gateway",
+            Self::RouteTable => "route_table",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MetricsRuntime {
     interval: Duration,
 }
 
 impl MetricsRuntime {
-    pub(crate) fn install(role: &'static str) -> Result<Option<Self>> {
+    pub(crate) fn install(role: MetricsRole) -> Result<Option<Self>> {
         let bind_address = optional_env("RELAYGATE_METRICS_BIND_ADDR")?;
         if bind_address.is_none() && env::var_os("RELAYGATE_METRICS_INTERVAL_MS").is_some() {
             bail!(
@@ -37,12 +54,15 @@ impl MetricsRuntime {
 
         PrometheusBuilder::new()
             .with_http_listener(bind_address)
-            .add_global_label("role", role)
+            .add_global_label("role", role.label())
             .set_buckets(LATENCY_BUCKETS_SECONDS)
             .context("failed to configure Prometheus latency buckets")?
             .install()
             .context("failed to start Prometheus metrics exporter")?;
-        describe_metrics();
+        match role {
+            MetricsRole::Gateway => describe_gateway_metrics(),
+            MetricsRole::RouteTable => describe_route_table_metrics(),
+        }
 
         Ok(Some(Self { interval }))
     }
@@ -120,7 +140,7 @@ pub(crate) fn observe_gateway(snapshot: GatewaySnapshot) {
     }
 }
 
-fn describe_metrics() {
+fn describe_gateway_metrics() {
     describe_counter!(
         "relaygate_gateway_dial_requests_total",
         "Accepted SDK DIAL requests on this Gateway."
@@ -257,6 +277,9 @@ fn describe_metrics() {
         "relaygate_gateway_route_table_request_duration_seconds",
         "Gateway-observed RouteTable request latency including local queueing and network round trip."
     );
+}
+
+fn describe_route_table_metrics() {
     describe_gauge!(
         "relaygate_route_table_registrations",
         "Current live registrations on this RouteTable shard."

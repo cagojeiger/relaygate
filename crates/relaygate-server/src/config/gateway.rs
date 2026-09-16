@@ -63,26 +63,36 @@ impl GatewayRuntimeConfig {
             )?;
             gateway = gateway.with_sdk_tls(tls);
         }
-        if let Some(capacity) = optional_usize("RELAYGATE_WRITER_QUEUE_CAPACITY")? {
-            gateway = gateway.with_writer_queue_capacity(capacity);
-        }
-        if let Some(maximum) = optional_usize("RELAYGATE_MAX_FRAME_LEN")? {
-            gateway = gateway.with_max_frame_len(maximum);
-        }
-        if let Some(maximum) = optional_usize("RELAYGATE_MAX_SESSIONS")? {
-            gateway = gateway.with_max_sessions(maximum);
-        }
-        if let Some(maximum) = optional_usize("RELAYGATE_MAX_PENDING_HANDSHAKES")? {
-            gateway = gateway.with_max_pending_handshakes(maximum);
-        }
+        gateway = override_with(
+            gateway,
+            optional_usize("RELAYGATE_WRITER_QUEUE_CAPACITY")?,
+            GatewayConfig::with_writer_queue_capacity,
+        );
+        gateway = override_with(
+            gateway,
+            optional_usize("RELAYGATE_MAX_FRAME_LEN")?,
+            GatewayConfig::with_max_frame_len,
+        );
+        gateway = override_with(
+            gateway,
+            optional_usize("RELAYGATE_MAX_SESSIONS")?,
+            GatewayConfig::with_max_sessions,
+        );
+        gateway = override_with(
+            gateway,
+            optional_usize("RELAYGATE_MAX_PENDING_HANDSHAKES")?,
+            GatewayConfig::with_max_pending_handshakes,
+        );
         let (default_rate, default_burst) = gateway.sdk_connection_rate_limit();
         gateway = gateway.with_sdk_connection_rate_limit(
             optional_usize("RELAYGATE_SDK_CONNECTION_RATE_PER_SECOND")?.unwrap_or(default_rate),
             optional_usize("RELAYGATE_SDK_CONNECTION_BURST")?.unwrap_or(default_burst),
         );
-        if let Some(maximum) = optional_usize("RELAYGATE_MAX_BINDINGS")? {
-            gateway = gateway.with_max_bindings(maximum);
-        }
+        gateway = override_with(
+            gateway,
+            optional_usize("RELAYGATE_MAX_BINDINGS")?,
+            GatewayConfig::with_max_bindings,
+        );
         let (rate, burst) = gateway.control_rate_limit();
         gateway = gateway.with_control_rate_limit(
             optional_usize("RELAYGATE_CONTROL_RATE_PER_SECOND")?.unwrap_or(rate),
@@ -93,21 +103,31 @@ impl GatewayRuntimeConfig {
             optional_usize("RELAYGATE_SESSION_CONTROL_RATE_PER_SECOND")?.unwrap_or(rate),
             optional_usize("RELAYGATE_SESSION_CONTROL_BURST")?.unwrap_or(burst),
         );
-        if let Some(maximum) = optional_usize("RELAYGATE_MAX_PENDING_OFFERS")? {
-            gateway = gateway.with_max_pending_offers(maximum);
-        }
-        if let Some(maximum) = optional_usize("RELAYGATE_MAX_REMOTE_DIAL_ATTEMPTS")? {
-            gateway = gateway.with_max_remote_dial_attempts(maximum);
-        }
-        if let Some(maximum) = optional_usize("RELAYGATE_MAX_LIVE_PIPES")? {
-            gateway = gateway.with_max_live_pipes(maximum);
-        }
-        if let Some(timeout) = optional_duration_millis("RELAYGATE_OFFER_TIMEOUT_MS")? {
-            gateway = gateway.with_offer_timeout(timeout);
-        }
-        if let Some(timeout) = optional_duration_millis("RELAYGATE_DRAIN_TIMEOUT_MS")? {
-            gateway = gateway.with_drain_timeout(timeout);
-        }
+        gateway = override_with(
+            gateway,
+            optional_usize("RELAYGATE_MAX_PENDING_OFFERS")?,
+            GatewayConfig::with_max_pending_offers,
+        );
+        gateway = override_with(
+            gateway,
+            optional_usize("RELAYGATE_MAX_REMOTE_DIAL_ATTEMPTS")?,
+            GatewayConfig::with_max_remote_dial_attempts,
+        );
+        gateway = override_with(
+            gateway,
+            optional_usize("RELAYGATE_MAX_LIVE_PIPES")?,
+            GatewayConfig::with_max_live_pipes,
+        );
+        gateway = override_with(
+            gateway,
+            optional_duration_millis("RELAYGATE_OFFER_TIMEOUT_MS")?,
+            GatewayConfig::with_offer_timeout,
+        );
+        gateway = override_with(
+            gateway,
+            optional_duration_millis("RELAYGATE_DRAIN_TIMEOUT_MS")?,
+            GatewayConfig::with_drain_timeout,
+        );
         let heartbeat_idle = optional_duration_millis("RELAYGATE_SDK_HEARTBEAT_IDLE_MS")?;
         let heartbeat_response = optional_duration_millis("RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS")?;
         if heartbeat_idle.is_some() || heartbeat_response.is_some() {
@@ -125,6 +145,19 @@ impl GatewayRuntimeConfig {
             distributed: distributed_from_env(transport)?,
             stats_interval: optional_duration_millis("RELAYGATE_STATS_INTERVAL_MS")?,
         })
+    }
+}
+
+/// Applies one optional environment override through its builder method,
+/// leaving the current value in place when the variable is unset.
+fn override_with<T>(
+    config: GatewayConfig,
+    value: Option<T>,
+    apply: impl FnOnce(GatewayConfig, T) -> GatewayConfig,
+) -> GatewayConfig {
+    match value {
+        Some(value) => apply(config, value),
+        None => config,
     }
 }
 
