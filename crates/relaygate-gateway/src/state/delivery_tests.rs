@@ -4,6 +4,7 @@
 //! `gateway::tests` and `gateway::effects::tests`.
 use std::error::Error;
 
+use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 use relaygate_protocol::{BindingId, ErrorCode, Frame, PeerObservation, PipeId, SessionId};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -206,5 +207,72 @@ fn a_full_queue_rejects_the_whole_terminal_batch_and_cancels() -> TestResult {
         SdkWriterItem::Single(Frame::Ping { nonce: 0 })
     ));
     assert!(lane.receiver.try_recv().is_err());
+    Ok(())
+}
+
+#[test]
+fn a_closed_queue_rejects_the_whole_terminal_batch_and_cancels() -> TestResult {
+    let lane = lane(4);
+    let target = session(1);
+    let pipe_id = PipeId::new(session(2), 1);
+    let mut batch = lane
+        .delivery(target, reset(pipe_id))
+        .into_terminal_batch()
+        .map_err(|_| "RESET did not start a terminal batch")?;
+    batch
+        .push(lane.delivery(target, dial_failed(3)))
+        .map_err(|_| "DIAL_FAILED for the same target was refused")?;
+    drop(lane.receiver);
+
+    assert_eq!(
+        batch.deliver(),
+        Some(DeliveryFailure::SessionUnavailable(target))
+    );
+    assert!(lane.cancellation.is_cancelled());
+    Ok(())
+}
+
+#[test]
+fn rejections_are_counted_by_reason_and_by_frame() -> TestResult {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let target = session(1);
+    let pipe_id = PipeId::new(session(2), 1);
+
+    metrics::with_local_recorder(&recorder, || -> TestResult {
+        // One frame refused by a full queue.
+        let full = lane(1);
+        full.fill()?;
+        assert!(full.delivery(target, offer(pipe_id)?).deliver().is_some());
+        // Two frames refused at once by a full queue: counted as two.
+        let mut batch = full
+            .delivery(target, reset(pipe_id))
+            .into_terminal_batch()
+            .map_err(|_| "RESET did not start a terminal batch")?;
+        batch
+            .push(full.delivery(target, dial_failed(3)))
+            .map_err(|_| "DIAL_FAILED for the same target was refused")?;
+        assert!(batch.deliver().is_some());
+        // One frame refused by a closed queue.
+        let closed = lane(1);
+        let delivery = closed.delivery(target, Frame::Pong { nonce: 1 });
+        drop(closed.receiver);
+        assert!(delivery.deliver().is_some());
+        Ok(())
+    })?;
+
+    let snapshot = snapshotter.snapshot().into_vec();
+    let counted = |reason: &str| {
+        snapshot.iter().find_map(|(key, _, _, value)| {
+            (key.key().name() == "relaygate_gateway_writer_queue_rejections_total"
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "reason" && label.value() == reason))
+            .then_some(value)
+        })
+    };
+    assert!(matches!(counted("full"), Some(DebugValue::Counter(3))));
+    assert!(matches!(counted("closed"), Some(DebugValue::Counter(1))));
     Ok(())
 }
