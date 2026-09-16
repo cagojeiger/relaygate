@@ -162,3 +162,10 @@ budget은 결과·연결 종료와 무관하게 시간으로만 보충합니다.
 | `RELAYGATE_RT_MAX_CONNECTIONS` | 1,024 | 동시 Gateway connection |
 | `RELAYGATE_RT_MAX_FRAME_LEN` | 1 MiB | RT frame 최대 길이 |
 | `RELAYGATE_RT_HANDSHAKE_TIMEOUT_MS` | 3000 | connection handshake deadline |
+
+`RELAYGATE_RT_HANDSHAKE_TIMEOUT_MS`는 TLS accept와 logical handshake deadline이며, 같은 값이 connection 종료 시
+writer drain deadline과 over-capacity 거절 frame 전송 deadline으로도 쓰입니다.
+
+RT connection이 `RELAYGATE_RT_MAX_CONNECTIONS`를 넘으면 거절은 transport에 따라 다르게 보입니다. plaintext는
+`HANDSHAKE_REJECTED`(`RESOURCE_EXHAUSTED`)를 보낸 뒤 닫고, mTLS는 handshake 전이라 frame을 쓸 암호화 채널이
+없어 연결만 닫으므로 Gateway client는 `UNAVAILABLE`을 관측합니다. 두 경우 모두 거절 metric은 동일하게 기록됩니다.
