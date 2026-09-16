@@ -113,6 +113,7 @@ impl LocalRegistry {
         if !self.next_selection.contains_key(destination) {
             self.next_selection.insert(destination.clone(), 0);
         }
+        // Present by the insert above; `?` only keeps the borrow checker happy.
         let cursor = self.next_selection.get_mut(destination)?;
         let index = *cursor % count;
         *cursor = cursor.wrapping_add(1);

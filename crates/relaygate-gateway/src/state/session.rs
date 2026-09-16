@@ -106,6 +106,9 @@ impl GatewayState {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
+            // `owned` only holds pipes with this session on at least one end, and
+            // a session never dials its own Binding (select_excluding, DIAL-005),
+            // so `!is_dialer` means this session is the acceptor.
             let is_dialer = pipe.dialer == PipeEndpoint::Sdk(session_id);
             if is_dialer && pipe.phase == PipePhase::Offered {
                 observe_dial_result(pipe.open_started_at, Some(ErrorCode::Cancelled));
