@@ -11,6 +11,8 @@ class ClassifyTests(unittest.TestCase):
             "crates/relaygate-gateway/src/state/delivery_tests.rs",
             "crates/relaygate-gateway/src/state/tests.rs",
             "crates/relaygate-gateway/src/state/control_admission_tests/budget.rs",
+            "crates/relaygate-gateway-peer/src/runtime_tests/duplicate_cleanup.rs",
+            "crates/relaygate-gateway-peer/src/liveness_runtime_tests/observation.rs",
             "docs/test/001-executable-coverage.toml",
             "README.md",
         ]
@@ -33,6 +35,7 @@ class ClassifyTests(unittest.TestCase):
             "Cargo.toml",
             "Cargo.lock",
             "rust-toolchain.toml",
+            "LICENSE",
             "tests/package-consumer/Cargo.toml",
             ".github/scripts/check-crate-packages.sh",
         ):

@@ -33,6 +33,9 @@ jobs:
 
       - name: Detect change scope
         id: scope
+        # `shell: bash` enables pipefail, so a script failure fails this step
+        # instead of leaving the outputs empty and silently skipping jobs.
+        shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: python3 .github/scripts/change_scope.py --base "$BASE_SHA" | tee -a "$GITHUB_OUTPUT"
@@ -529,6 +532,9 @@ jobs:
 
       - name: Detect change scope
         id: scope
+        # `shell: bash` enables pipefail, so a script failure fails this step
+        # instead of leaving the outputs empty and silently skipping jobs.
+        shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: python3 .github/scripts/change_scope.py --base "$BASE_SHA" | tee -a "$GITHUB_OUTPUT"

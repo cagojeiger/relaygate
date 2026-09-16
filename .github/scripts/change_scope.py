@@ -20,6 +20,8 @@ import sys
 ZERO_SHA = "0" * 40
 
 # Files that can only change test or documentation behaviour.
+# Matched with fnmatch, where `*` also crosses `/` (unlike a shell glob), so
+# `docs/*` covers every depth under docs/. Do not port these to shell globs.
 NON_RUNTIME_PATTERNS = (
     "docs/*",
     "*.md",
@@ -27,6 +29,7 @@ NON_RUNTIME_PATTERNS = (
     "crates/*/src/*/tests/*",
     "crates/*/src/*_tests.rs",
     "crates/*/src/*/*_tests.rs",
+    "crates/*/src/*_tests/*",
     "crates/*/src/*/*_tests/*",
     "crates/*/src/tests.rs",
     "crates/*/src/*/tests.rs",
@@ -43,6 +46,9 @@ PUBLISHED_PATTERNS = (
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
+    # Every published crate sets license-file.workspace, which resolves to
+    # the root LICENSE, so it is a `cargo package` input.
+    "LICENSE",
     "tests/package-consumer/*",
     ".github/scripts/check-crate-packages.sh",
     ".github/workflows/ci.yml",
