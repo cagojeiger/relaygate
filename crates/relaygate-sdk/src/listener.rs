@@ -22,7 +22,7 @@ use crate::{
 
 use self::{
     runtime::relay_supervisor,
-    state::{ListenerLifecycle, ListenerState, RelayInner, is_current_desired},
+    state::{ListenerLifecycle, ListenerRuntime, ListenerState, RelayInner, is_current_desired},
 };
 
 /// Current state of one desired Listener handle.
@@ -199,12 +199,10 @@ impl Relay {
             destination: destination.clone(),
             access_token_source,
             status,
-            last_error: StdMutex::new(None),
             incoming_tx,
             incoming_rx: tokio::sync::Mutex::new(incoming_rx),
             initial_deadline: deadline,
-            lifecycle: StdMutex::new(ListenerLifecycle::Pending),
-            registration_committed: StdMutex::new(false),
+            runtime: StdMutex::new(ListenerRuntime::new(ListenerLifecycle::Pending)),
             live_pipe_slots: self
                 .inner
                 .resources

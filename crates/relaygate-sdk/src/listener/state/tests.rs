@@ -10,7 +10,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{ListenerLifecycle, ListenerState, RelayInner};
+use super::{ListenerLifecycle, ListenerRuntime, ListenerState, RelayInner};
 use crate::{
     AccessToken, AccessTokenSource, Config, Destination, Error, ListenerStatus, RelayStatus,
     lifetime::RuntimeLifetime, resource::RelayResources, session::ReconnectBackoff,
@@ -30,12 +30,10 @@ fn precommit_session_end_keeps_initial_listener_retryable_with_original_deadline
         destination,
         access_token_source: AccessTokenSource::static_token(AccessToken::new("grant")?),
         status,
-        last_error: StdMutex::new(None),
         incoming_tx,
         incoming_rx: tokio::sync::Mutex::new(incoming_rx),
         initial_deadline: deadline,
-        lifecycle: StdMutex::new(ListenerLifecycle::Pending),
-        registration_committed: StdMutex::new(false),
+        runtime: StdMutex::new(ListenerRuntime::new(ListenerLifecycle::Pending)),
         live_pipe_slots: Arc::new(Semaphore::new(1)),
     });
 
@@ -45,13 +43,7 @@ fn precommit_session_end_keeps_initial_listener_retryable_with_original_deadline
 
     assert_eq!(*state.status.borrow(), ListenerStatus::Registering);
     assert_eq!(state.initial_deadline, deadline);
-    assert_eq!(
-        *state
-            .lifecycle
-            .lock()
-            .map_err(|_| "lifecycle lock poisoned")?,
-        ListenerLifecycle::Pending
-    );
+    assert_eq!(state.lifecycle(), ListenerLifecycle::Pending);
     assert!(state.last_error().is_none());
 
     assert!(state.begin_registration_commit());
@@ -178,12 +170,10 @@ fn closed_listener_status_is_terminal() -> TestResult {
         destination,
         access_token_source: AccessTokenSource::static_token(AccessToken::new("grant")?),
         status,
-        last_error: StdMutex::new(None),
         incoming_tx,
         incoming_rx: tokio::sync::Mutex::new(incoming_rx),
         initial_deadline: Instant::now() + Duration::from_secs(10),
-        lifecycle: StdMutex::new(ListenerLifecycle::Returned),
-        registration_committed: StdMutex::new(false),
+        runtime: StdMutex::new(ListenerRuntime::new(ListenerLifecycle::Returned)),
         live_pipe_slots: Arc::new(Semaphore::new(1)),
     });
 
@@ -212,12 +202,10 @@ fn reconnect_settlement_ignores_initial_listens_that_were_never_returned() -> Te
                 destination: name.parse()?,
                 access_token_source: AccessTokenSource::static_token(AccessToken::new("grant")?),
                 status,
-                last_error: StdMutex::new(None),
                 incoming_tx,
                 incoming_rx: tokio::sync::Mutex::new(incoming_rx),
                 initial_deadline: Instant::now() + Duration::from_secs(10),
-                lifecycle: StdMutex::new(lifecycle),
-                registration_committed: StdMutex::new(false),
+                runtime: StdMutex::new(ListenerRuntime::new(lifecycle)),
                 live_pipe_slots: Arc::new(Semaphore::new(1)),
             }),
         ))
