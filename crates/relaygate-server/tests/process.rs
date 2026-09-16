@@ -36,8 +36,10 @@ use relaygate_route_table_transport::{
 // ephemeral range (49152+ on macOS and Linux) so a client socket can never grab
 // one between the check-bind here and the child's real bind. Each allocation
 // draws a random port so two test binaries running at once do not walk the
-// same sequence; a lost race still surfaces as "Address already in use" in the
-// child's captured stderr. Listeners whose address the child logs use
+// same sequence. The port is released again before the child binds it, so two
+// concurrent test binaries can still (rarely) draw the same port inside that
+// window; a lost race surfaces as "Address already in use" in the child's
+// captured stderr. Listeners whose address the child logs use
 // `EPHEMERAL_LOOPBACK` instead and have no such window.
 const FIRST_TEST_PORT: u16 = 20_000;
 const TEST_PORT_SPAN: u16 = 28_000;
@@ -49,13 +51,22 @@ static PORT_RNG: LazyLock<AtomicU64> = LazyLock::new(|| {
 });
 
 fn random_test_port() -> u16 {
-    // xorshift64 over a shared atomic state; contention only reorders draws.
-    let mut state = PORT_RNG.load(Ordering::Relaxed);
+    // xorshift64 stepped atomically, so concurrent draws in this process never
+    // observe the same state. The step is a bijection on nonzero words, so the
+    // state can never reach 0 from the nonzero seed.
+    let previous = PORT_RNG
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |state| {
+            Some(xorshift64(state))
+        })
+        .unwrap_or(1);
+    FIRST_TEST_PORT + (xorshift64(previous) % u64::from(TEST_PORT_SPAN)) as u16
+}
+
+const fn xorshift64(mut state: u64) -> u64 {
     state ^= state << 13;
     state ^= state >> 7;
     state ^= state << 17;
-    PORT_RNG.store(state, Ordering::Relaxed);
-    FIRST_TEST_PORT + (state % u64::from(TEST_PORT_SPAN)) as u16
+    state
 }
 
 const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
