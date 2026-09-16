@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, ExitStatus, Output, Stdio},
     sync::{
         Arc, LazyLock, Mutex, PoisonError,
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -14,13 +14,9 @@ use std::{
 use std::io::Read;
 #[cfg(unix)]
 use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
-use std::{
-    fs,
-    net::TcpStream,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, net::TcpStream, path::PathBuf};
 
 #[cfg(unix)]
 use futures_util::{SinkExt, StreamExt};
@@ -36,17 +32,31 @@ use relaygate_route_table_transport::{
     ErrorCode as RouteTableErrorCode, GatewayName, RouteTableClient, RouteTableClientConfig,
 };
 
-// Test ports stay below the OS ephemeral range (49152+ on macOS and Linux) so a
-// health-poll client socket can never grab a port between the check-bind here
-// and the child server's real bind. The per-process offset keeps concurrent
-// invocations of this binary on the same checkout out of each other's range.
+// Pre-allocated ports (metrics exporter, peer listener) stay below the OS
+// ephemeral range (49152+ on macOS and Linux) so a client socket can never grab
+// one between the check-bind here and the child's real bind. Each allocation
+// draws a random port so two test binaries running at once do not walk the
+// same sequence; a lost race still surfaces as "Address already in use" in the
+// child's captured stderr. Listeners whose address the child logs use
+// `EPHEMERAL_LOOPBACK` instead and have no such window.
 const FIRST_TEST_PORT: u16 = 20_000;
-const TEST_PORT_STRIDE: u16 = 64;
-const TEST_PORT_SLOTS: u16 = 440;
-static NEXT_TEST_PORT: LazyLock<AtomicU16> = LazyLock::new(|| {
-    let slot = (std::process::id() % u32::from(TEST_PORT_SLOTS)) as u16;
-    AtomicU16::new(FIRST_TEST_PORT + slot * TEST_PORT_STRIDE)
+const TEST_PORT_SPAN: u16 = 28_000;
+static PORT_RNG: LazyLock<AtomicU64> = LazyLock::new(|| {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+    AtomicU64::new((u64::from(std::process::id()) << 32) ^ nanos | 1)
 });
+
+fn random_test_port() -> u16 {
+    // xorshift64 over a shared atomic state; contention only reorders draws.
+    let mut state = PORT_RNG.load(Ordering::Relaxed);
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    PORT_RNG.store(state, Ordering::Relaxed);
+    FIRST_TEST_PORT + (state % u64::from(TEST_PORT_SPAN)) as u16
+}
 
 const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
 /// Bind address for a child whose real port the test learns from its
@@ -1198,7 +1208,7 @@ fn assert_unsuccessful_output(output: &Output, expected: &str) {
 
 fn unused_loopback_address() -> io::Result<String> {
     loop {
-        let port = NEXT_TEST_PORT.fetch_add(1, Ordering::Relaxed);
+        let port = random_test_port();
         let address = format!("127.0.0.1:{port}");
         match TcpListener::bind(&address) {
             Ok(listener) => {
@@ -1444,7 +1454,10 @@ impl ChildGuard {
                 if !line.contains("\"server.started\"") {
                     continue;
                 }
-                let record: serde_json::Value = serde_json::from_str(line)?;
+                // The snapshot can end in a partially written line; wait for the rest.
+                let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
                 if let Some(address) = record.get("address").and_then(serde_json::Value::as_str) {
                     return Ok(address.to_owned());
                 }
