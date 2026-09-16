@@ -58,7 +58,9 @@ impl MetricsRuntime {
             .set_buckets(LATENCY_BUCKETS_SECONDS)
             .context("failed to configure Prometheus latency buckets")?
             .install()
-            .context("failed to start Prometheus metrics exporter")?;
+            .with_context(|| {
+                format!("failed to start Prometheus metrics exporter at {bind_address}")
+            })?;
         match role {
             MetricsRole::Gateway => describe_gateway_metrics(),
             MetricsRole::RouteTable => describe_route_table_metrics(),
