@@ -84,7 +84,7 @@ impl ClientTlsConfig {
     /// Checks that `server_name` is a DNS name or IP address rustls can verify
     /// a certificate against, without building a trust store.
     pub fn validate_server_name(server_name: &str) -> Result<(), TlsConfigError> {
-        ServerName::try_from(server_name.to_owned())
+        ServerName::try_from(server_name)
             .map(|_| ())
             .map_err(|error| TlsConfigError::InvalidServerName(error.to_string()))
     }
