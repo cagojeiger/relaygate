@@ -379,7 +379,7 @@ impl GatewayState {
             ControlOperation::Publish {
                 request_id,
                 destination,
-            } => self.publish(session_id, request_id, destination, now),
+            } => self.publish(session_id, request_id, destination),
             ControlOperation::Dial {
                 connection_id,
                 destination,

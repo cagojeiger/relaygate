@@ -106,10 +106,14 @@ impl GatewayState {
             let Some(pipe) = self.remove_pipe(pipe_id) else {
                 continue;
             };
-            if pipe.dialer == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
+            // `owned` only holds pipes with this session on at least one end, and
+            // a session never dials its own Binding (select_excluding, DIAL-005),
+            // so `!is_dialer` means this session is the acceptor.
+            let is_dialer = pipe.dialer == PipeEndpoint::Sdk(session_id);
+            if is_dialer && pipe.phase == PipePhase::Offered {
                 observe_dial_result(pipe.open_started_at, Some(ErrorCode::Cancelled));
             }
-            if pipe.acceptor == PipeEndpoint::Sdk(session_id) && pipe.phase == PipePhase::Offered {
+            if !is_dialer && pipe.phase == PipePhase::Offered {
                 actions.extend(self.dialer_failure(
                     &pipe,
                     pipe_id,
@@ -119,14 +123,12 @@ impl GatewayState {
                 ));
                 continue;
             }
-            let counterpart = if pipe.dialer == PipeEndpoint::Sdk(session_id) {
+            let counterpart = if is_dialer {
                 pipe.acceptor
             } else {
                 pipe.dialer
             };
-            let code = if pipe.dialer == PipeEndpoint::Sdk(session_id)
-                && counterpart.peer_key().is_some()
-            {
+            let code = if is_dialer && counterpart.peer_key().is_some() {
                 ErrorCode::Cancelled
             } else {
                 ErrorCode::Unavailable

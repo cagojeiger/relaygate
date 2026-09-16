@@ -177,6 +177,9 @@ impl GatewayState {
                 );
             }
         };
+        // The value scan covers the window in which a key is reserved by an
+        // in-flight OPEN but not yet indexed in `peer_pipes`; it is O(active
+        // opens), which the remote dial admission limit bounds.
         if self.peer_pipes.contains_key(&key)
             || self
                 .active_peer_opens
