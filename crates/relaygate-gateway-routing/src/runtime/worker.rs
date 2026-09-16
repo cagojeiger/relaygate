@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map::Entry},
     future::pending,
     sync::{
         Arc,
@@ -481,25 +481,26 @@ fn reconcile_desired(
         return Ok(());
     };
     *observed_version = view.store_version;
-    for (session_id, (version, snapshot)) in &view.sessions {
-        let key = RegistrationKey::new(config.gateway_id, *session_id, config.shard_id.clone());
-        registrations
-            .entry(*session_id)
-            .and_modify(|state| state.publish(*version, snapshot.clone(), now))
-            .or_insert_with(|| {
-                RegistrationState::new(
+    for (session_id, version, snapshot) in view.changed {
+        match registrations.entry(session_id) {
+            Entry::Occupied(mut entry) => entry.get_mut().publish(version, Some(snapshot), now),
+            Entry::Vacant(entry) => {
+                let key =
+                    RegistrationKey::new(config.gateway_id, session_id, config.shard_id.clone());
+                entry.insert(RegistrationState::new(
                     key,
-                    *version,
-                    snapshot.clone(),
+                    version,
+                    Some(snapshot),
                     now,
                     config.reconnect_initial,
                     config.reconnect_max,
-                )
-            });
+                ));
+            }
+        }
     }
-    for (session_id, state) in registrations.iter_mut() {
-        if !view.sessions.contains_key(session_id) {
-            state.publish(view.store_version, None, now);
+    for (session_id, version) in view.removed {
+        if let Some(state) = registrations.get_mut(&session_id) {
+            state.publish(version, None, now);
         }
     }
     Ok(())
