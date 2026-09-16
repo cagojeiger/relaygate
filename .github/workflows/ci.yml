@@ -17,15 +17,43 @@ env:
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RUST_TOOLCHAIN: 1.96.1
+  SHELLCHECK_VERSION: v0.10.0
+  SHELLCHECK_SHA256: 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
 
 jobs:
   hygiene:
     name: Hygiene
     runs-on: ubuntu-latest
+    outputs:
+      runtime: ${{ steps.scope.outputs.runtime }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Detect change scope
+        id: scope
+        # `shell: bash` enables pipefail, so a script failure fails this step
+        # instead of leaving the outputs empty and silently skipping jobs.
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 .github/scripts/change_scope.py --base "$BASE_SHA" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Install pinned shellcheck
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  ${RUNNER_TEMP}/shellcheck.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          sudo install -m 0755 "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+
+      - name: Lint acceptance shell scripts
+        run: |
+          for script in tests/kind/run.sh tests/kind/certificates.sh; do
+            bash -n "$script"
+          done
+          shellcheck -x tests/kind/run.sh tests/kind/certificates.sh
 
       - name: Check Helm release policy
         env:
@@ -499,6 +527,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect change scope
+        id: scope
+        # `shell: bash` enables pipefail, so a script failure fails this step
+        # instead of leaving the outputs empty and silently skipping jobs.
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 .github/scripts/change_scope.py --base "$BASE_SHA" | tee -a "$GITHUB_OUTPUT"
 
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
@@ -515,6 +554,7 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Verify crate package archives
+        if: steps.scope.outputs.published == 'true'
         run: .github/scripts/check-crate-packages.sh
 
       - name: Verify SDK observability isolation
@@ -536,6 +576,7 @@ jobs:
   compose:
     name: Docker Compose RT2/GW3 E2E
     needs: [hygiene, rust]
+    if: github.event_name != 'pull_request' || needs.hygiene.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
