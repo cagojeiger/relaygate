@@ -326,6 +326,11 @@ impl Relay {
                     }
                 };
                 let resources = self.inner.resources.try_reserve_outgoing()?;
+                // The lock spans the command send on purpose: the Gateway
+                // rejects a DIAL whose ConnectionId is not above every id it
+                // has seen on the session (SPEC 005 DIAL-001/DIAL-002), so ids
+                // must reach the session loop in allocation order. An atomic
+                // counter would let two concurrent dials enqueue out of order.
                 let mut next_connection_id =
                     timeout_at(deadline, session.next_connection_id.lock())
                         .await

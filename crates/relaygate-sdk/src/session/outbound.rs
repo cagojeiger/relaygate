@@ -1,3 +1,15 @@
+//! Bounded outbound frame lane shared by every Pipe of one Relay session.
+//!
+//! Capacity is the mpsc channel's; `capacity` only wakes writers that found it
+//! full. Wakeups are deliberately broadcast (`notify_waiters`) rather than
+//! handed to one waiter: a Pipe's write future can be dropped mid-wait while
+//! its `SessionOutbound` (and therefore its registered waiter) lives on inside
+//! the `AsyncWrite` object, so a single-waiter handoff — a semaphore permit or
+//! `notify_one` — would strand the freed slot on a writer nobody polls and
+//! starve its siblings. Every woken writer re-races `try_reserve`, which is
+//! O(blocked writers) per dequeue but never leaves a freed slot unclaimed
+//! while a live writer waits.
+
 use std::{
     future::Future,
     pin::Pin,
@@ -190,6 +202,30 @@ mod tests {
             Ok(FrameCommit::Sent)
         );
         assert_eq!(receiver.recv().await, Some(Frame::Pong { nonce: 2 }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_the_receiver_fails_a_blocked_writer() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (first, receiver) = session_outbound_channel(1);
+        let mut second = first.clone();
+        first.send(Frame::Ping { nonce: 1 }).await?;
+
+        let pending =
+            poll_fn(|context| second.poll_send(context, || Some(Frame::Pong { nonce: 2 })));
+        tokio::pin!(pending);
+        assert!(
+            timeout(Duration::from_millis(10), &mut pending)
+                .await
+                .is_err()
+        );
+
+        drop(receiver);
+        assert_eq!(
+            timeout(Duration::from_secs(1), &mut pending).await?,
+            Err(())
+        );
         Ok(())
     }
 }
