@@ -10,8 +10,8 @@ use tokio::time::Instant;
 
 pub(crate) use gateway::GatewayRuntimeConfig;
 pub(crate) use route_table::RouteTableRuntimeConfig;
-pub(crate) use transport::sdk_tls_enabled;
 use transport::{InternalTransport, internal_transport};
+pub(crate) use transport::{reject_removed_flags, sdk_tls_enabled};
 
 pub(super) struct InternalTlsMaterial {
     pub(super) ca: Vec<u8>,

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use relaygate_route_table::{ErrorCode as CoreErrorCode, RouteTableError};
+use relaygate_route_table::RouteTableError;
 use serde::{Deserialize, Serialize};
 
 /// Stable error categories exposed by the private RouteTable transport.
@@ -107,12 +107,12 @@ impl TransportError {
 
 impl From<RouteTableError> for TransportError {
     fn from(error: RouteTableError) -> Self {
-        let code = match error.code() {
-            CoreErrorCode::InvalidArgument => ErrorCode::InvalidArgument,
-            CoreErrorCode::PermissionDenied => ErrorCode::PermissionDenied,
-            CoreErrorCode::NotFound => ErrorCode::NotFound,
-            CoreErrorCode::FailedPrecondition => ErrorCode::FailedPrecondition,
-            CoreErrorCode::Internal => ErrorCode::Internal,
+        let code = match error {
+            RouteTableError::InvalidArgument(_) => ErrorCode::InvalidArgument,
+            RouteTableError::PermissionDenied => ErrorCode::PermissionDenied,
+            RouteTableError::NotFound => ErrorCode::NotFound,
+            RouteTableError::FailedPrecondition(_) => ErrorCode::FailedPrecondition,
+            RouteTableError::DeadlineOverflow => ErrorCode::Internal,
         };
         Self::new(code, error.to_string())
     }

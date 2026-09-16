@@ -28,6 +28,7 @@ pub(crate) struct RouteTableRuntimeConfig {
 
 impl RouteTableRuntimeConfig {
     pub(crate) fn from_env() -> Result<Self> {
+        super::transport::reject_removed_flags()?;
         let insecure = internal_transport()? == InternalTransport::Plaintext;
         let bind_address = optional_env("RELAYGATE_RT_BIND_ADDR")?
             .unwrap_or_else(|| DEFAULT_BIND_ADDRESS.to_owned());

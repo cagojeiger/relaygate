@@ -43,16 +43,10 @@ pub(crate) struct GatewayRuntimeConfig {
 impl GatewayRuntimeConfig {
     pub(crate) fn from_env() -> Result<Self> {
         super::transport::reject_removed_flags()?;
-        internal_transport()?;
+        // Validated up front so a bad mode fails local-only boots too.
+        let transport = internal_transport()?;
         let bind_address =
             optional_env("RELAYGATE_BIND_ADDR")?.unwrap_or_else(|| DEFAULT_BIND_ADDRESS.to_owned());
-        for removed in ["RELAYGATE_CLUSTER_TOKEN", "RELAYGATE_NEXT_CLUSTER_TOKEN"] {
-            if env::var_os(removed).is_some() {
-                anyhow::bail!(
-                    "{removed} is no longer supported; configure operation authorization"
-                );
-            }
-        }
         let mut gateway = super::authorization::apply_from_env()?;
         if super::transport::sdk_tls_enabled()? {
             let certificate_path = env::var("RELAYGATE_SDK_TLS_CERT_PATH")
@@ -128,20 +122,20 @@ impl GatewayRuntimeConfig {
         Ok(Self {
             bind_address,
             gateway,
-            distributed: distributed_from_env()?,
+            distributed: distributed_from_env(transport)?,
             stats_interval: optional_duration_millis("RELAYGATE_STATS_INTERVAL_MS")?,
         })
     }
 }
 
-fn distributed_from_env() -> Result<Option<DistributedGatewayConfig>> {
+fn distributed_from_env(transport: InternalTransport) -> Result<Option<DistributedGatewayConfig>> {
     if !DISTRIBUTED_ENVIRONMENT
         .iter()
         .any(|name| env::var_os(name).is_some())
     {
         return Ok(None);
     }
-    let insecure = internal_transport()? == InternalTransport::Plaintext;
+    let insecure = transport == InternalTransport::Plaintext;
 
     let directory_path = env::var("RELAYGATE_RT_SHARD_DIRECTORY_PATH")
         .context("RELAYGATE_RT_SHARD_DIRECTORY_PATH is required for distributed Gateway mode")?;

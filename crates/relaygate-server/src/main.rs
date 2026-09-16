@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
             runtime::route_table::serve(config, shutdown).await
         }
         Command::CheckGateway { address } => {
+            config::reject_removed_flags()?;
             if !config::sdk_tls_enabled()? {
                 check_insecure_for_tests(address, DEFAULT_CHECK_DEADLINE)
                     .await

@@ -8,7 +8,13 @@ const REMOVED_FLAGS: [&str; 2] = [
     "RELAYGATE_RT_TRUSTED_LOCAL",
 ];
 
-pub(super) fn reject_removed_flags() -> Result<()> {
+/// Cluster-token authentication removed in favour of operation authorization.
+const REMOVED_CLUSTER_TOKENS: [&str; 2] =
+    ["RELAYGATE_CLUSTER_TOKEN", "RELAYGATE_NEXT_CLUSTER_TOKEN"];
+
+/// Rejects environment that older releases honoured; every boot path and
+/// the readiness check call this exactly once before reading their config.
+pub(crate) fn reject_removed_flags() -> Result<()> {
     for name in REMOVED_FLAGS {
         if std::env::var_os(name).is_some() {
             bail!(
@@ -16,11 +22,15 @@ pub(super) fn reject_removed_flags() -> Result<()> {
             );
         }
     }
+    for name in REMOVED_CLUSTER_TOKENS {
+        if std::env::var_os(name).is_some() {
+            bail!("{name} is no longer supported; configure operation authorization");
+        }
+    }
     Ok(())
 }
 
 pub(crate) fn sdk_tls_enabled() -> Result<bool> {
-    reject_removed_flags()?;
     parse_sdk_tls(optional_env("RELAYGATE_SDK_TRANSPORT")?.as_deref())
 }
 
@@ -39,7 +49,6 @@ pub(super) enum InternalTransport {
 }
 
 pub(super) fn internal_transport() -> Result<InternalTransport> {
-    reject_removed_flags()?;
     parse_internal_transport(optional_env("RELAYGATE_INTERNAL_TRANSPORT")?.as_deref())
 }
 

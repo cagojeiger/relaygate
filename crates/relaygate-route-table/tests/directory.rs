@@ -1,4 +1,4 @@
-use relaygate_route_table::{Destination, ErrorCode, RouteTableError, ShardDirectory, ShardId};
+use relaygate_route_table::{Destination, RouteTableError, ShardDirectory, ShardId};
 
 const THREE_SHARD_DIRECTORY: &[u8] = br#"{"format_version":2,"authority_hash":"sha256-destination-modulo-v2","shards":[{"id":"rt-0","endpoint":"http://rt-0:8080"},{"id":"rt-1","endpoint":"http://rt-1:8080"},{"id":"rt-2","endpoint":"http://rt-2:8080"}]}"#;
 
@@ -95,14 +95,11 @@ fn typed_identifiers_reject_invalid_values() {
     let shard_error = ShardId::new("");
 
     for error in [empty_destination, missing_namespace, wildcard_destination] {
-        assert!(matches!(
-            error,
-            Err(ref error) if error.code() == ErrorCode::InvalidArgument
-        ));
+        assert!(matches!(error, Err(RouteTableError::InvalidArgument(_))));
     }
     assert!(matches!(
         shard_error,
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+        Err(RouteTableError::InvalidArgument(_))
     ));
 }
 
@@ -110,6 +107,6 @@ fn typed_identifiers_reject_invalid_values() {
 fn revision_zero_is_not_a_valid_domain_value() {
     assert!(matches!(
         relaygate_route_table::RegistrationRevision::new(0),
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+        Err(RouteTableError::InvalidArgument(_))
     ));
 }
