@@ -11,7 +11,7 @@ use super::{LivePipe, Registration, RelayFrameAction, RelaySessionState};
 use crate::{
     Error, ErrorCode, PeerObservation,
     listener::{ListenerStatus, RelayInner, is_current_desired},
-    pipe::{PipeState, to_wire_code},
+    pipe::PipeState,
     resource::{ResourceLimitKind, resource_exhausted},
     session::{SessionLink, SessionOutbound},
 };
@@ -266,13 +266,8 @@ impl FrameContext<'_, '_> {
                         "Listener incoming queue is closed",
                     ),
                 };
-                return reject_offer(
-                    self.link,
-                    pipe_id,
-                    to_wire_code(error.code()),
-                    error.message(),
-                )
-                .await;
+                return reject_offer(self.link, pipe_id, error.code().to_wire(), error.message())
+                    .await;
             }
         };
         let live = match self
@@ -282,13 +277,8 @@ impl FrameContext<'_, '_> {
         {
             Ok(live) => live,
             Err(error) => {
-                return reject_offer(
-                    self.link,
-                    pipe_id,
-                    to_wire_code(error.code()),
-                    error.message(),
-                )
-                .await;
+                return reject_offer(self.link, pipe_id, error.code().to_wire(), error.message())
+                    .await;
             }
         };
         let pipe_resources = self.inner.resources.pipe_resources(
@@ -446,7 +436,7 @@ impl FrameContext<'_, '_> {
                 .link
                 .send(Frame::Reset {
                     pipe_id,
-                    code: to_wire_code(error.code()),
+                    code: error.code().to_wire(),
                     message: error.message().to_owned(),
                 })
                 .await

@@ -5,7 +5,7 @@ use std::sync::{
 
 use bytes::Bytes;
 use futures_util::{future::poll_fn, task::AtomicWaker};
-use relaygate_protocol::{ErrorCode as WireErrorCode, PipeId};
+use relaygate_protocol::PipeId;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
 use crate::{
@@ -473,22 +473,5 @@ impl Drop for PipeOwner {
         if self.state.close_normal() {
             let _ = self.state.abandoned.send(self.state.id);
         }
-    }
-}
-
-pub(crate) fn to_wire_code(code: ErrorCode) -> WireErrorCode {
-    match code {
-        ErrorCode::InvalidArgument => WireErrorCode::InvalidArgument,
-        ErrorCode::Unauthenticated => WireErrorCode::Unauthenticated,
-        ErrorCode::PermissionDenied => WireErrorCode::PermissionDenied,
-        ErrorCode::NotFound => WireErrorCode::NotFound,
-        ErrorCode::FailedPrecondition => WireErrorCode::FailedPrecondition,
-        ErrorCode::Unavailable => WireErrorCode::Unavailable,
-        ErrorCode::DeadlineExceeded => WireErrorCode::DeadlineExceeded,
-        ErrorCode::ResourceExhausted => WireErrorCode::ResourceExhausted,
-        ErrorCode::Cancelled => WireErrorCode::Cancelled,
-        ErrorCode::ProtocolError => WireErrorCode::ProtocolError,
-        ErrorCode::Internal => WireErrorCode::Internal,
-        ErrorCode::AlreadyExists => WireErrorCode::AlreadyExists,
     }
 }

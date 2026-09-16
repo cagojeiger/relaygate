@@ -1,34 +1,66 @@
 use relaygate_protocol::{ErrorCode as WireErrorCode, PeerObservation as WirePeerObservation};
 
-/// Stable SDK failure reason. This type deliberately does not expose the wire
-/// protocol enum.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ErrorCode {
+/// Declares the SDK [`ErrorCode`] together with its metric name and both wire
+/// conversions from one variant list, so adding a code cannot leave a table
+/// behind.
+macro_rules! error_codes {
+    ($($(#[$doc:meta])* $variant:ident => $name:literal,)+) => {
+        /// Stable SDK failure reason. This type deliberately does not expose the wire
+        /// protocol enum.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[non_exhaustive]
+        pub enum ErrorCode {
+            $($(#[$doc])* $variant,)+
+        }
+
+        impl ErrorCode {
+            /// Canonical snake_case name for metric labels and structured logs.
+            pub(crate) const fn metric_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                }
+            }
+
+            pub(crate) fn from_wire(value: WireErrorCode) -> Self {
+                match value {
+                    $(WireErrorCode::$variant => Self::$variant,)+
+                }
+            }
+
+            pub(crate) fn to_wire(self) -> WireErrorCode {
+                match self {
+                    $(Self::$variant => WireErrorCode::$variant,)+
+                }
+            }
+        }
+    };
+}
+
+error_codes! {
     /// An input or configuration value was invalid.
-    InvalidArgument,
+    InvalidArgument => "invalid_argument",
     /// The supplied operation credential could not authenticate the caller.
-    Unauthenticated,
+    Unauthenticated => "unauthenticated",
     /// The authenticated caller is not authorized for the operation.
-    PermissionDenied,
+    PermissionDenied => "permission_denied",
     /// The requested destination or resource was not found.
-    NotFound,
+    NotFound => "not_found",
     /// The operation conflicts with the current state.
-    FailedPrecondition,
+    FailedPrecondition => "failed_precondition",
     /// A required session or service is temporarily unavailable.
-    Unavailable,
+    Unavailable => "unavailable",
     /// The operation did not finish before its deadline.
-    DeadlineExceeded,
+    DeadlineExceeded => "deadline_exceeded",
     /// A bounded local or Gateway resource was exhausted.
-    ResourceExhausted,
+    ResourceExhausted => "resource_exhausted",
     /// The operation or owning runtime was cancelled.
-    Cancelled,
+    Cancelled => "cancelled",
     /// A peer violated the RelayGate wire contract.
-    ProtocolError,
+    ProtocolError => "protocol_error",
     /// RelayGate encountered an internal failure.
-    Internal,
+    Internal => "internal",
     /// The requested registration already exists.
-    AlreadyExists,
+    AlreadyExists => "already_exists",
 }
 
 /// Peer observation for a connection or registration control operation.
@@ -148,42 +180,6 @@ impl Error {
             observation,
             "operation deadline exceeded",
         )
-    }
-}
-
-impl ErrorCode {
-    pub(crate) const fn metric_name(self) -> &'static str {
-        match self {
-            Self::InvalidArgument => "invalid_argument",
-            Self::Unauthenticated => "unauthenticated",
-            Self::PermissionDenied => "permission_denied",
-            Self::NotFound => "not_found",
-            Self::FailedPrecondition => "failed_precondition",
-            Self::Unavailable => "unavailable",
-            Self::DeadlineExceeded => "deadline_exceeded",
-            Self::ResourceExhausted => "resource_exhausted",
-            Self::Cancelled => "cancelled",
-            Self::ProtocolError => "protocol_error",
-            Self::Internal => "internal",
-            Self::AlreadyExists => "already_exists",
-        }
-    }
-
-    pub(crate) fn from_wire(value: WireErrorCode) -> Self {
-        match value {
-            WireErrorCode::InvalidArgument => Self::InvalidArgument,
-            WireErrorCode::Unauthenticated => Self::Unauthenticated,
-            WireErrorCode::PermissionDenied => Self::PermissionDenied,
-            WireErrorCode::NotFound => Self::NotFound,
-            WireErrorCode::FailedPrecondition => Self::FailedPrecondition,
-            WireErrorCode::Unavailable => Self::Unavailable,
-            WireErrorCode::DeadlineExceeded => Self::DeadlineExceeded,
-            WireErrorCode::ResourceExhausted => Self::ResourceExhausted,
-            WireErrorCode::Cancelled => Self::Cancelled,
-            WireErrorCode::ProtocolError => Self::ProtocolError,
-            WireErrorCode::Internal => Self::Internal,
-            WireErrorCode::AlreadyExists => Self::AlreadyExists,
-        }
     }
 }
 
