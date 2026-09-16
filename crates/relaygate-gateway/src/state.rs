@@ -28,6 +28,8 @@ mod opening;
 mod pipe;
 mod registration;
 mod remote;
+#[cfg(test)]
+mod remote_tests;
 mod session;
 #[cfg(test)]
 mod tests;
