@@ -15,8 +15,6 @@ use std::{
     },
 };
 
-use bytes::Bytes;
-use relaygate_protocol::ErrorCode;
 use relaygate_route_table::GatewayId;
 use tokio::{
     net::TcpListener,
@@ -30,7 +28,7 @@ use super::{
     event::{PeerCounts, PeerEvent, PeerFailure, PeerOpenRequest, PeerStreamKey},
     identity::{OpenIdentity, PeerTransportId},
     pool::PeerPool,
-    transport::{ActiveOpenSet, TransportHandle, TransportNotice},
+    transport::{ActiveOpenSet, StreamCommand, TransportHandle, TransportNotice},
 };
 
 pub use handle::PeerHandle;
@@ -48,32 +46,9 @@ pub(super) enum ManagerCommand {
         open_identity: OpenIdentity,
         reply: CommandReply,
     },
-    Opened {
+    Stream {
         key: PeerStreamKey,
-        reply: CommandReply,
-    },
-    Failed {
-        key: PeerStreamKey,
-        failure: PeerFailure,
-        reply: CommandReply,
-    },
-    Data {
-        key: PeerStreamKey,
-        payload: Bytes,
-        reply: CommandReply,
-    },
-    Fin {
-        key: PeerStreamKey,
-        reply: CommandReply,
-    },
-    Close {
-        key: PeerStreamKey,
-        reply: CommandReply,
-    },
-    Reset {
-        key: PeerStreamKey,
-        code: ErrorCode,
-        message: String,
+        command: StreamCommand,
         reply: CommandReply,
     },
 }
