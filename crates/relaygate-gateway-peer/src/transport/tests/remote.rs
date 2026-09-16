@@ -22,7 +22,8 @@ use crate::{
         StreamIdAllocator,
     },
     transport::{
-        ActiveOpenSet, TransportClosure, TransportCommand, TransportNotice, state::TransportActor,
+        ActiveOpenSet, StreamCommand, TransportClosure, TransportCommand, TransportNotice,
+        state::TransportActor,
     },
 };
 
@@ -124,7 +125,11 @@ async fn send_opened(
 ) -> Result<(), Box<dyn Error>> {
     let (reply, result) = oneshot::channel();
     actor
-        .handle_command(TransportCommand::Opened { stream_id, reply })
+        .handle_command(TransportCommand::Stream {
+            stream_id,
+            command: StreamCommand::Opened,
+            reply,
+        })
         .await;
     result.await??;
     Ok(())
@@ -137,9 +142,9 @@ async fn send_failed(
 ) -> Result<(), Box<dyn Error>> {
     let (reply, result) = oneshot::channel();
     actor
-        .handle_command(TransportCommand::Failed {
+        .handle_command(TransportCommand::Stream {
             stream_id,
-            failure,
+            command: StreamCommand::Failed { failure },
             reply,
         })
         .await;
@@ -154,9 +159,9 @@ async fn send_data(
 ) -> Result<(), Box<dyn Error>> {
     let (reply, result) = oneshot::channel();
     actor
-        .handle_command(TransportCommand::Data {
+        .handle_command(TransportCommand::Stream {
             stream_id,
-            payload,
+            command: StreamCommand::Data { payload },
             reply,
         })
         .await;
@@ -167,7 +172,11 @@ async fn send_data(
 async fn send_fin(actor: &mut TransportActor, stream_id: StreamId) -> Result<(), Box<dyn Error>> {
     let (reply, result) = oneshot::channel();
     actor
-        .handle_command(TransportCommand::Fin { stream_id, reply })
+        .handle_command(TransportCommand::Stream {
+            stream_id,
+            command: StreamCommand::Fin,
+            reply,
+        })
         .await;
     result.await??;
     Ok(())

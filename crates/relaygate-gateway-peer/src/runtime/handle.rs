@@ -7,6 +7,7 @@ use relaygate_protocol::{ErrorCode, PeerObservation};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{ManagerCommand, SharedCounts, TransportRegistry};
+use crate::transport::StreamCommand;
 use crate::{
     event::{PeerCounts, PeerFailure, PeerOpenRequest, PeerStreamKey},
     identity::OpenIdentity,
@@ -71,8 +72,12 @@ impl PeerHandle {
     }
 
     pub async fn send_opened(&self, key: PeerStreamKey) -> Result<(), PeerFailure> {
-        self.command(|reply| ManagerCommand::Opened { key, reply })
-            .await
+        self.command(|reply| ManagerCommand::Stream {
+            key,
+            command: StreamCommand::Opened,
+            reply,
+        })
+        .await
     }
 
     pub async fn send_failed(
@@ -80,31 +85,39 @@ impl PeerHandle {
         key: PeerStreamKey,
         failure: PeerFailure,
     ) -> Result<(), PeerFailure> {
-        self.command_or_close(key, |reply| ManagerCommand::Failed {
+        self.command_or_close(key, |reply| ManagerCommand::Stream {
             key,
-            failure,
+            command: StreamCommand::Failed { failure },
             reply,
         })
         .await
     }
 
     pub async fn send_data(&self, key: PeerStreamKey, payload: Bytes) -> Result<(), PeerFailure> {
-        self.command(|reply| ManagerCommand::Data {
+        self.command(|reply| ManagerCommand::Stream {
             key,
-            payload,
+            command: StreamCommand::Data { payload },
             reply,
         })
         .await
     }
 
     pub async fn send_fin(&self, key: PeerStreamKey) -> Result<(), PeerFailure> {
-        self.command(|reply| ManagerCommand::Fin { key, reply })
-            .await
+        self.command(|reply| ManagerCommand::Stream {
+            key,
+            command: StreamCommand::Fin,
+            reply,
+        })
+        .await
     }
 
     pub async fn send_close(&self, key: PeerStreamKey) -> Result<(), PeerFailure> {
-        self.command_or_close(key, |reply| ManagerCommand::Close { key, reply })
-            .await
+        self.command_or_close(key, |reply| ManagerCommand::Stream {
+            key,
+            command: StreamCommand::Close,
+            reply,
+        })
+        .await
     }
 
     pub async fn send_reset(
@@ -114,10 +127,9 @@ impl PeerHandle {
         message: impl Into<String>,
     ) -> Result<(), PeerFailure> {
         let message = message.into();
-        self.command_or_close(key, |reply| ManagerCommand::Reset {
+        self.command_or_close(key, |reply| ManagerCommand::Stream {
             key,
-            code,
-            message,
+            command: StreamCommand::Reset { code, message },
             reply,
         })
         .await

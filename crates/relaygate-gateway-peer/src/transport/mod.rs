@@ -37,6 +37,19 @@ use super::{
 type CommandReply = oneshot::Sender<Result<(), PeerFailure>>;
 type OpenReply = oneshot::Sender<Result<PeerStreamKey, PeerFailure>>;
 
+/// A command addressed to one already-open stream. The manager keys it by
+/// [`PeerStreamKey`] and the transport actor by [`StreamId`]; the payload is
+/// the same on both sides.
+#[derive(Debug)]
+pub(crate) enum StreamCommand {
+    Opened,
+    Failed { failure: PeerFailure },
+    Data { payload: bytes::Bytes },
+    Fin,
+    Close,
+    Reset { code: ErrorCode, message: String },
+}
+
 #[derive(Debug)]
 pub(super) enum TransportCommand {
     Open {
@@ -47,32 +60,9 @@ pub(super) enum TransportCommand {
         open_identity: OpenIdentity,
         reply: CommandReply,
     },
-    Opened {
+    Stream {
         stream_id: StreamId,
-        reply: CommandReply,
-    },
-    Failed {
-        stream_id: StreamId,
-        failure: PeerFailure,
-        reply: CommandReply,
-    },
-    Data {
-        stream_id: StreamId,
-        payload: bytes::Bytes,
-        reply: CommandReply,
-    },
-    Fin {
-        stream_id: StreamId,
-        reply: CommandReply,
-    },
-    Close {
-        stream_id: StreamId,
-        reply: CommandReply,
-    },
-    Reset {
-        stream_id: StreamId,
-        code: ErrorCode,
-        message: String,
+        command: StreamCommand,
         reply: CommandReply,
     },
 }
@@ -210,13 +200,7 @@ impl TransportCommand {
             Self::Open { reply, .. } => {
                 let _ = reply.send(Err(failure.clone()));
             }
-            Self::Cancel { reply, .. }
-            | Self::Opened { reply, .. }
-            | Self::Failed { reply, .. }
-            | Self::Data { reply, .. }
-            | Self::Fin { reply, .. }
-            | Self::Close { reply, .. }
-            | Self::Reset { reply, .. } => {
+            Self::Cancel { reply, .. } | Self::Stream { reply, .. } => {
                 let _ = reply.send(Err(failure.clone()));
             }
         }

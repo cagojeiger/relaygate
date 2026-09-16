@@ -22,7 +22,7 @@ use crate::{
         StreamId, StreamIdAllocator,
     },
     transport::{
-        ActiveOpenSet, TransportCloseReason, TransportClosure, TransportCommand,
+        ActiveOpenSet, StreamCommand, TransportCloseReason, TransportClosure, TransportCommand,
         state::TransportActor,
     },
 };
@@ -97,9 +97,11 @@ async fn saturated_stream_and_aggregate_buffers_are_released_on_transport_loss()
     for stream_id in stream_ids {
         let (reply, result) = oneshot::channel();
         actor
-            .handle_command(TransportCommand::Data {
+            .handle_command(TransportCommand::Stream {
                 stream_id,
-                payload: tracked_payload(&drops),
+                command: StreamCommand::Data {
+                    payload: tracked_payload(&drops),
+                },
                 reply,
             })
             .await;
@@ -118,9 +120,11 @@ async fn saturated_stream_and_aggregate_buffers_are_released_on_transport_loss()
 
     let (reply, result) = oneshot::channel();
     actor
-        .handle_command(TransportCommand::Data {
+        .handle_command(TransportCommand::Stream {
             stream_id: stream_ids[0],
-            payload: Bytes::from_static(b"rejected"),
+            command: StreamCommand::Data {
+                payload: Bytes::from_static(b"rejected"),
+            },
             reply,
         })
         .await;

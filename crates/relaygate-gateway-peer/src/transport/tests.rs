@@ -14,8 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ActiveOpenSet, TransportCloseReason, TransportClosure, TransportCommand, TransportHandle,
-    TransportNotice,
+    ActiveOpenSet, StreamCommand, TransportCloseReason, TransportClosure, TransportCommand,
+    TransportHandle, TransportNotice,
     state::{RuntimeStream, StreamOrigin, TransportActor},
 };
 use crate::{
@@ -378,9 +378,11 @@ async fn committed_open_preserves_order_while_writer_is_stalled() -> Result<(), 
         .ok_or("expected OPENED event")?;
     let (reply, result) = oneshot::channel();
     actor
-        .handle_command(TransportCommand::Data {
+        .handle_command(TransportCommand::Stream {
             stream_id: key.stream_id(),
-            payload: Bytes::from_static(b"after-opened"),
+            command: StreamCommand::Data {
+                payload: Bytes::from_static(b"after-opened"),
+            },
             reply,
         })
         .await;
@@ -449,9 +451,11 @@ async fn data_precedes_terminal_fin_while_writer_is_stalled() -> Result<(), Box<
 
     let (data_reply, data_result) = oneshot::channel();
     actor
-        .handle_command(TransportCommand::Data {
+        .handle_command(TransportCommand::Stream {
             stream_id: key.stream_id(),
-            payload: Bytes::from_static(b"echo-before-fin"),
+            command: StreamCommand::Data {
+                payload: Bytes::from_static(b"echo-before-fin"),
+            },
             reply: data_reply,
         })
         .await;
@@ -460,8 +464,9 @@ async fn data_precedes_terminal_fin_while_writer_is_stalled() -> Result<(), Box<
 
     let (fin_reply, fin_result) = oneshot::channel();
     actor
-        .handle_command(TransportCommand::Fin {
+        .handle_command(TransportCommand::Stream {
             stream_id: key.stream_id(),
+            command: StreamCommand::Fin,
             reply: fin_reply,
         })
         .await;

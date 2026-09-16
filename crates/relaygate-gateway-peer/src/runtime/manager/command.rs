@@ -10,7 +10,7 @@ use crate::{
     error::PeerError,
     event::{PeerFailure, PeerOpenRequest, PeerStreamKey},
     identity::{OpenIdentity, PeerTransportId},
-    transport::TransportCommand,
+    transport::{StreamCommand, TransportCommand},
 };
 
 impl Manager {
@@ -21,83 +21,11 @@ impl Manager {
                 open_identity,
                 reply,
             } => self.cancel_open(open_identity, reply),
-            ManagerCommand::Opened { key, reply } => {
-                self.dispatch_stream_command(
-                    key,
-                    |reply| TransportCommand::Opened {
-                        stream_id: key.stream_id(),
-                        reply,
-                    },
-                    reply,
-                );
-            }
-            ManagerCommand::Failed {
+            ManagerCommand::Stream {
                 key,
-                failure,
+                command,
                 reply,
-            } => {
-                self.dispatch_stream_command(
-                    key,
-                    |reply| TransportCommand::Failed {
-                        stream_id: key.stream_id(),
-                        failure,
-                        reply,
-                    },
-                    reply,
-                );
-            }
-            ManagerCommand::Data {
-                key,
-                payload,
-                reply,
-            } => {
-                self.dispatch_stream_command(
-                    key,
-                    |reply| TransportCommand::Data {
-                        stream_id: key.stream_id(),
-                        payload,
-                        reply,
-                    },
-                    reply,
-                );
-            }
-            ManagerCommand::Fin { key, reply } => {
-                self.dispatch_stream_command(
-                    key,
-                    |reply| TransportCommand::Fin {
-                        stream_id: key.stream_id(),
-                        reply,
-                    },
-                    reply,
-                );
-            }
-            ManagerCommand::Close { key, reply } => {
-                self.dispatch_stream_command(
-                    key,
-                    |reply| TransportCommand::Close {
-                        stream_id: key.stream_id(),
-                        reply,
-                    },
-                    reply,
-                );
-            }
-            ManagerCommand::Reset {
-                key,
-                code,
-                message,
-                reply,
-            } => {
-                self.dispatch_stream_command(
-                    key,
-                    |reply| TransportCommand::Reset {
-                        stream_id: key.stream_id(),
-                        code,
-                        message,
-                        reply,
-                    },
-                    reply,
-                );
-            }
+            } => self.dispatch_stream_command(key, command, reply),
         }
     }
 
@@ -250,7 +178,7 @@ impl Manager {
     fn dispatch_stream_command(
         &self,
         key: PeerStreamKey,
-        build: impl FnOnce(CommandReply) -> TransportCommand,
+        command: StreamCommand,
         reply: CommandReply,
     ) {
         if key.peer_gateway_id() == self.local_gateway_id {
@@ -274,7 +202,12 @@ impl Manager {
             )));
             return;
         }
-        if let Err(error) = transport.try_send(build(reply)) {
+        let command = TransportCommand::Stream {
+            stream_id: key.stream_id(),
+            command,
+            reply,
+        };
+        if let Err(error) = transport.try_send(command) {
             let _ = error;
         }
     }

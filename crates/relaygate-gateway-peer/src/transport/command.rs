@@ -4,7 +4,7 @@ use relaygate_protocol::ErrorCode;
 use tokio::{sync::mpsc, time::Instant};
 
 use super::{
-    TransportCloseReason, TransportCommand, TransportNotice,
+    StreamCommand, TransportCloseReason, TransportCommand, TransportNotice,
     state::{RuntimeStream, StreamOrigin, TransportActor, enqueue_stream_frame},
 };
 use crate::{
@@ -37,41 +37,21 @@ impl TransportActor {
                 let result = self.cancel(open_identity).await;
                 let _ = reply.send(result);
             }
-            TransportCommand::Opened { stream_id, reply } => {
-                let result = self.send_opened(stream_id);
-                let _ = reply.send(result);
-            }
-            TransportCommand::Failed {
+            TransportCommand::Stream {
                 stream_id,
-                failure,
+                command,
                 reply,
             } => {
-                let result = self.send_failed(stream_id, failure).await;
-                let _ = reply.send(result);
-            }
-            TransportCommand::Data {
-                stream_id,
-                payload,
-                reply,
-            } => {
-                let result = self.send_data(stream_id, payload);
-                let _ = reply.send(result);
-            }
-            TransportCommand::Fin { stream_id, reply } => {
-                let result = self.send_fin(stream_id).await;
-                let _ = reply.send(result);
-            }
-            TransportCommand::Close { stream_id, reply } => {
-                let result = self.send_close(stream_id).await;
-                let _ = reply.send(result);
-            }
-            TransportCommand::Reset {
-                stream_id,
-                code,
-                message,
-                reply,
-            } => {
-                let result = self.send_reset(stream_id, code, message).await;
+                let result = match command {
+                    StreamCommand::Opened => self.send_opened(stream_id),
+                    StreamCommand::Failed { failure } => self.send_failed(stream_id, failure).await,
+                    StreamCommand::Data { payload } => self.send_data(stream_id, payload),
+                    StreamCommand::Fin => self.send_fin(stream_id).await,
+                    StreamCommand::Close => self.send_close(stream_id).await,
+                    StreamCommand::Reset { code, message } => {
+                        self.send_reset(stream_id, code, message).await
+                    }
+                };
                 let _ = reply.send(result);
             }
         }
