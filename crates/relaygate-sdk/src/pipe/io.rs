@@ -14,7 +14,6 @@ use tokio::{
 
 use super::{
     DATA_CHUNK_LEN, Pipe, PipeReadHalf, PipeReader, PipeState, PipeWriteHalf, PipeWriter, Terminal,
-    to_wire_code,
 };
 use crate::{Error, ErrorCode, PeerObservation, Result, session::FrameCommit};
 
@@ -242,7 +241,7 @@ impl PipeWriter {
                 ))
                 .then(|| Frame::Reset {
                     pipe_id: state.id,
-                    code: to_wire_code(code),
+                    code: code.to_wire(),
                     message: message.to_owned(),
                 })
         }) {

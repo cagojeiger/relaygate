@@ -197,7 +197,7 @@ fn endpoint_parts(endpoint: &str) -> Result<(String, String, bool)> {
         host
     };
     // Validate DNS/IP identity even for plaintext, keeping one address grammar.
-    ClientTlsConfig::with_webpki_roots(name).map_err(|_| invalid_endpoint())?;
+    ClientTlsConfig::validate_server_name(name).map_err(|_| invalid_endpoint())?;
     Ok((address.to_owned(), name.to_owned(), plaintext))
 }
 
