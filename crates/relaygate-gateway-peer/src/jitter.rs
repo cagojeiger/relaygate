@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// Scales `duration` into `[0.9x, 1.1x]` with a deterministic FNV hash of
 /// `seed` and `salt`, so peers with the same configuration do not probe in
 /// lockstep.
-pub fn staggered(duration: Duration, seed: Uuid, salt: u8) -> Duration {
+pub(crate) fn staggered(duration: Duration, seed: Uuid, salt: u8) -> Duration {
     let mut hash = u64::from(salt);
     for byte in seed.as_bytes() {
         hash = hash.wrapping_mul(16_777_619) ^ u64::from(*byte);

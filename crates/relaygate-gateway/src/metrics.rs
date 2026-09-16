@@ -1,20 +1,20 @@
 use std::time::Duration;
 
-/// Peer-transport heartbeat metrics; the Gateway emits the same series with
-/// `transport = "sdk"` for SDK sessions. `transport` is the bounded label set
-/// of SPEC 008 OBS-006/OBS-007.
-pub(crate) fn observe_peer_heartbeat_round_trip(round_trip: Duration) {
+/// SDK-session heartbeat metrics; the peer crate emits the same series with
+/// `transport = "peer"` for its own transport. `transport` is the bounded
+/// label set of SPEC 008 OBS-006/OBS-007.
+pub(crate) fn observe_sdk_heartbeat_round_trip(round_trip: Duration) {
     metrics::histogram!(
         "relaygate_gateway_heartbeat_duration_seconds",
-        "transport" => "peer"
+        "transport" => "sdk"
     )
     .record(round_trip.as_secs_f64());
 }
 
-pub(crate) fn observe_peer_heartbeat_timeout() {
+pub(crate) fn observe_sdk_heartbeat_timeout() {
     metrics::counter!(
         "relaygate_gateway_heartbeat_timeouts_total",
-        "transport" => "peer"
+        "transport" => "sdk"
     )
     .increment(1);
 }
@@ -26,13 +26,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heartbeat_metrics_use_only_the_bounded_transport_label() {
+    fn sdk_heartbeat_metrics_carry_the_sdk_transport_label() {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            observe_peer_heartbeat_round_trip(Duration::from_millis(3));
-            observe_peer_heartbeat_timeout();
+            observe_sdk_heartbeat_round_trip(Duration::from_millis(7));
+            observe_sdk_heartbeat_timeout();
         });
 
         let snapshot = snapshotter.snapshot().into_vec();
@@ -42,7 +42,7 @@ mod tests {
                     && key
                         .key()
                         .labels()
-                        .any(|label| label.key() == "transport" && label.value() == "peer")
+                        .any(|label| label.key() == "transport" && label.value() == "sdk")
             })
         };
         assert!(matches!(

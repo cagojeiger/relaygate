@@ -273,6 +273,7 @@ rust = [
   "gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets",
   "gateway::tests::snapshot_admission_requires_capacity_and_non_draining_state",
   "metrics::tests::heartbeat_metrics_use_only_the_bounded_transport_label",
+  "metrics::tests::sdk_heartbeat_metrics_carry_the_sdk_transport_label",
   "client::tests::client_request_metrics_separate_operation_outcome_and_code",
   "json_logs_expose_stable_startup_and_snapshot_fields",
   "route_table_expiry_metric_counts_removed_soft_state_once",

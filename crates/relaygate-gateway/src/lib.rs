@@ -8,6 +8,8 @@ mod authorization;
 mod config;
 mod error;
 mod gateway;
+mod jitter;
+mod metrics;
 mod observation;
 mod rate_limit;
 mod registry;
@@ -16,7 +18,6 @@ mod state;
 mod test_support;
 
 use relaygate_gateway_peer as peer;
-use relaygate_gateway_peer::{jitter, metrics};
 use relaygate_gateway_routing as routing;
 
 pub use authorization::{AuthorizationConfig, Es256PublicKey, TrustedIssuer};

@@ -11,7 +11,7 @@ use super::{
     state::TransportActor,
     writer::run_writer,
 };
-use crate::metrics::{HeartbeatTransport, observe_heartbeat_round_trip, observe_heartbeat_timeout};
+use crate::metrics::{observe_peer_heartbeat_round_trip, observe_peer_heartbeat_timeout};
 use crate::{
     codec::PeerCodecError, config::GatewayPeerConfig, frame::PeerFrame, handshake::EstablishedPeer,
 };
@@ -164,7 +164,7 @@ impl TransportLoop {
             Some(Ok(frame)) => frame,
         };
         if let Some(round_trip) = self.liveness.observe_inbound(&frame) {
-            observe_heartbeat_round_trip(HeartbeatTransport::Peer, round_trip);
+            observe_peer_heartbeat_round_trip(round_trip);
         }
         if self.liveness.response_timed_out() {
             return Break(self.report_heartbeat_timeout());
@@ -217,7 +217,7 @@ impl TransportLoop {
 
     /// Records the timeout metric and log, returning the matching close reason.
     fn report_heartbeat_timeout(&self) -> TransportCloseReason {
-        observe_heartbeat_timeout(HeartbeatTransport::Peer);
+        observe_peer_heartbeat_timeout();
         tracing::debug!(
             component = "gateway",
             event = "gateway.peer.transport.heartbeat_timeout",
