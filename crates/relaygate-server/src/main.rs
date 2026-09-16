@@ -18,13 +18,13 @@ async fn main() -> Result<()> {
     match command()? {
         Command::Serve(RuntimeRole::Gateway) => {
             let config = config::GatewayRuntimeConfig::from_env()?;
-            let metrics = metrics::MetricsRuntime::install("gateway")?;
+            let metrics = metrics::MetricsRuntime::install(metrics::MetricsRole::Gateway)?;
             let shutdown = process_shutdown();
             runtime::gateway::serve(config, shutdown, metrics).await
         }
         Command::Serve(RuntimeRole::RouteTable) => {
             let config = config::RouteTableRuntimeConfig::from_env()?;
-            let _metrics = metrics::MetricsRuntime::install("route_table")?;
+            let _metrics = metrics::MetricsRuntime::install(metrics::MetricsRole::RouteTable)?;
             let shutdown = process_shutdown();
             runtime::route_table::serve(config, shutdown).await
         }
