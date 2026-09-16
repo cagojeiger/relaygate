@@ -10,7 +10,6 @@ impl GatewayState {
         session_id: SessionId,
         request_id: u64,
         destination: Destination,
-        _now: std::time::Instant,
     ) -> Vec<GatewayAction> {
         let (response, publish) = if self.draining {
             (

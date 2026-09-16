@@ -101,19 +101,22 @@ impl LocalRegistry {
         excluded_session: SessionId,
     ) -> Option<Binding> {
         let ids = self.by_destination.get(destination)?;
-        let eligible = ids
-            .iter()
-            .filter_map(|id| self.by_id.get(id))
-            .filter(|binding| binding.session_id != excluded_session)
-            .cloned()
-            .collect::<Vec<_>>();
-        if eligible.is_empty() {
+        let eligible = || {
+            ids.iter()
+                .filter_map(|id| self.by_id.get(id))
+                .filter(|binding| binding.session_id != excluded_session)
+        };
+        let count = eligible().count();
+        if count == 0 {
             return None;
         }
-        let cursor = self.next_selection.entry(destination.clone()).or_default();
-        let index = *cursor % eligible.len();
+        if !self.next_selection.contains_key(destination) {
+            self.next_selection.insert(destination.clone(), 0);
+        }
+        let cursor = self.next_selection.get_mut(destination)?;
+        let index = *cursor % count;
         *cursor = cursor.wrapping_add(1);
-        eligible.get(index).cloned()
+        eligible().nth(index).cloned()
     }
 
     pub(crate) fn binding_count(&self) -> usize {

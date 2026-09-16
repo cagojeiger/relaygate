@@ -9,7 +9,7 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{
-    peer::{OpenIdentity, PeerEvent, PeerFailure, PeerOpenRequest, PeerTarget},
+    peer::{OpenIdentity, PeerEvent, PeerFailure, PeerHandle, PeerOpenRequest, PeerTarget},
     state::{DeliveryFailure, GatewayAction, PeerDelivery},
 };
 
@@ -131,17 +131,21 @@ impl Inner {
     }
 
     fn spawn_control_effect(self: &Arc<Self>, action: ControlAction) -> Vec<GatewayAction> {
-        let Some(control) = &self.control_effects else {
+        // Both handles come from one `DistributedRuntime`, so they are present
+        // together; this is the only place an effect checks for them.
+        let (Some(control), Some(peer)) = (&self.control_effects, &self.peer) else {
             return self.reject_control_effect(action, "distributed control runtime is disabled");
         };
         let Ok(permit) = Arc::clone(&control.slots).try_acquire_owned() else {
             return self.reject_control_effect(action, "Gateway control effect limit reached");
         };
         let inner = Arc::clone(self);
+        let route_resolver = Arc::clone(&control.route_resolver);
+        let peer = peer.clone();
         let results = control.results.clone();
         let shutdown = control.shutdown.clone();
         control.tasks.spawn(async move {
-            let actions = inner.run_control_effect(action).await;
+            let actions = inner.run_control_effect(route_resolver, peer, action).await;
             drop(permit);
             if actions.is_empty() {
                 return;
@@ -179,30 +183,24 @@ impl Inner {
         }
     }
 
-    async fn run_control_effect(&self, action: ControlAction) -> Vec<GatewayAction> {
+    async fn run_control_effect(
+        &self,
+        route_resolver: Arc<dyn RouteResolver>,
+        peer: PeerHandle,
+        action: ControlAction,
+    ) -> Vec<GatewayAction> {
         match action {
             ControlAction::ResolveRoute {
                 open_identity,
                 destination,
-            } => {
-                let Some(control) = &self.control_effects else {
-                    return self.transition(|state| {
-                        state.route_failed(
-                            open_identity,
-                            ErrorCode::Internal,
-                            "RouteTable routing is not configured",
-                        )
-                    });
-                };
-                match control.route_resolver.resolve(destination).await {
-                    Ok(bindings) => {
-                        self.transition(|state| state.route_resolved(open_identity, bindings))
-                    }
-                    Err(error) => self.transition(|state| {
-                        state.route_failed(open_identity, error.code(), error.message())
-                    }),
+            } => match route_resolver.resolve(destination).await {
+                Ok(bindings) => {
+                    self.transition(|state| state.route_resolved(open_identity, bindings))
                 }
-            }
+                Err(error) => self.transition(|state| {
+                    state.route_failed(open_identity, error.code(), error.message())
+                }),
+            },
             ControlAction::OpenPeer {
                 open_identity,
                 gateway_id,
@@ -211,16 +209,6 @@ impl Inner {
                 relay_session_id,
                 binding_id,
             } => {
-                let Some(peer) = &self.peer else {
-                    return self.transition(|state| {
-                        state.peer_open_commit_failed(
-                            open_identity,
-                            ErrorCode::Internal,
-                            PeerObservation::NotObserved,
-                            "Gateway peer relay is not configured",
-                        )
-                    });
-                };
                 let request = PeerOpenRequest::new(
                     PeerTarget::new(gateway_id, gateway_locator),
                     open_identity,
@@ -243,9 +231,7 @@ impl Inner {
                 }
             }
             ControlAction::CancelPeerOpen { open_identity } => {
-                if let Some(peer) = &self.peer
-                    && let Err(error) = peer.cancel_open(open_identity).await
-                {
+                if let Err(error) = peer.cancel_open(open_identity).await {
                     tracing::debug!(
                         component = "gateway",
                         event = "gateway.peer_open.cancel_failed",
