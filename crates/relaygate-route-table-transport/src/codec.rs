@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::frame::WireFrame;
+use crate::{TransportError, frame::WireFrame};
 
 const MAGIC: [u8; 2] = *b"RT";
 const VERSION: u8 = 3;
@@ -151,6 +151,26 @@ impl Decoder for FrameCodec {
         serde_json::from_slice(&payload)
             .map(Some)
             .map_err(CodecError::InvalidPayload)
+    }
+}
+
+/// A send-side codec failure as the caller's transport error.
+pub(crate) fn map_send_codec_error(error: CodecError) -> TransportError {
+    match error {
+        CodecError::FrameTooLarge { .. } | CodecError::LengthOverflow => {
+            TransportError::resource_exhausted(error.to_string())
+        }
+        _ if error.is_io() => TransportError::unavailable(error.to_string()),
+        _ => TransportError::protocol(error.to_string()),
+    }
+}
+
+/// A receive-side codec failure as the caller's transport error.
+pub(crate) fn map_receive_codec_error(error: CodecError) -> TransportError {
+    if error.is_io() {
+        TransportError::unavailable(error.to_string())
+    } else {
+        TransportError::protocol(error.to_string())
     }
 }
 

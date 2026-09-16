@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     ErrorCode, GatewayName, TransportError,
-    codec::{CodecError, FrameCodec},
+    codec::{FrameCodec, map_receive_codec_error, map_send_codec_error},
     dto::WireRequest,
     frame::{GATEWAY_ROLE, ROUTE_TABLE_ROLE, WireFrame},
 };
@@ -293,24 +293,6 @@ pub(super) async fn reject_over_capacity(
     tokio::select! {
         _ = shutdown.cancelled() => {}
         _ = tokio::time::timeout(config.handshake_timeout, send) => {}
-    }
-}
-
-pub(super) fn map_send_codec_error(error: CodecError) -> TransportError {
-    match error {
-        CodecError::FrameTooLarge { .. } | CodecError::LengthOverflow => {
-            TransportError::resource_exhausted(error.to_string())
-        }
-        _ if error.is_io() => TransportError::unavailable(error.to_string()),
-        _ => TransportError::protocol(error.to_string()),
-    }
-}
-
-pub(super) fn map_receive_codec_error(error: CodecError) -> TransportError {
-    if error.is_io() {
-        TransportError::unavailable(error.to_string())
-    } else {
-        TransportError::protocol(error.to_string())
     }
 }
 

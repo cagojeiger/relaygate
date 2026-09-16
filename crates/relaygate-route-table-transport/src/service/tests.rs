@@ -11,13 +11,14 @@ use tokio_util::codec::Framed;
 use uuid::Uuid;
 
 use crate::{
+    codec::{map_receive_codec_error, map_send_codec_error},
     dto::{WireRequest, WireResponse},
     frame::{GATEWAY_ROLE, ROUTE_TABLE_ROLE, WireFrame},
 };
 
 use super::{
     actor::{ServiceCommand, run_shard_actor},
-    connection::{map_receive_codec_error, map_send_codec_error, submit_service_request},
+    connection::submit_service_request,
     response::{BoundedSendError, try_send_frame, try_write_protocol_fault},
     *,
 };

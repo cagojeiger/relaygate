@@ -13,7 +13,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{ErrorCode, TransportError, codec::FrameCodec};
+use crate::{
+    ErrorCode, TransportError,
+    bounds::{validate_capacity, validate_duration, validate_frame_len},
+    codec::FrameCodec,
+};
 
 use actor::{ServiceCommand, spawn_shard_actor};
 use connection::{handle_connection, observe_capacity_rejection, reject_over_capacity};
@@ -244,36 +248,6 @@ impl fmt::Debug for RouteTableService {
     }
 }
 
-fn validate_nonzero(name: &'static str, value: usize) -> Result<(), TransportError> {
-    if value == 0 {
-        Err(TransportError::invalid_argument(format!(
-            "{name} must be greater than zero"
-        )))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_capacity(name: &'static str, value: usize) -> Result<(), TransportError> {
-    validate_nonzero(name, value)?;
-    if value > Semaphore::MAX_PERMITS {
-        return Err(TransportError::invalid_argument(format!(
-            "{name} exceeds the runtime limit"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_frame_len(value: usize) -> Result<(), TransportError> {
-    validate_nonzero("maximum frame length", value)?;
-    if value > u32::MAX as usize {
-        return Err(TransportError::invalid_argument(
-            "maximum frame length exceeds the wire limit",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_service_frame_len(value: usize) -> Result<(), TransportError> {
     validate_frame_len(value)?;
     let minimum = error_response_frame(u64::MAX, ErrorCode::ResourceExhausted, "");
@@ -283,16 +257,6 @@ fn validate_service_frame_len(value: usize) -> Result<(), TransportError> {
         ));
     }
     Ok(())
-}
-
-fn validate_duration(name: &'static str, value: Duration) -> Result<(), TransportError> {
-    if value.is_zero() {
-        Err(TransportError::invalid_argument(format!(
-            "{name} must be greater than zero"
-        )))
-    } else {
-        Ok(())
-    }
 }
 
 #[cfg(test)]
