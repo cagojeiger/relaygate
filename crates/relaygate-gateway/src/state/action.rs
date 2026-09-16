@@ -2,6 +2,7 @@
 //! runtime (`gateway::effects`, `gateway::transition`) executes them outside
 //! the state lock; `PublishRegistration` is committed under the lock by
 //! `transition` to keep the registration snapshot order.
+
 use bytes::Bytes;
 use relaygate_protocol::{BindingId, Destination, ErrorCode, PeerObservation, PipeId, SessionId};
 use relaygate_route_table::{GatewayId, GatewayLocator};

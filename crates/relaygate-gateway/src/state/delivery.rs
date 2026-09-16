@@ -1,8 +1,11 @@
 //! Outbound SDK delivery: the bounded writer-queue handoff for one session and
-//! the failure it reports back to the state core. `GatewayState` decides which
-//! frame goes to which session; this module owns how that handoff can fail
-//! (queue full or closed), the terminal-batch coalescing rule and the
-//! rejection observation.
+//! the failure it reports back to the runtime, which feeds it into the state
+//! core through `transition`. `GatewayState` decides which frame goes to which
+//! session; this module owns how that handoff can fail (queue full or closed),
+//! the predicate for which frames may coalesce into one terminal batch (the
+//! coalescing pass itself lives in `gateway::effects`) and the rejection
+//! observation.
+
 use relaygate_protocol::{ErrorCode, Frame, PipeId, SessionId};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
