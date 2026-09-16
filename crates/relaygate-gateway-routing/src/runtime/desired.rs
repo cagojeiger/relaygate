@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::RwLock,
+    sync::{
+        RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use relaygate_route_table::{BindingSnapshot, RelaySessionId, ShardId};
@@ -28,7 +31,12 @@ struct DesiredState {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct DesiredStore(RwLock<DesiredState>);
+pub(super) struct DesiredStore {
+    // Mirrors `DesiredState::version` so the shard workers' scan tick can
+    // skip the lock when nothing was committed.
+    version: AtomicU64,
+    state: RwLock<DesiredState>,
+}
 
 impl DesiredStore {
     pub(super) fn commit(
@@ -36,13 +44,14 @@ impl DesiredStore {
         session_id: RelaySessionId,
         projected: Vec<ProjectedShardSnapshot>,
     ) -> Result<u64, RoutingError> {
-        let mut state = self.0.write().map_err(|_| {
+        let mut state = self.state.write().map_err(|_| {
             RoutingError::WorkerFailed("routing desired state lock is poisoned".to_owned())
         })?;
         let version = state.version.checked_add(1).ok_or_else(|| {
             RoutingError::WorkerFailed("routing desired version exhausted".to_owned())
         })?;
         state.version = version;
+        self.version.store(version, Ordering::Release);
         for projected in projected {
             let shard = state.by_shard.entry(projected.shard_id).or_default();
             if let Some(snapshot) = projected.snapshot {
@@ -65,7 +74,10 @@ impl DesiredStore {
         shard_id: &ShardId,
         observed_version: u64,
     ) -> Result<Option<ShardDesiredView>, RoutingError> {
-        let mut state = self.0.write().map_err(|_| {
+        if self.version.load(Ordering::Acquire) <= observed_version {
+            return Ok(None);
+        }
+        let mut state = self.state.write().map_err(|_| {
             RoutingError::WorkerFailed("routing desired state lock is poisoned".to_owned())
         })?;
         if state.version <= observed_version {

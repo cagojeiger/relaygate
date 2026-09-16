@@ -378,6 +378,12 @@ impl RegistrationState {
         self.pending = None;
         self.synced_version = None;
         self.terminal = true;
+        if self.snapshot.is_none() {
+            // Same reasoning as in `publish`: a removed session whose shard
+            // turned terminal can never finish Deregister, so rely on RT expiry.
+            self.lease = None;
+            self.validate_lease = false;
+        }
     }
 
     /// RT has already expired this lease, so a failed Deregister no longer

@@ -816,7 +816,7 @@ fn transient_deregister_failure_retries_with_the_same_lease() -> TestResult {
 }
 
 #[test]
-fn unrelated_desired_version_bump_keeps_deregister_backoff() -> TestResult {
+fn repeated_removal_publish_keeps_deregister_backoff() -> TestResult {
     let now = Instant::now();
     let retry = Duration::from_millis(10);
     let mut state =
@@ -830,6 +830,21 @@ fn unrelated_desired_version_bump_keeps_deregister_backoff() -> TestResult {
     state.publish(3, None, now);
     assert!(state.begin_next(now)?.is_none());
     assert!(state.begin_next(now + retry)?.is_some());
+    Ok(())
+}
+
+#[test]
+fn terminal_after_removal_releases_the_lease_for_pruning() -> TestResult {
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+    state.publish(2, None, now);
+    assert!(!state.is_removable());
+
+    state.mark_terminal();
+    assert!(state.is_removable());
+    assert!(state.begin_next(now)?.is_none());
     Ok(())
 }
 

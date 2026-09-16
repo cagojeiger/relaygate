@@ -223,8 +223,10 @@ impl ShardWorker {
         now: Instant,
     ) -> Result<(), RoutingError> {
         reconcile_desired(
-            &self.config,
             desired,
+            &self.config.shard_id,
+            self.config.gateway_id,
+            (self.config.reconnect_initial, self.config.reconnect_max),
             &mut self.registrations,
             observed_version,
             now,
@@ -471,13 +473,15 @@ fn duration_from_nanos(nanos: u128) -> Duration {
 }
 
 fn reconcile_desired(
-    config: &ShardWorkerConfig,
     desired: &DesiredStore,
+    shard_id: &ShardId,
+    gateway_id: GatewayId,
+    (retry_initial, retry_max): (Duration, Duration),
     registrations: &mut BTreeMap<RelaySessionId, RegistrationState>,
     observed_version: &mut u64,
     now: Instant,
 ) -> Result<(), RoutingError> {
-    let Some(view) = desired.shard_view_after(&config.shard_id, *observed_version)? else {
+    let Some(view) = desired.shard_view_after(shard_id, *observed_version)? else {
         return Ok(());
     };
     *observed_version = view.store_version;
@@ -485,15 +489,14 @@ fn reconcile_desired(
         match registrations.entry(session_id) {
             Entry::Occupied(mut entry) => entry.get_mut().publish(version, Some(snapshot), now),
             Entry::Vacant(entry) => {
-                let key =
-                    RegistrationKey::new(config.gateway_id, session_id, config.shard_id.clone());
+                let key = RegistrationKey::new(gateway_id, session_id, shard_id.clone());
                 entry.insert(RegistrationState::new(
                     key,
                     version,
                     Some(snapshot),
                     now,
-                    config.reconnect_initial,
-                    config.reconnect_max,
+                    retry_initial,
+                    retry_max,
                 ));
             }
         }
@@ -583,12 +586,98 @@ async fn wait_until(deadline: Option<Instant>) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{collections::BTreeMap, error::Error, time::Duration};
 
-    use relaygate_route_table::{GatewayId, RouteTableError, ShardId};
+    use relaygate_route_table::{
+        BindingId, BindingProjection, BindingSnapshot, Destination, GatewayId, GatewayLocator,
+        RelaySessionId, RouteTableError, ShardId,
+    };
+    use tokio::time::Instant;
     use uuid::Uuid;
 
-    use super::ReconnectBackoff;
+    use super::{DesiredStore, ReconnectBackoff, RegistrationState, reconcile_desired};
+    use crate::projection::ProjectedShardSnapshot;
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    fn present(shard_id: &ShardId) -> Result<ProjectedShardSnapshot, Box<dyn Error>> {
+        let binding = BindingProjection::new(
+            "test/echo".parse::<Destination>()?,
+            GatewayId::from_uuid(Uuid::from_u128(1)),
+            RelaySessionId::from_uuid(Uuid::from_u128(2)),
+            BindingId::from_uuid(Uuid::from_u128(3)),
+            GatewayLocator::new("gw-a.internal:27431")?,
+        );
+        Ok(ProjectedShardSnapshot {
+            shard_id: shard_id.clone(),
+            snapshot: Some(BindingSnapshot::new([binding])?),
+        })
+    }
+
+    fn absent(shard_id: &ShardId) -> ProjectedShardSnapshot {
+        ProjectedShardSnapshot {
+            shard_id: shard_id.clone(),
+            snapshot: None,
+        }
+    }
+
+    fn reconcile(
+        desired: &DesiredStore,
+        shard_id: &ShardId,
+        registrations: &mut BTreeMap<RelaySessionId, RegistrationState>,
+        observed: &mut u64,
+    ) -> TestResult {
+        reconcile_desired(
+            desired,
+            shard_id,
+            GatewayId::from_uuid(Uuid::from_u128(1)),
+            (Duration::from_millis(10), Duration::from_millis(40)),
+            registrations,
+            observed,
+            Instant::now(),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_applies_inserts_and_removals_with_their_own_versions() -> TestResult {
+        let desired = DesiredStore::default();
+        let shard_id = ShardId::new("rt-0")?;
+        let session = RelaySessionId::new();
+        let mut registrations = BTreeMap::new();
+        let mut observed = 0;
+
+        let inserted = desired.commit(session, vec![present(&shard_id)?])?;
+        reconcile(&desired, &shard_id, &mut registrations, &mut observed)?;
+        assert_eq!(observed, inserted);
+        let state = registrations.get(&session).ok_or("registration missing")?;
+        assert_eq!(state.desired_version(), inserted);
+        assert!(!state.is_removable());
+
+        let removed = desired.commit(session, vec![absent(&shard_id)])?;
+        reconcile(&desired, &shard_id, &mut registrations, &mut observed)?;
+        assert_eq!(observed, removed);
+        let state = registrations.get(&session).ok_or("registration missing")?;
+        assert_eq!(state.desired_version(), removed);
+        assert!(state.is_removable());
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_ignores_removals_for_sessions_it_never_registered() -> TestResult {
+        let desired = DesiredStore::default();
+        let shard_id = ShardId::new("rt-0")?;
+        let session = RelaySessionId::new();
+        let mut registrations = BTreeMap::new();
+        let mut observed = 0;
+
+        desired.commit(session, vec![present(&shard_id)?])?;
+        let removed = desired.commit(session, vec![absent(&shard_id)])?;
+        reconcile(&desired, &shard_id, &mut registrations, &mut observed)?;
+        assert_eq!(observed, removed);
+        assert!(registrations.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn route_table_reconnect_backoff_uses_bounded_jitter_and_resets() -> Result<(), RouteTableError>
