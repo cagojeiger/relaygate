@@ -446,16 +446,16 @@ pub(crate) fn response_registration_ack(
             )));
         }
     };
-    let expected = expected.name();
+    let request_name = expected.name();
     let ack = ack.into_domain()?;
     if expected_lease_id.is_some_and(|lease_id| ack.lease_id() != lease_id) {
         return Err(TransportError::protocol(format!(
-            "RouteTable {expected} response has a mismatched LeaseId"
+            "RouteTable {request_name} response has a mismatched LeaseId"
         )));
     }
     if expected_revision.is_some_and(|revision| ack.accepted_revision() != Some(revision)) {
         return Err(TransportError::protocol(format!(
-            "RouteTable {expected} response has a mismatched RegistrationRevision"
+            "RouteTable {request_name} response has a mismatched RegistrationRevision"
         )));
     }
     Ok(ack)
