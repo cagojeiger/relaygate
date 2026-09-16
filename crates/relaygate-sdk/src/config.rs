@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use relaygate_protocol::DEFAULT_MAX_FRAME_LEN;
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
@@ -91,7 +90,6 @@ pub struct Config {
     pub(crate) reconnect_maximum: Duration,
     pub(crate) outbound_capacity: usize,
     pub(crate) resource_limits: ResourceLimits,
-    pub(crate) max_frame_len: usize,
 }
 
 impl Config {
@@ -137,7 +135,6 @@ impl Config {
             reconnect_maximum: Duration::from_secs(5),
             outbound_capacity: 256,
             resource_limits: ResourceLimits::default(),
-            max_frame_len: DEFAULT_MAX_FRAME_LEN,
         }
     }
 
@@ -225,11 +222,11 @@ impl Config {
             deadline_from_now(name, duration)?;
         }
         let limits = self.resource_limits;
-        if self.outbound_capacity == 0 || self.max_frame_len < 1024 {
+        if self.outbound_capacity == 0 {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
                 PeerObservation::NotObserved,
-                "outbound capacity must be positive and max_frame_len must be at least 1024",
+                "outbound capacity must be positive",
             ));
         }
         if limits.max_pending_pipes_per_listener == 0
@@ -274,7 +271,6 @@ impl std::fmt::Debug for Config {
             .field("reconnect_maximum", &self.reconnect_maximum)
             .field("outbound_capacity", &self.outbound_capacity)
             .field("resource_limits", &self.resource_limits)
-            .field("max_frame_len", &self.max_frame_len)
             .finish()
     }
 }
