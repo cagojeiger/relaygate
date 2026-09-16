@@ -51,7 +51,8 @@ pub enum ProtocolError {
     /// The payload held bytes left over after the frame was decoded.
     #[error("frame has {0} trailing bytes")]
     TrailingBytes(usize),
-    /// The encoded payload length does not fit the wire length field.
+    /// A frame length cannot be represented on the wire, or a decode offset
+    /// would overflow.
     #[error("frame length cannot be represented on the wire")]
     LengthOverflow,
 }
