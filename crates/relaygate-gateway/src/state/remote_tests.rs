@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::{Delivery, GatewayAction, GatewayLimits, GatewayState};
+use super::{Delivery, GatewayAction, GatewayLimits, GatewayState, PeerDelivery};
 use crate::peer::{OpenIdentity, PeerStreamKey, PeerTransportId, StreamId};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -156,6 +156,18 @@ fn dial_failed(
     })
 }
 
+fn peer_resets(actions: &[GatewayAction]) -> impl Iterator<Item = (PeerStreamKey, ErrorCode)> {
+    actions.iter().filter_map(|action| match action {
+        GatewayAction::SendPeerFrame(PeerDelivery::Reset { key, code, .. }) => Some((*key, *code)),
+        _ => None,
+    })
+}
+
+fn resets_only(actions: &[GatewayAction], key: PeerStreamKey, code: ErrorCode) -> bool {
+    let mut resets = peer_resets(actions);
+    resets.next() == Some((key, code)) && resets.next().is_none()
+}
+
 fn opened(actions: &[GatewayAction], target: SessionId) -> Option<PipeId> {
     sdk_frames(actions).find_map(|(to, frame)| match frame {
         Frame::Opened { pipe_id } if to == target => Some(*pipe_id),
@@ -293,12 +305,12 @@ fn late_peer_opened_after_cancel_does_not_recreate_the_pipe() -> TestResult {
     let (open_identity, pipe_id) = fx.dial_until_awaiting_peer(1, key)?;
 
     let cancelled = fx.state.cancel_remote_attempt(fx.caller, pipe_id);
-    assert!(!cancelled.is_empty(), "cancel must reset the peer stream");
+    assert!(resets_only(&cancelled, key, ErrorCode::Cancelled));
     assert_eq!(fx.attempts(), 0);
 
     let late = fx.state.peer_opened_at(key, open_identity, Instant::now());
     assert!(opened(&late, fx.caller).is_none());
-    assert!(!late.is_empty(), "late OPENED must reset the peer stream");
+    assert!(resets_only(&late, key, ErrorCode::Cancelled));
     assert_eq!(fx.live_pipes(), 0);
     Ok(())
 }
@@ -318,7 +330,7 @@ fn cancel_while_starting_peer_cancels_the_peer_open() -> TestResult {
 
     // The peer commit that races the cancel is answered with a reset, not a pipe.
     let raced = fx.state.peer_open_committed(open_identity, fx.key(0));
-    assert!(!raced.is_empty());
+    assert!(resets_only(&raced, fx.key(0), ErrorCode::Cancelled));
     assert_eq!(fx.live_pipes(), 0);
     Ok(())
 }
@@ -331,7 +343,7 @@ fn a_second_commit_with_another_key_is_rejected_without_disturbing_the_first() -
     let (open_identity, pipe_id) = fx.dial_until_awaiting_peer(1, first)?;
 
     let rejected = fx.state.peer_open_committed(open_identity, second);
-    assert!(!rejected.is_empty(), "second key must be reset");
+    assert!(resets_only(&rejected, second, ErrorCode::ProtocolError));
     assert_eq!(fx.attempts(), 1);
 
     let actions = fx
@@ -379,7 +391,40 @@ fn peer_failures_on_a_stale_key_are_ignored_until_the_current_key_fails() -> Tes
 }
 
 #[test]
-fn peer_opened_after_the_dialer_left_resets_the_stream() -> TestResult {
+fn commit_failure_fails_a_starting_attempt_and_is_inert_once_committed() -> TestResult {
+    let mut fx = Fixture::new()?;
+    let (starting, _) = fx.dial(1)?;
+    fx.resolve_to_peer(starting)?;
+    let actions = fx.state.peer_open_commit_failed(
+        starting,
+        ErrorCode::Unavailable,
+        PeerObservation::NotObserved,
+        "no transport",
+    );
+    assert_eq!(
+        dial_failed(&actions, fx.caller),
+        Some((ErrorCode::Unavailable, PeerObservation::NotObserved))
+    );
+    assert_eq!(fx.attempts(), 0);
+
+    let key = fx.key(0);
+    let (committed, _) = fx.dial_until_awaiting_peer(2, key)?;
+    assert!(
+        fx.state
+            .peer_open_commit_failed(
+                committed,
+                ErrorCode::Unavailable,
+                PeerObservation::NotObserved,
+                "late"
+            )
+            .is_empty()
+    );
+    assert_eq!(fx.attempts(), 1);
+    Ok(())
+}
+
+#[test]
+fn peer_opened_after_session_removal_resets_the_stream() -> TestResult {
     let mut fx = Fixture::new()?;
     let key = fx.key(0);
     let (open_identity, _) = fx.dial_until_awaiting_peer(1, key)?;
@@ -389,7 +434,7 @@ fn peer_opened_after_the_dialer_left_resets_the_stream() -> TestResult {
 
     let actions = fx.state.peer_opened_at(key, open_identity, Instant::now());
     assert!(opened(&actions, fx.caller).is_none());
-    assert!(!actions.is_empty(), "the peer stream must be reset");
+    assert!(resets_only(&actions, key, ErrorCode::Cancelled));
     assert_eq!(fx.live_pipes(), 0);
     Ok(())
 }

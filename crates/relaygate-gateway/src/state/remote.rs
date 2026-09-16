@@ -13,19 +13,21 @@ use super::{
 };
 
 /// How a peer or route event relates to the current remote OPEN attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 enum AttemptMatch {
     Resolving,
     /// The peer OPEN was requested; no stream key is bound yet.
     Starting {
         binding_id: BindingId,
     },
-    /// The peer OPEN committed on the key the event names (or no key was given).
+    /// The peer OPEN committed on the key the event names.
     Awaiting {
         binding_id: BindingId,
     },
     /// The peer OPEN committed on a different key than the event names.
     Stale,
+    /// The peer OPEN committed and the event named no key to check.
+    Committed,
 }
 
 impl GatewayState {
@@ -43,13 +45,11 @@ impl GatewayState {
             RemoteOpenPhase::AwaitingPeer {
                 key: current_key,
                 binding_id,
-            } => {
-                if key.is_none_or(|key| key == current_key) {
-                    AttemptMatch::Awaiting { binding_id }
-                } else {
-                    AttemptMatch::Stale
-                }
-            }
+            } => match key {
+                None => AttemptMatch::Committed,
+                Some(key) if key == current_key => AttemptMatch::Awaiting { binding_id },
+                Some(_) => AttemptMatch::Stale,
+            },
         };
         Some((attempt.pipe_id, matched))
     }
@@ -59,15 +59,12 @@ impl GatewayState {
         open_identity: OpenIdentity,
         bindings: BindingSet,
     ) -> Vec<GatewayAction> {
-        if !matches!(
-            self.match_attempt(open_identity, None),
-            Some((_, AttemptMatch::Resolving))
-        ) {
-            return Vec::new();
-        }
         let Some(attempt) = self.remote_open_attempts.get(&open_identity) else {
             return Vec::new();
         };
+        if !matches!(attempt.phase, RemoteOpenPhase::Resolving) {
+            return Vec::new();
+        }
         let destination = attempt.destination.clone();
         let pipe_id = attempt.pipe_id;
         let started_at = attempt.started_at;
@@ -119,12 +116,10 @@ impl GatewayState {
             return self.offer_local_at(pipe_id, binding, Instant::now(), Some(started_at));
         }
 
+        // Nothing between the guard above and here touches the attempt map.
         let Some(attempt) = self.remote_open_attempts.get_mut(&open_identity) else {
             return Vec::new();
         };
-        if attempt.phase != RemoteOpenPhase::Resolving {
-            return Vec::new();
-        }
         attempt.phase = RemoteOpenPhase::StartingPeer { binding_id };
         vec![GatewayAction::OpenPeer {
             open_identity,
@@ -173,7 +168,7 @@ impl GatewayState {
         let binding_id = match matched {
             AttemptMatch::Starting { binding_id } => binding_id,
             AttemptMatch::Awaiting { .. } => return Vec::new(),
-            AttemptMatch::Resolving | AttemptMatch::Stale => {
+            AttemptMatch::Resolving | AttemptMatch::Stale | AttemptMatch::Committed => {
                 return self.endpoint_reset(
                     PipeEndpoint::Peer(key),
                     pipe_id,
@@ -388,7 +383,7 @@ impl GatewayState {
             AttemptMatch::Starting { binding_id } | AttemptMatch::Awaiting { binding_id } => {
                 binding_id
             }
-            AttemptMatch::Resolving | AttemptMatch::Stale => {
+            AttemptMatch::Resolving | AttemptMatch::Stale | AttemptMatch::Committed => {
                 return self.endpoint_reset(
                     PipeEndpoint::Peer(key),
                     pipe_id,
