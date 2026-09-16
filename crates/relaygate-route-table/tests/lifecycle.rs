@@ -3,7 +3,7 @@ mod support;
 use std::time::{Duration, Instant};
 
 use relaygate_route_table::{
-    BindingId, BindingProjection, Destination, ErrorCode, GatewayLocator, RegistrationRevision,
+    BindingId, BindingProjection, Destination, GatewayLocator, RegistrationRevision,
     RouteTableError,
 };
 use uuid::Uuid;
@@ -226,7 +226,7 @@ fn revision_rules_are_monotonic_atomic_and_idempotent() -> Result<(), RouteTable
     );
     assert!(matches!(
         invalid_first,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert_eq!(shard.stats().binding_count, 0);
 
@@ -268,7 +268,7 @@ fn revision_rules_are_monotonic_atomic_and_idempotent() -> Result<(), RouteTable
     );
     assert!(matches!(
         conflicting_same_revision,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert_eq!(shard.stats().binding_count, 2);
 
@@ -293,7 +293,7 @@ fn revision_rules_are_monotonic_atomic_and_idempotent() -> Result<(), RouteTable
     );
     assert!(matches!(
         delayed_revision,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert_eq!(
         shard

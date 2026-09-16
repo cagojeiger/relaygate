@@ -11,7 +11,7 @@ mod model;
 mod shard;
 
 pub use directory::{AUTHORITY_HASH_SHA256_MODULO_V2, ShardDirectory, ShardRecord};
-pub use error::{ErrorCode, RouteTableError};
+pub use error::RouteTableError;
 pub use identity::{
     AuthenticatedGatewayId, BindingId, GatewayId, GatewayLocator, LeaseId, RegistrationRevision,
     RelaySessionId, RequestContext, ShardDirectoryGeneration, ShardEndpoint, ShardId,

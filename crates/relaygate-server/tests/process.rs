@@ -445,14 +445,24 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
         "RELAYGATE_AUTH_CONFIG_PATH is required",
     );
 
-    let removed_cluster_token = server_command()
-        .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
-        .env("RELAYGATE_CLUSTER_TOKEN", "removed")
-        .output()?;
-    assert_unsuccessful_output(
-        &removed_cluster_token,
-        "RELAYGATE_CLUSTER_TOKEN is no longer supported",
-    );
+    // Removed cluster-token names fail every role and the readiness check.
+    for name in ["RELAYGATE_CLUSTER_TOKEN", "RELAYGATE_NEXT_CLUSTER_TOKEN"] {
+        for args in [
+            vec!["gateway"],
+            vec!["route-table"],
+            vec!["check", "127.0.0.1:1"],
+        ] {
+            let removed_cluster_token = server_command()
+                .args(&args)
+                .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")
+                .env(name, "removed")
+                .output()?;
+            assert_unsuccessful_output(
+                &removed_cluster_token,
+                &format!("{name} is no longer supported"),
+            );
+        }
+    }
 
     let zero_capacity = server_command()
         .env("RELAYGATE_BIND_ADDR", "127.0.0.1:0")

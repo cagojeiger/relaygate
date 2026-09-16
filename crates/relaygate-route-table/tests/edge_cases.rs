@@ -3,9 +3,9 @@ mod support;
 use std::time::{Duration, Instant};
 
 use relaygate_route_table::{
-    BindingId, BindingProjection, BindingSet, BindingSnapshot, Destination, ErrorCode,
-    GatewayLocator, RegistrationKey, RegistrationRevision, RequestContext, RouteTableConfig,
-    RouteTableError, RouteTableShard, ShardDirectory, ShardDirectoryGeneration, ShardId,
+    BindingId, BindingProjection, BindingSet, BindingSnapshot, Destination, GatewayLocator,
+    RegistrationKey, RegistrationRevision, RequestContext, RouteTableConfig, RouteTableError,
+    RouteTableShard, ShardDirectory, ShardDirectoryGeneration, ShardId,
 };
 use uuid::Uuid;
 
@@ -27,10 +27,7 @@ fn internal_register_deadline_overflow_leaves_no_partial_route_table_state()
         start,
     );
 
-    assert!(matches!(
-        register,
-        Err(ref error) if error.code() == ErrorCode::Internal
-    ));
+    assert!(matches!(register, Err(RouteTableError::DeadlineOverflow)));
     let stats = shard.stats();
     assert_eq!(stats.registration_count, 0);
     assert_eq!(stats.binding_count, 0);
@@ -43,10 +40,7 @@ fn internal_register_deadline_overflow_leaves_no_partial_route_table_state()
         &destination("unregistered")?,
         start,
     );
-    assert!(matches!(
-        resolve,
-        Err(ref error) if error.code() == ErrorCode::NotFound
-    ));
+    assert!(matches!(resolve, Err(RouteTableError::NotFound)));
     assert_eq!(shard.stats(), stats);
     Ok(())
 }
@@ -202,15 +196,15 @@ fn ended_lease_operations_cannot_change_a_new_lease() -> Result<(), RouteTableEr
     let stale_deregister = shard.deregister(context, generation, &key, lease_one, start);
     assert!(matches!(
         stale_update,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert!(matches!(
         stale_keepalive,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert!(matches!(
         stale_deregister,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert_eq!(
         shard
@@ -271,7 +265,7 @@ fn auth_generation_and_scope_failures_do_not_expire_or_mutate_state() -> Result<
     );
     assert!(matches!(
         generation_error,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert_eq!(shard.stats().registration_count, 1);
 
@@ -289,7 +283,7 @@ fn auth_generation_and_scope_failures_do_not_expire_or_mutate_state() -> Result<
     );
     assert!(matches!(
         scope_error,
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+        Err(RouteTableError::InvalidArgument(_))
     ));
     assert_eq!(shard.stats().registration_count, 1);
 
@@ -338,10 +332,7 @@ fn invalid_snapshot_is_rejected_before_existing_state_changes() -> Result<(), Ro
         out_of_scope,
         start,
     );
-    assert!(matches!(
-        result,
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
-    ));
+    assert!(matches!(result, Err(RouteTableError::InvalidArgument(_))));
     assert_eq!(shard.stats().binding_count, 1);
     assert_eq!(
         shard
@@ -396,7 +387,7 @@ fn expiry_memory_is_bounded_by_live_leases_not_keepalive_count() -> Result<(), R
 fn empty_and_duplicate_snapshot_shapes_are_rejected() -> Result<(), RouteTableError> {
     assert!(matches!(
         BindingSnapshot::new([]),
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+        Err(RouteTableError::InvalidArgument(_))
     ));
 
     let gateway_id = gateway(61);
@@ -418,7 +409,7 @@ fn empty_and_duplicate_snapshot_shapes_are_rejected() -> Result<(), RouteTableEr
     );
     assert!(matches!(
         BindingSnapshot::new([first, second]),
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+        Err(RouteTableError::InvalidArgument(_))
     ));
     Ok(())
 }
@@ -427,7 +418,7 @@ fn empty_and_duplicate_snapshot_shapes_are_rejected() -> Result<(), RouteTableEr
 fn binding_set_transport_reconstruction_rejects_invalid_shapes() -> Result<(), RouteTableError> {
     assert!(matches!(
         BindingSet::from_entries(Vec::new()),
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+        Err(RouteTableError::InvalidArgument(_))
     ));
 
     let gateway_id = gateway(62);
@@ -438,11 +429,11 @@ fn binding_set_transport_reconstruction_rejects_invalid_shapes() -> Result<(), R
 
     assert!(matches!(
         BindingSet::from_entries(vec![alpha.clone(), duplicate]),
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+        Err(RouteTableError::InvalidArgument(_))
     ));
     assert!(matches!(
         BindingSet::from_entries(vec![alpha.clone(), beta]),
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
+        Err(RouteTableError::InvalidArgument(_))
     ));
     assert_eq!(BindingSet::from_entries(vec![alpha])?.len(), 1);
     Ok(())
@@ -525,11 +516,11 @@ fn expired_lease_update_and_keepalive_fail_without_recreating_state() -> Result<
     );
     assert!(matches!(
         expired_update,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert!(matches!(
         expired_keepalive,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
     assert_eq!(shard.stats().registration_count, 0);
     assert_eq!(shard.stats().binding_count, 0);
@@ -581,14 +572,8 @@ fn wrong_authority_snapshot_and_resolve_are_invalid_and_atomic() -> Result<(), R
         &"test/8ed3f6ad-685b-459e-ad70-22518e1af76c".parse::<Destination>()?,
         start,
     );
-    assert!(matches!(
-        update,
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
-    ));
-    assert!(matches!(
-        resolve,
-        Err(ref error) if error.code() == ErrorCode::InvalidArgument
-    ));
+    assert!(matches!(update, Err(RouteTableError::InvalidArgument(_))));
+    assert!(matches!(resolve, Err(RouteTableError::InvalidArgument(_))));
     assert_eq!(shard.stats().registration_count, 1);
     assert_eq!(shard.stats().binding_count, 0);
     assert_eq!(shard.stats().expiry_record_count, 1);
@@ -637,7 +622,7 @@ fn active_binding_identity_cannot_change_destination_or_locator() -> Result<(), 
     );
     assert!(matches!(
         destination_result,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
 
     let changed_locator = BindingProjection::new(
@@ -658,7 +643,7 @@ fn active_binding_identity_cannot_change_destination_or_locator() -> Result<(), 
     );
     assert!(matches!(
         locator_result,
-        Err(ref error) if error.code() == ErrorCode::FailedPrecondition
+        Err(RouteTableError::FailedPrecondition(_))
     ));
 
     assert_eq!(
