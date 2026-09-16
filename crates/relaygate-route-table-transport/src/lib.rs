@@ -5,6 +5,7 @@
 //! It does not provide persistence, reconnect, request replay, or routing policy.
 
 mod auth;
+mod bounds;
 mod client;
 mod codec;
 mod dto;

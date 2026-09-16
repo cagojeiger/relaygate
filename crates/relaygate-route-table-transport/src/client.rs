@@ -8,14 +8,15 @@ use relaygate_route_table::{
 use relaygate_transport::{BoxedIo, ClientTlsConfig, insecure_boxed};
 use tokio::{
     net::{TcpStream, ToSocketAddrs},
-    sync::{Semaphore, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     time::Instant,
 };
 use tokio_util::codec::Framed;
 
 use crate::{
     ErrorCode, GatewayName, TransportError,
-    codec::{CodecError, FrameCodec},
+    bounds::{validate_capacity, validate_duration, validate_frame_len},
+    codec::{FrameCodec, map_receive_codec_error, map_send_codec_error},
     dto::{
         WireRequest, WireResponse, response_bindings, response_deregistered,
         response_registration_ack,
@@ -414,64 +415,6 @@ fn decode_response(
         _ => Err(TransportError::protocol(
             "unexpected frame from RouteTable service",
         )),
-    }
-}
-
-fn map_send_codec_error(error: CodecError) -> TransportError {
-    match error {
-        CodecError::FrameTooLarge { .. } | CodecError::LengthOverflow => {
-            TransportError::resource_exhausted(error.to_string())
-        }
-        _ if error.is_io() => TransportError::unavailable(error.to_string()),
-        _ => TransportError::protocol(error.to_string()),
-    }
-}
-
-fn map_receive_codec_error(error: CodecError) -> TransportError {
-    if error.is_io() {
-        TransportError::unavailable(error.to_string())
-    } else {
-        TransportError::protocol(error.to_string())
-    }
-}
-
-fn validate_nonzero(name: &'static str, value: usize) -> Result<(), TransportError> {
-    if value == 0 {
-        Err(TransportError::invalid_argument(format!(
-            "{name} must be greater than zero"
-        )))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_capacity(name: &'static str, value: usize) -> Result<(), TransportError> {
-    validate_nonzero(name, value)?;
-    if value > Semaphore::MAX_PERMITS {
-        return Err(TransportError::invalid_argument(format!(
-            "{name} exceeds the runtime limit"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_frame_len(value: usize) -> Result<(), TransportError> {
-    validate_nonzero("maximum frame length", value)?;
-    if value > u32::MAX as usize {
-        return Err(TransportError::invalid_argument(
-            "maximum frame length exceeds the wire limit",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_duration(name: &'static str, value: Duration) -> Result<(), TransportError> {
-    if value.is_zero() {
-        Err(TransportError::invalid_argument(format!(
-            "{name} must be greater than zero"
-        )))
-    } else {
-        Ok(())
     }
 }
 
