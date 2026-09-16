@@ -849,6 +849,118 @@ fn terminal_after_removal_releases_the_lease_for_pruning() -> TestResult {
 }
 
 #[test]
+fn registration_phases_follow_the_spec_007_table() -> TestResult {
+    use crate::lifecycle::RegistrationPhase as Phase;
+
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
+    assert_eq!(state.phase(), Phase::Registering);
+
+    // REGISTERING --> LEASED: Register ACK
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+    assert_eq!(state.phase(), Phase::Leased);
+
+    // LEASED --> LEASED: KeepAlive ACK re-validates the lease after a
+    // transport loss that precedes the first Update.
+    state.connection_lost(now);
+    assert_eq!(state.phase(), Phase::Leased);
+    let keep_alive = state.begin_next(now)?.ok_or("missing KEEP_ALIVE")?;
+    assert!(matches!(
+        keep_alive.action,
+        RegistrationAction::KeepAlive { .. }
+    ));
+    state.keep_alive_succeeded(&keep_alive, registration_ack(10, None), now);
+    assert_eq!(state.phase(), Phase::Leased);
+
+    // LEASED --> SYNCED: Update(revision 1) ACK
+    let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+    state.update_succeeded(
+        &update,
+        registration_ack(
+            10,
+            Some(relaygate_route_table::RegistrationRevision::new(1)?),
+        ),
+        now,
+    );
+    assert_eq!(state.phase(), Phase::Synced);
+
+    // SYNCED --> UNSYNCED: snapshot change; UNSYNCED --> SYNCED: Update ACK
+    state.publish(
+        2,
+        Some(snapshot("22222222-2222-4222-8222-222222222222")?),
+        now,
+    );
+    assert_eq!(state.phase(), Phase::Unsynced);
+    let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+    state.update_succeeded(
+        &update,
+        registration_ack(
+            10,
+            Some(relaygate_route_table::RegistrationRevision::new(2)?),
+        ),
+        now,
+    );
+    assert_eq!(state.phase(), Phase::Synced);
+
+    // SYNCED --> UNSYNCED: transport loss; UNSYNCED --> SYNCED: KeepAlive ACK
+    state.connection_lost(now);
+    assert_eq!(state.phase(), Phase::Unsynced);
+    let keep_alive = state.begin_next(now)?.ok_or("missing KEEP_ALIVE")?;
+    state.keep_alive_succeeded(&keep_alive, registration_ack(10, None), now);
+    assert_eq!(state.phase(), Phase::Synced);
+
+    // SYNCED --> DEREGISTERING --> REMOVED: ACK
+    state.publish(3, None, now);
+    assert_eq!(state.phase(), Phase::Deregistering);
+    let deregister = state.begin_next(now)?.ok_or("missing DEREGISTER")?;
+    state.finish_deregister(&deregister);
+    assert_eq!(state.phase(), Phase::Removed);
+    Ok(())
+}
+
+#[test]
+fn lease_invalid_returns_to_registering_and_permanent_failure_is_terminal() -> TestResult {
+    use crate::lifecycle::RegistrationPhase as Phase;
+
+    let now = Instant::now();
+    let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
+    let register = state.begin_next(now)?.ok_or("missing REGISTER")?;
+    state.register_succeeded(&register, registration_ack(10, None), now);
+    assert_eq!(state.phase(), Phase::Leased);
+
+    // LEASED --> REGISTERING: lease invalid (one idempotent REGISTER probe)
+    let update = state.begin_next(now)?.ok_or("missing UPDATE")?;
+    state.precondition_failed(&update, now);
+    assert_eq!(state.phase(), Phase::Registering);
+
+    // REGISTERING --> TERMINAL: the probe itself fails
+    let probe = state.begin_next(now)?.ok_or("missing REGISTER probe")?;
+    state.precondition_failed(&probe, now);
+    assert_eq!(state.phase(), Phase::Terminal);
+    assert!(state.begin_next(now)?.is_none());
+
+    // SYNCED --> TERMINAL: shard-scoped permanent failure reaches synced
+    // registrations too (SPEC 007).
+    let mut synced = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
+    let register = synced.begin_next(now)?.ok_or("missing REGISTER")?;
+    synced.register_succeeded(&register, registration_ack(11, None), now);
+    let update = synced.begin_next(now)?.ok_or("missing UPDATE")?;
+    synced.update_succeeded(
+        &update,
+        registration_ack(
+            11,
+            Some(relaygate_route_table::RegistrationRevision::new(1)?),
+        ),
+        now,
+    );
+    assert_eq!(synced.phase(), Phase::Synced);
+    synced.mark_terminal();
+    assert_eq!(synced.phase(), Phase::Terminal);
+    Ok(())
+}
+
+#[test]
 fn deregister_retry_budget_ends_with_the_lease_lifetime() -> TestResult {
     let now = Instant::now();
     let mut state = registration_state(now, 1, "11111111-1111-4111-8111-111111111111")?;
