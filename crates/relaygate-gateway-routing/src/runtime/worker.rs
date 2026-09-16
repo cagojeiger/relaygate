@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     super::{
         RoutingError,
-        lifecycle::{OperationTicket, RegistrationAction, RegistrationState},
+        lifecycle::{OperationTicket, RegistrationAction, RegistrationPhase, RegistrationState},
     },
     BoxFuture,
     desired::DesiredStore,
@@ -47,17 +47,18 @@ impl WorkerCounts {
         let (synced, unsynced, terminal) = registrations
             .values()
             .filter(|state| state.is_desired())
-            .fold((0, 0, 0), |(synced, unsynced, terminal), state| {
-                if state.is_synced() {
-                    (synced + 1, unsynced, terminal)
-                } else {
-                    (
-                        synced,
-                        unsynced + 1,
-                        terminal + usize::from(state.is_terminal()),
-                    )
-                }
-            });
+            .fold(
+                (0, 0, 0),
+                |(synced, unsynced, terminal), state| match state.phase() {
+                    RegistrationPhase::Synced => (synced + 1, unsynced, terminal),
+                    RegistrationPhase::Terminal => (synced, unsynced + 1, terminal + 1),
+                    RegistrationPhase::Registering
+                    | RegistrationPhase::Leased
+                    | RegistrationPhase::Unsynced
+                    | RegistrationPhase::Deregistering
+                    | RegistrationPhase::Removed => (synced, unsynced + 1, terminal),
+                },
+            );
         self.synced.store(synced, Ordering::Relaxed);
         self.unsynced.store(unsynced, Ordering::Relaxed);
         self.terminal.store(terminal, Ordering::Relaxed);

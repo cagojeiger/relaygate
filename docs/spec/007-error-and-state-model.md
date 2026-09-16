@@ -134,7 +134,11 @@ stateDiagram-v2
     REGISTERING --> TERMINAL: permanent failure
     LEASED --> TERMINAL: permanent failure
     UNSYNCED --> TERMINAL: permanent failure
+    SYNCED --> TERMINAL: permanent failure
 ```
+
+`TERMINAL`은 shard 범위의 permanent failure가 그 shard의 모든 registration에 적용될 때 `DEREGISTERING`에서도
+진입하며, snapshot이 없는 terminal registration은 lease를 버리고 RT expiry에 맡긴 뒤 `REMOVED`로 정리됩니다.
 
 이 다이어그램은 Gateway가 session-shard registration별로 관측하는 상태입니다. RT 쪽 lease와 snapshot 설치 구분은
 [ADR 019](../adr/019-registration-snapshot-lifecycle.md)가 설명하며 두 관점은 같은 lifecycle을 다르게 나눈 것입니다.

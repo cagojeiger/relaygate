@@ -126,6 +126,8 @@ rust = [
   "revision_rules_are_monotonic_atomic_and_idempotent",
   "expiry_memory_is_bounded_by_live_leases_not_keepalive_count",
   "restart_starts_empty_and_recovers_only_from_a_new_lease_snapshot",
+  "tests::registration_phases_follow_the_spec_007_table",
+  "tests::lease_invalid_returns_to_registering_and_permanent_failure_is_terminal",
 ]
 
 [[case]]

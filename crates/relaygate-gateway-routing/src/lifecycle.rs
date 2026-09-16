@@ -53,6 +53,19 @@ struct LeaseState {
     expires_at: Instant,
 }
 
+/// The SPEC 007 registration state, derived from [`RegistrationState`]'s
+/// fields so the canonical table can be asserted against directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RegistrationPhase {
+    Registering,
+    Leased,
+    Synced,
+    Unsynced,
+    Deregistering,
+    Removed,
+    Terminal,
+}
+
 /// Current desired state and synchronization metadata for one session-shard
 /// registration. No mutation history or old snapshot is retained.
 #[derive(Debug, Clone)]
@@ -132,22 +145,43 @@ impl RegistrationState {
         }
     }
 
+    /// Names the SPEC 007 state this registration is in. Pure: every
+    /// transition in the canonical table is a change of this value.
+    #[must_use]
+    pub(super) fn phase(&self) -> RegistrationPhase {
+        if self.terminal {
+            return RegistrationPhase::Terminal;
+        }
+        if self.snapshot.is_none() {
+            return if self.is_removable() {
+                RegistrationPhase::Removed
+            } else {
+                RegistrationPhase::Deregistering
+            };
+        }
+        let Some(lease) = &self.lease else {
+            return RegistrationPhase::Registering;
+        };
+        if !self.validate_lease && self.synced_version == Some(self.desired_version) {
+            RegistrationPhase::Synced
+        } else if lease.revision.is_none() {
+            // Leased but no snapshot Update has been accepted yet; lease
+            // re-validation after a transport loss stays inside LEASED
+            // (LEASED --> LEASED: KeepAlive ACK).
+            RegistrationPhase::Leased
+        } else {
+            RegistrationPhase::Unsynced
+        }
+    }
+
     #[must_use]
     pub(super) fn is_synced(&self) -> bool {
-        self.snapshot.is_some()
-            && !self.terminal
-            && !self.validate_lease
-            && self.synced_version == Some(self.desired_version)
+        self.phase() == RegistrationPhase::Synced
     }
 
     #[must_use]
     pub(super) fn is_desired(&self) -> bool {
         self.snapshot.is_some()
-    }
-
-    #[must_use]
-    pub(super) fn is_terminal(&self) -> bool {
-        self.terminal
     }
 
     #[must_use]
