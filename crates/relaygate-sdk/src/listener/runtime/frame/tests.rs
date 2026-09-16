@@ -20,7 +20,9 @@ use super::handle_relay_frame;
 use crate::{
     AccessToken, AccessTokenSource, Config, Destination, ListenerStatus,
     lifetime::RuntimeLifetime,
-    listener::{ListenerLifecycle, ListenerState, RelayInner, RelaySession, RelayStatus},
+    listener::{
+        ListenerLifecycle, ListenerRuntime, ListenerState, RelayInner, RelaySession, RelayStatus,
+    },
     pipe::PipeState,
     resource::RelayResources,
     session::{ReconnectBackoff, SessionLink, session_outbound_channel},
@@ -42,12 +44,10 @@ async fn full_listener_queue_rejects_offer_immediately_and_preserves_session_fra
         destination: destination.clone(),
         access_token_source: AccessTokenSource::static_token(AccessToken::new("grant")?),
         status,
-        last_error: StdMutex::new(None),
         incoming_tx,
         incoming_rx: tokio::sync::Mutex::new(incoming_rx),
         initial_deadline: Instant::now() + Duration::from_secs(10),
-        lifecycle: StdMutex::new(ListenerLifecycle::Returned),
-        registration_committed: StdMutex::new(false),
+        runtime: StdMutex::new(ListenerRuntime::new(ListenerLifecycle::Returned)),
         live_pipe_slots: Arc::new(Semaphore::new(1)),
     });
     let session_id = SessionId::new();

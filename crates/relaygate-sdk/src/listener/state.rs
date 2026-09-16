@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex as StdMutex, Weak,
+        Arc, Mutex as StdMutex, PoisonError, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -36,13 +36,30 @@ pub(super) struct ListenerState {
     pub(super) destination: Destination,
     pub(super) access_token_source: AccessTokenSource,
     pub(super) status: watch::Sender<ListenerStatus>,
-    pub(super) last_error: StdMutex<Option<Error>>,
     pub(super) incoming_tx: mpsc::Sender<Pipe>,
     pub(super) incoming_rx: tokio::sync::Mutex<mpsc::Receiver<Pipe>>,
     pub(super) initial_deadline: Instant,
-    pub(super) lifecycle: StdMutex<ListenerLifecycle>,
-    pub(super) registration_committed: StdMutex<bool>,
+    /// The one logical state machine behind this Listener. Status is published
+    /// to `status` while this lock is held, so a reader that takes the lock
+    /// sees a status no older than the lifecycle it observes.
+    pub(super) runtime: StdMutex<ListenerRuntime>,
     pub(super) live_pipe_slots: Arc<Semaphore>,
+}
+
+pub(super) struct ListenerRuntime {
+    pub(super) lifecycle: ListenerLifecycle,
+    pub(super) registration_committed: bool,
+    pub(super) last_error: Option<Error>,
+}
+
+impl ListenerRuntime {
+    pub(super) const fn new(lifecycle: ListenerLifecycle) -> Self {
+        Self {
+            lifecycle,
+            registration_committed: false,
+            last_error: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,7 +290,17 @@ pub(super) enum DesiredSettlement {
 }
 
 impl ListenerState {
-    pub(super) fn set_status(&self, status: ListenerStatus, error: Option<Error>) {
+    /// Locks the logical state. A poisoned lock means a holder panicked
+    /// mid-transition; the state is still the last consistent value written
+    /// under the lock, so it is recovered rather than treated as absent.
+    fn runtime(&self) -> std::sync::MutexGuard<'_, ListenerRuntime> {
+        self.runtime.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Publishes `status` (unless already Closed) and records `error` as the
+    /// last error, under the caller's lock so status and lifecycle move
+    /// together.
+    fn publish(&self, runtime: &mut ListenerRuntime, status: ListenerStatus, error: Option<Error>) {
         let mut previous = status;
         let applied = self.status.send_if_modified(|current| {
             previous = *current;
@@ -309,13 +336,21 @@ impl ListenerState {
                 );
             }
         }
-        if let Ok(mut last_error) = self.last_error.lock() {
-            *last_error = error;
-        }
+        runtime.last_error = error;
+    }
+
+    pub(super) fn set_status(&self, status: ListenerStatus, error: Option<Error>) {
+        let mut runtime = self.runtime();
+        self.publish(&mut runtime, status, error);
     }
 
     pub(super) fn last_error(&self) -> Option<Error> {
-        self.last_error.lock().ok().and_then(|error| error.clone())
+        self.runtime().last_error.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn lifecycle(&self) -> ListenerLifecycle {
+        self.runtime().lifecycle
     }
 
     pub(super) fn blocked_error(&self) -> Error {
@@ -329,18 +364,14 @@ impl ListenerState {
     }
 
     pub(super) fn was_returned(&self) -> bool {
-        self.lifecycle
-            .lock()
-            .is_ok_and(|lifecycle| *lifecycle == ListenerLifecycle::Returned)
+        self.runtime().lifecycle == ListenerLifecycle::Returned
     }
 
     pub(super) fn promote_returned(&self) -> bool {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return false;
-        };
-        match *lifecycle {
+        let mut runtime = self.runtime();
+        match runtime.lifecycle {
             ListenerLifecycle::Pending => {
-                *lifecycle = ListenerLifecycle::Returned;
+                runtime.lifecycle = ListenerLifecycle::Returned;
                 true
             }
             ListenerLifecycle::Returned => true,
@@ -349,15 +380,13 @@ impl ListenerState {
     }
 
     fn fail_initial(&self, error: Error) -> bool {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return false;
-        };
-        if *lifecycle != ListenerLifecycle::Pending {
+        let mut runtime = self.runtime();
+        if runtime.lifecycle != ListenerLifecycle::Pending {
             return false;
         }
-        *lifecycle = ListenerLifecycle::Terminal;
-        self.finish_registration_attempt();
-        self.set_status(ListenerStatus::Closed, Some(error));
+        runtime.lifecycle = ListenerLifecycle::Terminal;
+        runtime.registration_committed = false;
+        self.publish(&mut runtime, ListenerStatus::Closed, Some(error));
         true
     }
 
@@ -366,19 +395,21 @@ impl ListenerState {
         recovery_error: Error,
         initial_error: Error,
     ) -> bool {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return false;
-        };
-        match *lifecycle {
+        let mut runtime = self.runtime();
+        match runtime.lifecycle {
             ListenerLifecycle::Pending => {
-                *lifecycle = ListenerLifecycle::Terminal;
-                self.finish_registration_attempt();
-                self.set_status(ListenerStatus::Closed, Some(initial_error));
+                runtime.lifecycle = ListenerLifecycle::Terminal;
+                runtime.registration_committed = false;
+                self.publish(&mut runtime, ListenerStatus::Closed, Some(initial_error));
                 true
             }
             ListenerLifecycle::Returned => {
-                self.finish_registration_attempt();
-                self.set_status(ListenerStatus::Suspended, Some(recovery_error));
+                runtime.registration_committed = false;
+                self.publish(
+                    &mut runtime,
+                    ListenerStatus::Suspended,
+                    Some(recovery_error),
+                );
                 false
             }
             ListenerLifecycle::Terminal => false,
@@ -386,87 +417,70 @@ impl ListenerState {
     }
 
     pub(super) fn handle_precommit_session_end(&self, recovery_error: Error) {
-        let Ok(lifecycle) = self.lifecycle.lock() else {
-            return;
-        };
-        self.finish_registration_attempt();
-        match *lifecycle {
+        let mut runtime = self.runtime();
+        runtime.registration_committed = false;
+        match runtime.lifecycle {
             ListenerLifecycle::Pending => {
-                self.set_status(ListenerStatus::Registering, None);
+                self.publish(&mut runtime, ListenerStatus::Registering, None);
             }
             ListenerLifecycle::Returned => {
-                self.set_status(ListenerStatus::Suspended, Some(recovery_error));
+                self.publish(
+                    &mut runtime,
+                    ListenerStatus::Suspended,
+                    Some(recovery_error),
+                );
             }
             ListenerLifecycle::Terminal => {}
         }
     }
 
     pub(super) fn block(&self, error: Error) {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return;
-        };
-        if *lifecycle == ListenerLifecycle::Terminal {
+        let mut runtime = self.runtime();
+        if runtime.lifecycle == ListenerLifecycle::Terminal {
             return;
         }
-        *lifecycle = ListenerLifecycle::Terminal;
-        self.finish_registration_attempt();
-        self.set_status(ListenerStatus::Blocked, Some(error));
+        runtime.lifecycle = ListenerLifecycle::Terminal;
+        runtime.registration_committed = false;
+        self.publish(&mut runtime, ListenerStatus::Blocked, Some(error));
     }
 
+    /// Publishes ACTIVE under the state lock, which is what lets
+    /// `terminate_initial_operation` trust the status it reads under the same
+    /// lock.
     pub(super) fn activate(&self) -> bool {
-        self.activate_while_locked(|| {})
-    }
-
-    pub(super) fn activate_while_locked(&self, before_publish: impl FnOnce()) -> bool {
-        let Ok(lifecycle) = self.lifecycle.lock() else {
-            return false;
-        };
-        if *lifecycle == ListenerLifecycle::Terminal {
+        let mut runtime = self.runtime();
+        if runtime.lifecycle == ListenerLifecycle::Terminal {
             return false;
         }
-        before_publish();
-        self.finish_registration_attempt();
-        self.set_status(ListenerStatus::Active, None);
-        drop(lifecycle);
+        runtime.registration_committed = false;
+        self.publish(&mut runtime, ListenerStatus::Active, None);
         true
     }
 
     pub(super) fn close(&self, error: Option<Error>) {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return;
-        };
-        if *lifecycle == ListenerLifecycle::Terminal
+        let mut runtime = self.runtime();
+        if runtime.lifecycle == ListenerLifecycle::Terminal
             && *self.status.borrow() == ListenerStatus::Closed
         {
             return;
         }
-        *lifecycle = ListenerLifecycle::Terminal;
-        if let Ok(mut committed) = self.registration_committed.lock() {
-            *committed = false;
-        }
-        self.set_status(ListenerStatus::Closed, error);
+        runtime.lifecycle = ListenerLifecycle::Terminal;
+        runtime.registration_committed = false;
+        self.publish(&mut runtime, ListenerStatus::Closed, error);
     }
 
     pub(super) fn begin_registration_commit(&self) -> bool {
-        let Ok(lifecycle) = self.lifecycle.lock() else {
-            return false;
-        };
-        if *lifecycle == ListenerLifecycle::Terminal {
+        let mut runtime = self.runtime();
+        if runtime.lifecycle == ListenerLifecycle::Terminal {
             return false;
         }
-        if let Ok(mut committed) = self.registration_committed.lock() {
-            *committed = true;
-            self.set_status(ListenerStatus::Registering, None);
-            true
-        } else {
-            false
-        }
+        runtime.registration_committed = true;
+        self.publish(&mut runtime, ListenerStatus::Registering, None);
+        true
     }
 
     pub(super) fn finish_registration_attempt(&self) {
-        if let Ok(mut committed) = self.registration_committed.lock() {
-            *committed = false;
-        }
+        self.runtime().registration_committed = false;
     }
 
     fn terminate_initial_operation(
@@ -475,29 +489,22 @@ impl ListenerState {
         message: &str,
         keep_active: bool,
     ) -> Option<Error> {
-        let Ok(mut lifecycle) = self.lifecycle.lock() else {
-            return None;
-        };
-        if *lifecycle != ListenerLifecycle::Pending {
+        let mut runtime = self.runtime();
+        if runtime.lifecycle != ListenerLifecycle::Pending {
             return None;
         }
-        // `activate_while_locked` publishes ACTIVE under this same lock.
+        // `activate` publishes ACTIVE under this same lock.
         if keep_active && *self.status.borrow() == ListenerStatus::Active {
             return None;
         }
-        let observation = self.registration_committed.lock().map_or(
-            PeerObservation::NotObserved,
-            |mut committed| {
-                if std::mem::take(&mut *committed) {
-                    PeerObservation::MaybeObserved
-                } else {
-                    PeerObservation::NotObserved
-                }
-            },
-        );
-        *lifecycle = ListenerLifecycle::Terminal;
+        let observation = if std::mem::take(&mut runtime.registration_committed) {
+            PeerObservation::MaybeObserved
+        } else {
+            PeerObservation::NotObserved
+        };
+        runtime.lifecycle = ListenerLifecycle::Terminal;
         let error = Error::new(code, observation, message);
-        self.set_status(ListenerStatus::Closed, Some(error.clone()));
+        self.publish(&mut runtime, ListenerStatus::Closed, Some(error.clone()));
         Some(error)
     }
 

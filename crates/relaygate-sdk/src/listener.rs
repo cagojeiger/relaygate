@@ -22,7 +22,7 @@ use crate::{
 
 use self::{
     runtime::relay_supervisor,
-    state::{ListenerLifecycle, ListenerState, RelayInner, is_current_desired},
+    state::{ListenerLifecycle, ListenerRuntime, ListenerState, RelayInner, is_current_desired},
 };
 
 /// Current state of one desired Listener handle.
@@ -199,12 +199,10 @@ impl Relay {
             destination: destination.clone(),
             access_token_source,
             status,
-            last_error: StdMutex::new(None),
             incoming_tx,
             incoming_rx: tokio::sync::Mutex::new(incoming_rx),
             initial_deadline: deadline,
-            lifecycle: StdMutex::new(ListenerLifecycle::Pending),
-            registration_committed: StdMutex::new(false),
+            runtime: StdMutex::new(ListenerRuntime::new(ListenerLifecycle::Pending)),
             live_pipe_slots: self
                 .inner
                 .resources
@@ -238,7 +236,12 @@ impl Relay {
 
         let mut status = state.status.subscribe();
         loop {
-            match *status.borrow() {
+            // Copy the status out first: a `match` on `*status.borrow()` keeps
+            // the watch read guard alive through the arms, and the state
+            // methods called below publish through that watch while holding
+            // the state lock, so matching on the guard would invert the order.
+            let observed = *status.borrow();
+            match observed {
                 ListenerStatus::Active => {
                     if !state.promote_returned() {
                         continue;
@@ -608,7 +611,10 @@ impl Listener {
         // The final ACTIVE + non-terminal observation is accept's success
         // linearization point. A later session/peer failure is observed by
         // Pipe I/O, just like a socket may close immediately after accept.
-        match *status.borrow() {
+        // Copied out so the watch read guard is released before
+        // `blocked_error` takes the state lock (see `listen` for the order).
+        let observed = *status.borrow();
+        match observed {
             ListenerStatus::Active if !pipe.is_terminal() => Some(Ok(pipe)),
             ListenerStatus::Active => {
                 drop(pipe);
