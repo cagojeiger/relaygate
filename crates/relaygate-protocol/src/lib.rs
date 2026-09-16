@@ -5,6 +5,7 @@
 //!
 //! This crate owns framing and identifiers only. Socket ownership, reconnect,
 //! admission, and routing policy belong to the SDK and Gateway crates.
+#![deny(missing_docs)]
 
 mod codec;
 mod error;

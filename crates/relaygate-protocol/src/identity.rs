@@ -7,16 +7,19 @@ macro_rules! opaque_uuid {
         pub struct $name(Uuid);
 
         impl $name {
+            /// Creates an identifier from a freshly generated UUIDv4.
             #[must_use]
             pub fn new() -> Self {
                 Self(Uuid::new_v4())
             }
 
+            /// Wraps an existing UUID, such as one decoded from the wire.
             #[must_use]
             pub const fn from_uuid(value: Uuid) -> Self {
                 Self(value)
             }
 
+            /// Returns the wrapped UUID for wire encoding or comparison.
             #[must_use]
             pub const fn as_uuid(self) -> Uuid {
                 self.0
@@ -68,6 +71,7 @@ pub struct PipeId {
 }
 
 impl PipeId {
+    /// Creates an identifier from its origin session and connection counter.
     #[must_use]
     pub const fn new(origin_session_id: SessionId, connection_id: u64) -> Self {
         Self {
@@ -76,11 +80,13 @@ impl PipeId {
         }
     }
 
+    /// Returns the session incarnation that originated the dial.
     #[must_use]
     pub const fn origin_session_id(self) -> SessionId {
         self.origin_session_id
     }
 
+    /// Returns the counter the origin session assigned to the dial.
     #[must_use]
     pub const fn connection_id(self) -> u64 {
         self.connection_id

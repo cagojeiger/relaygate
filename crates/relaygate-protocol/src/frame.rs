@@ -8,20 +8,29 @@ use crate::{BearerToken, BindingId, Destination, PipeId, SessionId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ErrorCode {
+    /// A request field is malformed or violates the contract.
     InvalidArgument = 1,
+    /// The operation credential is missing, expired, or unverifiable.
     Unauthenticated = 2,
+    /// The verified credential does not authorize the operation.
     PermissionDenied = 3,
+    /// No Binding or Pipe matches the requested Destination or identifier.
     NotFound = 4,
+    /// The current state does not allow the operation.
     FailedPrecondition = 5,
+    /// The serving side cannot accept the operation at this time.
     Unavailable = 6,
+    /// The operation did not reach a terminal result within its deadline.
     DeadlineExceeded = 7,
     /// Covers admission, capacity, queue, and size limits.
     ResourceExhausted = 8,
+    /// The initiator abandoned the operation before it completed.
     Cancelled = 9,
     /// A peer violated the wire protocol or state-machine contract.
     ProtocolError = 10,
     /// A local invariant or task failed without a peer protocol violation.
     Internal = 11,
+    /// The requested registration already exists.
     AlreadyExists = 12,
 }
 
@@ -99,90 +108,145 @@ impl PeerObservation {
 /// [`Frame::Dial`]; application data remains opaque in [`Frame::Data`].
 #[derive(Clone, PartialEq, Eq)]
 pub enum Frame {
+    /// SDK → Gateway: starts a session and carries no credential.
     Hello,
+    /// Gateway → SDK: establishes the session and assigns its identifier.
     Welcome {
+        /// Identifies the session incarnation the Gateway just established.
         session_id: SessionId,
     },
+    /// Gateway → SDK: refuses the session before it is established.
     SessionRejected {
+        /// Names the reason the session was refused.
         code: ErrorCode,
+        /// Human-readable detail for the code.
         message: String,
     },
+    /// SDK → Gateway: registers a Destination for this session.
     Publish {
+        /// Correlates the reply with the request that carried the same id.
         request_id: u64,
+        /// The exact routing address being registered.
         destination: Destination,
+        /// Operation credential the Gateway verifies for this registration.
         access_token: BearerToken,
     },
+    /// Gateway → SDK: reports that the registration succeeded.
     Published {
+        /// Correlates the reply with the request that carried the same id.
         request_id: u64,
+        /// Identifies the Binding the registration created.
         binding_id: BindingId,
     },
+    /// Gateway → SDK: reports that the registration failed.
     PublishFailed {
+        /// Correlates the reply with the request that carried the same id.
         request_id: u64,
+        /// Names the reason the registration failed.
         code: ErrorCode,
+        /// Human-readable detail for the code.
         message: String,
     },
+    /// SDK → Gateway: releases a Binding this session owns.
     Unpublish {
+        /// Correlates the reply with the request that carried the same id.
         request_id: u64,
+        /// Identifies the Binding to release.
         binding_id: BindingId,
     },
+    /// Gateway → SDK: confirms that the Binding is released.
     Unpublished {
+        /// Correlates the reply with the request that carried the same id.
         request_id: u64,
     },
+    /// SDK → Gateway: requests a Pipe to a Destination.
     Dial {
+        /// Session-local id that correlates the dial with its terminal result.
         connection_id: u64,
+        /// The exact routing address the dial targets.
         destination: Destination,
+        /// Operation credential the Gateway verifies for this dial.
         access_token: BearerToken,
     },
     /// Offers an incoming Pipe to the session that owns a selected binding.
     Offer {
+        /// Identifies the Pipe being offered.
         pipe_id: PipeId,
+        /// Identifies the Binding the Gateway selected for the dial.
         binding_id: BindingId,
+        /// The routing address the dial targeted.
         destination: Destination,
     },
+    /// SDK → Gateway: the Listener admitted the offered Pipe to its queue.
     OfferAccepted {
+        /// Identifies the offered Pipe.
         pipe_id: PipeId,
     },
+    /// SDK → Gateway: the Listener did not admit the offered Pipe.
     OfferRejected {
+        /// Identifies the offered Pipe.
         pipe_id: PipeId,
+        /// Names the reason the offer was rejected.
         code: ErrorCode,
+        /// Human-readable detail for the code.
         message: String,
     },
     /// Confirms that a Pipe is established for the dialing session.
     Opened {
+        /// Identifies the established Pipe, carrying the origin session id and
+        /// the connection id of the dial that created it.
         pipe_id: PipeId,
     },
+    /// Gateway → SDK: ends a dial attempt without a Pipe.
     DialFailed {
+        /// Correlates the failure with the dial that carried the same id.
         connection_id: u64,
+        /// Names the reason the dial failed.
         code: ErrorCode,
+        /// States whether the selected Listener may have observed the dial.
         observation: PeerObservation,
+        /// Human-readable detail for the code.
         message: String,
     },
+    /// Carries opaque application bytes over an established Pipe.
     Data {
+        /// Identifies the Pipe the bytes belong to.
         pipe_id: PipeId,
+        /// Application bytes RelayGate relays without interpreting them.
         payload: Bytes,
     },
     /// Half-closes the sender's write direction of a Pipe.
     Fin {
+        /// Identifies the Pipe being half-closed.
         pipe_id: PipeId,
     },
     /// Closes a Pipe normally in both directions.
     Close {
+        /// Identifies the Pipe being closed.
         pipe_id: PipeId,
     },
     /// Terminates a Pipe with an error.
     Reset {
+        /// Identifies the Pipe being terminated.
         pipe_id: PipeId,
+        /// Names the reason the Pipe was terminated.
         code: ErrorCode,
+        /// Human-readable detail for the code.
         message: String,
     },
+    /// Probes session liveness and expects a matching [`Frame::Pong`].
     Ping {
+        /// Value the peer echoes in its reply.
         nonce: u64,
     },
+    /// Answers a liveness probe.
     Pong {
+        /// Echoes the nonce of the probe being answered.
         nonce: u64,
     },
     /// Cancels a pending Pipe establishment attempt.
     Cancel {
+        /// Identifies the pending Pipe to release.
         pipe_id: PipeId,
     },
 }
