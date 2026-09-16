@@ -22,6 +22,8 @@ mod control_admission;
 mod control_admission_tests;
 mod delivery;
 #[cfg(test)]
+mod delivery_tests;
+#[cfg(test)]
 mod observation_tests;
 mod opening;
 mod pipe;
