@@ -233,7 +233,7 @@ fn a_closed_queue_rejects_the_whole_terminal_batch_and_cancels() -> TestResult {
 }
 
 #[test]
-fn rejections_are_counted_by_reason_and_by_frame() -> TestResult {
+fn rejections_are_counted_by_reason_and_by_frame_count() -> TestResult {
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     let target = session(1);
