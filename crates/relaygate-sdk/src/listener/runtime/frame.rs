@@ -70,7 +70,18 @@ pub(super) async fn handle_relay_frame(
         } => frames.on_reset(pipe_id, code, message),
         Frame::Ping { nonce } => frames.on_ping(nonce).await,
         Frame::Pong { .. } | Frame::Unpublished { .. } => frames.settle(),
-        _ => RelayFrameAction::Stop,
+        other => {
+            // `Frame`'s Debug redacts tokens and payloads; the kind is enough
+            // to explain why the session ends.
+            tracing::warn!(
+                component = "sdk",
+                event = "sdk.session.unexpected_frame",
+                session_id = %session_id.as_uuid(),
+                frame = ?other,
+                "unexpected frame ended the Relay session"
+            );
+            RelayFrameAction::Stop
+        }
     }
 }
 

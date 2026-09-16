@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use relaygate_protocol::{Frame, FrameCodec, SessionId};
+use relaygate_protocol::{DEFAULT_MAX_FRAME_LEN, Frame, FrameCodec, SessionId};
 use relaygate_transport::BoxedIo;
 use tokio::time::{Instant, sleep_until, timeout};
 use tokio_util::codec::Framed;
@@ -31,7 +31,7 @@ async fn establish_inner(config: &Config) -> Result<EstablishedSession> {
     let stream = config.transport.connect(config.connect_timeout).await?;
     let mut transport = Framed::with_capacity(
         stream,
-        FrameCodec::new(config.max_frame_len),
+        FrameCodec::new(DEFAULT_MAX_FRAME_LEN),
         SDK_FRAME_INITIAL_CAPACITY,
     );
     transport.set_backpressure_boundary(SDK_FRAME_WRITE_BACKPRESSURE_BOUNDARY);

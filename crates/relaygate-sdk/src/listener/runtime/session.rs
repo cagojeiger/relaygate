@@ -1,4 +1,7 @@
-use std::ops::ControlFlow::{self, Break, Continue};
+use std::{
+    collections::hash_map::Entry,
+    ops::ControlFlow::{self, Break, Continue},
+};
 
 use futures_util::StreamExt;
 use relaygate_protocol::{BearerToken, Frame, PipeId, ProtocolError};
@@ -269,20 +272,29 @@ impl RelayLoop<'_> {
             response,
             resources,
         };
-        if self
-            .state
-            .pending_dials
-            .insert(connection_id, pending)
-            .is_some()
-        {
-            if let Some(pending) = self.state.pending_dials.remove(&connection_id) {
+        match self.state.pending_dials.entry(connection_id) {
+            // Ids are allocated in order under the session lock, so a repeat
+            // is an internal invariant break; reject the newcomer and leave
+            // the in-flight dial untouched.
+            Entry::Occupied(_) => {
+                debug_assert!(false, "duplicate ConnectionId {connection_id}");
+                tracing::error!(
+                    component = "sdk",
+                    event = "sdk.dial.duplicate_connection_id",
+                    session_id = %self.established.id.as_uuid(),
+                    connection_id,
+                    "duplicate ConnectionId allocated for a Relay session"
+                );
                 let _ = pending.response.send(Err(Error::new(
                     ErrorCode::AlreadyExists,
                     PeerObservation::NotObserved,
                     "ConnectionId is already in flight",
                 )));
+                return Continue(());
             }
-            return Continue(());
+            Entry::Vacant(slot) => {
+                slot.insert(pending);
+            }
         }
         if self
             .link()
