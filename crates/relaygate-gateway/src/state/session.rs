@@ -158,6 +158,14 @@ impl GatewayState {
         actions
     }
 
+    /// Delivers one frame to an SDK session, or nothing if the session is gone.
+    pub(super) fn send_to(&self, target: SessionId, frame: Frame) -> Vec<GatewayAction> {
+        self.to(target, frame)
+            .map(GatewayAction::SendSdkFrame)
+            .into_iter()
+            .collect()
+    }
+
     pub(super) fn to(&self, target: SessionId, frame: Frame) -> Option<Delivery> {
         let session = self.sessions.get(&target)?;
         Some(Delivery {

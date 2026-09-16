@@ -200,18 +200,14 @@ impl GatewayState {
         message: &str,
     ) -> Vec<GatewayAction> {
         match target {
-            PipeEndpoint::Sdk(session_id) => self
-                .to(
-                    session_id,
-                    Frame::Reset {
-                        pipe_id,
-                        code,
-                        message: message.to_owned(),
-                    },
-                )
-                .map(GatewayAction::SendSdkFrame)
-                .into_iter()
-                .collect(),
+            PipeEndpoint::Sdk(session_id) => self.send_to(
+                session_id,
+                Frame::Reset {
+                    pipe_id,
+                    code,
+                    message: message.to_owned(),
+                },
+            ),
             PipeEndpoint::Peer(key) => vec![
                 PeerDelivery::Reset {
                     key,
@@ -230,33 +226,23 @@ impl GatewayState {
         payload: Bytes,
     ) -> Vec<GatewayAction> {
         match target {
-            PipeEndpoint::Sdk(session_id) => self
-                .to(session_id, Frame::Data { pipe_id, payload })
-                .map(GatewayAction::SendSdkFrame)
-                .into_iter()
-                .collect(),
+            PipeEndpoint::Sdk(session_id) => {
+                self.send_to(session_id, Frame::Data { pipe_id, payload })
+            }
             PipeEndpoint::Peer(key) => vec![PeerDelivery::Data { key, payload }.into()],
         }
     }
 
     fn endpoint_fin(&self, target: PipeEndpoint, pipe_id: PipeId) -> Vec<GatewayAction> {
         match target {
-            PipeEndpoint::Sdk(session_id) => self
-                .to(session_id, Frame::Fin { pipe_id })
-                .map(GatewayAction::SendSdkFrame)
-                .into_iter()
-                .collect(),
+            PipeEndpoint::Sdk(session_id) => self.send_to(session_id, Frame::Fin { pipe_id }),
             PipeEndpoint::Peer(key) => vec![PeerDelivery::Fin { key }.into()],
         }
     }
 
     fn endpoint_close(&self, target: PipeEndpoint, pipe_id: PipeId) -> Vec<GatewayAction> {
         match target {
-            PipeEndpoint::Sdk(session_id) => self
-                .to(session_id, Frame::Close { pipe_id })
-                .map(GatewayAction::SendSdkFrame)
-                .into_iter()
-                .collect(),
+            PipeEndpoint::Sdk(session_id) => self.send_to(session_id, Frame::Close { pipe_id }),
             PipeEndpoint::Peer(key) => vec![PeerDelivery::Close { key }.into()],
         }
     }

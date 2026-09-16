@@ -288,6 +288,38 @@ fn duplicate_or_out_of_order_dial_identifiers_fail_without_creating_more_state()
 }
 
 #[test]
+fn only_the_dialer_may_cancel_a_pipe() -> TestResult {
+    let mut state = state();
+    let caller = add_session(&mut state);
+    let receiver = add_session(&mut state);
+    let stranger = add_session(&mut state);
+    let destination = destination(DESTINATION_A)?;
+    publish(&mut state, receiver, &destination)?;
+    let actions = state.test_handle(caller, dial(1, &destination))?;
+    let pipe_id = offered_pipe(&actions).ok_or("missing OFFER")?;
+
+    for sender in [receiver, stranger] {
+        let error = state
+            .test_handle(sender, Frame::Cancel { pipe_id })
+            .err()
+            .ok_or("non-dialer cancelled a Pipe")?;
+        assert!(matches!(
+            error,
+            ProtocolViolation::PipeOwnership {
+                sender: rejected,
+                pipe_id: rejected_pipe,
+                frame_name: "CANCEL",
+            } if rejected == sender && rejected_pipe == pipe_id
+        ));
+    }
+    assert_eq!(state.snapshot().pending_offers, 1);
+
+    state.test_handle(caller, Frame::Cancel { pipe_id })?;
+    assert_eq!(state.snapshot().pending_offers, 0);
+    Ok(())
+}
+
+#[test]
 fn foreign_session_cannot_control_an_existing_pipe() -> TestResult {
     let mut state = state();
     let caller = add_session(&mut state);

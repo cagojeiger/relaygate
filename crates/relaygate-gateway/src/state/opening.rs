@@ -159,7 +159,7 @@ impl GatewayState {
                 acceptor_finished: false,
             },
         );
-        self.to(
+        self.send_to(
             binding.session_id,
             Frame::Offer {
                 pipe_id,
@@ -167,9 +167,6 @@ impl GatewayState {
                 destination,
             },
         )
-        .map(GatewayAction::SendSdkFrame)
-        .into_iter()
-        .collect()
     }
 
     pub(super) fn open_failed(
@@ -189,7 +186,7 @@ impl GatewayState {
             observation = ?observation,
             "Dial attempt failed"
         );
-        self.to(
+        self.send_to(
             dialer,
             Frame::DialFailed {
                 connection_id,
@@ -198,9 +195,6 @@ impl GatewayState {
                 message: message.to_owned(),
             },
         )
-        .map(GatewayAction::SendSdkFrame)
-        .into_iter()
-        .collect()
     }
 
     fn new_open_failed(
@@ -329,13 +323,11 @@ impl GatewayState {
         dialer: SessionId,
         pipe_id: PipeId,
     ) -> Result<Vec<GatewayAction>, ProtocolViolation> {
-        if !self.pipes.contains_key(&pipe_id) {
-            return Ok(self.cancel_remote_attempt(dialer, pipe_id));
-        }
         let Some(pipe) = self.pipes.get(&pipe_id) else {
-            return Ok(Vec::new());
+            return Ok(self.cancel_remote_attempt(dialer, pipe_id));
         };
-        pipe.ensure_sdk_owner(dialer, pipe_id, "CANCEL")?;
+        // Only the dialer may cancel; an acceptor holding the pipe is still a
+        // foreign sender for CANCEL.
         if pipe.dialer != PipeEndpoint::Sdk(dialer) {
             return Err(ProtocolViolation::PipeOwnership {
                 sender: dialer,
@@ -425,11 +417,7 @@ impl GatewayState {
     pub(super) fn dialer_opened(&self, pipe: &PipeEntry, pipe_id: PipeId) -> Vec<GatewayAction> {
         observe_dial_result(pipe.open_started_at, None);
         match pipe.dialer {
-            PipeEndpoint::Sdk(dialer) => self
-                .to(dialer, Frame::Opened { pipe_id })
-                .map(GatewayAction::SendSdkFrame)
-                .into_iter()
-                .collect(),
+            PipeEndpoint::Sdk(dialer) => self.send_to(dialer, Frame::Opened { pipe_id }),
             PipeEndpoint::Peer(key) => vec![PeerDelivery::Opened { key }.into()],
         }
     }
