@@ -118,7 +118,7 @@ impl RouteTableShard {
             return Ok(Self::ack(registration, now));
         }
 
-        let deadline = self.deadline_from(now)?;
+        let deadline = Self::deadline_from(self.config.lease_ttl, now)?;
         let lease_id = self.unique_lease_id();
         self.registration_index.insert(
             key.clone(),
@@ -152,7 +152,7 @@ impl RouteTableShard {
         self.validate_snapshot(key, &snapshot)?;
         self.expire_due(now);
 
-        let registration = self.current_registration(key, lease_id)?;
+        let registration = Self::current_registration(&mut self.registration_index, key, lease_id)?;
         match registration.revision {
             None if revision != RegistrationRevision::FIRST => {
                 return Err(RouteTableError::FailedPrecondition(
@@ -176,23 +176,11 @@ impl RouteTableShard {
         }
         Self::validate_current_binding_identity_stability(registration, &snapshot)?;
 
-        let new_bindings = snapshot.into_map();
-        let (old_bindings, deadline) = {
-            let registration = self
-                .registration_index
-                .get(key)
-                .ok_or_else(|| RouteTableError::FailedPrecondition("unknown lease".to_owned()))?;
-            (registration.bindings.clone(), registration.deadline)
-        };
-
-        self.remove_bindings(&old_bindings);
-        self.insert_bindings(&new_bindings);
-        let registration = self
-            .registration_index
-            .get_mut(key)
-            .ok_or_else(|| RouteTableError::FailedPrecondition("unknown lease".to_owned()))?;
+        let old_bindings = std::mem::replace(&mut registration.bindings, snapshot.into_map());
         registration.revision = Some(revision);
-        registration.bindings = new_bindings;
+        let deadline = registration.deadline;
+        Self::remove_bindings(&mut self.destination_index, &old_bindings);
+        Self::insert_bindings(&mut self.destination_index, &registration.bindings);
 
         Ok(RegistrationAck::new(
             lease_id,
@@ -214,18 +202,12 @@ impl RouteTableShard {
         self.validate_registration_scope(key)?;
         self.expire_due(now);
 
-        let (old_deadline, revision) = {
-            let registration = self.current_registration(key, lease_id)?;
-            (registration.deadline, registration.revision)
-        };
-        let new_deadline = self.deadline_from(now)?;
+        let registration = Self::current_registration(&mut self.registration_index, key, lease_id)?;
+        let new_deadline = Self::deadline_from(self.config.lease_ttl, now)?;
+        let old_deadline = std::mem::replace(&mut registration.deadline, new_deadline);
+        let revision = registration.revision;
         self.remove_expiry(key, lease_id, old_deadline);
         self.insert_expiry(key, lease_id, new_deadline);
-        let registration = self
-            .registration_index
-            .get_mut(key)
-            .ok_or_else(|| RouteTableError::FailedPrecondition("unknown lease".to_owned()))?;
-        registration.deadline = new_deadline;
 
         Ok(RegistrationAck::new(
             lease_id,
@@ -401,24 +383,40 @@ impl RouteTableShard {
         Ok(())
     }
 
-    fn current_registration(
-        &self,
+    /// Looks up the active registration for `key` and checks that `lease_id`
+    /// is its current lease. Takes the index rather than `&mut self` so callers
+    /// can keep the registration borrowed while they update the sibling
+    /// `destination_index`/`config` fields.
+    fn current_registration<'a>(
+        registration_index: &'a mut HashMap<RegistrationKey, RegistrationState>,
         key: &RegistrationKey,
         lease_id: LeaseId,
-    ) -> Result<&RegistrationState, RouteTableError> {
-        let registration = self.registration_index.get(key).ok_or_else(|| {
-            RouteTableError::FailedPrecondition("registration lease is not active".to_owned())
-        })?;
+    ) -> Result<&'a mut RegistrationState, RouteTableError> {
+        let registration = registration_index
+            .get_mut(key)
+            .ok_or_else(Self::lease_not_active)?;
+        Self::check_lease(registration, lease_id)?;
+        Ok(registration)
+    }
+
+    fn lease_not_active() -> RouteTableError {
+        RouteTableError::FailedPrecondition("registration lease is not active".to_owned())
+    }
+
+    fn check_lease(
+        registration: &RegistrationState,
+        lease_id: LeaseId,
+    ) -> Result<(), RouteTableError> {
         if registration.lease_id != lease_id {
             return Err(RouteTableError::FailedPrecondition(
                 "LeaseId is not the current active lease".to_owned(),
             ));
         }
-        Ok(registration)
+        Ok(())
     }
 
-    fn deadline_from(&self, now: Instant) -> Result<Instant, RouteTableError> {
-        now.checked_add(self.config.lease_ttl)
+    fn deadline_from(lease_ttl: Duration, now: Instant) -> Result<Instant, RouteTableError> {
+        now.checked_add(lease_ttl)
             .ok_or(RouteTableError::DeadlineOverflow)
     }
 
@@ -471,29 +469,35 @@ impl RouteTableShard {
         };
         self.active_lease_ids.remove(&registration.lease_id);
         self.remove_expiry(key, registration.lease_id, registration.deadline);
-        self.remove_bindings(&registration.bindings);
+        Self::remove_bindings(&mut self.destination_index, &registration.bindings);
     }
 
-    fn insert_bindings(&mut self, bindings: &BTreeMap<BindingIdentity, BindingProjection>) {
+    fn insert_bindings(
+        destination_index: &mut HashMap<Destination, BTreeMap<BindingIdentity, BindingProjection>>,
+        bindings: &BTreeMap<BindingIdentity, BindingProjection>,
+    ) {
         for (identity, binding) in bindings {
-            self.destination_index
+            destination_index
                 .entry(binding.destination().clone())
                 .or_default()
                 .insert(*identity, binding.clone());
         }
     }
 
-    fn remove_bindings(&mut self, bindings: &BTreeMap<BindingIdentity, BindingProjection>) {
+    fn remove_bindings(
+        destination_index: &mut HashMap<Destination, BTreeMap<BindingIdentity, BindingProjection>>,
+        bindings: &BTreeMap<BindingIdentity, BindingProjection>,
+    ) {
         for (identity, binding) in bindings {
             let remove_destination =
-                if let Some(bindings) = self.destination_index.get_mut(binding.destination()) {
+                if let Some(bindings) = destination_index.get_mut(binding.destination()) {
                     bindings.remove(identity);
                     bindings.is_empty()
                 } else {
                     false
                 };
             if remove_destination {
-                self.destination_index.remove(binding.destination());
+                destination_index.remove(binding.destination());
             }
         }
     }

@@ -102,27 +102,25 @@ async fn authenticate(
             return Ok(None);
         }
 
-        let name = GatewayName::new(gateway_name).ok();
-        let gateway_id = Uuid::parse_str(&gateway_id).ok().map(GatewayId::from_uuid);
-        if name.is_none() || gateway_id.is_none() {
-            let error = TransportError::protocol("invalid Gateway identity claims");
-            observe_handshake("error", error.code().metric_name());
-            tracing::debug!(
-                event = "route_table.handshake.rejected",
-                error_code = error.code().metric_name(),
-                "RouteTable rejected invalid Gateway identity claims"
-            );
-            let _ = framed
-                .send(WireFrame::HandshakeRejected {
-                    role: ROUTE_TABLE_ROLE.to_owned(),
-                    code: error.code(),
-                    message: error.message().to_owned(),
-                })
-                .await;
-            return Ok(None);
-        }
-        let Some(gateway_id) = gateway_id else {
-            return Ok(None);
+        let gateway_id = match (GatewayName::new(gateway_name), Uuid::parse_str(&gateway_id)) {
+            (Ok(_), Ok(gateway_id)) => GatewayId::from_uuid(gateway_id),
+            _ => {
+                let error = TransportError::protocol("invalid Gateway identity claims");
+                observe_handshake("error", error.code().metric_name());
+                tracing::debug!(
+                    event = "route_table.handshake.rejected",
+                    error_code = error.code().metric_name(),
+                    "RouteTable rejected invalid Gateway identity claims"
+                );
+                let _ = framed
+                    .send(WireFrame::HandshakeRejected {
+                        role: ROUTE_TABLE_ROLE.to_owned(),
+                        code: error.code(),
+                        message: error.message().to_owned(),
+                    })
+                    .await;
+                return Ok(None);
+            }
         };
         framed
             .send(WireFrame::Welcome {

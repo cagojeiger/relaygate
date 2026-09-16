@@ -18,7 +18,7 @@ use crate::{
     bounds::{validate_capacity, validate_duration, validate_frame_len},
     codec::{FrameCodec, map_receive_codec_error, map_send_codec_error},
     dto::{
-        WireRequest, WireResponse, response_bindings, response_deregistered,
+        RegistrationRequest, WireRequest, WireResponse, response_bindings, response_deregistered,
         response_registration_ack,
     },
     frame::{GATEWAY_ROLE, ROUTE_TABLE_ROLE, WireFrame, WireResult},
@@ -175,7 +175,7 @@ impl RouteTableClient {
         let started_at = Instant::now();
         let result = async {
             let response = self.request(WireRequest::register(generation, key)).await?;
-            response_registration_ack(response, "REGISTER", None, None)
+            response_registration_ack(response, RegistrationRequest::Register, None, None)
         }
         .await;
         observe_request("register", started_at, &result);
@@ -197,7 +197,12 @@ impl RouteTableClient {
                     generation, key, lease_id, revision, snapshot,
                 ))
                 .await?;
-            response_registration_ack(response, "UPDATE", Some(lease_id), Some(revision))
+            response_registration_ack(
+                response,
+                RegistrationRequest::Update,
+                Some(lease_id),
+                Some(revision),
+            )
         }
         .await;
         observe_request("update", started_at, &result);
@@ -215,7 +220,12 @@ impl RouteTableClient {
             let response = self
                 .request(WireRequest::keep_alive(generation, key, lease_id))
                 .await?;
-            response_registration_ack(response, "KEEP_ALIVE", Some(lease_id), None)
+            response_registration_ack(
+                response,
+                RegistrationRequest::KeepAlive,
+                Some(lease_id),
+                None,
+            )
         }
         .await;
         observe_request("keep_alive", started_at, &result);

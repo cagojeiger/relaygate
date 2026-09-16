@@ -106,8 +106,7 @@ impl RouteTableService {
         let permits = Arc::new(Semaphore::new(config.max_connections));
         let (requests, request_receiver) = mpsc::channel(config.request_queue_capacity);
         let runtime_shutdown = shutdown.child_token();
-        let actor_shutdown = runtime_shutdown.child_token();
-        let mut actor = spawn_actor(shard, request_receiver, actor_shutdown.clone());
+        let mut actor = spawn_actor(shard, request_receiver, runtime_shutdown.child_token());
         let mut actor_completed = false;
         let mut connections = JoinSet::new();
         let mut service_error = None;
@@ -115,9 +114,7 @@ impl RouteTableService {
         loop {
             while let Some(completed) = connections.try_join_next() {
                 if let Err(join_error) = completed {
-                    service_error = Some(TransportError::internal(format!(
-                        "RouteTable connection task failed: {join_error}"
-                    )));
+                    service_error = Some(connection_task_failed(join_error));
                     break;
                 }
             }
@@ -136,9 +133,7 @@ impl RouteTableService {
                 }
                 completed = connections.join_next(), if !connections.is_empty() => {
                     if let Some(Err(join_error)) = completed {
-                        service_error = Some(TransportError::internal(format!(
-                            "RouteTable connection task failed: {join_error}"
-                        )));
+                        service_error = Some(connection_task_failed(join_error));
                         break;
                     }
                 }
@@ -201,15 +196,12 @@ impl RouteTableService {
         }
 
         runtime_shutdown.cancel();
-        actor_shutdown.cancel();
         drop(requests);
         while let Some(completed) = connections.join_next().await {
             if let Err(join_error) = completed
                 && service_error.is_none()
             {
-                service_error = Some(TransportError::internal(format!(
-                    "RouteTable connection task failed: {join_error}"
-                )));
+                service_error = Some(connection_task_failed(join_error));
             }
         }
         if !actor_completed {
@@ -229,6 +221,10 @@ impl RouteTableService {
             Ok(())
         }
     }
+}
+
+fn connection_task_failed(join_error: JoinError) -> TransportError {
+    TransportError::internal(format!("RouteTable connection task failed: {join_error}"))
 }
 
 fn unexpected_actor_exit<T>(result: Result<T, JoinError>) -> TransportError {

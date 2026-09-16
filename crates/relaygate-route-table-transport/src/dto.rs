@@ -411,22 +411,42 @@ impl WireDuration {
     }
 }
 
+/// The registration request a `RegistrationAck` response must answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegistrationRequest {
+    Register,
+    Update,
+    KeepAlive,
+}
+
+impl RegistrationRequest {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Register => "REGISTER",
+            Self::Update => "UPDATE",
+            Self::KeepAlive => "KEEP_ALIVE",
+        }
+    }
+}
+
 pub(crate) fn response_registration_ack(
     response: WireResponse,
-    expected: &'static str,
+    expected: RegistrationRequest,
     expected_lease_id: Option<LeaseId>,
     expected_revision: Option<RegistrationRevision>,
 ) -> Result<RegistrationAck, TransportError> {
-    let ack = match response {
-        WireResponse::Registered { ack } if expected == "REGISTER" => ack,
-        WireResponse::Updated { ack } if expected == "UPDATE" => ack,
-        WireResponse::KeptAlive { ack } if expected == "KEEP_ALIVE" => ack,
+    let ack = match (response, expected) {
+        (WireResponse::Registered { ack }, RegistrationRequest::Register)
+        | (WireResponse::Updated { ack }, RegistrationRequest::Update)
+        | (WireResponse::KeptAlive { ack }, RegistrationRequest::KeepAlive) => ack,
         _ => {
             return Err(TransportError::protocol(format!(
-                "RouteTable response does not match {expected} request"
+                "RouteTable response does not match {} request",
+                expected.name()
             )));
         }
     };
+    let expected = expected.name();
     let ack = ack.into_domain()?;
     if expected_lease_id.is_some_and(|lease_id| ack.lease_id() != lease_id) {
         return Err(TransportError::protocol(format!(
