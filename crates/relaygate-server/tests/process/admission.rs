@@ -4,17 +4,17 @@ use tokio::io::AsyncReadExt;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sdk_admission_rejection_metrics_distinguish_transport_capacity()
 -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
     let mut server = ChildGuard::spawn_captured(
         server_command()
-            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
+            .env("RELAYGATE_LOG_FORMAT", "json")
             .env("RELAYGATE_MAX_SESSIONS", "2")
             .env("RELAYGATE_MAX_PENDING_HANDSHAKES", "1")
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
             .env("RELAYGATE_METRICS_INTERVAL_MS", "10"),
     )?;
-    wait_until_healthy(&address, &mut server)?;
+    let address = wait_until_healthy(&mut server)?;
     wait_handshake_usage(&metrics_address, &mut server, 0)?;
     let stalled = tokio::net::TcpStream::connect(&address).await?;
     wait_handshake_usage(&metrics_address, &mut server, 1)?;
@@ -82,17 +82,17 @@ fn invalid_control_rate_environment_fails_before_serving() -> Result<(), Box<dyn
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connection_rate_environment_rejects_and_reports_without_session_state()
 -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
     let mut server = ChildGuard::spawn_captured(
         server_command()
-            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
+            .env("RELAYGATE_LOG_FORMAT", "json")
             .env("RELAYGATE_SDK_CONNECTION_RATE_PER_SECOND", "1")
             .env("RELAYGATE_SDK_CONNECTION_BURST", "1")
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
             .env("RELAYGATE_METRICS_INTERVAL_MS", "10"),
     )?;
-    wait_until_healthy(&address, &mut server)?;
+    let address = wait_until_healthy(&mut server)?;
     // Probe admission already spent the initial burst; recover between attempts.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let mut active = connect_sdk_session(&address).await?;

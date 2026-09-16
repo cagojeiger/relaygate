@@ -61,16 +61,16 @@ fn internal_transport_rejects_unknown_and_conflicting_modes_before_serving()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_plaintext_route_table_admits_without_keys_or_certificates()
 -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let artifact = ShardDirectoryArtifact::create()?;
-    let mut server = ChildGuard::spawn(
+    let mut server = ChildGuard::spawn_captured(
         server_command()
             .arg("route-table")
             .env("RELAYGATE_INTERNAL_TRANSPORT", "plaintext")
-            .env("RELAYGATE_RT_BIND_ADDR", &address)
+            .env("RELAYGATE_LOG_FORMAT", "json")
+            .env("RELAYGATE_RT_BIND_ADDR", EPHEMERAL_LOOPBACK)
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path()),
     )?;
-    let client = wait_until_route_table_ready(&address, GatewayId::new(), &mut server).await?;
+    let client = wait_until_route_table_ready(GatewayId::new(), &mut server).await?;
     let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
     let error = client
         .resolve(directory.generation(), &DESTINATION_A.parse()?)

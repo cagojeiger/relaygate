@@ -4,15 +4,16 @@ use std::{
     net::TcpListener,
     process::{Child, Command, ExitStatus, Output, Stdio},
     sync::{
-        LazyLock,
+        Arc, LazyLock, Mutex, PoisonError,
         atomic::{AtomicU16, Ordering},
     },
     thread,
     time::{Duration, Instant},
 };
 
+use std::io::Read;
 #[cfg(unix)]
-use std::io::{Read, Write};
+use std::io::Write;
 #[cfg(unix)]
 use std::{
     fs,
@@ -48,6 +49,10 @@ static NEXT_TEST_PORT: LazyLock<AtomicU16> = LazyLock::new(|| {
 });
 
 const STARTUP_DEADLINE: Duration = Duration::from_secs(5);
+/// Bind address for a child whose real port the test learns from its
+/// `server.started` log record, so no pre-allocated port can be taken between
+/// the availability check and the child's bind.
+const EPHEMERAL_LOOPBACK: &str = "127.0.0.1:0";
 
 #[cfg(unix)]
 #[path = "process/admission.rs"]
@@ -71,10 +76,13 @@ const PEER_CONNECT_TIMEOUT: Duration = Duration::from_millis(100);
 #[cfg(unix)]
 #[test]
 fn server_boots_health_checks_and_exits_on_sigterm() -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
-    let mut server = ChildGuard::spawn(server_command().env("RELAYGATE_BIND_ADDR", &address))?;
+    let mut server = ChildGuard::spawn_captured(
+        server_command()
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
+            .env("RELAYGATE_LOG_FORMAT", "json"),
+    )?;
 
-    wait_until_healthy(&address, &mut server)?;
+    wait_until_healthy(&mut server)?;
 
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
@@ -97,7 +105,6 @@ fn server_boots_health_checks_and_exits_on_sigterm() -> Result<(), Box<dyn Error
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
     let artifact = ShardDirectoryArtifact::create()?;
     let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
@@ -105,7 +112,7 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .arg("route-table")
-            .env("RELAYGATE_RT_BIND_ADDR", &address)
+            .env("RELAYGATE_RT_BIND_ADDR", EPHEMERAL_LOOPBACK)
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_RT_SHARD_ID", "rt-0")
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
@@ -113,7 +120,7 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
-    let client = wait_until_route_table_ready(&address, gateway_id, &mut server).await?;
+    let client = wait_until_route_table_ready(gateway_id, &mut server).await?;
     let error = match client
         .resolve(directory.generation(), &DESTINATION_A.parse()?)
         .await
@@ -230,7 +237,6 @@ async fn route_table_role_starts_ready_empty_and_exits_on_sigterm() -> Result<()
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn route_table_expiry_metric_counts_removed_soft_state_once() -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
     let artifact = ShardDirectoryArtifact::create()?;
     let directory = ShardDirectory::from_json_bytes(ShardDirectoryArtifact::BYTES)?;
@@ -238,14 +244,15 @@ async fn route_table_expiry_metric_counts_removed_soft_state_once() -> Result<()
     let mut server = ChildGuard::spawn_captured(
         server_command()
             .arg("route-table")
-            .env("RELAYGATE_RT_BIND_ADDR", &address)
+            .env("RELAYGATE_RT_BIND_ADDR", EPHEMERAL_LOOPBACK)
+            .env("RELAYGATE_LOG_FORMAT", "json")
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_RT_SHARD_ID", "rt-0")
             .env("RELAYGATE_RT_LEASE_TTL_MS", "100")
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address),
     )?;
 
-    let client = wait_until_route_table_ready(&address, gateway_id, &mut server).await?;
+    let client = wait_until_route_table_ready(gateway_id, &mut server).await?;
     let key = RegistrationKey::new(gateway_id, RelaySessionId::new(), ShardId::new("rt-0")?);
     client.register(directory.generation(), &key).await?;
 
@@ -275,12 +282,11 @@ async fn route_table_expiry_metric_counts_removed_soft_state_once() -> Result<()
 #[test]
 fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
 -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let peer_address = unused_loopback_address()?;
     let artifact = ShardDirectoryArtifact::create()?;
     let mut server = ChildGuard::spawn_captured(
         server_command()
-            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_GATEWAY_NAME", "gw-a")
             .env("RELAYGATE_GATEWAY_LOCATOR", &peer_address)
@@ -289,7 +295,7 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
-    wait_until_healthy(&address, &mut server)?;
+    wait_until_healthy(&mut server)?;
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
         .status()?;
@@ -324,13 +330,12 @@ fn distributed_gateway_starts_without_route_table_and_hides_internal_key()
 #[test]
 fn distributed_peer_accept_failure_exits_process_nonzero_within_bound() -> Result<(), Box<dyn Error>>
 {
-    let address = unused_loopback_address()?;
     let peer_address = unused_loopback_address()?;
     let peer_socket = peer_address.parse()?;
     let artifact = ShardDirectoryArtifact::create()?;
     let mut server = ChildGuard::spawn_captured(
         server_command_with_open_file_limit(PROCESS_NOFILE_LIMIT)
-            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
             .env("RELAYGATE_RT_SHARD_DIRECTORY_PATH", artifact.path())
             .env("RELAYGATE_GATEWAY_NAME", "gw-a")
             .env("RELAYGATE_GATEWAY_LOCATOR", &peer_address)
@@ -339,7 +344,7 @@ fn distributed_peer_accept_failure_exits_process_nonzero_within_bound() -> Resul
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
-    wait_until_healthy(&address, &mut server)?;
+    wait_until_healthy(&mut server)?;
 
     let mut idle_peers = Vec::with_capacity(PEER_FD_PRESSURE_ATTEMPTS);
     for _ in 0..PEER_FD_PRESSURE_ATTEMPTS {
@@ -579,16 +584,15 @@ fn invalid_environment_configuration_fails_before_serving() -> Result<(), Box<dy
 #[cfg(unix)]
 #[test]
 fn json_logs_expose_stable_startup_and_snapshot_fields() -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let mut server = ChildGuard::spawn_captured(
         server_command()
-            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
             .env("RELAYGATE_LOG", "info")
             .env("RELAYGATE_LOG_FORMAT", "json")
             .env("RELAYGATE_STATS_INTERVAL_MS", "250"),
     )?;
 
-    wait_until_healthy(&address, &mut server)?;
+    wait_until_healthy(&mut server)?;
 
     let signal_status = Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
@@ -653,15 +657,14 @@ fn json_logs_expose_stable_startup_and_snapshot_fields() -> Result<(), Box<dyn E
 #[cfg(unix)]
 #[test]
 fn default_json_logs_do_not_emit_gateway_snapshots() -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let mut server = ChildGuard::spawn_captured(
         server_command()
-            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
             .env("RELAYGATE_LOG", "info")
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
-    wait_until_healthy(&address, &mut server)?;
+    wait_until_healthy(&mut server)?;
     thread::sleep(Duration::from_millis(300));
 
     let signal_status = Command::new("kill")
@@ -704,12 +707,11 @@ fn default_json_logs_do_not_emit_gateway_snapshots() -> Result<(), Box<dyn Error
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
 -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
     let secret = "must-not-appear-in-metrics-output";
     let mut server = ChildGuard::spawn_captured(
         server_command()
-            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
             .env("RELAYGATE_MAX_BINDINGS", "1")
             .env("RELAYGATE_MAX_SESSIONS", "17")
             .env("RELAYGATE_MAX_PENDING_HANDSHAKES", "7")
@@ -722,7 +724,7 @@ async fn gateway_metrics_expose_current_state_and_red_signals_without_secrets()
             .env("RELAYGATE_LOG_FORMAT", "json"),
     )?;
 
-    wait_until_healthy(&address, &mut server)?;
+    let address = wait_until_healthy(&mut server)?;
     let destination: Destination = DESTINATION_A.parse()?;
     let publish_token = test_access_token()?;
     let mut listener = connect_sdk_session(&address).await?;
@@ -997,11 +999,10 @@ fn occupied_metrics_address_fails_before_gateway_serve() -> Result<(), Box<dyn E
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets()
 -> Result<(), Box<dyn Error>> {
-    let address = unused_loopback_address()?;
     let metrics_address = unused_loopback_address()?;
     let mut server = ChildGuard::spawn_captured(
         server_command()
-            .env("RELAYGATE_BIND_ADDR", &address)
+            .env("RELAYGATE_BIND_ADDR", EPHEMERAL_LOOPBACK)
             .env("RELAYGATE_LOG", "debug")
             .env("RELAYGATE_LOG_FORMAT", "json")
             .env("RELAYGATE_METRICS_BIND_ADDR", &metrics_address)
@@ -1010,7 +1011,7 @@ async fn gateway_sdk_heartbeat_timeout_is_observable_without_payload_or_secrets(
             .env("RELAYGATE_SDK_HEARTBEAT_TIMEOUT_MS", "40"),
     )?;
 
-    wait_until_healthy(&address, &mut server)?;
+    let address = wait_until_healthy(&mut server)?;
     let mut sdk = connect_sdk_session(&address).await?;
     let heartbeat = tokio::time::timeout(Duration::from_secs(1), sdk.next()).await?;
     assert!(
@@ -1141,7 +1142,9 @@ fn clean_server_command(mut command: Command) -> Command {
     ] {
         command.env_remove(name);
     }
-    command.env("RELAYGATE_LOG", "warn");
+    // Quiet by default, but keep the server's own lifecycle records (this crate's
+    // modules) at info so `ChildGuard::bound_address` can read `server.started`.
+    command.env("RELAYGATE_LOG", "warn,relaygate_server=info");
     command.env("RELAYGATE_AUTH_CONFIG_PATH", authorization_config_path());
     command.env("RELAYGATE_SDK_TRANSPORT", "plaintext");
     command.env("RELAYGATE_INTERNAL_TRANSPORT", "plaintext");
@@ -1208,7 +1211,10 @@ fn unused_loopback_address() -> io::Result<String> {
     }
 }
 
-fn wait_until_healthy(address: &str, server: &mut ChildGuard) -> Result<(), Box<dyn Error>> {
+/// Waits for the Gateway `check` to succeed and returns the SDK address the
+/// child actually bound.
+fn wait_until_healthy(server: &mut ChildGuard) -> Result<String, Box<dyn Error>> {
+    let address = server.bound_address()?;
     let deadline = Instant::now() + STARTUP_DEADLINE;
 
     loop {
@@ -1220,9 +1226,9 @@ fn wait_until_healthy(address: &str, server: &mut ChildGuard) -> Result<(), Box<
             .into());
         }
 
-        let check = server_command().args(["check", address]).output()?;
+        let check = server_command().args(["check", &address]).output()?;
         if check.status.success() {
-            return Ok(());
+            return Ok(address);
         }
 
         if Instant::now() >= deadline {
@@ -1284,16 +1290,16 @@ fn metric_has_labels(body: &str, metric: &str, labels: &[&str]) -> bool {
 
 #[cfg(unix)]
 async fn wait_until_route_table_ready(
-    address: &str,
     gateway_id: GatewayId,
     server: &mut ChildGuard,
 ) -> Result<RouteTableClient, Box<dyn Error>> {
-    let endpoint: std::net::SocketAddr = address.parse()?;
+    let endpoint: std::net::SocketAddr = server.bound_address()?.parse()?;
     let deadline = tokio::time::Instant::now() + STARTUP_DEADLINE;
     loop {
         if let Some(status) = server.try_wait()? {
+            let (stdout, stderr) = server.read_captured()?;
             return Err(io::Error::other(format!(
-                "RouteTable server exited before becoming ready: {status}"
+                "RouteTable server exited before becoming ready: {status}; stdout: {stdout}; stderr: {stderr}"
             ))
             .into());
         }
@@ -1357,26 +1363,101 @@ impl Drop for ShardDirectoryArtifact {
 
 struct ChildGuard {
     child: Child,
+    captured: CapturedOutput,
+}
+
+/// Child stdout/stderr drained by background threads, so a chatty child never
+/// blocks on a full pipe and the test can inspect the output while the child
+/// is still running.
+struct CapturedOutput {
+    stdout: Arc<Mutex<Vec<u8>>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    readers: Vec<thread::JoinHandle<()>>,
+}
+
+impl CapturedOutput {
+    fn drain(
+        stream: impl Read + Send + 'static,
+        sink: &Arc<Mutex<Vec<u8>>>,
+    ) -> thread::JoinHandle<()> {
+        let sink = Arc::clone(sink);
+        thread::spawn(move || {
+            let mut stream = stream;
+            let mut buffer = [0_u8; 8192];
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => sink
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .extend_from_slice(&buffer[..read]),
+                }
+            }
+        })
+    }
+
+    fn snapshot(sink: &Arc<Mutex<Vec<u8>>>) -> String {
+        String::from_utf8_lossy(&sink.lock().unwrap_or_else(PoisonError::into_inner)).into_owned()
+    }
 }
 
 impl ChildGuard {
-    fn spawn(command: &mut Command) -> io::Result<Self> {
-        let child = command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        Ok(Self { child })
-    }
-
-    #[cfg(unix)]
     fn spawn_captured(command: &mut Command) -> io::Result<Self> {
-        let child = command
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        Ok(Self { child })
+        let stdout = Arc::new(Mutex::new(Vec::new()));
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let mut readers = Vec::with_capacity(2);
+        if let Some(stream) = child.stdout.take() {
+            readers.push(CapturedOutput::drain(stream, &stdout));
+        }
+        if let Some(stream) = child.stderr.take() {
+            readers.push(CapturedOutput::drain(stream, &stderr));
+        }
+        Ok(Self {
+            child,
+            captured: CapturedOutput {
+                stdout,
+                stderr,
+                readers,
+            },
+        })
+    }
+
+    /// The address the child actually bound, read from its `server.started`
+    /// JSON log record. Requires `RELAYGATE_LOG_FORMAT=json`.
+    fn bound_address(&mut self) -> Result<String, Box<dyn Error>> {
+        let deadline = Instant::now() + STARTUP_DEADLINE;
+        loop {
+            if let Some(status) = self.try_wait()? {
+                let (stdout, stderr) = self.read_captured()?;
+                return Err(io::Error::other(format!(
+                    "server exited before logging server.started: {status}; stdout: {stdout}; stderr: {stderr}"
+                ))
+                .into());
+            }
+            let stdout = CapturedOutput::snapshot(&self.captured.stdout);
+            for line in stdout.lines() {
+                if !line.contains("\"server.started\"") {
+                    continue;
+                }
+                let record: serde_json::Value = serde_json::from_str(line)?;
+                if let Some(address) = record.get("address").and_then(serde_json::Value::as_str) {
+                    return Ok(address.to_owned());
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("server did not log server.started before the startup deadline; stdout: {stdout}"),
+                )
+                .into());
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
     }
 
     #[cfg(unix)]
@@ -1402,17 +1483,16 @@ impl ChildGuard {
         }
     }
 
-    #[cfg(unix)]
+    /// Complete stdout/stderr of an exited child. Joins the drain threads, so
+    /// call it only after the child has exited.
     fn read_captured(&mut self) -> io::Result<(String, String)> {
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        if let Some(mut stream) = self.child.stdout.take() {
-            stream.read_to_string(&mut stdout)?;
+        for reader in self.captured.readers.drain(..) {
+            let _ = reader.join();
         }
-        if let Some(mut stream) = self.child.stderr.take() {
-            stream.read_to_string(&mut stderr)?;
-        }
-        Ok((stdout, stderr))
+        Ok((
+            CapturedOutput::snapshot(&self.captured.stdout),
+            CapturedOutput::snapshot(&self.captured.stderr),
+        ))
     }
 }
 
