@@ -112,7 +112,7 @@ impl SessionHeartbeat {
 }
 
 fn jittered_duration(duration: Duration, session_id: SessionId, salt: u8) -> Duration {
-    crate::jitter::staggered(duration, session_id.as_uuid(), salt)
+    crate::jitter::staggered(duration, session_id.as_uuid().as_bytes(), salt)
 }
 
 #[cfg(test)]

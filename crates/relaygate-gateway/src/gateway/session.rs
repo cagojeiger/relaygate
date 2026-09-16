@@ -18,7 +18,7 @@ use tokio::{
 use tokio_util::{codec::Framed, sync::CancellationToken};
 
 use crate::authorization::ControlOperation;
-use crate::metrics::{HeartbeatTransport, observe_heartbeat_round_trip, observe_heartbeat_timeout};
+use crate::metrics::{observe_sdk_heartbeat_round_trip, observe_sdk_heartbeat_timeout};
 use crate::state::{ProtocolViolation, SdkWriterItem};
 
 use super::{Inner, heartbeat::SessionHeartbeat};
@@ -139,7 +139,7 @@ impl Inner {
                 _ = cancellation.cancelled() => break,
                 () = sleep_until(heartbeat.next_deadline()) => {
                     let Some(frame) = heartbeat.on_deadline() else {
-                        observe_heartbeat_timeout(HeartbeatTransport::Sdk);
+                        observe_sdk_heartbeat_timeout();
                         tracing::debug!(
                             component = "gateway",
                             event = "gateway.session.heartbeat_timeout",
@@ -158,10 +158,10 @@ impl Inner {
                     let Some(frame) = frame else { break; };
                     let frame = frame?;
                     if let Some(round_trip) = heartbeat.observe_inbound(&frame) {
-                        observe_heartbeat_round_trip(HeartbeatTransport::Sdk, round_trip);
+                        observe_sdk_heartbeat_round_trip(round_trip);
                     }
                     if heartbeat.response_timed_out() {
-                        observe_heartbeat_timeout(HeartbeatTransport::Sdk);
+                        observe_sdk_heartbeat_timeout();
                         tracing::debug!(
                             component = "gateway",
                             event = "gateway.session.heartbeat_timeout",
