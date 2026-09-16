@@ -128,6 +128,7 @@ fn register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle()
         start + Duration::from_secs(7),
     )?;
     assert_eq!(alpha_bindings.entries(), std::slice::from_ref(&alpha));
+    assert_eq!(shard.stats().destination_count, 2);
 
     let revision_two = RegistrationRevision::new(2)?;
     shard.update(
@@ -159,6 +160,7 @@ fn register_update_resolve_keepalive_and_deregister_form_a_closed_lifecycle()
             .entries(),
         &[beta]
     );
+    assert_eq!(shard.stats().destination_count, 1);
 
     let kept_alive = shard.keep_alive(
         context,

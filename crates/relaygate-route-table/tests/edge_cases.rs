@@ -46,6 +46,62 @@ fn internal_register_deadline_overflow_leaves_no_partial_route_table_state()
 }
 
 #[test]
+fn internal_keep_alive_deadline_overflow_leaves_the_registration_untouched()
+-> Result<(), RouteTableError> {
+    // Place the lease so that it is still live at `keep_alive_at` (deadline is
+    // `edge - 6s`) while `keep_alive_at + ttl` no longer fits in an `Instant`.
+    let ttl = Duration::from_secs(10);
+    let edge = latest_instant(Instant::now());
+    let registered_at = edge - Duration::from_secs(16);
+    let keep_alive_at = edge - Duration::from_secs(7);
+    assert!(keep_alive_at.checked_add(ttl).is_none());
+
+    let gateway_id = gateway(21);
+    let mut shard = shard(ttl)?;
+    let generation = shard.generation();
+    let key = key(gateway_id, session(2))?;
+    let registered = shard.register(context(gateway_id), generation, key.clone(), registered_at)?;
+    let before = shard.stats();
+    assert_eq!(before.registration_count, 1);
+
+    let kept_alive = shard.keep_alive(
+        context(gateway_id),
+        generation,
+        &key,
+        registered.lease_id(),
+        keep_alive_at,
+    );
+    assert!(matches!(kept_alive, Err(RouteTableError::DeadlineOverflow)));
+    assert_eq!(shard.stats(), before);
+
+    // The original lease is still the active one, so it can still be released.
+    shard.deregister(
+        context(gateway_id),
+        generation,
+        &key,
+        registered.lease_id(),
+        keep_alive_at,
+    )?;
+    assert_eq!(shard.stats().registration_count, 0);
+    assert_eq!(shard.stats().expiry_record_count, 0);
+    Ok(())
+}
+
+/// The latest `Instant` reachable from `start` in whole seconds.
+fn latest_instant(start: Instant) -> Instant {
+    let (mut low, mut high) = (0_u64, u64::MAX);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if start.checked_add(Duration::from_secs(mid)).is_some() {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    start + Duration::from_secs(low)
+}
+
+#[test]
 fn one_registration_expiry_preserves_sibling_bindings() -> Result<(), RouteTableError> {
     let start = Instant::now();
     let ttl = Duration::from_secs(10);
