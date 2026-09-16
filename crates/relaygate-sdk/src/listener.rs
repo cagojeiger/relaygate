@@ -236,7 +236,12 @@ impl Relay {
 
         let mut status = state.status.subscribe();
         loop {
-            match *status.borrow() {
+            // Copy the status out first: a `match` on `*status.borrow()` keeps
+            // the watch read guard alive through the arms, and the state
+            // methods called below publish through that watch while holding
+            // the state lock, so matching on the guard would invert the order.
+            let observed = *status.borrow();
+            match observed {
                 ListenerStatus::Active => {
                     if !state.promote_returned() {
                         continue;
@@ -606,7 +611,10 @@ impl Listener {
         // The final ACTIVE + non-terminal observation is accept's success
         // linearization point. A later session/peer failure is observed by
         // Pipe I/O, just like a socket may close immediately after accept.
-        match *status.borrow() {
+        // Copied out so the watch read guard is released before
+        // `blocked_error` takes the state lock (see `listen` for the order).
+        let observed = *status.borrow();
+        match observed {
             ListenerStatus::Active if !pipe.is_terminal() => Some(Ok(pipe)),
             ListenerStatus::Active => {
                 drop(pipe);
