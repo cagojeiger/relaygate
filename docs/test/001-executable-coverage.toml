@@ -139,6 +139,11 @@ rust = [
   "state::tests::remote_dial_admission_rejects_before_resolve_and_releases_after_terminal_result",
   "gateway::tests::full_offer_queue_rejects_only_the_dial_and_preserves_the_listener",
   "operation_denial_does_not_end_the_relay_session",
+  "state::remote_tests::route_failure_while_resolving_fails_the_dial_once",
+  "state::remote_tests::route_resolved_with_a_foreign_destination_is_a_precondition_failure",
+  "state::remote_tests::route_resolved_to_this_gateway_offers_locally_or_fails_when_stale",
+  "state::remote_tests::cancel_while_starting_peer_cancels_the_peer_open",
+  "state::remote_tests::late_peer_opened_after_cancel_does_not_recreate_the_pipe",
 ]
 
 [[case]]
@@ -146,6 +151,11 @@ id = "T-PEER-01"
 status = "executable"
 rust = [
   "rt_one_gateway_three_forms_a_closed_current_state_relay",
+  "state::remote_tests::resolve_commit_and_opened_create_the_relayed_pipe",
+  "state::remote_tests::commit_failure_fails_a_starting_attempt_and_is_inert_once_committed",
+  "state::remote_tests::a_second_commit_with_another_key_is_rejected_without_disturbing_the_first",
+  "state::remote_tests::peer_failures_on_a_stale_key_are_ignored_until_the_current_key_fails",
+  "state::remote_tests::peer_opened_after_session_removal_resets_the_stream",
   "tests::peer_pool_keeps_at_most_one_transport_per_direction",
   "tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_failed_counter",
   "tests::peer_frame_codec_round_trips_every_frame_kind",
