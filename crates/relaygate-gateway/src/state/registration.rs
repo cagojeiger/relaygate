@@ -77,11 +77,7 @@ impl GatewayState {
             )
             .increment(1);
         }
-        let mut actions = self
-            .to(session_id, response)
-            .map(GatewayAction::SendSdkFrame)
-            .into_iter()
-            .collect::<Vec<_>>();
+        let mut actions = self.send_to(session_id, response);
         if publish {
             actions.push(self.registration_publication(session_id));
         }

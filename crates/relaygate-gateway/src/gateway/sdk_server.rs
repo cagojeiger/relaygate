@@ -336,14 +336,7 @@ pub async fn check(
 ) -> Result<(), GatewayError> {
     timeout(deadline, async {
         let stream = TcpStream::connect(address).await?;
-        let stream = tls.connect_boxed(stream).await?;
-        let mut framed = Framed::new(stream, FrameCodec::default());
-        framed.send(Frame::Hello).await?;
-        match framed.next().await {
-            Some(Ok(Frame::Welcome { .. })) => Ok(()),
-            Some(Ok(_)) | None => Err(GatewayError::UnexpectedAdmissionResponse),
-            Some(Err(error)) => Err(GatewayError::Protocol(error)),
-        }
+        probe_admission(tls.connect_boxed(stream).await?).await
     })
     .await
     .map_err(|_| GatewayError::AdmissionCheckTimeout)?
@@ -356,16 +349,20 @@ pub async fn check_insecure_for_tests(
 ) -> Result<(), GatewayError> {
     timeout(deadline, async {
         let stream = TcpStream::connect(address).await?;
-        let mut framed = Framed::new(insecure_boxed(stream), FrameCodec::default());
-        framed.send(Frame::Hello).await?;
-        match framed.next().await {
-            Some(Ok(Frame::Welcome { .. })) => Ok(()),
-            Some(Ok(_)) | None => Err(GatewayError::UnexpectedAdmissionResponse),
-            Some(Err(error)) => Err(GatewayError::Protocol(error)),
-        }
+        probe_admission(insecure_boxed(stream)).await
     })
     .await
     .map_err(|_| GatewayError::AdmissionCheckTimeout)?
+}
+
+async fn probe_admission(io: BoxedIo) -> Result<(), GatewayError> {
+    let mut framed = Framed::new(io, FrameCodec::default());
+    framed.send(Frame::Hello).await?;
+    match framed.next().await {
+        Some(Ok(Frame::Welcome { .. })) => Ok(()),
+        Some(Ok(_)) | None => Err(GatewayError::UnexpectedAdmissionResponse),
+        Some(Err(error)) => Err(GatewayError::Protocol(error)),
+    }
 }
 
 #[cfg(test)]

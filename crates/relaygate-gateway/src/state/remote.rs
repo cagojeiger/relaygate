@@ -336,7 +336,7 @@ impl GatewayState {
                 acceptor_finished: false,
             },
         );
-        self.to(
+        self.send_to(
             relay_session_id,
             Frame::Offer {
                 pipe_id,
@@ -344,9 +344,6 @@ impl GatewayState {
                 destination,
             },
         )
-        .map(GatewayAction::SendSdkFrame)
-        .into_iter()
-        .collect()
     }
 
     pub(crate) fn peer_opened(
@@ -439,15 +436,12 @@ impl GatewayState {
                 acceptor_finished: false,
             },
         );
-        self.to(
+        self.send_to(
             dialer,
             Frame::Opened {
                 pipe_id: attempt.pipe_id,
             },
         )
-        .map(GatewayAction::SendSdkFrame)
-        .into_iter()
-        .collect()
     }
 
     pub(crate) fn peer_open_failed(

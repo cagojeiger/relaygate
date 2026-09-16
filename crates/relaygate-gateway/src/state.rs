@@ -518,11 +518,7 @@ impl GatewayState {
                 message,
             } => Self::send_actions(self.reset(session_id, pipe_id, code, message)?),
             Frame::Cancel { pipe_id } => Self::send_actions(self.cancel(session_id, pipe_id)?),
-            Frame::Ping { nonce } => self
-                .to(session_id, Frame::Pong { nonce })
-                .map(GatewayAction::SendSdkFrame)
-                .into_iter()
-                .collect(),
+            Frame::Ping { nonce } => self.send_to(session_id, Frame::Pong { nonce }),
             Frame::Pong { .. } => Vec::new(),
             Frame::Hello
             | Frame::Publish { .. }
@@ -623,10 +619,7 @@ impl GatewayState {
             )
             .increment(1);
         }
-        self.to(session_id, operation.failure(code))
-            .map(GatewayAction::SendSdkFrame)
-            .into_iter()
-            .collect()
+        self.send_to(session_id, operation.failure(code))
     }
 
     pub(crate) fn snapshot(&self) -> GatewaySnapshot {
