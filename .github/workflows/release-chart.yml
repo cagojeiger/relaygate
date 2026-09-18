@@ -16,7 +16,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
-  CHART_REPOSITORY: https://cagojeiger.github.io/relaygate
+  CHART_REPOSITORY: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
 
 jobs:
   package:
