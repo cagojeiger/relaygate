@@ -46,6 +46,7 @@ rust = [
   "resource_limits::pipe_byte_limit_resets_only_the_overflowed_pipe_and_preserves_sibling",
   "listener::runtime::frame::tests::full_listener_queue_rejects_offer_immediately_and_preserves_session_frames",
   "resource_limits::local_dial_capacity_rejection_still_supplies_the_token_exactly_once",
+  "listener::relay::tests::duplicate_destination_listen_returns_already_exists",
 ]
 
 [[case]]
@@ -148,6 +149,7 @@ rust = [
   "state::remote_tests::route_resolved_to_this_gateway_offers_locally_or_fails_when_stale",
   "state::remote_tests::cancel_while_starting_peer_cancels_the_peer_open",
   "state::remote_tests::late_peer_opened_after_cancel_does_not_recreate_the_pipe",
+  "state::tests::rejected_offer_delivery_fails_only_that_dial_and_preserves_existing_state",
 ]
 
 [[case]]
@@ -160,6 +162,12 @@ rust = [
   "state::remote_tests::a_second_commit_with_another_key_is_rejected_without_disturbing_the_first",
   "state::remote_tests::peer_failures_on_a_stale_key_are_ignored_until_the_current_key_fails",
   "state::remote_tests::peer_opened_after_session_removal_resets_the_stream",
+  "state::remote_tests::inbound_peer_open_rejects_draining_without_mutating_state",
+  "state::remote_tests::inbound_peer_open_rejects_identity_from_an_unauthenticated_gateway",
+  "state::remote_tests::inbound_peer_open_rejects_an_already_active_identity",
+  "state::remote_tests::inbound_peer_open_rejects_when_pipe_capacity_is_exhausted",
+  "state::remote_tests::inbound_peer_open_rejects_a_stale_binding",
+  "state::remote_tests::inbound_peer_open_rejects_an_active_pipe_identity_without_disturbing_it",
   "tests::peer_pool_keeps_at_most_one_transport_per_direction",
   "tests::stream_id_allocator_uses_endpoint_bit_and_never_reuses_failed_counter",
   "tests::peer_frame_codec_round_trips_every_frame_kind",
@@ -208,6 +216,7 @@ rust = [
   "tls_server_rejects_a_client_without_alpn",
   "mutual_tls_rejects_a_trusted_certificate_with_the_wrong_gateway_role",
   "mutual_tls_rejects_an_untrusted_gateway_certificate",
+  "state::remote_tests::inbound_peer_open_rejects_identity_from_an_unauthenticated_gateway",
   "runtime_tests::plaintext_peer_accepts_without_a_key_allowlist",
   "transport_modes::internal_plaintext_does_not_disable_sdk_tls",
   "transport_modes::internal_transport_rejects_unknown_and_conflicting_modes_before_serving",

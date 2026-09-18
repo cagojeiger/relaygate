@@ -430,12 +430,12 @@ mod tests {
     use std::{error::Error as StdError, time::Duration};
 
     use futures_util::{SinkExt, StreamExt};
-    use relaygate_protocol::{DEFAULT_MAX_FRAME_LEN, Frame, FrameCodec, SessionId};
+    use relaygate_protocol::{BindingId, DEFAULT_MAX_FRAME_LEN, Frame, FrameCodec, SessionId};
     use tokio::{net::TcpListener, sync::oneshot, time::timeout};
     use tokio_util::codec::Framed;
 
     use super::{Relay, RelayStatus};
-    use crate::Config;
+    use crate::{AccessToken, AccessTokenSource, Config, Destination, ErrorCode};
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn StdError + Send + Sync>>;
 
@@ -468,6 +468,72 @@ mod tests {
         assert_eq!(relay.status(), RelayStatus::Active);
         assert!(relay.inner.current.borrow().is_some());
         timeout(Duration::from_secs(1), relay.wait_ready()).await??;
+
+        relay.close();
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn duplicate_destination_listen_returns_already_exists() -> TestResult {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut transport = Framed::new(stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+            if !matches!(
+                transport.next().await.ok_or("SDK closed before HELLO")??,
+                Frame::Hello
+            ) {
+                return Err::<(), Box<dyn StdError + Send + Sync>>(
+                    "SDK first frame was not HELLO".into(),
+                );
+            }
+            transport
+                .send(Frame::Welcome {
+                    session_id: SessionId::new(),
+                })
+                .await?;
+            let request_id = match transport
+                .next()
+                .await
+                .ok_or("SDK closed before PUBLISH")??
+            {
+                Frame::Publish { request_id, .. } => request_id,
+                _ => return Err("SDK did not send PUBLISH".into()),
+            };
+            transport
+                .send(Frame::Published {
+                    request_id,
+                    binding_id: BindingId::new(),
+                })
+                .await?;
+            let _ = shutdown_rx.await;
+            Ok::<(), Box<dyn StdError + Send + Sync>>(())
+        });
+
+        let relay = Relay::connect(Config::new_insecure_for_tests(address.to_string())).await?;
+        let destination: Destination = "test/duplicate-listener".parse()?;
+        let first = relay
+            .listen(
+                destination.clone(),
+                AccessTokenSource::static_token(AccessToken::new("first-token")?),
+            )
+            .await?;
+        let duplicate = relay
+            .listen(
+                destination,
+                AccessTokenSource::static_token(AccessToken::new("second-token")?),
+            )
+            .await;
+        let error = match duplicate {
+            Ok(_) => return Err("duplicate listen unexpectedly succeeded".into()),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), ErrorCode::AlreadyExists);
+        assert_eq!(first.status(), super::ListenerStatus::Active);
 
         relay.close();
         let _ = shutdown_tx.send(());
