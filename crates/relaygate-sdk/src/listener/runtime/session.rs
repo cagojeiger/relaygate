@@ -48,16 +48,23 @@ pub(super) async fn run_relay_session(
         outbound_tx,
         abandoned_tx,
         needs_reconcile: true,
+        settlement_dirty: true,
         timed_out_request: None,
         registration_succeeded: false,
     };
 
     loop {
-        if session.needs_reconcile && !session.reconcile().await {
-            break;
+        if session.needs_reconcile {
+            if !session.reconcile().await {
+                break;
+            }
+            session.needs_reconcile = false;
+            session.settlement_dirty = true;
         }
-        session.needs_reconcile = false;
-        session.settle_reconnect(reconnect_episode);
+        if session.settlement_dirty {
+            session.settle_reconnect(reconnect_episode);
+            session.settlement_dirty = false;
+        }
         let registration_deadline = session.registration_deadline();
         let flow = tokio::select! {
             biased;
@@ -130,6 +137,7 @@ struct RelayLoop<'a> {
     outbound_tx: SessionOutbound,
     abandoned_tx: mpsc::UnboundedSender<PipeId>,
     needs_reconcile: bool,
+    settlement_dirty: bool,
     timed_out_request: Option<u64>,
     registration_succeeded: bool,
 }
@@ -220,7 +228,11 @@ impl RelayLoop<'_> {
         .await;
         match action {
             RelayFrameAction::Continue => {}
-            RelayFrameAction::RegistrationSucceeded => self.registration_succeeded = true,
+            RelayFrameAction::RegistrationSucceeded => {
+                self.registration_succeeded = true;
+                self.settlement_dirty = true;
+            }
+            RelayFrameAction::SettlementChanged => self.settlement_dirty = true,
             RelayFrameAction::Reconcile => self.needs_reconcile = true,
             RelayFrameAction::Stop => return Break(()),
         }
@@ -244,7 +256,7 @@ impl RelayLoop<'_> {
         request_id: u64,
         token: crate::Result<BearerToken>,
     ) -> ControlFlow<()> {
-        if commit_registration_token(
+        let committed = commit_registration_token(
             request_id,
             token,
             self.inner,
@@ -252,12 +264,9 @@ impl RelayLoop<'_> {
             &mut self.state,
             &self.session_cancel,
         )
-        .await
-        {
-            Continue(())
-        } else {
-            Break(())
-        }
+        .await;
+        self.settlement_dirty = true;
+        if committed { Continue(()) } else { Break(()) }
     }
 
     async fn on_command(&mut self, command: RelayCommand) -> ControlFlow<()> {

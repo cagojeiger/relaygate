@@ -126,6 +126,70 @@ fn reconnect_backoff_uses_bounded_jitter_and_resets() {
 }
 
 #[tokio::test]
+async fn steady_state_data_frames_do_not_rescan_listener_settlement() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let session_id = SessionId::new();
+    let pipe_id = PipeId::new(session_id, 1);
+    let (send_data_tx, send_data_rx) = oneshot::channel();
+    let (processed_tx, processed_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut transport = Framed::new(stream, FrameCodec::new(DEFAULT_MAX_FRAME_LEN));
+        if !matches!(
+            transport.next().await.ok_or("SDK closed before HELLO")??,
+            Frame::Hello
+        ) {
+            return Err::<(), Box<dyn StdError + Send + Sync>>(
+                "SDK first frame was not HELLO".into(),
+            );
+        }
+        transport.send(Frame::Welcome { session_id }).await?;
+        send_data_rx.await.map_err(|_| "DATA trigger was dropped")?;
+        for _ in 0..100 {
+            transport
+                .send(Frame::Data {
+                    pipe_id,
+                    payload: Bytes::from_static(b"x"),
+                })
+                .await?;
+        }
+        transport.send(Frame::Ping { nonce: 7 }).await?;
+        loop {
+            if matches!(
+                transport.next().await.ok_or("SDK closed before PONG")??,
+                Frame::Pong { nonce: 7 }
+            ) {
+                break;
+            }
+        }
+        let _ = processed_tx.send(());
+        let _ = shutdown_rx.await;
+        Ok::<(), Box<dyn StdError + Send + Sync>>(())
+    });
+
+    let relay = Relay::connect(Config::new_insecure_for_tests(address.to_string())).await?;
+    timeout(Duration::from_secs(1), async {
+        while relay.desired_settlement_calls() == 0 {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await?;
+    let baseline = relay.desired_settlement_calls();
+    send_data_tx
+        .send(())
+        .map_err(|_| "fake Gateway stopped before DATA trigger")?;
+    timeout(Duration::from_secs(1), processed_rx).await??;
+    assert_eq!(relay.desired_settlement_calls(), baseline);
+
+    relay.close();
+    let _ = shutdown_tx.send(());
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn initial_unexpected_non_welcome_frame_returns_protocol_error() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;

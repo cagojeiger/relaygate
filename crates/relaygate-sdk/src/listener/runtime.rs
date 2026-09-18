@@ -226,6 +226,7 @@ impl RelaySessionState {
 enum RelayFrameAction {
     Continue,
     RegistrationSucceeded,
+    SettlementChanged,
     Reconcile,
     Stop,
 }

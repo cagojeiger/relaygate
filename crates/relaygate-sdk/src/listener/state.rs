@@ -30,6 +30,8 @@ pub(super) struct RelayInner {
     pub(super) republish_retry_epoch: Arc<AtomicU64>,
     pub(super) republish_backoff: Arc<StdMutex<ReconnectBackoff>>,
     pub(super) reconnect_degraded: AtomicBool,
+    #[cfg(test)]
+    pub(super) desired_settlement_calls: AtomicU64,
 }
 
 pub(super) struct ListenerState {
@@ -138,6 +140,9 @@ impl RelayInner {
     }
 
     pub(super) fn desired_settlement(&self) -> DesiredSettlement {
+        #[cfg(test)]
+        self.desired_settlement_calls
+            .fetch_add(1, Ordering::Relaxed);
         self.desired
             .lock()
             .map_or(DesiredSettlement::Pending, |desired| {
