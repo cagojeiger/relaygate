@@ -175,6 +175,214 @@ fn opened(actions: &[GatewayAction], target: SessionId) -> Option<PipeId> {
     })
 }
 
+fn peer_failure(
+    actions: &[GatewayAction],
+    expected_key: PeerStreamKey,
+) -> Option<(ErrorCode, PeerObservation)> {
+    actions.iter().find_map(|action| match action {
+        GatewayAction::SendPeerFrame(PeerDelivery::Failed {
+            key,
+            code,
+            observation,
+            ..
+        }) if *key == expected_key => Some((*code, *observation)),
+        _ => None,
+    })
+}
+
+fn publish_listener(fx: &mut Fixture) -> TestResult<(SessionId, BindingId)> {
+    let listener = add_session(&mut fx.state);
+    let actions = fx.state.handle_at(
+        listener,
+        Frame::Publish {
+            request_id: 1,
+            destination: fx.destination.clone(),
+            access_token: access_token(),
+        },
+        Instant::now(),
+    )?;
+    let binding_id = sdk_frames(&actions)
+        .find_map(|(_, frame)| match frame {
+            Frame::Published { binding_id, .. } => Some(*binding_id),
+            _ => None,
+        })
+        .ok_or("listener did not publish")?;
+    Ok((listener, binding_id))
+}
+
+fn inbound_identity(
+    entry_gateway: GatewayId,
+    origin: SessionId,
+    connection_id: u64,
+) -> OpenIdentity {
+    OpenIdentity::new(entry_gateway, origin, connection_id)
+}
+
+#[test]
+fn inbound_peer_open_rejects_draining_without_mutating_state() -> TestResult {
+    let mut fx = Fixture::new()?;
+    let key = fx.key(0);
+    let identity = inbound_identity(fx.peer_gateway, SessionId::new(), 1);
+    fx.state.begin_draining();
+    let before = fx.state.snapshot();
+
+    let actions = fx.state.receive_peer_open_at(
+        key,
+        identity,
+        fx.destination.clone(),
+        SessionId::new(),
+        BindingId::new(),
+        Instant::now(),
+    );
+
+    assert_eq!(
+        peer_failure(&actions, key),
+        Some((ErrorCode::Unavailable, PeerObservation::NotObserved))
+    );
+    assert_eq!(fx.state.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn inbound_peer_open_rejects_identity_from_an_unauthenticated_gateway() -> TestResult {
+    let mut fx = Fixture::new()?;
+    let key = fx.key(0);
+    let identity = inbound_identity(GatewayId::new(), SessionId::new(), 1);
+    let before = fx.state.snapshot();
+
+    let actions = fx.state.receive_peer_open_at(
+        key,
+        identity,
+        fx.destination.clone(),
+        SessionId::new(),
+        BindingId::new(),
+        Instant::now(),
+    );
+
+    assert_eq!(
+        peer_failure(&actions, key),
+        Some((ErrorCode::PermissionDenied, PeerObservation::NotObserved))
+    );
+    assert_eq!(fx.state.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn inbound_peer_open_rejects_an_already_active_identity() -> TestResult {
+    let mut fx = Fixture::new()?;
+    let key = fx.key(0);
+    let identity = inbound_identity(fx.peer_gateway, SessionId::new(), 1);
+    fx.state.active_peer_opens.insert(identity, key);
+    let before = fx.state.snapshot();
+
+    let actions = fx.state.receive_peer_open_at(
+        key,
+        identity,
+        fx.destination.clone(),
+        SessionId::new(),
+        BindingId::new(),
+        Instant::now(),
+    );
+
+    assert_eq!(
+        peer_failure(&actions, key),
+        Some((ErrorCode::AlreadyExists, PeerObservation::NotObserved))
+    );
+    assert_eq!(fx.state.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn inbound_peer_open_rejects_when_pipe_capacity_is_exhausted() -> TestResult {
+    let mut fx = Fixture::new()?;
+    let key = fx.key(0);
+    let identity = inbound_identity(fx.peer_gateway, SessionId::new(), 1);
+    fx.state.limits.max_live_pipes = 0;
+    let before = fx.state.snapshot();
+
+    let actions = fx.state.receive_peer_open_at(
+        key,
+        identity,
+        fx.destination.clone(),
+        SessionId::new(),
+        BindingId::new(),
+        Instant::now(),
+    );
+
+    assert_eq!(
+        peer_failure(&actions, key),
+        Some((ErrorCode::ResourceExhausted, PeerObservation::NotObserved))
+    );
+    assert_eq!(fx.state.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn inbound_peer_open_rejects_a_stale_binding() -> TestResult {
+    let mut fx = Fixture::new()?;
+    let key = fx.key(0);
+    let identity = inbound_identity(fx.peer_gateway, SessionId::new(), 1);
+    let before = fx.state.snapshot();
+
+    let actions = fx.state.receive_peer_open_at(
+        key,
+        identity,
+        fx.destination.clone(),
+        SessionId::new(),
+        BindingId::new(),
+        Instant::now(),
+    );
+
+    assert_eq!(
+        peer_failure(&actions, key),
+        Some((ErrorCode::Unavailable, PeerObservation::NotObserved))
+    );
+    assert_eq!(fx.state.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn inbound_peer_open_rejects_an_active_pipe_identity_without_disturbing_it() -> TestResult {
+    let mut fx = Fixture::new()?;
+    let (listener, binding_id) = publish_listener(&mut fx)?;
+    let connection_id = 1;
+    let offered = fx.state.handle_at(
+        fx.caller,
+        Frame::Dial {
+            connection_id,
+            destination: fx.destination.clone(),
+            access_token: access_token(),
+        },
+        Instant::now(),
+    )?;
+    let pipe_id = sdk_frames(&offered)
+        .find_map(|(_, frame)| match frame {
+            Frame::Offer { pipe_id, .. } => Some(*pipe_id),
+            _ => None,
+        })
+        .ok_or("local DIAL did not create an OFFER")?;
+    let key = fx.key(0);
+    let identity = inbound_identity(fx.peer_gateway, fx.caller, connection_id);
+    let before = fx.state.snapshot();
+
+    let actions = fx.state.receive_peer_open_at(
+        key,
+        identity,
+        fx.destination.clone(),
+        listener,
+        binding_id,
+        Instant::now(),
+    );
+
+    assert_eq!(pipe_id, PipeId::new(fx.caller, connection_id));
+    assert_eq!(
+        peer_failure(&actions, key),
+        Some((ErrorCode::AlreadyExists, PeerObservation::NotObserved))
+    );
+    assert_eq!(fx.state.snapshot(), before);
+    Ok(())
+}
+
 #[test]
 fn resolve_commit_and_opened_create_the_relayed_pipe() -> TestResult {
     let mut fx = Fixture::new()?;

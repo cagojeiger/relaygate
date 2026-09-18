@@ -192,6 +192,59 @@ fn accepted_pipe_relays_data_and_closes_without_residue() -> TestResult {
 }
 
 #[test]
+fn rejected_offer_delivery_fails_only_that_dial_and_preserves_existing_state() -> TestResult {
+    let mut state = state();
+    let listener = add_session(&mut state);
+    let existing_dialer = add_session(&mut state);
+    let rejected_dialer = add_session(&mut state);
+    let destination = destination(DESTINATION_A)?;
+    let binding_id = publish(&mut state, listener, &destination)?;
+
+    let existing_offer = state.test_handle(existing_dialer, dial(1, &destination))?;
+    let existing_pipe = offered_pipe(&existing_offer).ok_or("missing existing OFFER")?;
+    state.test_handle(
+        listener,
+        Frame::OfferAccepted {
+            pipe_id: existing_pipe,
+        },
+    )?;
+
+    let rejected_offer = state.test_handle(rejected_dialer, dial(1, &destination))?;
+    let rejected_pipe = offered_pipe(&rejected_offer).ok_or("missing rejected OFFER")?;
+    let before = state.snapshot();
+
+    let actions = state.offer_delivery_rejected(listener, rejected_pipe);
+
+    assert!(sdk_frames(&actions).any(|(target, frame)| {
+        target == rejected_dialer
+            && matches!(
+                frame,
+                Frame::DialFailed {
+                    code: ErrorCode::ResourceExhausted,
+                    observation: PeerObservation::NotObserved,
+                    ..
+                }
+            )
+    }));
+    let after = state.snapshot();
+    assert_eq!(after.sessions, before.sessions);
+    assert_eq!(after.bindings, before.bindings);
+    assert_eq!(after.live_pipes, before.live_pipes);
+    assert_eq!(after.pending_offers + 1, before.pending_offers);
+    assert_eq!(state.pipe_count(), 1);
+    assert_eq!(
+        state
+            .registry
+            .exact(listener, binding_id, &destination)
+            .map(|binding| binding.id),
+        Some(binding_id)
+    );
+    assert!(state.pipes.contains_key(&existing_pipe));
+    assert!(!state.pipes.contains_key(&rejected_pipe));
+    Ok(())
+}
+
+#[test]
 fn offer_timeout_closes_the_unresponsive_relay_and_preserves_sibling_binding() -> TestResult {
     let mut state = limited_state(GatewayLimits {
         offer_timeout: Duration::from_millis(10),
