@@ -99,6 +99,8 @@ impl Relay {
         let inner = Arc::new(RelayInner {
             resources: RelayResources::new(config.resource_limits),
             reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            desired_settlement_calls: AtomicU64::new(0),
             republish_retry_epoch: Arc::new(AtomicU64::new(0)),
             republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
                 config.reconnect_initial,
@@ -123,6 +125,13 @@ impl Relay {
             inner,
             _lifetime: lifetime,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn desired_settlement_calls(&self) -> u64 {
+        self.inner
+            .desired_settlement_calls
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Creates one desired Listener for a destination and waits until its initial

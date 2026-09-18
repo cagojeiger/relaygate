@@ -193,7 +193,11 @@ impl FrameContext<'_, '_> {
             self.inner.fail_initial_listener(&pending.state, error);
             return RelayFrameAction::Reconcile;
         }
-        self.settle()
+        if self.inner.cancel.is_cancelled() {
+            RelayFrameAction::Stop
+        } else {
+            RelayFrameAction::SettlementChanged
+        }
     }
 
     async fn on_offer(

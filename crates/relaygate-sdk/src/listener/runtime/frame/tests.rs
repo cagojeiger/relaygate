@@ -72,6 +72,7 @@ async fn full_listener_queue_rejects_offer_immediately_and_preserves_session_fra
         lifetime: Weak::<RuntimeLifetime>::new(),
         resources: RelayResources::new(limits),
         reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+        desired_settlement_calls: AtomicU64::new(0),
         republish_retry_epoch: Arc::new(AtomicU64::new(0)),
         republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
             Duration::from_millis(10),
@@ -170,6 +171,7 @@ async fn dropped_pipe_keeps_its_entry_until_close_is_sent() -> TestResult {
         lifetime: Weak::<RuntimeLifetime>::new(),
         resources: RelayResources::new(limits),
         reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+        desired_settlement_calls: AtomicU64::new(0),
         republish_retry_epoch: Arc::new(AtomicU64::new(0)),
         republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
             Duration::from_millis(10),

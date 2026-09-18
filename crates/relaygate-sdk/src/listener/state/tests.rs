@@ -64,6 +64,7 @@ fn cancelled_relay_status_transition_closes_instead_of_resurrecting() {
     let inner = RelayInner {
         resources: RelayResources::new(limits),
         reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+        desired_settlement_calls: AtomicU64::new(0),
         republish_retry_epoch: Arc::new(AtomicU64::new(0)),
         republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
             config.reconnect_initial,
@@ -98,6 +99,7 @@ async fn repeated_republish_failures_share_one_bounded_retry_timer() -> TestResu
     let inner = RelayInner {
         resources: RelayResources::new(limits),
         reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+        desired_settlement_calls: AtomicU64::new(0),
         republish_retry_epoch: Arc::new(AtomicU64::new(0)),
         republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(initial, maximum))),
         config,
@@ -232,6 +234,7 @@ fn reconnect_settlement_ignores_initial_listens_that_were_never_returned() -> Te
         lifetime: Weak::<RuntimeLifetime>::new(),
         resources: RelayResources::new(limits),
         reconnect_degraded: std::sync::atomic::AtomicBool::new(false),
+        desired_settlement_calls: AtomicU64::new(0),
         republish_retry_epoch: Arc::new(AtomicU64::new(0)),
         republish_backoff: Arc::new(StdMutex::new(ReconnectBackoff::new(
             Duration::from_millis(10),
