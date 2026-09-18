@@ -44,24 +44,47 @@ pub(super) struct WorkerCounts {
 
 impl WorkerCounts {
     pub(super) fn update(&self, registrations: &BTreeMap<RelaySessionId, RegistrationState>) {
-        let (synced, unsynced, terminal) = registrations
+        let counts = registrations
             .values()
             .filter(|state| state.is_desired())
-            .fold(
-                (0, 0, 0),
-                |(synced, unsynced, terminal), state| match state.phase() {
-                    RegistrationPhase::Synced => (synced + 1, unsynced, terminal),
-                    RegistrationPhase::Terminal => (synced, unsynced + 1, terminal + 1),
-                    RegistrationPhase::Registering
-                    | RegistrationPhase::Leased
-                    | RegistrationPhase::Unsynced
-                    | RegistrationPhase::Deregistering
-                    | RegistrationPhase::Removed => (synced, unsynced + 1, terminal),
-                },
-            );
-        self.synced.store(synced, Ordering::Relaxed);
-        self.unsynced.store(unsynced, Ordering::Relaxed);
-        self.terminal.store(terminal, Ordering::Relaxed);
+            .fold(RegistrationCounts::default(), |mut counts, state| {
+                counts.observe(state);
+                counts
+            });
+        self.store(counts);
+    }
+
+    fn store(&self, counts: RegistrationCounts) {
+        self.synced.store(counts.synced, Ordering::Relaxed);
+        self.unsynced.store(counts.unsynced, Ordering::Relaxed);
+        self.terminal.store(counts.terminal, Ordering::Relaxed);
+    }
+}
+
+#[derive(Default)]
+struct RegistrationCounts {
+    synced: usize,
+    unsynced: usize,
+    terminal: usize,
+}
+
+impl RegistrationCounts {
+    fn observe(&mut self, state: &RegistrationState) {
+        if !state.is_desired() {
+            return;
+        }
+        match state.phase() {
+            RegistrationPhase::Synced => self.synced += 1,
+            RegistrationPhase::Terminal => {
+                self.unsynced += 1;
+                self.terminal += 1;
+            }
+            RegistrationPhase::Registering
+            | RegistrationPhase::Leased
+            | RegistrationPhase::Unsynced
+            | RegistrationPhase::Deregistering
+            | RegistrationPhase::Removed => self.unsynced += 1,
+        }
     }
 }
 
@@ -129,15 +152,17 @@ pub(super) async fn run_shard_worker(
             worker.reconcile(&desired, &mut observed_desired_version, now)?;
             dirty = false;
         }
-        worker.prune();
-
         if worker.wants_connect(connect.is_none(), now) {
             connect = Some(connect_once(&worker.config));
         }
+        let mut registration_deadline = None;
         if operation.is_none() {
-            operation = worker.begin_operation(now)?;
+            let prepared = worker.prepare_registrations(now)?;
+            operation = prepared.operation;
+            registration_deadline = prepared.deadline;
+        } else {
+            worker.prune();
         }
-        let registration_deadline = worker.registration_deadline(operation.is_none());
         let reconnect_deadline = worker.reconnect_deadline(connect.is_none());
 
         tokio::select! {
@@ -247,27 +272,33 @@ impl ShardWorker {
             && now >= self.reconnect_at
     }
 
-    fn begin_operation(
+    fn prepare_registrations(
         &mut self,
         now: Instant,
-    ) -> Result<Option<BoxFuture<OperationCompletion>>, RoutingError> {
+    ) -> Result<PreparedRegistrations, RoutingError> {
         if self.terminal {
-            return Ok(None);
+            self.prune();
+            return Ok(PreparedRegistrations::default());
         }
         let Some(current) = self.connected.clone() else {
-            return Ok(None);
+            self.prune();
+            return Ok(PreparedRegistrations::default());
         };
-        match begin_registration_operation(&mut self.registrations, now) {
-            Ok(Some(ticket)) => {
-                self.counts.update(&self.registrations);
-                Ok(Some(execute_operation(
-                    current.epoch,
-                    current.client,
-                    self.config.generation,
-                    ticket,
-                )))
+        match prepare_registration_pass(&mut self.registrations, now) {
+            Ok(prepared) => {
+                self.counts.store(prepared.counts);
+                Ok(PreparedRegistrations {
+                    operation: prepared.ticket.map(|ticket| {
+                        execute_operation(
+                            current.epoch,
+                            current.client,
+                            self.config.generation,
+                            ticket,
+                        )
+                    }),
+                    deadline: prepared.deadline,
+                })
             }
-            Ok(None) => Ok(None),
             Err(message) => {
                 mark_all_terminal(&mut self.registrations);
                 self.counts.update(&self.registrations);
@@ -276,17 +307,6 @@ impl ShardWorker {
                     self.config.shard_id
                 )))
             }
-        }
-    }
-
-    fn registration_deadline(&self, no_operation_in_flight: bool) -> Option<Instant> {
-        if self.connected.is_some() && no_operation_in_flight {
-            self.registrations
-                .values()
-                .filter_map(RegistrationState::next_deadline)
-                .min()
-        } else {
-            None
         }
     }
 
@@ -510,16 +530,63 @@ fn reconcile_desired(
     Ok(())
 }
 
-fn begin_registration_operation(
+#[derive(Default)]
+struct PreparedRegistrations {
+    operation: Option<BoxFuture<OperationCompletion>>,
+    deadline: Option<Instant>,
+}
+
+struct RegistrationPass {
+    ticket: Option<OperationTicket>,
+    deadline: Option<Instant>,
+    counts: RegistrationCounts,
+    #[cfg(test)]
+    visited: usize,
+}
+
+fn prepare_registration_pass(
     registrations: &mut BTreeMap<RelaySessionId, RegistrationState>,
     now: Instant,
-) -> Result<Option<OperationTicket>, &'static str> {
-    for state in registrations.values_mut() {
-        if let Some(ticket) = state.begin_next(now)? {
-            return Ok(Some(ticket));
+) -> Result<RegistrationPass, &'static str> {
+    let mut pass = RegistrationPass {
+        ticket: None,
+        deadline: None,
+        counts: RegistrationCounts::default(),
+        #[cfg(test)]
+        visited: 0,
+    };
+    let mut error = None;
+    registrations.retain(|_, state| {
+        #[cfg(test)]
+        {
+            pass.visited += 1;
         }
+        if state.is_removable() {
+            return false;
+        }
+        if error.is_none() && pass.ticket.is_none() {
+            match state.begin_next(now) {
+                Ok(ticket) => pass.ticket = ticket,
+                Err(message) => error = Some(message),
+            }
+        }
+        pass.counts.observe(state);
+        if pass.ticket.is_none() {
+            pass.deadline = match (pass.deadline, state.next_deadline()) {
+                (Some(current), Some(candidate)) => Some(current.min(candidate)),
+                (None, candidate) => candidate,
+                (current, None) => current,
+            };
+        }
+        true
+    });
+    if let Some(message) = error {
+        return Err(message);
     }
-    Ok(None)
+    if pass.ticket.is_some() {
+        pass.deadline = None;
+    }
+    Ok(pass)
 }
 
 fn mark_connection_lost(
@@ -596,7 +663,10 @@ mod tests {
     use tokio::time::Instant;
     use uuid::Uuid;
 
-    use super::{DesiredStore, ReconnectBackoff, RegistrationState, reconcile_desired};
+    use super::{
+        DesiredStore, ReconnectBackoff, RegistrationState, prepare_registration_pass,
+        reconcile_desired,
+    };
     use crate::projection::ProjectedShardSnapshot;
 
     type TestResult = Result<(), Box<dyn Error>>;
@@ -677,6 +747,53 @@ mod tests {
         reconcile(&desired, &shard_id, &mut registrations, &mut observed)?;
         assert_eq!(observed, removed);
         assert!(registrations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn registration_pass_selects_and_counts_one_thousand_sessions_in_one_visit_each() -> TestResult
+    {
+        let now = Instant::now();
+        let shard_id = ShardId::new("rt-0")?;
+        let projected = present(&shard_id)?;
+        let snapshot = projected.snapshot.ok_or("snapshot missing")?;
+        let gateway_id = GatewayId::from_uuid(Uuid::from_u128(1));
+        let mut registrations = (1..=1_000_u128)
+            .map(|value| {
+                let session_id = RelaySessionId::from_uuid(Uuid::from_u128(value));
+                let key = relaygate_route_table::RegistrationKey::new(
+                    gateway_id,
+                    session_id,
+                    shard_id.clone(),
+                );
+                (
+                    session_id,
+                    RegistrationState::new(
+                        key,
+                        1,
+                        Some(snapshot.clone()),
+                        now,
+                        Duration::from_millis(10),
+                        Duration::from_millis(40),
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let started = std::time::Instant::now();
+        let pass = prepare_registration_pass(&mut registrations, now)?;
+        eprintln!(
+            "registration pass: sessions=1000 elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+
+        assert!(pass.ticket.is_some());
+        assert!(pass.deadline.is_none());
+        assert_eq!(pass.counts.synced, 0);
+        assert_eq!(pass.counts.unsynced, 1_000);
+        assert_eq!(pass.counts.terminal, 0);
+        assert_eq!(pass.visited, 1_000);
+        assert_eq!(registrations.len(), 1_000);
         Ok(())
     }
 
