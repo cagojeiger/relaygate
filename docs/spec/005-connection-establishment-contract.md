@@ -62,6 +62,8 @@ AccessToken은 Entry Gateway에서 제거됩니다. RT Resolve와 peer OPEN에�
 | `DIAL-011` | remote DIAL admission 초과는 해당 요청을 `RESOURCE_EXHAUSTED/NOT_OBSERVED`로 끝내고 점유를 반환하며 existing session, Binding과 Pipe는 유지된다. |
 | `DIAL-012` | OFFER pre-commit writer saturation은 해당 DIAL만 `RESOURCE_EXHAUSTED/NOT_OBSERVED`로 끝내고 selected session, Binding과 existing Pipe를 유지한다. 다른 writer failure는 uncertain session failure다. |
 
+현재 구현에서 local 후보는 Destination별 round-robin으로 선택하고 remote 후보는 첫 후보를 선택합니다. 후보 간 분산은 계약으로 보장하지 않습니다.
+
 ## observation
 
 새 DIAL은 ConnectionId fence를 갱신한 뒤 [제어 요청 예산](010-transport-and-admission-contract.md#sdk-제어-요청-보호)과

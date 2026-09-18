@@ -23,11 +23,13 @@ existing session·Binding·Pipe를 유지합니다.
 
 ## 로그와 metric
 
+Lifecycle log는 `debug`가 기본이며, `info`에서는 drain과 `warn` 이상 사건만 기록합니다.
+
 | category | lifecycle event |
 | --- | --- |
-| session | admitted, rejected, removed |
+| session | rejected, removed |
 | Listener | active, suspended, blocked, closed |
-| authorization | operation, terminal outcome, stable code |
+| authorization | metric 전용: operation, terminal outcome, stable code |
 | dial | result, code, observation |
 | dependency | peer/RT connect, handshake, loss, recovery |
 | shutdown | drain start, deadline, complete |

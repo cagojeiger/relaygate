@@ -157,7 +157,7 @@ fn describe_gateway_metrics() {
     );
     describe_counter!(
         "relaygate_gateway_writer_queue_rejections_total",
-        "Frames rejected by a full or closed bounded SDK writer queue."
+        "Frames rejected by a full or closed bounded SDK writer queue, including queues still full at the response deadline."
     );
     describe_counter!(
         "relaygate_gateway_publish_results_total",
