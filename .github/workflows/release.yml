@@ -243,9 +243,17 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           PACKAGE: ${{ matrix.image }}
         run: |
+          owner_type=$(gh api "/repos/${GITHUB_REPOSITORY}" --jq .owner.type)
+          case "$owner_type" in
+            User) package_scope=users ;;
+            Organization) package_scope=orgs ;;
+            *) echo "::error::unsupported repository owner type: ${owner_type}"; exit 1 ;;
+          esac
+          package_api="/${package_scope}/${OWNER}/packages/container/${PACKAGE}"
+
           version_output=$(
             gh api --paginate \
-              "/users/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100" \
+              "${package_api}/versions?per_page=100" \
               --jq '.[]
                 | select(any(.metadata.container.tags[]?;
                     test("^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$")))
@@ -266,5 +274,5 @@ jobs:
 
           for version_id in "${version_ids[@]:versions_to_keep}"; do
             gh api --method DELETE \
-              "/users/${OWNER}/packages/container/${PACKAGE}/versions/${version_id}"
+              "${package_api}/versions/${version_id}"
           done

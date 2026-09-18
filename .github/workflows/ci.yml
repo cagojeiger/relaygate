@@ -15,6 +15,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CHART_REPOSITORY: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RUST_TOOLCHAIN: 1.96.1
   SHELLCHECK_VERSION: v0.10.0
@@ -519,7 +520,7 @@ jobs:
             "target/helm/retry/$package" target/helm/repository)
           test "$digest" = "$retry_digest"
           (cd target/helm/repository && sha256sum --check "$package.sha256")
-          helm repo index target/helm/repository --url https://cagojeiger.github.io/relaygate
+          helm repo index target/helm/repository --url "$CHART_REPOSITORY"
           helm show chart "target/helm/repository/$package"
 
   rust:
