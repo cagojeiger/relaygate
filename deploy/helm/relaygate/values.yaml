@@ -55,8 +55,8 @@ gateway:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/cagojeiger/relaygate-gateway
-    tag: "0.3.0"
+    repository: ghcr.io/project-jelly/relaygate-gateway
+    tag: "0.5.3"
     pullPolicy: IfNotPresent
 
   sdkPort: 27420
@@ -92,8 +92,8 @@ routeTable:
   shardCount: 1
 
   image:
-    repository: ghcr.io/cagojeiger/relaygate-route-table
-    tag: "0.3.0"
+    repository: ghcr.io/project-jelly/relaygate-route-table
+    tag: "0.5.3"
     pullPolicy: IfNotPresent
 
   port: 27430
