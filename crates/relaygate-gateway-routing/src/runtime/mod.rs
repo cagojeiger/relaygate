@@ -1,6 +1,8 @@
 mod desired;
 mod observation;
 mod operation;
+mod reconnect;
+mod registration;
 mod worker;
 
 use std::{
@@ -28,10 +30,8 @@ use super::{
 
 use desired::DesiredStore;
 pub(super) use operation::{is_connection_error, is_terminal_control_error};
-use worker::{
-    ClientAvailability, ClientFailure, ShardHandle, ShardWorkerConfig, WorkerCounts,
-    run_shard_worker,
-};
+use registration::WorkerCounts;
+use worker::{ClientAvailability, ClientFailure, ShardHandle, ShardWorkerConfig, run_shard_worker};
 
 #[cfg(test)]
 use operation::{OperationCompletion, OperationResult, apply_epoch_scoped_operation_completion};
